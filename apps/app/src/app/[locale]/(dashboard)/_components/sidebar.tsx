@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   ListChecks,
   LogOut,
+  MessageSquare,
   Menu,
   Settings,
   X,
@@ -24,6 +25,9 @@ import { ThemeSwitcher } from "./theme-switcher";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  // prefix: /chat/<id> must keep this row highlighted. Opt-in per entry so
+  // that /settings does not also light up on /settings/billing.
+  { href: "/chat", label: "Chat", icon: MessageSquare, prefix: true },
   { href: "/jobs", label: "Jobs", icon: ListChecks },
   { href: "/platform", label: "Platform", icon: Boxes },
   { href: "/files", label: "Files", icon: FolderOpen },
@@ -65,7 +69,10 @@ export function Sidebar() {
 
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-1">
         {NAV.map((item) => {
-          const active = pathname === item.href;
+          const active =
+            "prefix" in item && item.prefix
+              ? pathname === item.href || pathname.startsWith(`${item.href}/`)
+              : pathname === item.href;
           const Icon = item.icon;
           return (
             <Link

@@ -29,6 +29,20 @@
     --chart-3: 197 37% 24%;
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
+
+    /* Chat brand accent. Hue locked at 152 across both themes.
+       One green cannot be both a legible fill and legible text on white, so
+       there are three tokens with strict roles:
+         --brand            fills, borders, rings ONLY
+         --brand-foreground text ON a brand fill ONLY
+         --brand-ink        brand-coloured text on a page background ONLY
+       Contrast (WCAG): brand-foreground on brand 5.24:1, brand-ink on
+       background 5.62:1, brand vs background 3.05:1 (1.4.11 non-text).
+       Do NOT lighten the light fill: at 152 74% 40% the boundary contrast
+       drops to 2.77:1 and fails. */
+    --brand: 152 74% 38%;
+    --brand-foreground: 152 95% 8%;
+    --brand-ink: 152 72% 27%;
   }
 
   .dark {
@@ -56,6 +70,13 @@
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
+
+    /* On the pure-black dark theme the fill is light enough to double as ink.
+       Contrast: brand-foreground on brand 9.37:1, brand-ink on background
+       12.30:1. */
+    --brand: 152 76% 52%;
+    --brand-foreground: 152 95% 8%;
+    --brand-ink: 152 76% 52%;
   }
 }
 
@@ -66,4 +87,31 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+@layer utilities {
+  /* Chat viewport height.
+     Two declarations so the browser cascade picks dvh where supported and
+     falls back to vh otherwise — Tailwind arbitrary values cannot express a
+     fallback pair, and tailwind-merge would collapse them into one.
+     Subtracts the chrome above the chat pane: the h-12 topbar on desktop,
+     plus the h-14 mobile sidebar header below md. */
+  .h-chat-shell {
+    height: calc(100vh - 6.5rem);
+    height: calc(100dvh - 6.5rem);
+  }
+  @media (min-width: 768px) {
+    .h-chat-shell {
+      height: calc(100vh - 3rem);
+      height: calc(100dvh - 3rem);
+    }
+  }
+}
+
+/* Shiki dual-theme: flip colours via CSS on theme change rather than
+   re-highlighting every code block. */
+.shiki span {
+  color: var(--s-light);
+}
+.dark .shiki span {
+  color: var(--s-dark);
 }

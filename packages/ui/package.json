@@ -30,6 +30,7 @@
     "./select": "./src/components/select.tsx",
     "./tooltip": "./src/components/tooltip.tsx",
     "./switch": "./src/components/switch.tsx",
+    "./textarea": "./src/components/textarea.tsx",
     "./dialog": "./src/components/dialog.tsx",
     "./icons": "./src/components/icons.tsx",
     "./scroll-area": "./src/components/scroll-area.tsx",

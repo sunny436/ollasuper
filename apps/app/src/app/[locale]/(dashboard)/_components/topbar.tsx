@@ -7,6 +7,7 @@ import { NotificationsBell } from "./notifications-bell";
 const APP_VERSION = "0.1.0";
 const TITLES: Record<string, string> = {
   "/": "Dashboard",
+  "/chat": "Chat",
   "/jobs": "Jobs",
   "/platform": "Platform",
   "/files": "Files",
@@ -16,7 +17,10 @@ const TITLES: Record<string, string> = {
 
 export function Topbar() {
   const pathname = usePathname();
-  const title = TITLES[pathname] ?? "Dashboard";
+  // /chat/<id> is not a static key, and falling through to "Dashboard" on a
+  // chat thread reads as a bug.
+  const title =
+    TITLES[pathname] ?? (pathname.startsWith("/chat/") ? "Chat" : "Dashboard");
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card px-6">
       <nav className="flex items-center gap-1.5 text-sm">

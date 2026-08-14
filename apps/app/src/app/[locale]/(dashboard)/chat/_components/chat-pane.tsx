@@ -1,0 +1,81 @@
+"use client";
+
+import { api } from "@v1/backend/convex/_generated/api";
+import type { Id } from "@v1/backend/convex/_generated/dataModel";
+import { useQuery } from "convex/react";
+import { PanelLeft } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ComposerProvider } from "../_hooks/use-composer";
+import { DEFAULT_MODEL } from "../_lib/models";
+import { Composer } from "./composer";
+import { MessageList } from "./message-list";
+import { useChatSidebar } from "./chat-shell";
+
+export function ChatPane({ threadId }: { threadId: string | null }) {
+  const [streamingId, setStreamingId] = useState<Id<"chatMessages"> | null>(null);
+  const [model, setModel] = useState<string>(DEFAULT_MODEL);
+  const { openSidebar } = useChatSidebar();
+
+  // threadId is a raw URL string, so this query takes v.string() and
+  // normalizeId's it server-side. Returns null for a bad or foreign id.
+  const thread = useQuery(
+    api.chat.threads.get,
+    threadId ? { threadId } : "skip",
+  );
+
+  useEffect(() => {
+    if (thread?.model) setModel(thread.model);
+  }, [thread?.model]);
+
+  const onStreamingChange = useCallback(
+    (id: Id<"chatMessages"> | null) => setStreamingId(id),
+    [],
+  );
+
+  // A bad/deleted thread id renders inline. Deliberately NOT notFound(): that
+  // renders [locale]/not-found.tsx and destroys the whole chat shell.
+  const notFound = threadId !== null && thread === null;
+
+  return (
+    <ComposerProvider>
+      <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-4 xl:hidden">
+          <button
+            type="button"
+            onClick={openSidebar}
+            aria-label="Open conversations"
+            className="rounded-md p-1.5 text-primary/60 transition hover:bg-primary/5"
+          >
+            <PanelLeft className="h-4 w-4" />
+          </button>
+          <span className="truncate text-sm text-primary/80">
+            {thread?.title ?? "New chat"}
+          </span>
+        </header>
+
+        {notFound ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-8">
+            <div className="text-center">
+              <p className="text-sm text-primary/70">Conversation not found</p>
+              <a
+                href="/chat"
+                className="mt-2 inline-block text-xs text-brand-ink hover:underline"
+              >
+                ← All conversations
+              </a>
+            </div>
+          </div>
+        ) : (
+          <MessageList threadId={threadId} onStreamingChange={onStreamingChange} />
+        )}
+
+        <Composer
+          threadId={threadId}
+          streamingMessageId={streamingId}
+          model={model}
+          onModelChange={setModel}
+        />
+      </section>
+    </ComposerProvider>
+  );
+}

@@ -20,6 +20,17 @@ const config = {
     extend: {
       fontFamily: {
         departure: ["var(--font-departure-mono)"],
+        // Opt-in ONLY, deliberately not mapped onto sans/mono. The Geist vars
+        // are set on <body> but nothing consumes them, so the app currently
+        // renders in the default stacks; mapping them would silently restyle
+        // every live page and change every e2e screenshot. Used only in code
+        // blocks.
+        "geist-mono": [
+          "var(--font-geist-mono)",
+          "ui-monospace",
+          "SFMono-Regular",
+          "monospace",
+        ],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -55,6 +66,13 @@ const config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // See globals.css for the role of each. brand = fills/borders/rings,
+        // brand-ink = text, brand-foreground = text on a brand fill.
+        brand: {
+          DEFAULT: "hsl(var(--brand))",
+          foreground: "hsl(var(--brand-foreground))",
+          ink: "hsl(var(--brand-ink))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -70,10 +88,25 @@ const config = {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
+        "caret-blink": {
+          "0%,70%,100%": { opacity: "1" },
+          "20%,50%": { opacity: "0" },
+        },
+        "fade-in-up": {
+          from: { opacity: "0", transform: "translateY(4px)" },
+          to: { opacity: "1", transform: "none" },
+        },
+        "dot-bounce": {
+          "0%,80%,100%": { transform: "translateY(0)", opacity: ".45" },
+          "40%": { transform: "translateY(-3px)", opacity: "1" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        "caret-blink": "caret-blink 1.2s ease-out infinite",
+        "fade-in-up": "fade-in-up 150ms ease-out",
+        "dot-bounce": "dot-bounce 1.2s ease-in-out infinite",
       },
     },
   },
