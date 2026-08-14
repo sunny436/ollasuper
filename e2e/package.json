@@ -10,7 +10,7 @@
     "dashboard": "node p-sidebar.js && node p-feedback.js && node p-home.js && node p-notif.js && node p-cmdk.js && node p-paging.js && node p-sessions.js"
   },
   "devDependencies": {
-    "convex": "^1.19.2",
+    "convex": "1.19.2",
     "playwright": "^1.48.0"
   }
 }

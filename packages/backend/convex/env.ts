@@ -12,6 +12,14 @@ export const env = createEnv({
     SITE_URL: z.string().url(),
     AUTH_GOOGLE_ID: z.string().min(1),
     AUTH_GOOGLE_SECRET: z.string().min(1),
+    // AI inference plane. OPTIONAL on purpose: the deployment runs with
+    // VALIDATE_ENV=true, so marking these required would fail validation on the
+    // live backend the moment this code lands but before the Python service is
+    // configured. chat.stream.dispatch hard-fails at the call site instead,
+    // matching how jobs.processJob handles a missing BACKEND_BASE_URL.
+    AI_BASE_URL: z.optional(z.string().url()),
+    AI_SERVICE_KEY: z.optional(z.string().min(1)),
+    AI_INGRESS_SECRET: z.optional(z.string().min(1)),
   },
   runtimeEnv: {
     CONVEX_SITE_URL: process.env.CONVEX_SITE_URL,
@@ -23,6 +31,9 @@ export const env = createEnv({
     SITE_URL: process.env.SITE_URL,
     AUTH_GOOGLE_ID: process.env.AUTH_GOOGLE_ID,
     AUTH_GOOGLE_SECRET: process.env.AUTH_GOOGLE_SECRET,
+    AI_BASE_URL: process.env.AI_BASE_URL,
+    AI_SERVICE_KEY: process.env.AI_SERVICE_KEY,
+    AI_INGRESS_SECRET: process.env.AI_INGRESS_SECRET,
   },
   skipValidation: !process.env.VALIDATE_ENV,
 });
