@@ -1,0 +1,81 @@
+"""Generation endpoints. Service-key auth only — never browser-facing."""
+
+from __future__ import annotations
+
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+
+from app.logging import get_logger
+from app.models.chat import CancelResult, GenerateAccepted, GenerateRequest
+from app.runtime.registry import Conflict, TooMany
+from app.runtime.runner import run_generation
+from app.security import require_service_key
+
+log = get_logger(__name__)
+
+router = APIRouter(prefix="/v1", dependencies=[Depends(require_service_key)])
+
+
+@router.post("/generate", response_model=GenerateAccepted, status_code=202)
+async def generate(req: GenerateRequest, request: Request) -> GenerateAccepted:
+    """Accept a turn and return immediately.
+
+    Returns 202 before any model work starts. Convex's dispatch action treats
+    any non-2xx as terminal, so blocking here would couple the whole
+    generation's lifetime to one Convex action's timeout.
+    """
+    app = request.app.state
+    try:
+        app.registry.acquire(req.messageId, req.userId)
+    except Conflict as e:
+        raise HTTPException(status_code=409, detail="already generating") from e
+    except TooMany as e:
+        raise HTTPException(
+            status_code=429,
+            detail="too many concurrent generations",
+            headers={"Retry-After": str(e.retry_after)},
+        ) from e
+
+    async def _run() -> None:
+        try:
+            await run_generation(req, app.settings, app.convex)
+        finally:
+            app.registry.release(req.messageId)
+
+    task = asyncio.create_task(_run(), name=f"gen:{req.messageId}")
+    app.registry.attach(req.messageId, task)
+
+    log.info(
+        "generation_accepted",
+        extra={
+            "stream_id": req.streamId,
+            "message_id": req.messageId,
+            "user_id": req.userId,
+            "model": req.model,
+            "history_len": len(req.history),
+        },
+    )
+    return GenerateAccepted(messageId=req.messageId, model=req.model)
+
+
+@router.post("/generate/{message_id}/cancel", response_model=CancelResult)
+async def cancel(message_id: str, request: Request, response: Response) -> CancelResult:
+    """Fast cancel path (sub-millisecond).
+
+    A 404 here is not a failure: it means the generation already finished, or
+    is running on a different worker. Either way the ingress cancel flag still
+    stops it within one flush, so correctness never depends on this landing.
+    """
+    ok = request.app.state.registry.cancel(message_id)
+    response.status_code = 202 if ok else 404
+    return CancelResult(cancelled=ok, messageId=message_id)
+
+
+@router.get("/generate/{message_id}")
+async def status(message_id: str, request: Request) -> dict:
+    return {
+        "messageId": message_id,
+        "running": request.app.state.registry.has(message_id),
+        "active": request.app.state.registry.active,
+    }

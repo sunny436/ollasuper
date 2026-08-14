@@ -1,0 +1,121 @@
+"""Runtime configuration.
+
+Everything is environment-driven; nothing here has a secret default. The
+OpenRouter key in particular is never generated, never defaulted and never
+written by a deploy script — the service refuses to start without one.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    # --- binding -----------------------------------------------------------
+    # Loopback by default. Convex (:3210/:3211), Next (:3000) and this service
+    # (:8000) all live on the same host, so the service key never crosses a
+    # network segment. This single line removes more attack surface than
+    # anything else in the service.
+    ai_bind_host: str = "127.0.0.1"
+    ai_port: int = 8000
+
+    # --- server-to-server auth --------------------------------------------
+    ai_service_key: str = ""  # Convex -> here   (x-service-key)
+    ai_ingress_secret: str = ""  # here -> Convex (x-ai-key)
+
+    # --- Convex ------------------------------------------------------------
+    # Two separate URLs on purpose. The issuer must match the JWT byte-for-byte
+    # (deploy/28-fix-issuer.sh exists, so this has bitten before), while all
+    # outbound calls should stay on loopback and survive the Caddy / Cloudflare
+    # cutovers that rewrite the public origin.
+    convex_site_url: str = "http://127.0.0.1:3211"
+    convex_internal_url: str = "http://127.0.0.1:3211"
+    convex_audience: str = "convex"
+
+    # --- OpenRouter --------------------------------------------------------
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_app_url: str = "https://leads.networkershome.com"
+    openrouter_app_title: str = "myos"
+
+    ai_default_model: str = "anthropic/claude-opus-5"
+    ai_title_model: str = "anthropic/claude-haiku-4.5"
+    ai_max_output_tokens: int = 8192
+
+    # --- context -----------------------------------------------------------
+    # 32k, not 1M. At Opus-5 input rates a full 32k context is ~$0.16/turn;
+    # 1M would be $5.00 per message. A 32k window holds ~60 turns of ordinary
+    # chat, far past the point where a rolling summary is the better tool.
+    ai_context_budget_tokens: int = 32_000
+    # count_tokens_approximately is calibrated for OpenAI-ish tokenizers and
+    # undercounts Claude. There is no Claude tokenizer available through
+    # OpenRouter, so approximate and pad. Re-measure against usage.prompt_tokens
+    # on real traffic and tune.
+    ai_token_safety_factor: float = 1.35
+
+    # --- delta writer ------------------------------------------------------
+    # See app/runtime/writer.py for why these specific numbers. The interval is
+    # a latency ceiling, not the primary trigger: at a realistic ~280 chars/s a
+    # 100ms floor fires before the 96-char target every time and produces
+    # ~32-char batches (measured: 236 flushes on an 8k answer, ~944KB
+    # downstream per viewer). 300ms lets the size branch win normally while a
+    # slow stream still repaints ~3x/sec.
+    ai_flush_min_interval_ms: int = 300
+    ai_flush_max_interval_ms: int = 700
+    ai_flush_min_chars: int = 96
+    ai_flush_max_chars: int = 512
+    ai_heartbeat_ms: int = 5_000
+    ai_ingress_fail_deadline_s: float = 20.0
+    ai_pending_cap_bytes: int = 256 * 1024
+
+    # --- resource protection ----------------------------------------------
+    # Policy (per-user quotas) belongs in Convex, where the authenticated
+    # identity lives. These two exist only to stop one process being swamped.
+    ai_max_concurrent_per_user: int = 2
+    ai_max_concurrent_global: int = 32
+
+    # --- attachments -------------------------------------------------------
+    # pypdf extraction always works and needs no provider support. The
+    # OpenRouter file-parser plugin path is gated behind this flag until a
+    # probe confirms ChatOpenAI forwards both the unknown content-part dict
+    # and extra_body.plugins untouched.
+    ai_pdf_engine: str = Field(default="pypdf", pattern="^(pypdf|openrouter)$")
+    ai_max_images_per_turn: int = 4
+    ai_max_attachment_bytes: int = 20 * 1024 * 1024
+
+    # --- observability -----------------------------------------------------
+    ai_log_level: str = "INFO"
+    # Off by default. Enabling it puts user message content in journalctl.
+    ai_log_content: bool = False
+
+    @property
+    def ingress_url(self) -> str:
+        return f"{self.convex_internal_url.rstrip('/')}/ai/ingress"
+
+    @property
+    def file_url(self) -> str:
+        return f"{self.convex_internal_url.rstrip('/')}/ai/file"
+
+    def secrets(self) -> tuple[str, ...]:
+        """Values the log redaction filter must never emit."""
+        return tuple(
+            s
+            for s in (
+                self.openrouter_api_key,
+                self.ai_service_key,
+                self.ai_ingress_secret,
+            )
+            if s
+        )
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()

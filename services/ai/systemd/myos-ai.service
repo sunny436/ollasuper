@@ -1,0 +1,44 @@
+[Unit]
+Description=myos AI inference plane (FastAPI + LangGraph)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/myos/services/ai
+EnvironmentFile=/opt/myos/services/ai/.env
+
+# --workers 1 is REQUIRED, not a default. The fast cancel path is an in-process
+# task registry; with multiple workers a cancel POST lands on whichever worker
+# the kernel picks and usually misses. (Correctness still holds either way —
+# the ingress cancel flag is worker-agnostic — but the fast path breaks.)
+# This workload is ~100% IO-bound, so one uvloop process carries hundreds of
+# concurrent streams and the GIL is not the constraint.
+#
+# --no-access-log because the access log adds nothing here and is one more
+# place request URLs can land in journalctl.
+ExecStart=/opt/myos/services/ai/.venv/bin/python -m uvicorn app.main:app \
+  --host 127.0.0.1 --port 8000 --workers 1 --no-access-log \
+  --timeout-graceful-shutdown 25
+
+Restart=always
+RestartSec=5
+
+# KillSignal is load-bearing. systemd's default SIGTERM kills uvicorn without
+# draining, so every in-flight stream dies with no finalize and its message
+# hangs at status "streaming" until the Convex reaper fires 90s later. SIGINT
+# triggers uvicorn's graceful shutdown, which runs the FastAPI lifespan
+# teardown, which cancels every registered task and lets each generation's
+# `finally:` finalize as cancelled.
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# Hardening. The existing myos units have none of this; worth backporting.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/myos/services/ai
+
+[Install]
+WantedBy=multi-user.target

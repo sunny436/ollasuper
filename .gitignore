@@ -37,6 +37,13 @@ yarn-error.log*
 # vercel
 .vercel
 
+# python (services/ai)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
 # typescript
 *.tsbuildinfo
 

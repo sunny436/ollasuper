@@ -1,0 +1,57 @@
+[project]
+name = "myos-ai"
+version = "0.1.0"
+description = "myos AI inference plane — FastAPI + LangGraph, streaming into Convex"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.3",
+    "pydantic==2.13.4",
+    "pydantic-settings>=2.7,<3",
+    "httpx==0.28.1",
+    "langchain-core==1.5.4",
+    "langchain==1.3.15",
+    "langchain-openai==1.5.0",
+    "langgraph==1.2.11",
+    # NOT python-jose: it has algorithm-confusion CVEs (2024-33663/33664), a thin
+    # maintenance cadence, and no JWKS client at all — you would hand-roll fetch
+    # and cache, which is exactly where JWKS bugs live. PyJWKClient is the direct
+    # analogue of the jose createRemoteJWKSet used in backend-echo/server.mjs.
+    "pyjwt[crypto]>=2.10,<3",
+    "pillow>=11,<12",
+    "pypdf>=5,<6",
+]
+
+# Deliberately NOT langchain-anthropic: it speaks the native Anthropic Messages
+# API and cannot reach OpenRouter. All traffic goes through langchain-openai's
+# ChatOpenAI pointed at OpenRouter's OpenAI-compatible endpoint.
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "S"]
+ignore = ["S101"]  # assert is fine in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106"]  # hardcoded test secrets are intentional
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
