@@ -323,6 +323,85 @@ describe("cross-tenant isolation matrix — chat surfaces", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Catches a dropped .eq("userId", userId) in a withSearchIndex chain. That is
+// a ONE-LINE omission that leaks every conversation in the tenant, and no type
+// checker will catch it, because the query is still perfectly valid without it.
+describe("search does not leak across users", () => {
+  /**
+   * SKIPPED, and deliberately not deleted.
+   *
+   * convex-test 0.0.41 does not implement withSearchIndex at all (the string
+   * does not appear in its dist), so every search query returns [] in-process.
+   * Asserting "the peer got []" here would therefore PASS even if the
+   * .eq("userId", userId) filter were removed entirely — a test that cannot
+   * fail is worse than no test, because it reads as coverage.
+   *
+   * Newer convex-test does support it, but requires convex ^1.32 and this
+   * project is pinned to 1.19.2 to stay aligned with the live self-hosted
+   * deployment.
+   *
+   * => This property MUST be verified against a real deployment. See the
+   *    e2e suite, which searches as two separate real accounts.
+   */
+  test.skip("a peer cannot find the owner's threads or message text", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, member, ws } = await seedWorkspace(t);
+
+    const asOwner = t.withIdentity(as(owner));
+    const threadId = await asOwner.mutation(api.chat.threads.create, {
+      workspaceId: ws,
+      title: "ownersecretalpha planning",
+    });
+    await asOwner.mutation(api.chat.messages.send, {
+      threadId,
+      content: "the passphrase is ownersecretbeta, do not share",
+      clientId: "s1",
+    });
+    await drain(t);
+
+    expect(
+      await asOwner.query(api.chat.search.threads, {
+        workspaceId: ws,
+        query: "ownersecretalpha",
+      }),
+    ).toHaveLength(1);
+
+    const peer = t.withIdentity(as(member));
+    for (const term of ["ownersecretalpha", "ownersecretbeta", "planning"]) {
+      expect(
+        await peer.query(api.chat.search.threads, { workspaceId: ws, query: term }),
+      ).toEqual([]);
+      expect(
+        await peer.query(api.chat.search.messages, { workspaceId: ws, query: term }),
+      ).toEqual([]);
+    }
+  });
+
+  test("an outsider is refused outright", async () => {
+    const t = convexTest(schema, modules);
+    const { ws, outsider } = await seedWorkspace(t);
+    await expect(
+      t
+        .withIdentity(as(outsider))
+        .query(api.chat.search.threads, { workspaceId: ws, query: "anything" }),
+    ).rejects.toThrow();
+  });
+
+  test("a too-short term returns nothing rather than scanning the index", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    await seedThread(t, owner, ws);
+    const u = t.withIdentity(as(owner));
+    expect(
+      await u.query(api.chat.search.threads, { workspaceId: ws, query: "a" }),
+    ).toEqual([]);
+    expect(
+      await u.query(api.chat.search.threads, { workspaceId: ws, query: "   " }),
+    ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe("attachments", () => {
   async function seedAttachment(
     t: ReturnType<typeof convexTest>,

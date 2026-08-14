@@ -3,7 +3,7 @@
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
-import { ArrowUp, Loader2, Square } from "lucide-react";
+import { ArrowUp, Loader2, Paperclip, Square } from "lucide-react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   forwardRef,
@@ -14,9 +14,11 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { useAttachments } from "../_hooks/use-attachments";
 import { useComposer } from "../_hooks/use-composer";
 import { useMediaQuery } from "../_hooks/use-media-query";
 import { useSendMessage } from "../_hooks/use-send-message";
+import { AttachmentChip } from "./attachment-chip";
 import { ModelPicker } from "./model-picker";
 
 /**
@@ -48,8 +50,6 @@ const ComposerTextarea = forwardRef<
 ));
 ComposerTextarea.displayName = "ComposerTextarea";
 
-const MIN_HEIGHT = 24;
-
 export function Composer({
   threadId,
   streamingMessageId,
@@ -66,6 +66,13 @@ export function Composer({
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { registerTextarea } = useComposer();
   const { send, sending, canSend } = useSendMessage(threadId);
+  const attachments = useAttachments(threadId);
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  // dragenter/dragleave fire for EVERY child element, so a boolean makes the
+  // overlay strobe as the pointer crosses message boundaries. A counter is the
+  // only reliable way to know when the pointer has truly left.
+  const dragDepth = useRef(0);
   const stop = useMutation(api.chat.stream.stop);
   const coarsePointer = useMediaQuery("(pointer: coarse)");
 
@@ -99,17 +106,24 @@ export function Composer({
 
   const doSend = useCallback(async () => {
     const text = value;
-    if (!text.trim()) return;
+    const ids = attachments.readyIds;
+    if (!text.trim() && ids.length === 0) return;
+    if (attachments.uploading) {
+      toast.error("Wait for the upload to finish");
+      return;
+    }
     // Optimistic clear before the await; restored on failure.
     setValue("");
     setDraft("");
     requestAnimationFrame(autosize);
-    const ok = await send(text, { model });
-    if (!ok) {
+    const ok = await send(text, { model, attachmentIds: ids });
+    if (ok) {
+      attachments.clear();
+    } else {
       setValue(text);
       requestAnimationFrame(autosize);
     }
-  }, [value, send, model, setDraft, autosize]);
+  }, [value, send, model, setDraft, autosize, attachments]);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key !== "Enter") return;
@@ -133,7 +147,7 @@ export function Composer({
   };
 
   const isStreaming = Boolean(streamingMessageId);
-  const hasContent = value.trim().length > 0;
+  const hasContent = value.trim().length > 0 || attachments.readyIds.length > 0;
 
   const onStop = async () => {
     if (!streamingMessageId) return;
@@ -144,14 +158,70 @@ export function Composer({
     }
   };
 
+  const onPaste = (e: React.ClipboardEvent) => {
+    const files = Array.from(e.clipboardData.items)
+      .filter((i) => i.kind === "file")
+      .map((i) => i.getAsFile())
+      .filter((f): f is File => f !== null)
+      // Screenshot blobs have no filename.
+      .map((f) =>
+        f.name ? f : new File([f], `pasted-${Date.now()}.png`, { type: f.type }),
+      );
+    if (files.length) {
+      e.preventDefault();
+      attachments.add(files);
+    }
+  };
+
   return (
-    <div className="shrink-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
+    <div
+      className="relative shrink-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6"
+      onDragEnter={(e) => {
+        e.preventDefault();
+        dragDepth.current += 1;
+        setDragging(true);
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        dragDepth.current -= 1;
+        if (dragDepth.current <= 0) setDragging(false);
+      }}
+      onDragOver={(e) => {
+        // Without preventDefault + dropEffect the browser NAVIGATES to the file.
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragging(false);
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length) attachments.add(files);
+      }}
+    >
+      {dragging && (
+        <div className="pointer-events-none absolute inset-2 z-20 grid place-items-center rounded-xl border-2 border-dashed border-brand bg-brand/10 backdrop-blur-[1px]">
+          <span className="text-sm font-medium text-brand-ink">Drop to attach</span>
+        </div>
+      )}
       <div className="mx-auto w-full max-w-3xl">
         <label htmlFor="chat-composer" className="sr-only">
           Message
         </label>
         <div className="rounded-2xl border border-border bg-card px-3 py-2 shadow-sm transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25">
+          {attachments.items.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {attachments.items.map((item) => (
+                <AttachmentChip
+                  key={item.localId}
+                  item={item}
+                  onRemove={(id) => void attachments.remove(id)}
+                />
+              ))}
+            </div>
+          )}
           <ComposerTextarea
+            onPaste={onPaste}
             id="chat-composer"
             ref={taRef}
             value={value}
@@ -173,7 +243,29 @@ export function Composer({
             }}
           />
           <div className="mt-1.5 flex items-center justify-between gap-2">
-            <ModelPicker value={model} onChange={onModelChange} disabled={isStreaming} />
+            <div className="flex items-center gap-1">
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                hidden
+                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,application/json"
+                onChange={(e) => {
+                  attachments.add(Array.from(e.target.files ?? []));
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                aria-label="Attach files"
+                title="Attach files"
+                className="rounded-md p-1 text-primary/45 transition hover:bg-primary/5 hover:text-primary/80"
+              >
+                <Paperclip className="h-4 w-4" />
+              </button>
+              <ModelPicker value={model} onChange={onModelChange} disabled={isStreaming} />
+            </div>
             <div className="flex items-center gap-2">
               <span
                 id="chat-composer-hint"
