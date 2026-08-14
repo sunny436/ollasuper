@@ -59,3 +59,15 @@ packages/email/public
 # Storybook
 storybook-static
 tailwind.css
+
+# graphify — generated code knowledge graph.
+#
+# Ignored, not committed, for one concrete reason: the post-commit hook rebuilds
+# graph.json in the background AFTER each commit, so tracking it would leave the
+# tree dirty immediately after every single commit. It is also a pure build
+# artifact — derived entirely from source, rebuilt by `graphify update .` in
+# seconds with no API key and no network — so it belongs with .next/ and dist/.
+#
+# .graphifyignore and .claude/settings.json ARE committed: those are the
+# configuration a teammate needs to reproduce the same graph.
+graphify-out/

@@ -71,6 +71,56 @@ To install Bun, please follow the official installation instructions:
 
 [Bun Installation Guide](https://bun.sh/docs/installation)
 
+## Code knowledge graph (graphify)
+
+Optional, but it is what makes an AI assistant useful in this repo: it indexes the
+monorepo into a queryable graph of symbols, call edges and cross-file dependencies,
+so a question like *"what breaks if I change `requireThreadAccess`?"* is answered
+from the graph instead of by grepping.
+
+**One-time setup** (a teammate needs only this — everything else is committed):
+
+```bash
+uv tool install graphifyy    # or: pipx install graphifyy
+uv tool update-shell         # puts the `graphify` binary on PATH; restart your shell
+graphify install             # installs the /graphify skill into your AI assistant
+```
+
+**Build the graph** (~20s, AST-only — no API key, no network, no LLM):
+
+```bash
+graphify update .
+```
+
+**Query it:**
+
+```bash
+graphify query "how does a streamed token reach the browser?"
+graphify explain "requireThreadAccess"      # definition + every caller
+graphify affected "requireThreadAccess"     # blast radius of a change
+graphify path "send" "dispatch"             # how two symbols connect
+graphify god-nodes                          # the architectural hubs
+```
+
+`graphify-out/graph.html` is a standalone interactive view — open it in a browser,
+no server needed.
+
+Notes:
+- **`graphify-out/` is gitignored.** The post-commit hook rebuilds it in the
+  background after every commit, so tracking it would leave the tree dirty after
+  each commit. It is a pure build artifact — rebuilt from source by the command
+  above.
+- **What gets indexed** is controlled by `.graphifyignore` (committed). `.gitignore`
+  is honoured automatically, so `node_modules/`, `.next/`, `.venv/`, `build/` and
+  every `.env` are already excluded; `.graphifyignore` additionally drops
+  `convex/_generated/`, lockfiles and binary assets, which are noise in a graph.
+- The graph is **code structure only** — it never sends source anywhere. Semantic
+  extraction of prose is opt-in and off by default.
+- `.claude/settings.json` registers advisory pre-tool hooks that point Claude at the
+  graph before it falls back to grep. They are non-blocking: with graphify absent
+  they no-op and the repo works exactly as before.
+
+To remove it entirely: `graphify uninstall --purge` and `graphify hook uninstall`.
 
 ## Getting Started
 
