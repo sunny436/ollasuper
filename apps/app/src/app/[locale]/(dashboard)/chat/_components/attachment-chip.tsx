@@ -18,7 +18,6 @@ export function AttachmentChip({
       }`}
     >
       {item.isImage && item.previewUrl ? (
-        // biome-ignore lint/a11y/useAltText: filename is the alt text
         <img
           src={item.previewUrl}
           alt={item.name}

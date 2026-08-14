@@ -9,6 +9,7 @@ import { recordUsage } from "../usage";
 import { bindAttachments } from "./attachments";
 import {
   assertAllowedModel,
+  DEFAULT_MODEL,
   getUserIdOrNull,
   requireMessageAccess,
   requireThreadAccess,
@@ -117,6 +118,64 @@ export const get = query({
   },
 });
 
+/**
+ * Rate limit: generations started per user per rolling hour.
+ *
+ * MAX_CONCURRENT_STREAMS alone is not a spend control — it bounds *parallel*
+ * generations, not *sequential* ones. A `send → stop → retry` loop never has
+ * more than one stream running and can be driven as fast as the round trip
+ * allows, each iteration billing a full context to OpenRouter. This is the
+ * only thing standing between one compromised session and an unbounded bill.
+ *
+ * Fixed window, not sliding: a sliding window needs per-event rows, and the
+ * failure mode of a fixed window (2x the limit across a boundary) is
+ * irrelevant at this scale.
+ */
+const MAX_GENERATIONS_PER_HOUR = 120;
+const RATE_WINDOW_MS = 60 * 60 * 1000;
+
+async function assertRateLimit(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  workspaceId: Id<"workspaces">,
+) {
+  const now = Date.now();
+  const settings = await ctx.db
+    .query("chatSettings")
+    .withIndex("by_user_workspace", (q) =>
+      q.eq("userId", userId).eq("workspaceId", workspaceId),
+    )
+    .unique();
+
+  const start = settings?.rateWindowStart ?? 0;
+  const fresh = now - start >= RATE_WINDOW_MS;
+  const count = fresh ? 0 : (settings?.rateWindowCount ?? 0);
+
+  if (count >= MAX_GENERATIONS_PER_HOUR) {
+    const mins = Math.ceil((start + RATE_WINDOW_MS - now) / 60_000);
+    throw new ConvexError(
+      `Hourly message limit reached — try again in ${mins} minute${mins === 1 ? "" : "s"}`,
+    );
+  }
+
+  const patch = {
+    rateWindowStart: fresh ? now : start,
+    rateWindowCount: count + 1,
+  };
+  if (settings) {
+    await ctx.db.patch(settings._id, patch);
+  } else {
+    await ctx.db.insert("chatSettings", {
+      workspaceId,
+      userId,
+      defaultModel: DEFAULT_MODEL,
+      sendOnEnter: true,
+      updatedAt: now,
+      ...patch,
+    });
+  }
+}
+
 /** Reject a second concurrent generation, per-thread and per-user. */
 async function assertCanGenerate(
   ctx: MutationCtx,
@@ -143,6 +202,9 @@ async function assertCanGenerate(
       "Too many generations in progress — wait for one to finish",
     );
   }
+  // Last, so that a user who is merely clicking too fast gets the clearer
+  // "already generating" message and does not burn window budget on it.
+  await assertRateLimit(ctx, userId, thread.workspaceId);
 }
 
 /**
@@ -243,7 +305,9 @@ export const send = mutation({
     // double-invoke must not produce two turns.
     const dup = await ctx.db
       .query("chatMessages")
-      .withIndex("by_client_id", (q) => q.eq("clientId", args.clientId))
+      .withIndex("by_client_id", (q) =>
+        q.eq("userId", userId).eq("clientId", args.clientId),
+      )
       .first();
     if (dup) {
       const stream = thread.streamingMessageId
@@ -560,9 +624,20 @@ export const remove = mutation({
     if (thread.streamingMessageId === messageId) {
       throw new ConvexError("Stop the generation before deleting this message");
     }
+    // deleteFromSeq removes EVERYTHING from this seq onward, which can include
+    // an in-flight assistant message at a higher seq. Leaving
+    // streamingMessageId pointing at a deleted row bricks the thread:
+    // assertCanGenerate throws "already generating" forever, and stop/retry
+    // both fail with "Not found" because the row is gone.
+    const streaming = thread.streamingMessageId
+      ? await ctx.db.get(thread.streamingMessageId)
+      : null;
+    const clearsStream = !streaming || streaming.seq >= message.seq;
+
     await deleteFromSeq(ctx, thread._id, message.seq);
     await ctx.db.patch(thread._id, {
       messageCount: Math.max(0, message.seq),
+      ...(clearsStream ? { streamingMessageId: undefined } : {}),
       updatedAt: Date.now(),
     });
   },

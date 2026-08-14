@@ -167,6 +167,48 @@ export const dispatchPayload = internalQuery({
 });
 
 /**
+ * Is this storageId reachable from this stream's thread?
+ *
+ * /ai/file used to take a bare storageId, which made the ingress secret a key
+ * to EVERY blob in the deployment — the workspace files plane, every user's
+ * private chat attachments, avatars. That undid the whole
+ * "storageId is never exposed" discipline in chat/attachments.ts and broke the
+ * capability model the rest of the ingress is built on.
+ *
+ * Now the route must present a streamId as well, and the blob must belong to an
+ * attachment on that stream's own thread.
+ */
+export const attachmentInStream = internalQuery({
+  args: { streamId: v.string(), storageId: v.string() },
+  handler: async (ctx, { streamId, storageId }) => {
+    const stream = await ctx.db
+      .query("chatStreams")
+      .withIndex("by_streamId", (q) => q.eq("streamId", streamId))
+      .unique();
+    if (!stream) return null;
+
+    // db.system.normalizeId, not db.normalizeId: _storage is a system table and
+    // the plain accessor throws rather than returning null, which would make
+    // every /ai/file request a 500 and silently break all attachments.
+    const sid = ctx.db.system.normalizeId("_storage", storageId);
+    if (!sid) return null;
+
+    const attachment = await ctx.db
+      .query("chatAttachments")
+      .withIndex("by_storage", (q) => q.eq("storageId", sid))
+      .first();
+    if (!attachment) return null;
+
+    // Must belong to the same user AND the same thread as the stream.
+    if (attachment.userId !== stream.userId) return null;
+    if (attachment.threadId && attachment.threadId !== stream.threadId) {
+      return null;
+    }
+    return { storageId: sid };
+  },
+});
+
+/**
  * Hand the turn to the Python inference plane.
  *
  * Mirrors jobs.processJob exactly: fire-and-forget POST, any non-2xx is

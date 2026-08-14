@@ -27,7 +27,7 @@ echo "[3/5] secrets (idempotent — never clobbers an existing .env)"
 if [ ! -f "$AI/.env" ]; then
   cat > "$AI/.env" <<EOF
 AI_BIND_HOST=127.0.0.1
-AI_PORT=8000
+AI_PORT=8770
 AI_SERVICE_KEY=$(openssl rand -hex 24)
 AI_INGRESS_SECRET=$(openssl rand -hex 24)
 CONVEX_SITE_URL=http://${HOST}:3211
@@ -66,7 +66,7 @@ fi
 
 echo "[4/5] Convex deployment env"
 cd "$REPO/packages/backend"
-"$NODE" "$CVX" env set -- AI_BASE_URL       "http://127.0.0.1:8000" >/dev/null
+"$NODE" "$CVX" env set -- AI_BASE_URL       "http://127.0.0.1:8770" >/dev/null
 "$NODE" "$CVX" env set -- AI_SERVICE_KEY    "$AI_SERVICE_KEY"       >/dev/null
 "$NODE" "$CVX" env set -- AI_INGRESS_SECRET "$AI_INGRESS_SECRET"    >/dev/null
 "$NODE" "$CVX" deploy -y
@@ -78,6 +78,6 @@ systemctl daemon-reload
 systemctl enable --now myos-ai.service
 
 sleep 3
-curl -fsS http://127.0.0.1:8000/healthz >/dev/null && echo "  healthz OK"
-curl -fsS http://127.0.0.1:8000/readyz  >/dev/null && echo "  readyz OK"
+curl -fsS http://127.0.0.1:8770/healthz >/dev/null && echo "  healthz OK"
+curl -fsS http://127.0.0.1:8770/readyz  >/dev/null && echo "  readyz OK"
 echo "AI_DEPLOY_DONE"

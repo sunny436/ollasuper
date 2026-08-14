@@ -38,7 +38,6 @@ const components: Components = {
     const safe = safeImageUrl(typeof src === "string" ? src : "");
     if (!safe) return null;
     return (
-      // biome-ignore lint/a11y/useAltText: alt is forwarded from the markdown
       <img
         {...props}
         src={safe}

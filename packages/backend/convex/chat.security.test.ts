@@ -464,6 +464,50 @@ describe("attachments", () => {
     expect(row).toHaveProperty("url");
   });
 
+  test("no public read path leaks storageId, including via messages", async () => {
+    // ctx.storage.getUrl() is a bearer capability: anyone holding the URL
+    // fetches the bytes with no auth. So the id must never reach a client,
+    // from ANY surface — not just attachments.get.
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    const u = t.withIdentity(as(owner));
+
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["hello"], { type: "text/plain" })),
+    );
+    const threadId = await u.mutation(api.chat.threads.create, {
+      workspaceId: ws,
+    });
+    const attachmentId = await u.mutation(api.chat.attachments.register, {
+      workspaceId: ws,
+      storageId,
+      name: "notes.txt",
+      size: 5,
+      contentType: "text/plain",
+      threadId,
+    });
+    await u.mutation(api.chat.messages.send, {
+      threadId,
+      content: "see attached",
+      clientId: "att-1",
+      attachmentIds: [attachmentId],
+    });
+    await drain(t);
+
+    const page = await u.query(api.chat.messages.listPaged, {
+      threadId,
+      paginationOpts: { numItems: 20, cursor: null },
+    });
+    const serialised = JSON.stringify(page);
+    expect(serialised).not.toContain(storageId);
+    expect(serialised).toContain("notes.txt");
+
+    const listed = await u.query(api.chat.attachments.listForThread, {
+      threadId,
+    });
+    expect(JSON.stringify(listed)).not.toContain(storageId);
+  });
+
   test("unsupported file types are rejected", async () => {
     const t = convexTest(schema, modules);
     const { owner, ws } = await seedWorkspace(t);
@@ -479,6 +523,145 @@ describe("attachments", () => {
         contentType: "application/x-msdownload",
       }),
     ).rejects.toThrow(/Unsupported file type/);
+  });
+
+  test("the stored size is measured, not taken from the client", async () => {
+    // Validating args.size is decorative: upload 500MB, then declare size: 1.
+    // The Python service later pulls the whole blob into memory and
+    // base64-expands it by 4/3 to build a data: URI.
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    const body = "x".repeat(4096);
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob([body], { type: "text/plain" })),
+    );
+    const attachmentId = await t
+      .withIdentity(as(owner))
+      .mutation(api.chat.attachments.register, {
+        workspaceId: ws,
+        storageId,
+        name: "lying.txt",
+        size: 1, // the lie
+        contentType: "text/plain",
+      });
+    const row = await t
+      .withIdentity(as(owner))
+      .query(api.chat.attachments.get, { attachmentId });
+    expect(row?.size).toBe(body.length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /ai/file hands raw bytes to the inference plane. An earlier version took a
+// bare storageId, which made AI_INGRESS_SECRET a key to EVERY blob in the
+// deployment — the workspace files plane, every user's private chat
+// attachments, avatars — and quietly undid the "storageId is never exposed"
+// discipline that the tests above enforce on the client side.
+// ---------------------------------------------------------------------------
+describe("/ai/file is capability-scoped, not just secret-gated", () => {
+  const SECRET = "test-ingress-secret-0123456789ab";
+  let prev: string | undefined;
+  beforeEach(() => {
+    prev = process.env.AI_INGRESS_SECRET;
+    process.env.AI_INGRESS_SECRET = SECRET;
+  });
+  afterEach(() => {
+    if (prev === undefined) {
+      // biome-ignore lint/performance/noDelete: the only way to actually unset an env var
+      delete process.env.AI_INGRESS_SECRET;
+    } else {
+      process.env.AI_INGRESS_SECRET = prev;
+    }
+  });
+
+  const getFile = (t: ReturnType<typeof convexTest>, body: unknown) =>
+    t.fetch("/ai/file", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-ai-key": SECRET },
+      body: JSON.stringify(body),
+    });
+
+  test("the right stream gets its own attachment's bytes", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    const u = t.withIdentity(as(owner));
+
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["payload"], { type: "text/plain" })),
+    );
+    const threadId = await u.mutation(api.chat.threads.create, {
+      workspaceId: ws,
+    });
+    const attachmentId = await u.mutation(api.chat.attachments.register, {
+      workspaceId: ws,
+      storageId,
+      name: "notes.txt",
+      size: 7,
+      contentType: "text/plain",
+      threadId,
+    });
+    const sent = await u.mutation(api.chat.messages.send, {
+      threadId,
+      content: "read this",
+      clientId: "file-1",
+      attachmentIds: [attachmentId],
+    });
+    await drain(t);
+
+    const ok = await getFile(t, { storageId, streamId: sent.streamId });
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toBe("payload");
+  });
+
+  test("another user's stream cannot pull the blob", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, member, ws } = await seedWorkspace(t);
+
+    // The owner's private attachment.
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["private"], { type: "text/plain" })),
+    );
+    const ownerThread = await t
+      .withIdentity(as(owner))
+      .mutation(api.chat.threads.create, { workspaceId: ws });
+    await t.withIdentity(as(owner)).mutation(api.chat.attachments.register, {
+      workspaceId: ws,
+      storageId,
+      name: "private.txt",
+      size: 7,
+      contentType: "text/plain",
+      threadId: ownerThread,
+    });
+
+    // A legitimate stream belonging to a DIFFERENT user in the same workspace.
+    const peer = await seedThread(t, member, ws, "peer thread");
+
+    const res = await getFile(t, { storageId, streamId: peer.streamId });
+    // Same 404 as a nonexistent blob — never an existence oracle.
+    expect(res.status).toBe(404);
+  });
+
+  test("a storageId with no attachment row is refused", async () => {
+    // Covers the whole rest of the deployment: workspace files, avatars,
+    // anything else in _storage that chat never registered.
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    const orphan = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["not chat"], { type: "text/plain" })),
+    );
+    const { streamId } = await seedThread(t, owner, ws);
+    const res = await getFile(t, { storageId: orphan, streamId });
+    expect(res.status).toBe(404);
+  });
+
+  test("a bare storageId with no streamId is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["x"], { type: "text/plain" })),
+    );
+    const res = await getFile(t, { storageId });
+    expect(res.status).toBe(400);
   });
 });
 
@@ -526,6 +709,41 @@ describe("AI ingress (/ai/ingress)", () => {
       { op: "heartbeat", streamId: "x" },
       "wrong-key-aaaaaaaaaaaaaaaaaaaa",
     );
+    expect(res.status).toBe(401);
+  });
+
+  test("fails CLOSED when AI_INGRESS_SECRET is not configured", async () => {
+    // The dangerous shape here would be a compare that treats "both empty" as
+    // a match: an unconfigured deployment would then accept an empty header
+    // from anyone. Verified empirically rather than by reading the compare.
+    const saved = process.env.AI_INGRESS_SECRET;
+    // biome-ignore lint/performance/noDelete: the only way to actually unset an env var
+    delete process.env.AI_INGRESS_SECRET;
+    try {
+      const t = convexTest(schema, modules);
+      for (const key of [null, "", "anything"]) {
+        const res = await t.fetch("/ai/ingress", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(key !== null ? { "x-ai-key": key } : {}),
+          },
+          body: JSON.stringify({ op: "heartbeat", streamId: "x" }),
+        });
+        expect(res.status).toBe(401);
+      }
+    } finally {
+      if (saved !== undefined) process.env.AI_INGRESS_SECRET = saved;
+    }
+  });
+
+  test("/ai/file also refuses without the secret", async () => {
+    const t = convexTest(schema, modules);
+    const res = await t.fetch("/ai/file", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ storageId: "anything" }),
+    });
     expect(res.status).toBe(401);
   });
 
@@ -685,6 +903,97 @@ describe("send() invariants", () => {
     expect(n).toBe(2); // one user + one assistant, not four
   });
 
+  test("a clientId collision across users cannot swallow a send", async () => {
+    // With a bare by_client_id index the idempotency probe is GLOBAL: user B
+    // sending with a clientId user A already used would get back A's message
+    // id and no message of their own. clientId comes from the browser, so a
+    // collision is one crypto.randomUUID() away from being chosen deliberately.
+    const t = convexTest(schema, modules);
+    const { owner, member, ws } = await seedWorkspace(t);
+    const shared = "collide-me";
+
+    const a = await t
+      .withIdentity(as(owner))
+      .mutation(api.chat.threads.create, { workspaceId: ws });
+    const sentA = await t
+      .withIdentity(as(owner))
+      .mutation(api.chat.messages.send, {
+        threadId: a,
+        content: "owner's message",
+        clientId: shared,
+      });
+    await drain(t);
+
+    const b = await t
+      .withIdentity(as(member))
+      .mutation(api.chat.threads.create, { workspaceId: ws });
+    const sentB = await t
+      .withIdentity(as(member))
+      .mutation(api.chat.messages.send, {
+        threadId: b,
+        content: "member's message",
+        clientId: shared,
+      });
+    await drain(t);
+
+    expect(sentB.deduped).toBe(false);
+    expect(sentB.userMessageId).not.toBe(sentA.userMessageId);
+  });
+
+  test("generations are rate limited per user, per hour", async () => {
+    // MAX_CONCURRENT_STREAMS bounds PARALLEL generations, not sequential ones:
+    // send -> stop -> retry never has more than one stream running and can be
+    // driven as fast as the round trip allows, billing a full context each
+    // time. This is the only ceiling on spend from one compromised session.
+    const t = convexTest(schema, modules);
+    const { owner, member, ws } = await seedWorkspace(t);
+    const u = t.withIdentity(as(owner));
+    const threadId = await u.mutation(api.chat.threads.create, {
+      workspaceId: ws,
+    });
+
+    // Park the window counter just under the limit rather than sending 120
+    // messages — the boundary is the property, the loop is just cost.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("chatSettings", {
+        workspaceId: ws,
+        userId: owner,
+        defaultModel: "anthropic/claude-opus-5",
+        sendOnEnter: true,
+        rateWindowStart: Date.now(),
+        rateWindowCount: 119,
+        updatedAt: Date.now(),
+      });
+    });
+
+    const ok = await u.mutation(api.chat.messages.send, {
+      threadId,
+      content: "number 120",
+      clientId: "rl-1",
+    });
+    await drain(t);
+    // Clear the in-flight stream so the next send fails on the RATE limit and
+    // not on "already generating" — otherwise this test passes for the wrong
+    // reason and would keep passing with the limit removed.
+    if (!ok.assistantMessageId) throw new Error("expected an assistant turn");
+    await t
+      .withIdentity(as(owner))
+      .mutation(api.chat.stream.stop, { messageId: ok.assistantMessageId });
+
+    await expect(
+      u.mutation(api.chat.messages.send, {
+        threadId,
+        content: "number 121",
+        clientId: "rl-2",
+      }),
+    ).rejects.toThrow(/Hourly message limit/);
+
+    // A different user in the same workspace is unaffected — the counter is
+    // keyed on the identity, not the tenant.
+    const peer = await seedThread(t, member, ws);
+    expect(peer.userMessageId).toBeTruthy();
+  });
+
   test("a second send while generating is refused", async () => {
     const t = convexTest(schema, modules);
     const { owner, ws } = await seedWorkspace(t);
@@ -738,6 +1047,44 @@ describe("send() invariants", () => {
         clientId: "c1",
       }),
     ).rejects.toThrow(/empty/i);
+  });
+
+  test("deleting a message never leaves the thread stuck generating", async () => {
+    // messages.remove deletes everything from that seq onward, which includes
+    // any in-flight assistant row at a HIGHER seq. If streamingMessageId is
+    // left pointing at the deleted row the thread is bricked forever: every
+    // send throws "already generating", and stop/retry both throw "Not found"
+    // because the row they would clear no longer exists.
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    const u = t.withIdentity(as(owner));
+    const threadId = await u.mutation(api.chat.threads.create, {
+      workspaceId: ws,
+    });
+    const first = await u.mutation(api.chat.messages.send, {
+      threadId,
+      content: "first",
+      clientId: "d1",
+    });
+    await drain(t);
+
+    // Delete the USER message: the assistant reply is still streaming at
+    // seq+1 and gets swept up in the same cascade.
+    await u.mutation(api.chat.messages.remove, {
+      messageId: first.userMessageId,
+    });
+
+    const thread = await t.run(async (ctx) => ctx.db.get(threadId));
+    expect(thread?.streamingMessageId).toBeUndefined();
+
+    // The thread is usable again — this is the assertion that matters.
+    const next = await u.mutation(api.chat.messages.send, {
+      threadId,
+      content: "second",
+      clientId: "d2",
+    });
+    await drain(t);
+    expect(next.userMessageId).toBeTruthy();
   });
 });
 

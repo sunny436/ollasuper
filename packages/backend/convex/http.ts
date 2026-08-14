@@ -136,17 +136,33 @@ http.route({
       }
       case "finalize": {
         if (!streamId) return aiJson({ error: "bad request" }, 400);
-        const status = body.status === "error" ? "error" : "done";
+        // "cancelled" must NOT fall through to "done". When the user pressed
+        // Stop, stop() has already marked the stream aborted and finishStream
+        // short-circuits — but registry.shutdown() also cancels every in-flight
+        // task on a graceful systemd restart, and there the stream is still
+        // running. Mapping that to "done" would silently persist a truncated
+        // answer labelled complete, with no error badge, that retry() refuses
+        // because it only accepts error/aborted.
+        const status =
+          body.status === "error" || body.status === "cancelled"
+            ? "error"
+            : "done";
         const text = typeof body.text === "string" ? body.text : "";
         if (status === "error") {
           const err = (body.error ?? {}) as Record<string, unknown>;
+          const cancelled = body.status === "cancelled";
           const r = await ctx.runMutation(internal.chat.ingest.failStream, {
             streamId,
-            error:
-              typeof err.message === "string"
+            error: cancelled
+              ? "Response was interrupted"
+              : typeof err.message === "string"
                 ? err.message
                 : "Generation failed",
-            errorCode: typeof err.code === "string" ? err.code : undefined,
+            errorCode: cancelled
+              ? "interrupted"
+              : typeof err.code === "string"
+                ? err.code
+                : undefined,
             text,
           });
           if ("unknown" in r && r.unknown)
@@ -213,6 +229,14 @@ http.route({
 // because that URL is a BEARER CAPABILITY — unguessable but not scoped and not
 // reliably time-limited, so passing it around would leak it into request
 // bodies, httpx logs and traces.
+//
+// CAPABILITY-SCOPED, like every other ingress op. An earlier version took a
+// bare storageId, which made AI_INGRESS_SECRET a key to every blob in the
+// deployment — the workspace files plane, every user's private chat
+// attachments, avatars — and quietly undid the "storageId is never exposed"
+// discipline in chat/attachments.ts. The caller must now also present the
+// streamId it was given, and the blob must belong to an attachment on that
+// stream's own thread.
 http.route({
   path: "/ai/file",
   method: "POST",
@@ -221,10 +245,20 @@ http.route({
       return new Response("unauthorized", { status: 401 });
     const body = (await req.json().catch(() => null)) as {
       storageId?: string;
+      streamId?: string;
     } | null;
-    if (!body?.storageId) return aiJson({ error: "bad request" }, 400);
-    // biome-ignore lint/suspicious/noExplicitAny: id shape validated by storage
-    const blob = await ctx.storage.get(body.storageId as any);
+    if (!body?.storageId || !body?.streamId) {
+      return aiJson({ error: "bad request" }, 400);
+    }
+
+    const allowed = await ctx.runQuery(
+      internal.chat.stream.attachmentInStream,
+      { streamId: body.streamId, storageId: body.storageId },
+    );
+    // Same response for "no such blob" and "not yours" — no existence oracle.
+    if (!allowed) return new Response("not found", { status: 404 });
+
+    const blob = await ctx.storage.get(allowed.storageId);
     if (!blob) return new Response("not found", { status: 404 });
     return new Response(blob);
   }),

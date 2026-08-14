@@ -74,7 +74,6 @@ export function useStickToBottom(deps: unknown[]) {
   }, []);
 
   // --- pin before paint ----------------------------------------------------
-  // biome-ignore lint/correctness/useExhaustiveDependencies: caller-supplied deps
   useLayoutEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;

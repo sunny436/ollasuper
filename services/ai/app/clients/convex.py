@@ -95,22 +95,30 @@ class ConvexClient:
 
         raise ConvexUnavailable(str(last) if last else "ingress unavailable")
 
-    async def fetch_file(self, storage_id: str) -> tuple[bytes, str]:
+    async def fetch_file(self, storage_id: str, stream_id: str) -> tuple[bytes, str]:
         """Fetch attachment bytes.
 
         Goes through Convex with the ingress secret rather than using a
         ctx.storage.getUrl(). That URL is a BEARER CAPABILITY — unguessable but
         unscoped — so passing it around would leak it into request bodies,
         httpx logs and traces.
+
+        `stream_id` is not decoration: /ai/file is capability-scoped, and Convex
+        will only return the blob if it belongs to an attachment on THIS
+        stream's thread. Without it the ingress secret alone would be a key to
+        every blob in the deployment.
         """
         r = await self._c.post(
             self._s.file_url,
-            json={"storageId": storage_id},
+            json={"storageId": storage_id, "streamId": stream_id},
             headers={
                 "content-type": "application/json",
                 "x-ai-key": self._s.ai_ingress_secret,
             },
         )
+        if r.status_code == 404:
+            # Not ours, or gone. Retrying cannot help.
+            raise ConvexRejected("attachment not available")
         if r.status_code != 200:
             raise ConvexUnavailable(f"file fetch failed: {r.status_code}")
         return r.content, r.headers.get("content-type", "application/octet-stream")

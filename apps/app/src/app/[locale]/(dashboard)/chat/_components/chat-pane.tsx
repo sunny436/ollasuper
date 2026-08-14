@@ -66,15 +66,28 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
             </div>
           </div>
         ) : (
-          <MessageList threadId={threadId} onStreamingChange={onStreamingChange} />
+          <>
+            <MessageList
+              threadId={threadId}
+              onStreamingChange={onStreamingChange}
+            />
+            {/*
+              Inside the guard, not beside it. A composer rendered next to
+              "Conversation not found" still holds the bad URL string, and
+              sending would hand it to a v.id() validator — an
+              ArgumentValidationError that the Convex client reports through
+              console.error, which fails every e2e script's zero-console-error
+              assertion. Offering a send button that cannot work is also just
+              a lie about what the UI does.
+            */}
+            <Composer
+              threadId={threadId}
+              streamingMessageId={streamingId}
+              model={model}
+              onModelChange={setModel}
+            />
+          </>
         )}
-
-        <Composer
-          threadId={threadId}
-          streamingMessageId={streamingId}
-          model={model}
-          onModelChange={setModel}
-        />
       </section>
     </ComposerProvider>
   );

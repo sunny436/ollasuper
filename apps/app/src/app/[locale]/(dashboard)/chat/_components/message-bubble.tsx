@@ -76,7 +76,6 @@ function MessageBubbleImpl({
             <div className="mb-1.5 flex flex-wrap justify-end gap-1.5">
               {message.attachments.map((a) =>
                 a.kind === "image" && a.url ? (
-                  // biome-ignore lint/a11y/useAltText: filename is the alt text
                   <img
                     key={a._id}
                     src={a.url}

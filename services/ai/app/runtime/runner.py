@@ -58,9 +58,18 @@ async def run_generation(
         if latest is None:
             raise ValueError("no user message to respond to")
 
+        # Bound the newest turn BEFORE assembling it. trim() below only bounds
+        # `prior`; the latest turn is where every user-controlled byte lives, so
+        # leaving it unbounded means the token budget controls the wrong half of
+        # the request. See Settings.ai_max_turn_chars.
+        if len(latest.content) > settings.ai_max_turn_chars:
+            latest = latest.model_copy(
+                update={"content": latest.content[: settings.ai_max_turn_chars]}
+            )
+
         try:
             content, n_images = await build_user_content(
-                latest, convex, settings, model=req.model
+                latest, convex, settings, model=req.model, stream_id=req.streamId
             )
         except AttachmentError as e:
             error = {"code": ERR_ATTACHMENT, "message": str(e), "retryable": False}

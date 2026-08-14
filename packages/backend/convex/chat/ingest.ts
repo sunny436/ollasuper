@@ -19,6 +19,23 @@ const COMPACT_EVERY = 24;
 /** Convex documents cap at 1MB; stop well short of it. */
 const MAX_MESSAGE_CHARS = 400_000;
 
+/**
+ * Server-side bounds on one delta batch.
+ *
+ * The Python writer self-limits, but the server must not trust the client for
+ * its own write bound: without these, one request could insert thousands of
+ * chatStreamChunks rows (each an indexed probe plus an insert) and push them
+ * all into the viewer's live subscription.
+ */
+const MAX_DELTAS_PER_BATCH = 64;
+const MAX_DELTA_CHARS = 16_000;
+/**
+ * A single delta with seq 1e9 would trigger compaction, set committedSeq to
+ * 1e9, and then silently drop every legitimate delta that followed via the
+ * `d.seq <= committedSeq` guard. Bound how far ahead a seq may jump.
+ */
+const MAX_SEQ_LOOKAHEAD = 1024;
+
 async function loadStream(
   ctx: MutationCtx,
   streamId: string,
@@ -79,9 +96,18 @@ export const appendDeltas = internalMutation({
     const now = Date.now();
     let maxSeq = stream.chunkSeq;
 
-    for (const d of deltas) {
+    for (const d of deltas.slice(0, MAX_DELTAS_PER_BATCH)) {
       // Already compacted away — this is a retry of an old batch.
       if (d.seq <= stream.committedSeq) continue;
+      // Reject nonsense seqs rather than letting one poison committedSeq.
+      if (
+        !Number.isInteger(d.seq) ||
+        d.seq < 0 ||
+        d.seq > stream.chunkSeq + MAX_SEQ_LOOKAHEAD
+      ) {
+        continue;
+      }
+      if (d.text.length > MAX_DELTA_CHARS) continue;
       // Indexed uniqueness probe: makes an HTTP retry idempotent. O(1).
       const existing = await ctx.db
         .query("chatStreamChunks")
@@ -301,24 +327,6 @@ export const setSummary = internalMutation({
     await ctx.db.patch(thread._id, {
       summary: summary.slice(0, 8000),
       summaryThroughSeq: throughSeq,
-    });
-    return { ok: true };
-  },
-});
-
-/** Extracted document text (PDF/DOCX), cached so re-sends don't re-parse. */
-export const setAttachmentText = internalMutation({
-  args: {
-    attachmentId: v.id("chatAttachments"),
-    text: v.optional(v.string()),
-    status: v.union(v.literal("ready"), v.literal("error")),
-  },
-  handler: async (ctx, { attachmentId, text, status }) => {
-    const a = await ctx.db.get(attachmentId);
-    if (!a) return { ok: false };
-    await ctx.db.patch(attachmentId, {
-      extractedText: text?.slice(0, 200_000),
-      status,
     });
     return { ok: true };
   },

@@ -3,7 +3,7 @@
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
 ## ✅ Done (current state)
-Self-hosted Convex (Docker) · multi-tenant platform (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · jobs · usage · API keys · audit · events · files · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup.
+Self-hosted Convex (Docker) · multi-tenant platform (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · jobs · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, folders, search, attachments, prompt library — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup.
 
 ## 1. Dashboard UX (remaining increments)
 - **Home overview** — replace placeholder home with stat cards (open jobs, members, files, usage) + recent activity feed.
@@ -45,6 +45,41 @@ seeded 8k-job / 5k-notification workspace:
   a unit test (create→complete→counts) and backfilled for existing data (`counters:backfillAll`).
   Was ~8001 rows/render on an 8k-job workspace. (`orgs.members`/`myWorkspaces` still do N+1
   `ctx.db.get` per row — fine at team sizes; revisit only if memberships grow large.)
+
+## AI chat (`/chat`) — the inference plane
+The AI half the template left as a seam (`TEMPLATE.md:3`) is now built, as a **hybrid**:
+Convex stays the data plane; a separate **Python FastAPI + LangGraph** service at
+`services/ai/` is the inference plane, talking to OpenRouter.
+
+- **Streaming is Convex-mediated.** The browser never talks to Python. Python POSTs token
+  batches to `/ai/ingress`; the browser's `useQuery` subscription re-renders. That is what
+  makes a stream survive a refresh, work in a second tab, and need no SSE on the client.
+- **The in-flight message row is written exactly twice** — `""` on insert and the final text
+  on finalize — because Convex re-sends a whole query result on any write. Deltas live in
+  `chatStreamChunks` and are compacted every 24 seqs. `chat.stream.active` is the only query
+  that re-fires during a generation.
+- **Chat is private to the USER**, not the workspace — unlike every other table here, where
+  any member reads any row. `workspaceId` is for tenancy only. There is deliberately **no
+  workspace-only index** on `chatThreads`/`chatMessages`, so no query shape in this codebase
+  can enumerate a tenant's conversations without pinning a `userId` first.
+- **Ports:** the service binds `127.0.0.1:8770`. Not 8000 — `deploy/47-glitchtip.sh` tunnels
+  `localhost:8000` to a public `trycloudflare` URL, and binding there would publish it.
+- **Secrets:** `AI_SERVICE_KEY` (Convex→Python) and `AI_INGRESS_SECRET` (Python→Convex) are
+  distinct from `BACKEND_WEBHOOK_SECRET`, which belongs to `backend-echo` in a different trust
+  domain. `OPENROUTER_API_KEY` is never generated, never defaulted, and never written by a
+  deploy script — `services/ai/.env` (0600) only.
+- **Ingress is capability-scoped, not just secret-gated:** every op carries a `streamId` UUID
+  minted inside `messages.send`, and `/ai/file` additionally requires the blob to belong to
+  that stream's own thread. A leaked ingress secret still cannot reach an arbitrary
+  conversation or an arbitrary blob.
+- **Spend controls:** ≤60 messages + a rolling summary from Convex, a 32k-token trim on prior
+  turns, a 48k-char cap on the newest turn, 3 concurrent streams and 120 generations/hour per
+  user. Without the last two, `send → stop → retry` is an unbounded billing loop.
+- **Run the tests:** `bun test` (72 Convex tests incl. cross-user isolation) and
+  `cd services/ai && uv run pytest` (35, no network / no Convex / no API key needed).
+- **Deferred, by design:** RAG and tools. The schema and the LangGraph edge layout leave room
+  for both (`add_conditional_edges("model", tools_condition, …)` needs no change to the
+  streaming path, because the writer already filters on `langgraph_node == "model"`).
 
 ## Notes / caveats
 - Email is **log-fallback** until Resend is configured (codes appear in Convex logs).

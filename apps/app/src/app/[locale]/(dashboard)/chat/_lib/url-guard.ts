@@ -14,28 +14,55 @@
 
 const SAFE_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
+/**
+ * Strip ASCII control characters and surrounding whitespace BEFORE parsing,
+ * and return the stripped string rather than the caller's original.
+ *
+ * This is the whole trick, and getting it wrong is a live XSS. Consider a
+ * NUL byte inside the scheme: `new URL("javascript\u0000:alert(1)", base)`
+ * does NOT parse as javascript: — the NUL makes the scheme invalid, so URL
+ * treats the whole thing as a relative path and resolves it against the https
+ * base. A guard that checks the PARSED protocol but returns the ORIGINAL
+ * string therefore emits href="javascript\u0000:alert(1)", which a browser
+ * may strip back to javascript: when it parses the attribute. Same class of
+ * bypass for \n, \r and \t inside the scheme.
+ *
+ * Normalising first means the string we validate is the string we return.
+ */
+function normalise(url: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  return url.replace(/[\u0000-\u001F\u007F]/g, "").trim();
+}
+
 export function safeUrl(url: string): string {
   if (!url) return "";
+  const cleaned = normalise(url);
+  if (!cleaned) return "";
   try {
     // The base makes relative URLs parse; they resolve to https and are safe.
-    const u = new URL(url, "https://relative.invalid");
-    return SAFE_PROTOCOLS.has(u.protocol) ? url : "";
+    const u = new URL(cleaned, "https://relative.invalid");
+    return SAFE_PROTOCOLS.has(u.protocol) ? cleaned : "";
   } catch {
     return "";
   }
 }
 
 /**
- * Images are stricter than links: only https, plus the Convex storage origin
- * that serves our own attachments.
+ * Images are stricter than links: https only.
+ *
+ * data: is refused even for images, because data:image/svg+xml can carry
+ * script and an <img> is not a safe container for arbitrary SVG.
  */
 export function safeImageUrl(url: string): string {
   if (!url) return "";
+  const cleaned = normalise(url);
+  if (!cleaned) return "";
   try {
     const convex = process.env.NEXT_PUBLIC_CONVEX_URL;
-    const u = new URL(url, convex || "https://relative.invalid");
-    if (u.protocol === "https:") return url;
-    if (convex && url.startsWith(convex)) return url;
+    const u = new URL(cleaned, convex || "https://relative.invalid");
+    if (u.protocol === "https:") return cleaned;
+    // The self-hosted Convex storage origin is http in some deployments.
+    if (convex && cleaned.startsWith(convex)) return cleaned;
     return "";
   } catch {
     return "";

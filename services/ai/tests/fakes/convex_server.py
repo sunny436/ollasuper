@@ -42,6 +42,8 @@ class FakeConvex:
     finalize_count: dict[str, int] = field(default_factory=dict)
     heartbeats: dict[str, int] = field(default_factory=dict)
     titles: dict[str, str] = field(default_factory=dict)
+    #: (streamId, storageId) -> bytes, served by /ai/file.
+    files: dict[tuple[str, str], bytes] = field(default_factory=dict)
     connections_opened: int = 0
     started_at: float = field(default_factory=time.monotonic)
 
@@ -133,7 +135,17 @@ def build(state: FakeConvex) -> FastAPI:
 
     @app.post("/ai/file")
     async def file(request: Request):
-        return _json({"error": "not implemented in fake"}, 404)
+        from fastapi.responses import Response
+
+        body = await request.json()
+        # Mirrors the real route's capability scoping: the blob is only served
+        # if it is reachable from THIS stream. A test that keyed on storageId
+        # alone would pass even if the client stopped sending streamId.
+        key = (body.get("streamId", ""), body.get("storageId", ""))
+        blob = state.files.get(key)
+        if blob is None:
+            return _json({"error": "not found"}, 404)
+        return Response(blob, media_type="application/octet-stream")
 
     @app.get("/version")
     async def version():

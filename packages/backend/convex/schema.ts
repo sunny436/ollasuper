@@ -245,7 +245,10 @@ export default defineSchema({
   })
     .index("by_thread_seq", ["threadId", "seq"])
     .index("by_thread_parent", ["threadId", "parentId"])
-    .index("by_client_id", ["clientId"])
+    // userId first: a bare clientId index makes the idempotency probe global,
+    // so a colliding id from another user would silently swallow the send and
+    // hand back THEIR message id.
+    .index("by_client_id", ["userId", "clientId"])
     .searchIndex("search_content", {
       searchField: "content",
       filterFields: ["userId", "workspaceId", "threadId"],
@@ -327,6 +330,12 @@ export default defineSchema({
     customInstructionsAbout: v.optional(v.string()),
     customInstructionsStyle: v.optional(v.string()),
     sendOnEnter: v.boolean(),
+    // Fixed-window generation counter. Lives here rather than in its own table
+    // because this row is per-user-per-workspace, already indexed on exactly
+    // that key, and already loaded on the dispatch path — so the rate check
+    // costs one read that was happening anyway.
+    rateWindowStart: v.optional(v.number()),
+    rateWindowCount: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_user_workspace", ["userId", "workspaceId"]),
 

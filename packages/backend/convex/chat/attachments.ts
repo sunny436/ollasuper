@@ -99,7 +99,12 @@ export const register = mutation({
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, args.workspaceId);
 
-    if (args.size <= 0 || args.size > MAX_BYTES) {
+    // Measure the ACTUAL blob. args.size is client-supplied, so validating it
+    // is decorative: upload 500MB, then call register({ size: 1 }). The Python
+    // service later pulls the whole blob into memory to build a data: URI.
+    const meta = await ctx.db.system.get(args.storageId);
+    const realSize = meta?.size ?? args.size;
+    if (realSize <= 0 || realSize > MAX_BYTES) {
       throw new ConvexError("File too large (max 20MB)");
     }
     const kind = classify(args.contentType);
@@ -118,7 +123,7 @@ export const register = mutation({
       threadId: args.threadId,
       storageId: args.storageId,
       name: args.name.slice(0, 256) || "untitled",
-      size: args.size,
+      size: realSize,
       contentType: args.contentType.slice(0, 128),
       kind,
       status: "uploaded",

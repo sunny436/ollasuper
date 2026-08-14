@@ -20,11 +20,17 @@ class Settings(BaseSettings):
 
     # --- binding -----------------------------------------------------------
     # Loopback by default. Convex (:3210/:3211), Next (:3000) and this service
-    # (:8000) all live on the same host, so the service key never crosses a
-    # network segment. This single line removes more attack surface than
-    # anything else in the service.
+    # all live on the same host, so the service key never crosses a network
+    # segment. This single line removes more attack surface than anything else
+    # in the service.
+    #
+    # NOT :8000 — deploy/47-glitchtip.sh publishes GlitchTip on 8000 and
+    # cf-glitch.service tunnels http://localhost:8000 to a public
+    # trycloudflare.com URL. Whichever process binds first wins; if it were this
+    # one, the entire inference plane (service-key auth only, no CORS, no
+    # per-user authz) would be reachable from the internet.
     ai_bind_host: str = "127.0.0.1"
-    ai_port: int = 8000
+    ai_port: int = 8770
 
     # --- server-to-server auth --------------------------------------------
     ai_service_key: str = ""  # Convex -> here   (x-service-key)
@@ -54,6 +60,13 @@ class Settings(BaseSettings):
     # 1M would be $5.00 per message. A 32k window holds ~60 turns of ordinary
     # chat, far past the point where a rolling summary is the better tool.
     ai_context_budget_tokens: int = 32_000
+    # The budget above bounds PRIOR turns. This bounds the newest one, which is
+    # where every user-controlled byte actually is: MAX_CONTENT (100k chars) +
+    # 6 attachments x MAX_PDF_CHARS (60k) = 460k chars ~ 115k input tokens, or
+    # ~$0.58 of Opus input on a single send, versus the ~32k this config claims
+    # is the ceiling. Trimming history while letting the current turn through
+    # unbounded controls the wrong half.
+    ai_max_turn_chars: int = 48_000
     # count_tokens_approximately is calibrated for OpenAI-ish tokenizers and
     # undercounts Claude. There is no Claude tokenizer available through
     # OpenRouter, so approximate and pad. Re-measure against usage.prompt_tokens

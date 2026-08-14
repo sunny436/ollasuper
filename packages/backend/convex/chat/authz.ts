@@ -39,9 +39,11 @@ export async function getUserIdOrNull(
 /**
  * Ownership is checked BEFORE workspace membership, deliberately.
  *
- * A same-workspace peer therefore gets "Not found" rather than "Forbidden", so
- * the error is never an existence oracle for someone else's threadId. A true
- * outsider falls through to requireMember and gets "Forbidden".
+ * EVERY non-owner gets "Not found" — same-workspace peer and complete outsider
+ * alike — so the error is never an existence oracle for someone else's
+ * threadId. The requireMember call below is therefore unreachable for
+ * outsiders; it exists to catch the owner who has since been removed from the
+ * workspace, and only ever throws "Forbidden" for that case.
  */
 export async function requireThreadAccess(
   ctx: QueryCtx,
