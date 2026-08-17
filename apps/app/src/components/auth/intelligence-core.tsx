@@ -75,16 +75,24 @@ export function IntelligenceCore() {
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-    camera.position.z = 3.2;
+    camera.position.set(0, 0, 3.2);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
+    // updateStyle=false kept the canvas at its intrinsic size instead of filling
+    // the circular mask, which is what made the sphere sit off-centre and clip.
+    // Drive the CSS box explicitly and derive aspect from the real dimensions.
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
+    renderer.domElement.style.display = "block";
+
     const resize = () => {
-      const size = Math.max(container.clientWidth, 1);
-      renderer.setSize(size, size, false);
-      camera.aspect = 1;
+      const w = Math.max(container.clientWidth, 1);
+      const h = Math.max(container.clientHeight, 1);
+      camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
     };
     resize();
     container.appendChild(renderer.domElement);
@@ -92,7 +100,7 @@ export function IntelligenceCore() {
     const observer = new ResizeObserver(resize);
     observer.observe(container);
 
-    const geometry = new THREE.SphereGeometry(1.15, 64, 64);
+    const geometry = new THREE.SphereGeometry(1.05, 64, 64);
     // Held as its own const rather than reached through material.uniforms.uTime,
     // whose index signature is `IUniform | undefined` under strict mode.
     const uTime = { value: 0 };
@@ -138,5 +146,11 @@ export function IntelligenceCore() {
     };
   }, []);
 
-  return <div ref={mountRef} aria-hidden="true" className="h-full w-full" />;
+  return (
+    <div
+      ref={mountRef}
+      aria-hidden="true"
+      className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-full"
+    />
+  );
 }
