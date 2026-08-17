@@ -3,7 +3,7 @@ import { Password } from "@convex-dev/auth/providers/Password";
 import { convexAuth, getAuthSessionId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import { ResendOTP } from "./ResendOTP";
-import { assertUsableEmail, normalizeEmail } from "./authPolicy";
+import { assertUsableEmail, googleProfile, normalizeEmail } from "./authPolicy";
 import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
 import { ResendOTPReset, ResendOTPVerify } from "./passwordProviders";
 
@@ -66,24 +66,7 @@ const PasswordWithFlows = Password({
  * attacker register a Google account claiming a victim's address and land on the
  * victim's user record. That is the account-takeover path, so refuse it.
  */
-const GoogleVerified = Google({
-  profile(profile: Record<string, unknown>) {
-    if (profile.email_verified !== true) {
-      throw new ConvexError(
-        "Your Google account's email address is not verified.",
-      );
-    }
-    const email = normalizeEmail(String(profile.email ?? ""));
-    return {
-      // `sub` is the immutable Google subject; this becomes providerAccountId.
-      id: String(profile.sub),
-      email,
-      emailNormalized: email,
-      name: typeof profile.name === "string" ? profile.name : undefined,
-      image: typeof profile.picture === "string" ? profile.picture : undefined,
-    };
-  },
-});
+const GoogleVerified = Google({ profile: googleProfile });
 
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
   providers: [PasswordWithFlows, ResendOTP, GoogleVerified],

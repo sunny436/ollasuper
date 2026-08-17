@@ -1,6 +1,8 @@
 "use client";
 
 import { useAuthActions } from "@convex-dev/auth/react";
+import { api } from "@v1/backend/convex/_generated/api";
+import { useAction } from "convex/react";
 import { useForm } from "@tanstack/react-form";
 import { zodValidator } from "@tanstack/zod-form-adapter";
 import { AnimatePresence, motion } from "framer-motion";
@@ -17,9 +19,10 @@ import {
   User,
 } from "lucide-react";
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { AmbientBackdrop } from "./ambient-backdrop";
+import { consumeDisplacedFlag } from "@/lib/displaced-session";
 import { IntelligenceCoreFallback } from "./intelligence-core-fallback";
 import { OAuthRow } from "./oauth-row";
 import {
@@ -176,12 +179,25 @@ function FieldShell({
 
 export function AuthPanel() {
   const { signIn } = useAuthActions();
+  // NOT signIn("password", { flow: "reset" }): that resolves for a known address
+  // and throws InvalidAccountId for an unknown one, which is an enumeration
+  // oracle. This action responds identically either way.
+  const requestPasswordReset = useAction(api.authSessions.requestPasswordReset);
   const [mode, setMode] = useState<Mode>("signIn");
   const [pending, setPending] = useState(false);
   const [reveal, setReveal] = useState(false);
   // Carried across steps: the verify and reset panels need the address the code
   // went to, and the user should not have to retype it.
   const [email, setEmail] = useState("");
+
+  // Explain an involuntary sign-out. Without this, a user displaced by a login
+  // on another device just finds themselves at a login screen with no reason.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: run once per mount
+  useEffect(() => {
+    if (consumeDisplacedFlag()) {
+      toast.error("You were signed out because your account was used on another device.");
+    }
+  }, []);
 
   /**
    * Lifted from the original auth-form.tsx. ConvexError puts the server's
@@ -239,9 +255,10 @@ export function AuthPanel() {
     defaultValues: { email: "" },
     onSubmit: ({ value }) =>
       go(async () => {
-        await signIn("password", { email: value.email, flow: "reset" });
+        await requestPasswordReset({ email: value.email });
         setEmail(value.email);
-        toast.success("Reset code sent.");
+        // Deliberately generic: says nothing about whether the account exists.
+        toast.success("If that account exists, a reset code is on its way.");
         setMode("reset");
       })(),
   });

@@ -99,3 +99,35 @@ export function assertUsableEmail(email: string): string {
   }
   return normalized;
 }
+
+/**
+ * Google profile mapper. Exported so the control can be tested directly — a live
+ * OAuth round trip needs credentials this deployment does not have.
+ *
+ * Two properties matter:
+ *  - an UNVERIFIED Google email is refused. Google will issue a profile with
+ *    email_verified:false, and accepting it lets an attacker register a Google
+ *    account claiming a victim's address and land on the victim's user record.
+ *  - identity is keyed on `sub`, the immutable subject, never the email. A user
+ *    who changes their Gmail address keeps the same account, and a recycled
+ *    address cannot inherit one.
+ */
+export function googleProfile(profile: Record<string, unknown>): {
+  id: string;
+  email: string;
+  emailNormalized: string;
+  name?: string;
+  image?: string;
+} {
+  if (profile.email_verified !== true) {
+    throw new ConvexError("Your Google account's email address is not verified.");
+  }
+  const email = normalizeEmail(String(profile.email ?? ""));
+  return {
+    id: String(profile.sub),
+    email,
+    emailNormalized: email,
+    ...(typeof profile.name === "string" ? { name: profile.name } : {}),
+    ...(typeof profile.picture === "string" ? { image: profile.picture } : {}),
+  };
+}
