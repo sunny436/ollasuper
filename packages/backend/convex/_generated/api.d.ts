@@ -13,6 +13,7 @@ import type * as apiKeys from "../apiKeys.js";
 import type * as audit from "../audit.js";
 import type * as auditLog from "../auditLog.js";
 import type * as auth from "../auth.js";
+import type * as authSessions from "../authSessions.js";
 import type * as authPolicy from "../authPolicy.js";
 import type * as authEventsPurge from "../authEventsPurge.js";
 import type * as authEvents from "../authEvents.js";
@@ -67,6 +68,7 @@ declare const fullApi: ApiFromModules<{
   audit: typeof audit;
   auditLog: typeof auditLog;
   auth: typeof auth;
+  authSessions: typeof authSessions;
   authPolicy: typeof authPolicy;
   authEventsPurge: typeof authEventsPurge;
   authEvents: typeof authEvents;

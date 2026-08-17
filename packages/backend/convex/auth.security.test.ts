@@ -36,13 +36,13 @@ async function seedSessions(t: ReturnType<typeof convexTest>, count: number) {
   });
 }
 
+// Filtered in JS rather than through withIndex: the schema union is large enough
+// that TypeScript drops narrowing on a loosely-typed `t`, and the index adds
+// nothing at test-scale row counts.
 const countSessions = (t: ReturnType<typeof convexTest>, userId: Id<"users">) =>
   t.run(async (ctx) =>
-    (
-      await ctx.db
-        .query("authSessions")
-        .withIndex("userId", (q) => q.eq("userId", userId))
-        .collect()
+    (await ctx.db.query("authSessions").collect()).filter(
+      (s) => s.userId === userId,
     ).length,
   );
 
