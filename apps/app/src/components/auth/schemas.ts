@@ -28,6 +28,12 @@ const signUpPassword = z
   .regex(/[A-Z]/, "Add an uppercase letter")
   .regex(/\d/, "Add a number");
 
+/**
+ * Persisted to `users.name` via the `profile` function on the Password provider
+ * in convex/auth.ts. Without that function the value is silently discarded.
+ */
+const name = z.string().trim().min(2, "Full name must be at least 2 characters");
+
 /** 8-digit codes from ResendOTPVerify / ResendOTPReset. */
 const code = z
   .string()
@@ -35,7 +41,7 @@ const code = z
   .min(1, "Enter the code we emailed you");
 
 export const signInSchema = z.object({ email, password: signInPassword });
-export const signUpSchema = z.object({ email, password: signUpPassword });
+export const signUpSchema = z.object({ name, email, password: signUpPassword });
 export const verifySchema = z.object({ code });
 export const forgotSchema = z.object({ email });
 export const resetSchema = z.object({ code, newPassword: signUpPassword });

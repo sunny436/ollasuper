@@ -55,6 +55,7 @@ async function getCode(label, email) {
 
   await step("Sign up (password policy + verify required)", async () => {
     await page.click('button:has-text("Sign up")');
+    await page.fill('input[name="name"]', "Auth Test");
     await page.fill('input[type="email"]', EMAIL);
     await page.fill('input[type="password"]', PW);
     await page.click('button[type="submit"]');
@@ -82,7 +83,7 @@ async function getCode(label, email) {
   await step("Forgot password → reset → signed in with new password", async () => {
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
     await page.waitForURL(/login/, { timeout: 15000 }); cur = page.url();
-    await page.click('button:has-text("Forgot password?")');
+    await page.click('button:has-text("Forgot")');
     await page.fill('input[type="email"]', EMAIL);
     await page.click('button[type="submit"]');
     await page.waitForSelector('input[name="code"]', { timeout: 15000 });

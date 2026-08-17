@@ -10,6 +10,22 @@ import { ResendOTPReset, ResendOTPVerify } from "./passwordProviders";
 const PasswordWithFlows = Password({
   verify: ResendOTPVerify,
   reset: ResendOTPReset,
+  // Without this, Password falls back to its defaultProfile, which returns
+  // `{ email }` and nothing else — so a `name` sent by the sign-up form would be
+  // accepted and then silently dropped. `users.name` is already optional in the
+  // schema, and the dashboard sidebar renders it, so persist it here.
+  // The expected return is WithoutSystemFields<Doc<"users">> & { email: string },
+  // and Convex's `Value` does not include `undefined`. So `name` is either a real
+  // string or absent from the object entirely — never explicitly undefined, which
+  // is what a ternary or `name: string | undefined` would produce.
+  profile: (params) => {
+    const doc: Record<string, string> & { email: string } = {
+      email: params.email as string,
+    };
+    const name = typeof params.name === "string" ? params.name.trim() : "";
+    if (name) doc.name = name;
+    return doc;
+  },
   validatePasswordRequirements: (password: string) => {
     if (
       password.length < 8 ||

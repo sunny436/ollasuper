@@ -11,7 +11,7 @@ export function IntelligenceCoreFallback() {
   return (
     <div
       aria-hidden="true"
-      className="h-full w-full rounded-full bg-[radial-gradient(circle_at_30%_25%,#5AC8FA_0%,#007AFF_45%,#5856D6_75%,#AF52DE_100%)]"
+      className="h-full w-full rounded-full bg-[radial-gradient(circle_at_32%_28%,#06B6D4_0%,#7C3AED_45%,#EC4899_78%,#FFBF33_100%)] opacity-90"
     />
   );
 }
