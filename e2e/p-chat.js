@@ -44,7 +44,7 @@ const step = async (n, f) => {
     await page.waitForURL(/login/, { timeout: 20000 });
     await page.locator('input[type="email"]').first().fill(EMAIL);
     await page.locator('input[type="password"]').first().fill(PASSWORD);
-    await page.click('button:has-text("Sign in")');
+    await page.click('button[type="submit"]');
     await page.waitForTimeout(3500);
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(1500);

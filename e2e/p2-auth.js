@@ -28,20 +28,20 @@ async function getCode(label, email) {
   await step("login page renders AuthForm + Google", async () => {
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
     await page.waitForURL(/login/, { timeout: 20000 }); cur = page.url();
-    if (!(await page.locator('button:has-text("Continue with Google")').isVisible())) throw new Error("no Google button");
+    if (!(await page.locator('button:has-text("Google")').isVisible())) throw new Error("no Google button");
   });
 
   await step("Sign up (password policy + verify required)", async () => {
-    await page.click('button:has-text("Create account")');
+    await page.click('button:has-text("Sign up")');
     await page.fill('input[type="email"]', EMAIL);
     await page.fill('input[type="password"]', PW);
-    await page.click('button:has-text("Create account")');
-    await page.waitForSelector('input[placeholder="Verification code"]', { timeout: 15000 });
+    await page.click('button[type="submit"]');
+    await page.waitForSelector('input[name="code"]', { timeout: 15000 });
   });
   await step("Email verification (code from logs)", async () => {
     const code = await getCode("email verification", EMAIL);
-    await page.fill('input[placeholder="Verification code"]', code);
-    await page.click('button:has-text("Verify email")');
+    await page.fill('input[name="code"]', code);
+    await page.click('button[type="submit"]');
     await page.waitForTimeout(3500);
     return code;
   });
@@ -62,12 +62,12 @@ async function getCode(label, email) {
     await page.waitForURL(/login/, { timeout: 15000 }); cur = page.url();
     await page.click('button:has-text("Forgot password?")');
     await page.fill('input[type="email"]', EMAIL);
-    await page.click('button:has-text("Send reset code")');
-    await page.waitForSelector('input[placeholder="Reset code"]', { timeout: 15000 });
+    await page.click('button[type="submit"]');
+    await page.waitForSelector('input[name="code"]', { timeout: 15000 });
     const code = await getCode("password reset", EMAIL);
-    await page.fill('input[placeholder="Reset code"]', code);
-    await page.fill('input[placeholder="New password"]', NEWPW);
-    await page.click('button:has-text("Set new password")');
+    await page.fill('input[name="code"]', code);
+    await page.fill('input[name="newPassword"]', NEWPW);
+    await page.click('button[type="submit"]');
     await page.waitForTimeout(3500);
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" }); await page.waitForTimeout(2000); cur = page.url();
     if (/login/.test(cur)) throw new Error("reset login failed");
@@ -81,7 +81,7 @@ async function getCode(label, email) {
     await page.waitForURL(/login/, { timeout: 15000 });
     await page.fill('input[type="email"]', "admin@myos.test");
     await page.fill('input[type="password"]', "MyosAdmin#2026");
-    await page.click('button:has-text("Sign in")');
+    await page.click('button[type="submit"]');
     await page.waitForTimeout(3500);
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" }); await page.waitForTimeout(2000); cur = page.url();
     if (/login|onboarding/.test(cur)) throw new Error("admin bounced: " + cur);
