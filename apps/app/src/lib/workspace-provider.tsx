@@ -22,8 +22,17 @@ export const useWorkspace = () => useContext(WorkspaceCtx);
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const workspaces = useQuery(api.orgs.myWorkspaces) as WS[] | undefined;
   const ensure = useMutation(api.orgs.ensureWorkspace);
+  // Single-active-session enforcement + lastActivityAt. The decision and the
+  // writes happen server-side in one mutation; this only supplies the trigger,
+  // because @convex-dev/auth has no callback that spans every sign-in path.
+  const heartbeat = useMutation(api.authSessions.heartbeat);
   const [current, setCurrent] = useState<Id<"workspaces"> | null>(null);
   const [ensuring, setEnsuring] = useState(false);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: run once per mount
+  useEffect(() => {
+    void heartbeat({}).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (workspaces === undefined) return;
