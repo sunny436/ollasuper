@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # --- OpenRouter --------------------------------------------------------
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_app_url: str = "https://leads.networkershome.com"
+    openrouter_app_url: str = "https://app.ollasuper.com"
     openrouter_app_title: str = "myos"
 
     ai_default_model: str = "anthropic/claude-opus-5"

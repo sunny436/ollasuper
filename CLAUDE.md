@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**myos** — a self-hosted, multi-tenant SaaS control-plane forked from `get-convex/v1`, plus an AI chat product built on top of it. It is **live in production** on a VM at `10.1.30.14` (Convex `:3210`/`:3211`, Next `:3000`, backend-echo `:4000`, dashboard `:6791`), publicly tunnelled at `leads.networkershome.com`. Treat pushes to it accordingly.
+**myos** — a self-hosted, multi-tenant SaaS control-plane forked from `get-convex/v1`, plus an AI chat product built on top of it. It is **live in production** on a VM at `10.1.30.14` (Convex `:3210`/`:3211`, Next `:3000`, backend-echo `:4000`, dashboard `:6791`), publicly tunnelled at `app.ollasuper.com` — with Convex reachable at `convex.ollasuper.com` (`:3210`) and `convex-site.ollasuper.com` (`:3211`), because the browser opens its WebSocket to Convex directly and cannot ride on the app's hostname. Treat pushes to it accordingly.
+
+`ollasuper.com` itself is **not ours** — the apex, `www` and `tokens.` serve other properties (a marketing site and a design-token site on Cloudflare Pages), and the zone carries live MX/SPF/DKIM/DMARC mail records. Anything touching DNS must operate on an allowlist of our three hostnames; `deploy/58-ollasuper-dns.sh` does, and diffs the whole zone afterwards to prove nothing else moved.
 
 `TEMPLATE.md` describes the original seam: the control-plane is the platform plumbing (auth, orgs, files, billing), and "your product/AI logic lives in a separate backend." The AI half is now built — see **Two planes** below.
 

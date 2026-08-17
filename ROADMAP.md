@@ -33,14 +33,26 @@ Billing**.
 - **Polish** — loading skeletons, consistent empty states, 404 page + error boundary, footer/version, help/docs link, keyboard shortcuts. Remove dead `_components/navigation.tsx` (old top-nav, no longer imported).
 
 ## 2. Production-readiness
-- **Named Cloudflare tunnel + real domain** — replaces the ephemeral `*.trycloudflare.com` URLs (which change on `cloudflared` restart and require an app rebuild). Gives stable URLs, real Let's Encrypt certs, and **activates Google OAuth** (stable redirect URI).
+- **Named Cloudflare tunnel + real domain — SCRIPTED (2026-08-17), not yet run.** `app.ollasuper.com`
+  (`:3000`), `convex.ollasuper.com` (`:3210`), `convex-site.ollasuper.com` (`:3211`) via the VM's existing
+  named tunnel. `deploy/56-discover-tunnel.sh` (read-only) → `57-ollasuper-domain.sh` (ingress + origins +
+  rebuild, touches no DNS) → `58-ollasuper-dns.sh` (the flip, dry-run by default). Replaces the ephemeral
+  `*.trycloudflare.com` URLs, which change on `cloudflared` restart and require an app rebuild.
+  Two things to know: taking over `app.ollasuper.com` displaces the product currently there (rollback is
+  recorded to `/opt/myos/.dns-rollback.json` before the change), and moving `CONVEX_SITE_ORIGIN` moves the
+  OIDC issuer, so **every existing session is invalidated** and all users are signed out once.
+  Universal SSL covers the root plus first-level subdomains, so all three hostnames get a valid free cert.
+  Unverified until `56` runs: that `networkershome.com` and `ollasuper.com` share one Cloudflare account —
+  a single tunnel can only span zones within one account.
 - **Email — local option DONE (Mailpit), or Resend for real delivery.** Auth emails now send
   over SMTP via a Node action (`convex/email.ts` + `nodemailer`); set `SMTP_HOST`/`SMTP_PORT`
   (+ optional `SMTP_USER`/`SMTP_PASS`/`SMTP_FROM`). Pointed at self-hosted **Mailpit**
   (`deploy/50-mailpit.sh`, SMTP `:1025`, web inbox `:8025`) and verified a signup email lands.
   The code is still logged as a fallback, so log-mode keeps working when SMTP is unset. For
   real outbound mail, set `SMTP_*` to Resend's SMTP (or any provider) — no code change.
-- **Google OAuth** — add `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` + register the callback (needs the domain above).
+- **Google OAuth** — add `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` + register the callback. **Unblocked** once
+  the domain scripts above run: exposing `:3211` as `convex-site.ollasuper.com` gives the stable, real-cert
+  redirect URI this was waiting on. Enabling it is deliberately NOT part of that change.
 - **Strong `INSTANCE_SECRET`** for the Convex backend (currently the compose default) before any real use.
 - **Observability — DONE via self-hosted GlitchTip** (no external SaaS). `self-hosted/glitchtip/`
   brings up a Sentry-protocol-compatible stack; the app's existing `@sentry/nextjs` wiring reports
@@ -105,4 +117,8 @@ Convex stays the data plane; a separate **Python FastAPI + LangGraph** service a
 
 ## Notes / caveats
 - Email is **log-fallback** until Resend is configured (codes appear in Convex logs).
-- The `trycloudflare` URLs are **ephemeral**; `NEXT_PUBLIC_CONVEX_URL` is baked at build, so a tunnel restart needs a rebuild — move to a named tunnel/domain for stability.
+- `NEXT_PUBLIC_CONVEX_URL` is baked in at **build** time, so any change of Convex hostname needs a full
+  `next build` — restarting the service is not enough, and a stale `.next` will keep serving the old origin.
+  `deploy/57-ollasuper-domain.sh` clears `.next` before rebuilding and then greps the output to prove the new
+  origin is actually in the bundle. This is also why the old ephemeral `trycloudflare` URLs were painful: they
+  changed on every `cloudflared` restart and each change required a rebuild.
