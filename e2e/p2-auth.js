@@ -74,9 +74,9 @@ async function getCode(label, email) {
     if (/login|onboarding/.test(cur)) throw new Error("not in dashboard: " + cur);
   });
   await step("Sign out", async () => {
-    await page.locator("nav button.rounded-full").first().click({ timeout: 8000 });
-    await page.waitForTimeout(700);
-    await page.getByText("Log Out").click({ timeout: 8000 });
+    // The sidebar footer has a plain "Log out" button; the old selector
+    // (nav button.rounded-full) described an avatar dropdown that no longer exists.
+    await page.getByRole("button", { name: "Log out" }).click({ timeout: 8000 });
     await page.waitForTimeout(2500);
   });
   await step("Forgot password → reset → signed in with new password", async () => {
@@ -95,9 +95,7 @@ async function getCode(label, email) {
     if (/login/.test(cur)) throw new Error("reset login failed");
   });
   await step("Admin password sign-in still works (regression)", async () => {
-    await page.locator("nav button.rounded-full").first().click({ timeout: 8000 }).catch(() => {});
-    await page.waitForTimeout(700);
-    await page.getByText("Log Out").click({ timeout: 8000 }).catch(() => {});
+    await page.getByRole("button", { name: "Log out" }).click({ timeout: 8000 }).catch(() => {});
     await page.waitForTimeout(2000);
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
     await page.waitForURL(/login/, { timeout: 15000 });
