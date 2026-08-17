@@ -1,5 +1,9 @@
 const { chromium } = require("playwright");
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
+const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
+// Fallback is for the EPHEMERAL CI stack only (localhost, torn down after the
+// run). Any deployment reachable from the internet must set ADMIN_PASSWORD.
+const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
 const errs = [], results = []; let cur = BASE;
 const step = async (n, f) => { try { const d = await f(); results.push([true, n, d || ""]); console.log("PASS  " + n + (d ? " — " + d : "")); } catch (e) { results.push([false, n, e.message.split("\n")[0]]); console.log("FAIL  " + n + " — " + e.message.split("\n")[0]); } };
 (async () => {
@@ -10,8 +14,8 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
   await step("login", async () => {
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
     await page.waitForURL(/login/, { timeout: 20000 });
-    await page.locator('input[type="email"]').first().fill("admin@myos.test");
-    await page.locator('input[type="password"]').first().fill("MyosAdmin#2026");
+    await page.locator('input[type="email"]').first().fill(EMAIL);
+    await page.locator('input[type="password"]').first().fill(PASSWORD);
     await page.click('button[type="submit"]');
     await page.waitForTimeout(3500);
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
