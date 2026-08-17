@@ -19,6 +19,7 @@ import {
 import dynamic from "next/dynamic";
 import { useState } from "react";
 import { toast } from "sonner";
+import { AmbientBackdrop } from "./ambient-backdrop";
 import { IntelligenceCoreFallback } from "./intelligence-core-fallback";
 import { OAuthRow } from "./oauth-row";
 import {
@@ -295,11 +296,13 @@ export function AuthPanel() {
   };
 
   return (
-    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#0D0D11] p-4 font-sans selection:bg-[#7C3AED]/40 selection:text-white md:p-8">
-      <div className="pointer-events-none absolute top-1/4 left-1/4 h-[520px] w-[520px] rounded-full bg-[#007AFF]/20 blur-[150px]" />
-      <div className="pointer-events-none absolute right-1/4 bottom-1/4 h-[460px] w-[460px] rounded-full bg-[#AF52DE]/20 blur-[150px]" />
+    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#07080E] p-4 font-sans selection:bg-[#7C3AED]/40 selection:text-white md:p-8">
+      <AmbientBackdrop />
 
-      <div className="relative flex min-h-[620px] w-full max-w-[980px] flex-col overflow-hidden rounded-[28px] border border-white/10 bg-white/[0.03] shadow-[0_30px_90px_rgba(0,0,0,0.65)] backdrop-blur-2xl md:flex-row">
+      {/* Neon halo sits behind the card, hence -inset and -z-10. */}
+      <div className="relative">
+        <div className="pointer-events-none absolute -inset-8 -z-10 rounded-[40px] bg-gradient-to-r from-cyan-500/20 via-purple-600/20 to-pink-500/20 blur-[70px]" />
+        <div className="relative flex min-h-[620px] w-full max-w-[980px] flex-col overflow-hidden rounded-[28px] border border-white/10 bg-white/[0.03] shadow-[0_30px_90px_rgba(0,0,0,0.65)] backdrop-blur-2xl md:flex-row">
         {/* Left brand panel */}
         <div className="relative flex w-full select-none flex-col justify-between overflow-hidden border-white/10 bg-gradient-to-br from-[#12203F] via-[#1B1B44] to-[#3B1B5E] p-8 md:w-[340px] md:border-r md:p-10">
           <div className="pointer-events-none absolute -inset-[40%] opacity-20 mix-blend-overlay">
@@ -723,6 +726,7 @@ export function AuthPanel() {
           </div>
 
           <OAuthRow onGoogle={() => void signIn("google")} disabled={pending} />
+        </div>
         </div>
       </div>
     </div>
