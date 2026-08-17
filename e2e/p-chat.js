@@ -176,7 +176,10 @@ const step = async (n, f) => {
   await step("prompt library opens and saves a prompt", async () => {
     await page.getByRole("button", { name: /Prompt library/ }).click();
     await page.getByRole("dialog", { name: "Prompt library" }).waitFor({ timeout: 5000 });
-    await page.getByRole("button", { name: "New" }).click();
+    // exact: getByRole matches the accessible name as a SUBSTRING by default,
+    // so a bare "New" also hits "New chat" and "New folder" and Playwright
+    // throws a strict-mode violation on 3 matches.
+    await page.getByRole("button", { name: "New", exact: true }).click();
     await page.getByLabel("Prompt title").fill("E2E prompt");
     await page.getByLabel("Prompt text").fill("This came from the library.");
     await page.getByRole("button", { name: "Save" }).click();

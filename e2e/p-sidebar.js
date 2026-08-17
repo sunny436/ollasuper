@@ -45,4 +45,8 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
   const pass = results.filter((r) => r[0]).length;
   console.log(`\n===== SIDEBAR: ${pass}/${results.length} | console errors: ${errs.length} =====`);
   errs.forEach((e) => console.log("  - " + e));
+  // Exit non-zero like p-chat does. Without this the workflow's `|| exit 1` was
+  // a no-op gate: this suite loads /chat (the landing page) and a render crash
+  // there shows up only as a console error, which used to pass silently.
+  if (pass !== results.length || errs.length > 0) process.exit(1);
 })().catch((e) => { console.error("FATAL", e); process.exit(1); });
