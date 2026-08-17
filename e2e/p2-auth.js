@@ -2,6 +2,10 @@
 const { chromium } = require("playwright");
 const { execSync } = require("child_process");
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
+// Fallback is for the EPHEMERAL CI stack only; set ADMIN_PASSWORD for any
+// internet-reachable deployment.
+const ADMIN_PW = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
 // Verification and reset codes are console.warn'd by the auth providers as a dev
 // fallback whenever SMTP is unset (packages/backend/convex/passwordProviders.ts).
 // They land in the CONVEX LOG STREAM, not container stdout, so they are read back
@@ -100,8 +104,8 @@ async function getCode(label, email) {
     await page.waitForTimeout(2000);
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
     await page.waitForURL(/login/, { timeout: 15000 });
-    await page.fill('input[type="email"]', "admin@myos.test");
-    await page.fill('input[type="password"]', "MyosAdmin#2026");
+    await page.fill('input[type="email"]', ADMIN_EMAIL);
+    await page.fill('input[type="password"]', ADMIN_PW);
     await page.click('button[type="submit"]');
     await page.waitForTimeout(3500);
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" }); await page.waitForTimeout(2000); cur = page.url();
