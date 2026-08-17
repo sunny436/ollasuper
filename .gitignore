@@ -79,6 +79,8 @@ graphify-out/
 # too. If a token ever does land in a commit, ignoring it afterwards does not
 # help — rotate it in the Cloudflare dashboard.
 cf_tunnel_info.txt
+open_router_key.txt
 *_token*.txt
 *_secret*.txt
+*_key*.txt
 *.credentials.json
