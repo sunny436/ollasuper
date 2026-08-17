@@ -1,3 +1,6 @@
+import os
+import sys
+
 from django.contrib.auth import get_user_model
 from apps.organizations_ext.models import Organization
 from apps.projects.models import Project, ProjectKey
@@ -8,7 +11,12 @@ except Exception:
     Team = None
 
 User = get_user_model()
-email, pw = "admin@myos.test", "MyosAdmin#2026"
+# Never defaulted: this creates a GlitchTip SUPERUSER, and a literal here would be
+# a working credential published in a public repo.
+email = os.environ.get("GLITCHTIP_ADMIN_EMAIL", "admin@myos.test")
+pw = os.environ.get("GLITCHTIP_ADMIN_PASSWORD")
+if not pw:
+    sys.exit("FATAL: set GLITCHTIP_ADMIN_PASSWORD before running this script.")
 
 u, _ = User.objects.get_or_create(email=email)
 u.set_password(pw)
