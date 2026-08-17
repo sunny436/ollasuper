@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **myos** — a self-hosted, multi-tenant SaaS control-plane forked from `get-convex/v1`, plus an AI chat product built on top of it. It is **live in production** on a VM at `10.1.30.14` (Convex `:3210`/`:3211`, Next `:3000`, backend-echo `:4000`, dashboard `:6791`), publicly tunnelled at `leads.networkershome.com`. Treat pushes to it accordingly.
 
-`TEMPLATE.md` describes the original seam: the control-plane is the platform plumbing (auth, orgs, jobs, files, billing), and "your product/AI logic lives in a separate backend." The AI half is now built — see **Two planes** below.
+`TEMPLATE.md` describes the original seam: the control-plane is the platform plumbing (auth, orgs, files, billing), and "your product/AI logic lives in a separate backend." The AI half is now built — see **Two planes** below.
+
+The dashboard, devices, sessions, AI-access, jobs and platform sections were removed; `/` redirects to `/chat`. The remaining surfaces are **Chat**, **Files**, **Settings** and **Billing**. Tenancy, RBAC, API keys, usage, audit and events survived the removal as backend-only modules — they lost their Platform UI, not their function.
 
 ## Commands
 
@@ -76,7 +78,7 @@ cd apps/app && NEXT_PUBLIC_CONVEX_URL=http://10.1.30.14:3210 bun run build
 Browser ─▶ Next.js (apps/app)  ──useQuery/useMutation over WebSocket──┐
                                                                       ▼
                         CONVEX — data plane (TypeScript, packages/backend)
-                        auth · orgs/RBAC · jobs · files · usage · audit
+                        auth · orgs/RBAC · files · usage · audit
                         chatThreads/Messages/Streams/StreamChunks/…
                             │ action → POST /v1/generate      ▲ POST /ai/ingress
                             ▼   x-service-key                 │   x-ai-key + streamId
@@ -109,7 +111,7 @@ Two different trust models coexist. Getting them confused is the main hazard in 
 
 | Surface | Trust boundary | Helper |
 |---|---|---|
-| jobs, files, audit, events, members | **workspace** — any member reads any row | `requireMember` / `requireRole` (`convex/orgs.ts`) |
+| files, audit, events, members | **workspace** — any member reads any row | `requireMember` / `requireRole` (`convex/orgs.ts`) |
 | **chat** | **user** — `workspaceId` is for tenancy/billing only | `convex/chat/authz.ts` |
 
 `convex/chat/authz.ts` is a separate file to avoid an import cycle with `orgs.ts` (same reason `auditLog.ts` was split out). Every non-owner gets `"Not found"`, never `"Forbidden"` — the error must not be an existence oracle for someone else's `threadId`.

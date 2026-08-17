@@ -47,14 +47,12 @@ async function allowed(name, fn) {
   const wsB = await B.mutation(api.orgs.createWorkspace, { name: "B-ws" });
   console.log(`wsA=${wsA} wsB=${wsB}\n--- positive controls ---`);
 
-  await allowed("A reads own jobs", () => A.query(api.jobs.list, { workspaceId: wsA }));
-  await allowed("A creates job (own ws)", () => A.mutation(api.jobs.create, { workspaceId: wsA, kind: "demo", input: {} }));
+  await allowed("A reads own files", () => A.query(api.files.list, { workspaceId: wsA }));
   await allowed("A creates apiKey (own ws)", () => A.action(api.apiKeys.create, { workspaceId: wsA, name: "k" }));
   const aKeys = await A.query(api.apiKeys.listMine, { workspaceId: wsA });
   const keyAId = aKeys && aKeys[0] && aKeys[0]._id;
 
   console.log("--- IDOR reads: B -> A's workspace (must deny) ---");
-  await denied("B reads A.jobs.list", () => B.query(api.jobs.list, { workspaceId: wsA }));
   await denied("B reads A.usage.mine", () => B.query(api.usage.mine, { workspaceId: wsA }));
   await denied("B reads A.apiKeys.listMine", () => B.query(api.apiKeys.listMine, { workspaceId: wsA }));
   await denied("B reads A.files.list", () => B.query(api.files.list, { workspaceId: wsA }));
@@ -64,7 +62,6 @@ async function allowed(name, fn) {
   await denied("B reads A.orgs.pendingInvites", () => B.query(api.orgs.pendingInvites, { workspaceId: wsA }));
 
   console.log("--- IDOR writes: B -> A's workspace (must deny) ---");
-  await denied("B creates job in A.ws", () => B.mutation(api.jobs.create, { workspaceId: wsA, kind: "x", input: {} }));
   await denied("B creates apiKey in A.ws", () => B.action(api.apiKeys.create, { workspaceId: wsA, name: "x" }));
   await denied("B generateUploadUrl in A.ws", () => B.mutation(api.files.generateUploadUrl, { workspaceId: wsA }));
   await denied("B invites to A.ws", () => B.mutation(api.orgs.invite, { workspaceId: wsA, email: "x@x.com", role: "admin" }));
@@ -76,7 +73,7 @@ async function allowed(name, fn) {
   rec("B sees own invite (same-case email)", !!(invs && invs.length), invs ? `${invs.length} invite(s)` : "none");
   if (invs && invs.length) {
     await allowed("B accepts invite (becomes member)", () => B.mutation(api.orgs.acceptInvite, { inviteId: invs[0]._id }));
-    await allowed("B(member) reads A.jobs.list", () => B.query(api.jobs.list, { workspaceId: wsA }));
+    await allowed("B(member) reads A.files.list", () => B.query(api.files.list, { workspaceId: wsA }));
     await denied("B(member) cannot invite (admin-only)", () => B.mutation(api.orgs.invite, { workspaceId: wsA, email: "y@y.com", role: "admin" }));
     await denied("B(member) cannot see pendingInvites", () => B.query(api.orgs.pendingInvites, { workspaceId: wsA }));
   }
@@ -90,9 +87,9 @@ async function allowed(name, fn) {
 
   console.log("--- unauth control ---");
   try {
-    const r = await client(null).query(api.jobs.list, { workspaceId: wsA });
-    rec("unauth jobs.list returns no data", Array.isArray(r) && r.length === 0, `returned ${JSON.stringify(r).slice(0,40)}`);
-  } catch (e) { rec("unauth jobs.list returns no data", true, "threw (also safe)"); }
+    const r = await client(null).query(api.files.list, { workspaceId: wsA });
+    rec("unauth files.list returns no data", Array.isArray(r) && r.length === 0, `returned ${JSON.stringify(r).slice(0,40)}`);
+  } catch (e) { rec("unauth files.list returns no data", true, "threw (also safe)"); }
 
   const pass = results.filter((r) => r.pass).length;
   console.log(`\n================ P2 RESULT: ${pass}/${results.length} ================`);

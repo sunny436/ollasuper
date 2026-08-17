@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Verify all Phase 2 platform modules end-to-end on the VM.
+# Verify all Phase 2 backend modules end-to-end on the VM.
 set -uo pipefail
 NODE=/usr/bin/node
 CVX=/opt/myos/node_modules/convex/bin/main.js
 cd /opt/myos/packages/backend
-USERID="$("$NODE" "$CVX" run jobs:firstUserId 2>&1 | tail -1 | tr -d '"[:space:]')"
+USERID="$("$NODE" "$CVX" run seed:firstUserId 2>&1 | tail -1 | tr -d '"[:space:]')"
 echo "userId: $USERID"
 
 echo "=== usage.record + audit.record (direct) ==="
@@ -23,8 +23,7 @@ curl -s -X POST http://127.0.0.1:3211/api/verify-key -H "x-api-key: $KEY"; echo
 echo -n "bad-key response:    "
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:3211/api/verify-key -H "x-api-key: sk_bogus"
 
-echo "=== jobs.create wiring -> usage + audit ==="
-"$NODE" "$CVX" run jobs:createInternal "{\"userId\":\"$USERID\",\"kind\":\"demo\",\"input\":{}}" 2>&1 | tail -1
+echo "=== usage + audit rows written by the calls above ==="
 sleep 1
 echo "-- usage --";      "$NODE" "$CVX" data usage      2>&1 | tail -4
 echo "-- auditLogs --";  "$NODE" "$CVX" data auditLogs  2>&1 | tail -4

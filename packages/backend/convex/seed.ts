@@ -5,27 +5,16 @@ import { requireDevSeed } from "./devGuard";
 // Dev-only load generators + read profilers (DEV_SEED gated). Used to measure the
 // read-amplification of count-by-collect queries on a large workspace.
 
-export const seedJobs = internalMutation({
-  args: {
-    workspaceId: v.id("workspaces"),
-    userId: v.id("users"),
-    count: v.number(),
-  },
-  handler: async (ctx, { workspaceId, userId, count }) => {
+/**
+ * Resolve any one userId. Operator convenience for the deploy/verify scripts,
+ * which need a real user to act as; DEV_SEED-gated like everything else here.
+ */
+export const firstUserId = internalQuery({
+  args: {},
+  handler: async (ctx) => {
     requireDevSeed();
-    const now = Date.now();
-    for (let i = 0; i < count; i++) {
-      await ctx.db.insert("jobs", {
-        workspaceId,
-        userId,
-        kind: "seed",
-        status: i % 4 === 0 ? "pending" : "done",
-        input: {},
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-    return count;
+    const u = await ctx.db.query("users").first();
+    return u?._id ?? null;
   },
 });
 
@@ -47,16 +36,12 @@ export const seedNotifications = internalMutation({
   },
 });
 
-/** Reports rows READ by the dashboard.stats logic (= the amplification per re-render). */
+/** Reports rows READ by a count-by-collect workspace stats query (= the amplification per re-render). */
 export const profileStats = internalQuery({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, { workspaceId }) => {
     requireDevSeed();
-    const [jobs, members, files, usage] = await Promise.all([
-      ctx.db
-        .query("jobs")
-        .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
-        .collect(),
+    const [members, files, usage] = await Promise.all([
       ctx.db
         .query("members")
         .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
@@ -71,8 +56,8 @@ export const profileStats = internalQuery({
         .collect(),
     ]);
     return {
-      rowsRead: jobs.length + members.length + files.length + usage.length,
-      jobs: jobs.length,
+      rowsRead: members.length + files.length + usage.length,
+      files: files.length,
     };
   },
 });
@@ -100,12 +85,6 @@ export const seedCleanupBatch = internalMutation({
     for (const n of notifs)
       if (n.type === "seed") {
         await ctx.db.delete(n._id);
-        deleted++;
-      }
-    const jobs = await ctx.db.query("jobs").take(2000);
-    for (const j of jobs)
-      if (j.kind === "seed") {
-        await ctx.db.delete(j._id);
         deleted++;
       }
     return deleted;

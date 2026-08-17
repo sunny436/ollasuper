@@ -204,17 +204,18 @@ const step = async (n, f) => {
   });
 
   await step("other dashboard pages still work", async () => {
-    for (const [path, marker] of [
-      ["/en/jobs", "Jobs"],
-      ["/en/files", "Files"],
-      ["/en", "Dashboard"],
-    ]) {
+    for (const [path, marker] of [["/en/files", "Files"]]) {
       await page.goto(BASE + path, { waitUntil: "domcontentloaded" });
       await page.waitForTimeout(1200);
       if (!(await page.getByText(marker).count())) {
         throw new Error(`${path} did not render`);
       }
     }
+  });
+
+  await step("root redirects to /chat", async () => {
+    await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
+    await page.waitForURL(/\/chat/, { timeout: 15000 });
   });
 
   await b.close();

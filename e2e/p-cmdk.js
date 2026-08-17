@@ -20,10 +20,10 @@ const step = async (n, f) => { try { await f(); results.push(true); console.log(
     await page.keyboard.press("Control+k");
     await page.waitForSelector('input[placeholder="Jump to…"]', { timeout: 5000 });
   });
-  await step("filter + Enter navigates to Jobs", async () => {
-    await page.fill('input[placeholder="Jump to…"]', "job");
+  await step("filter + Enter navigates to Files", async () => {
+    await page.fill('input[placeholder="Jump to…"]', "file");
     await page.keyboard.press("Enter");
-    await page.waitForURL(/\/jobs/, { timeout: 8000 });
+    await page.waitForURL(/\/files/, { timeout: 8000 });
   });
   await b.close();
   console.log(`\n===== CMDK: ${results.filter(Boolean).length}/${results.length} | console errors: ${errs.length} =====`);

@@ -5,7 +5,7 @@ NODE=/usr/bin/node
 CVX=/opt/myos/node_modules/convex/bin/main.js
 cd /opt/myos/packages/backend
 
-A="$("$NODE" "$CVX" run jobs:firstUserId 2>&1 | tail -1 | tr -d '"[:space:]')"
+A="$("$NODE" "$CVX" run seed:firstUserId 2>&1 | tail -1 | tr -d '"[:space:]')"
 echo "userA: $A"
 WS="$("$NODE" "$CVX" run orgs:createWorkspaceForUser "{\"userId\":\"$A\",\"name\":\"Team-FollowOns\"}" 2>&1 | tail -1 | tr -d '"[:space:]')"
 echo "workspace: $WS"

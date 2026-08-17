@@ -18,9 +18,13 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
     await page.waitForTimeout(2500); cur = page.url();
     if (/login|onboarding/.test(cur)) throw new Error("not logged in: " + cur);
   });
+  await step("root redirects to /chat", async () => {
+    await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
+    await page.waitForURL(/\/chat/, { timeout: 15000 }); cur = page.url();
+  });
   await step("sidebar shows all nav links (left)", async () => {
     const aside = page.locator("aside");
-    for (const label of ["Dashboard", "Jobs", "Platform", "Files", "Settings", "Billing"]) {
+    for (const label of ["Chat", "Files", "Settings", "Billing"]) {
       if (!(await aside.getByRole("link", { name: label }).first().isVisible())) throw new Error("missing nav: " + label);
     }
     await page.screenshot({ path: "C:\\Users\\test\\pw-e2e\\shots-sidebar.png" });
@@ -28,15 +32,14 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
   await step("workspace switcher present in sidebar", async () => {
     if (!(await page.locator("aside select").first().isVisible())) throw new Error("no workspace switcher");
   });
-  await step("navigate via sidebar → Jobs", async () => {
-    await page.locator("aside").getByRole("link", { name: "Jobs" }).click();
-    await page.waitForURL(/\/jobs/, { timeout: 10000 }); cur = page.url();
-    await page.waitForSelector('button:has-text("Run demo job")', { timeout: 15000 });
+  await step("navigate via sidebar → Files", async () => {
+    await page.locator("aside").getByRole("link", { name: "Files" }).click();
+    await page.waitForURL(/\/files/, { timeout: 10000 }); cur = page.url();
+    await page.waitForSelector("text=Files", { timeout: 15000 });
   });
-  await step("navigate via sidebar → Platform", async () => {
-    await page.locator("aside").getByRole("link", { name: "Platform" }).click();
-    await page.waitForURL(/\/platform/, { timeout: 10000 }); cur = page.url();
-    await page.waitForSelector("text=API keys", { timeout: 15000 });
+  await step("navigate via sidebar → Chat", async () => {
+    await page.locator("aside").getByRole("link", { name: "Chat" }).click();
+    await page.waitForURL(/\/chat/, { timeout: 10000 }); cur = page.url();
   });
   await b.close();
   const pass = results.filter((r) => r[0]).length;

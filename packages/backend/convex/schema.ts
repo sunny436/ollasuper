@@ -28,20 +28,6 @@ export default defineSchema({
     .index("by_received", ["receivedAt"])
     .index("by_workspace", ["workspaceId"]),
 
-  jobs: defineTable({
-    workspaceId: v.optional(v.id("workspaces")),
-    userId: v.id("users"),
-    kind: v.string(),
-    status: v.string(),
-    input: v.optional(v.any()),
-    result: v.optional(v.any()),
-    error: v.optional(v.string()),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_user", ["userId"])
-    .index("by_workspace", ["workspaceId"]),
-
   auditLogs: defineTable({
     workspaceId: v.optional(v.id("workspaces")),
     userId: v.id("users"),
@@ -122,7 +108,8 @@ export default defineSchema({
     .index("by_user", ["userId"])
     .index("by_user_read", ["userId", "read"]),
 
-  // Maintained counters so dashboard.stats is O(1) instead of scanning every row.
+  // Maintained per-workspace counters (members/files/chatThreads/chatMessages),
+  // kept current via bump() so nothing has to scan a whole table to count.
   counters: defineTable({
     workspaceId: v.id("workspaces"),
     metric: v.string(),
