@@ -1,5 +1,5 @@
 const { chromium } = require("playwright");
-const BASE = process.env.E2E_BASE_URL || "https://blue-transmission-clinic-photo.trycloudflare.com";
+const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const errs = [], results = [];
 const step = async (n, f) => { try { await f(); results.push(true); console.log("PASS  " + n); } catch (e) { results.push(false); console.log("FAIL  " + n + " — " + e.message.split("\n")[0]); } };
 (async () => {

@@ -71,3 +71,16 @@ tailwind.css
 # .graphifyignore and .claude/settings.json ARE committed: those are the
 # configuration a teammate needs to reproduce the same graph.
 graphify-out/
+
+# Operator credential drops. cf_tunnel_info.txt holds a LIVE Cloudflare API
+# token with full zone rights over ollasuper.com; it sits at the repo root, so
+# a single `git add -A` would publish it to a public remote. Ignored by exact
+# name AND by pattern, so the next credential file someone drops here is caught
+# too. If a token ever does land in a commit, ignoring it afterwards does not
+# help — rotate it in the Cloudflare dashboard.
+cf_tunnel_info.txt
+open_router_key.txt
+*_token*.txt
+*_secret*.txt
+*_key*.txt
+*.credentials.json

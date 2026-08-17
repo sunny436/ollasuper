@@ -18,10 +18,24 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
-echo "[2/5] venv + deps, reproducible from uv.lock"
+# uv defaults to installing its CPython under $HOME/.local/share/uv/python, and
+# .venv/bin/python is a SYMLINK into it. myos-ai.service sets ProtectHome=true,
+# which hides /root from the service — so systemd cannot exec the interpreter and
+# the unit dies with status=203/EXEC while the same path runs fine from a shell.
+# Keep the hardening and move the interpreter instead: anywhere outside $HOME.
+export UV_PYTHON_INSTALL_DIR=${UV_PYTHON_INSTALL_DIR:-/opt/uv-python}
+
+echo "[2/5] venv + deps, reproducible from uv.lock (python under $UV_PYTHON_INSTALL_DIR)"
 cd "$AI"
 uv python install 3.12
 uv sync --frozen --no-dev
+
+# Fail loudly here rather than as an opaque 203/EXEC after [5/5].
+VENV_PY=$(readlink -f "$AI/.venv/bin/python")
+case "$VENV_PY" in
+  "$HOME"/*) echo "FATAL: venv interpreter is $VENV_PY, inside \$HOME; ProtectHome=true in myos-ai.service will make systemd fail to exec it. Remove $AI/.venv and re-run." >&2; exit 1 ;;
+  *) echo "  interpreter: $VENV_PY" ;;
+esac
 
 echo "[3/5] secrets (idempotent — never clobbers an existing .env)"
 if [ ! -f "$AI/.env" ]; then

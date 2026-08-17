@@ -1,7 +1,7 @@
 // Full auth E2E over Cloudflare HTTPS: signup+verify, reset, admin regression, google button.
 const { chromium } = require("playwright");
 const { execSync } = require("child_process");
-const BASE = process.env.E2E_BASE_URL || "https://blue-transmission-clinic-photo.trycloudflare.com";
+const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const SSH = 'ssh -i C:\\Users\\test\\.ssh\\id_ed25519 -o StrictHostKeyChecking=no -o BatchMode=yes root@10.1.30.14';
 const ts = Date.now();
 const EMAIL = `authtest${ts}@myos.test`, PW = "TestUser#2026", NEWPW = "NewPass#2026";
