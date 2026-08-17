@@ -1,48 +1,41 @@
 import { Email } from "@convex-dev/auth/providers/Email";
 import { internal } from "./_generated/api";
+import { deliverCode, generateNumericCode } from "./authCodes";
 
 // Email providers for password-reset and email-verification codes.
-// The code is logged (dev fallback) AND, when SMTP is configured, emailed via the
-// Node SMTP action (e.g. a local Mailpit inbox).
+//
+// Codes are 8 digits, valid for 15 minutes, single-use, and stored sha256-hashed
+// by the library in authVerificationCodes. Requesting a new code replaces the
+// previous row for that account, so a resend invalidates its predecessor.
+//
+// Generation and delivery live in authCodes.ts so these two providers and the
+// magic-OTP provider cannot drift on the security-relevant parts — in
+// particular, codes are no longer logged when a mail transport is configured.
 
 type Ctx = { runAction: (ref: unknown, args: unknown) => Promise<unknown> };
-
-function genCode() {
-  const b = new Uint8Array(8);
-  crypto.getRandomValues(b);
-  return Array.from(b, (x) => (x % 10).toString()).join("");
-}
-async function send(ctx: Ctx | undefined, label: string, email: string, token: string) {
-  console.warn(`[auth] ${label} code for ${email}: ${token}`); // dev fallback
-  try {
-    await ctx?.runAction(internal.email.sendEmail, {
-      to: email,
-      subject: `Your ${label} code`,
-      text: `Your ${label} code is ${token}`,
-    });
-  } catch (e) {
-    console.warn(`[email] ${label} send failed: ${(e as Error).message}`);
-  }
-}
 
 export const ResendOTPVerify = Email({
   id: "verify-otp",
   apiKey: process.env.RESEND_API_KEY,
   maxAge: 60 * 15,
-  generateVerificationToken: async () => genCode(),
+  generateVerificationToken: async () => generateNumericCode(),
   sendVerificationRequest: async (
     { identifier, token }: { identifier: string; token: string },
     ctx?: Ctx,
-  ) => send(ctx, "email verification", identifier, token),
+  ): Promise<void> => {
+    await deliverCode(ctx, "email verification", identifier, token, internal.email.sendEmail);
+  },
 });
 
 export const ResendOTPReset = Email({
   id: "password-reset",
   apiKey: process.env.RESEND_API_KEY,
   maxAge: 60 * 15,
-  generateVerificationToken: async () => genCode(),
+  generateVerificationToken: async () => generateNumericCode(),
   sendVerificationRequest: async (
     { identifier, token }: { identifier: string; token: string },
     ctx?: Ctx,
-  ) => send(ctx, "password reset", identifier, token),
+  ): Promise<void> => {
+    await deliverCode(ctx, "password reset", identifier, token, internal.email.sendEmail);
+  },
 });

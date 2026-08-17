@@ -1,0 +1,349 @@
+/// <reference types="vite/client" />
+import { convexTest } from "convex-test";
+import { describe, expect, test } from "vitest";
+import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
+import {
+  GENERIC_EMAIL_REJECTION,
+  assertUsableEmail,
+  isDisposableEmail,
+  isValidEmailShape,
+  normalizeEmail,
+} from "./authPolicy";
+import { generateNumericCode, hasMailTransport } from "./authCodes";
+import { ipPrefix, recordAuthEvent, revokeOtherSessions } from "./authEvents";
+import schema from "./schema";
+
+const modules = import.meta.glob(["./**/*.*s", "!./**/*.test.*"]);
+
+/** Create a user plus N sessions, each with a refresh token, as sign-in would. */
+async function seedSessions(t: ReturnType<typeof convexTest>, count: number) {
+  return t.run(async (ctx) => {
+    const userId = await ctx.db.insert("users", { email: "s@t.test" });
+    const sessionIds: Id<"authSessions">[] = [];
+    for (let i = 0; i < count; i++) {
+      const sessionId = await ctx.db.insert("authSessions", {
+        userId,
+        expirationTime: Date.now() + 1000 * 60 * 60,
+      });
+      await ctx.db.insert("authRefreshTokens", {
+        sessionId,
+        expirationTime: Date.now() + 1000 * 60 * 60,
+      });
+      sessionIds.push(sessionId);
+    }
+    return { userId, sessionIds };
+  });
+}
+
+const countSessions = (t: ReturnType<typeof convexTest>, userId: Id<"users">) =>
+  t.run(async (ctx) =>
+    (
+      await ctx.db
+        .query("authSessions")
+        .withIndex("userId", (q) => q.eq("userId", userId))
+        .collect()
+    ).length,
+  );
+
+// ---------------------------------------------------------------- email policy
+
+describe("email policy", () => {
+  test("normalizes case, whitespace and unicode compatibility forms", () => {
+    expect(normalizeEmail("  User@Example.COM ")).toBe("user@example.com");
+    // Full-width characters normalize to ASCII, so they cannot be used to
+    // register a visually identical second account.
+    expect(normalizeEmail("ｕｓｅｒ@example.com")).toBe("user@example.com");
+  });
+
+  test("does NOT strip gmail dots or +tags", () => {
+    // Deliberate: provider-specific folding applied universally would merge
+    // genuinely distinct addresses and become a takeover vector.
+    expect(normalizeEmail("a.b+tag@gmail.com")).toBe("a.b+tag@gmail.com");
+  });
+
+  test("rejects malformed addresses", () => {
+    for (const bad of ["", "no-at", "a@b", "a@@b.com", "a b@c.com", `${"x".repeat(250)}@y.com`]) {
+      expect(isValidEmailShape(bad)).toBe(false);
+    }
+    expect(isValidEmailShape("ok@example.com")).toBe(true);
+  });
+
+  test("rejects disposable providers, case- and whitespace-insensitively", () => {
+    expect(isDisposableEmail("a@mailinator.com")).toBe(true);
+    expect(isDisposableEmail("  A@GuerrillaMail.com ")).toBe(true);
+    expect(isDisposableEmail("a@example.com")).toBe(false);
+  });
+
+  test("every rejection reason yields the SAME message (no enumeration oracle)", () => {
+    const messages = new Set<string>();
+    for (const bad of ["not-an-email", "a@mailinator.com", "a@10minutemail.com"]) {
+      try {
+        assertUsableEmail(bad);
+        throw new Error(`expected rejection for ${bad}`);
+      } catch (e) {
+        messages.add(String((e as { data?: string })?.data ?? (e as Error).message));
+      }
+    }
+    expect(messages.size).toBe(1);
+    expect([...messages][0]).toBe(GENERIC_EMAIL_REJECTION);
+  });
+});
+
+// ------------------------------------------------------------------- OTP codes
+
+describe("one-time codes", () => {
+  test("are 8 digits and unbiased across the full alphabet", () => {
+    const counts = new Map<string, number>();
+    for (let i = 0; i < 400; i++) {
+      const code = generateNumericCode();
+      expect(code).toMatch(/^\d{8}$/);
+      for (const d of code) counts.set(d, (counts.get(d) ?? 0) + 1);
+    }
+    // All ten digits must appear. The old `byte % 10` favoured 0-5; with 3200
+    // samples a missing digit would be a real signal, not noise.
+    expect(counts.size).toBe(10);
+    const freqs = [...counts.values()];
+    const spread = Math.max(...freqs) / Math.min(...freqs);
+    expect(spread).toBeLessThan(1.5);
+  });
+
+  test("are not predictable across calls", () => {
+    const seen = new Set(Array.from({ length: 200 }, () => generateNumericCode()));
+    expect(seen.size).toBeGreaterThan(190);
+  });
+
+  test("codes are only logged when NO mail transport exists", () => {
+    // The production leak this closes: codes were previously written to the
+    // Convex log stream unconditionally, so log access was an auth bypass.
+    const prev = process.env.SMTP_HOST;
+    process.env.SMTP_HOST = "smtp.example.com";
+    expect(hasMailTransport()).toBe(true);
+    process.env.SMTP_HOST = undefined;
+    // biome-ignore lint/performance/noDelete: env var must be absent, not "undefined"
+    delete process.env.SMTP_HOST;
+    const prevKey = process.env.RESEND_API_KEY;
+    // biome-ignore lint/performance/noDelete: same reason
+    delete process.env.RESEND_API_KEY;
+    expect(hasMailTransport()).toBe(false);
+    if (prev !== undefined) process.env.SMTP_HOST = prev;
+    if (prevKey !== undefined) process.env.RESEND_API_KEY = prevKey;
+  });
+});
+
+// ------------------------------------------------- single active session (req 2)
+
+describe("single active session", () => {
+  test("revokes every other session and its refresh tokens", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sessionIds } = await seedSessions(t, 3);
+    expect(await countSessions(t, userId)).toBe(3);
+
+    const keep = sessionIds[2];
+    if (!keep) throw new Error("seed failed");
+    const revoked = await t.run((ctx) => revokeOtherSessions(ctx, userId, keep));
+
+    expect(revoked).toBe(2);
+    expect(await countSessions(t, userId)).toBe(1);
+
+    // An orphaned refresh token can still mint access tokens, so revocation
+    // that leaves them behind is cosmetic.
+    const tokens = await t.run(async (ctx) =>
+      ctx.db.query("authRefreshTokens").collect(),
+    );
+    expect(tokens.length).toBe(1);
+    expect(tokens[0]?.sessionId).toBe(keep);
+  });
+
+  test("keep=null revokes ALL sessions — the pre-session-creation ordering", async () => {
+    // @convex-dev/auth creates the session at different points depending on the
+    // flow. When the callback runs first (fresh browser, no auth context),
+    // getAuthSessionId returns null and every old session must go; the new one
+    // is created immediately afterwards and survives.
+    const t = convexTest(schema, modules);
+    const { userId } = await seedSessions(t, 3);
+    const revoked = await t.run((ctx) => revokeOtherSessions(ctx, userId, null));
+    expect(revoked).toBe(3);
+    expect(await countSessions(t, userId)).toBe(0);
+  });
+
+  test("sequential logins converge on exactly one session, and it is the newest", async () => {
+    const t = convexTest(schema, modules);
+    const { userId } = await seedSessions(t, 1);
+
+    let newest: Id<"authSessions"> | null = null;
+    for (let i = 0; i < 5; i++) {
+      newest = await t.run(async (ctx) => {
+        const id = await ctx.db.insert("authSessions", {
+          userId,
+          expirationTime: Date.now() + 1000,
+        });
+        await revokeOtherSessions(ctx, userId, id);
+        return id;
+      });
+      expect(await countSessions(t, userId)).toBe(1);
+    }
+
+    const remaining = await t.run(async (ctx) =>
+      ctx.db
+        .query("authSessions")
+        .withIndex("userId", (q) => q.eq("userId", userId))
+        .collect(),
+    );
+    expect(remaining.length).toBe(1);
+    expect(remaining[0]?._id).toBe(newest);
+  });
+
+  test("is idempotent — re-running leaves the surviving session alone", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sessionIds } = await seedSessions(t, 2);
+    const keep = sessionIds[0];
+    if (!keep) throw new Error("seed failed");
+    await t.run((ctx) => revokeOtherSessions(ctx, userId, keep));
+    const second = await t.run((ctx) => revokeOtherSessions(ctx, userId, keep));
+    expect(second).toBe(0);
+    expect(await countSessions(t, userId)).toBe(1);
+  });
+
+  test("never touches another user's sessions", async () => {
+    const t = convexTest(schema, modules);
+    const { userId } = await seedSessions(t, 2);
+    const otherId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("users", { email: "other@t.test" });
+      await ctx.db.insert("authSessions", { userId: id, expirationTime: Date.now() + 1000 });
+      return id;
+    });
+    await t.run((ctx) => revokeOtherSessions(ctx, userId, null));
+    expect(await countSessions(t, otherId)).toBe(1);
+  });
+});
+
+// --------------------------------------------------------- auth events (req 20)
+
+describe("auth events", () => {
+  test("records each event type with a user and timestamp", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run((ctx) => ctx.db.insert("users", { email: "e@t.test" }));
+    const types = [
+      "login", "logout", "login_failed", "google_login", "otp_verified",
+      "otp_failed", "password_changed", "password_reset", "session_revoked",
+      "session_replaced",
+    ] as const;
+    await t.run(async (ctx) => {
+      for (const type of types) await recordAuthEvent(ctx, { type, userId });
+    });
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("authEvents")
+        .withIndex("by_user_at", (q) => q.eq("userId", userId))
+        .collect(),
+    );
+    expect(rows.length).toBe(types.length);
+    expect(new Set(rows.map((r) => r.type)).size).toBe(types.length);
+    expect(rows.every((r) => typeof r.at === "number")).toBe(true);
+  });
+
+  test("never throws, and records an unattributed event when there is no user", async () => {
+    const t = convexTest(schema, modules);
+    // A logout can happen when the session is already gone, so userId is
+    // optional and writing history must never be able to reject.
+    await expect(
+      t.run((ctx) => recordAuthEvent(ctx, { type: "logout" })),
+    ).resolves.not.toThrow();
+    const rows = await t.run(async (ctx) => ctx.db.query("authEvents").collect());
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.userId).toBeUndefined();
+  });
+
+  test("stores only a truncated IP prefix, never a full address", () => {
+    expect(ipPrefix("203.0.113.42")).toBe("203.0.113.0/24");
+    expect(ipPrefix("203.0.113.42, 70.41.3.18")).toBe("203.0.113.0/24");
+    expect(ipPrefix("2001:db8:85a3:8d3::370:7348")).toBe("2001:db8:85a3::/48");
+    expect(ipPrefix(undefined)).toBeUndefined();
+    expect(ipPrefix("garbage")).toBeUndefined();
+  });
+
+  test("truncates an overlong user-agent rather than storing it whole", async () => {
+    const t = convexTest(schema, modules);
+    await t.run((ctx) =>
+      recordAuthEvent(ctx, { type: "login", userAgent: "U".repeat(5000) }),
+    );
+    const [row] = await t.run(async (ctx) => ctx.db.query("authEvents").collect());
+    expect((row?.userAgent ?? "").length).toBeLessThanOrEqual(256);
+  });
+
+  test("purge removes events past the 90-day retention and keeps recent ones", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("authEvents", { type: "login", at: now - 1000 * 60 * 60 * 24 * 91 });
+      await ctx.db.insert("authEvents", { type: "login", at: now - 1000 * 60 * 60 * 24 * 89 });
+    });
+    const deleted = await t.mutation(internal.authEventsPurge.purgeOld, {});
+    expect(deleted).toBe(1);
+    const left = await t.run(async (ctx) => ctx.db.query("authEvents").collect());
+    expect(left.length).toBe(1);
+  });
+});
+
+// ----------------------------------------------------------- schema (req 9)
+
+describe("required auth data is persistable", () => {
+  test("users carries the account/security fields", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const userId = await t.run((ctx) =>
+      ctx.db.insert("users", {
+        name: "Ada",
+        email: "Ada@Example.com",
+        emailNormalized: normalizeEmail("Ada@Example.com"),
+        emailVerificationTime: now,
+        accountStatus: "active",
+        lastLoginAt: now,
+        lastActivityAt: now,
+        passwordChangedAt: now,
+      }),
+    );
+    const user = await t.run(async (ctx) => ctx.db.get(userId));
+    expect(user?.emailNormalized).toBe("ada@example.com");
+    expect(user?.accountStatus).toBe("active");
+    expect(user?.passwordChangedAt).toBe(now);
+  });
+
+  test("users are findable by normalized email", async () => {
+    const t = convexTest(schema, modules);
+    await t.run((ctx) =>
+      ctx.db.insert("users", { email: "Mixed@Case.com", emailNormalized: "mixed@case.com" }),
+    );
+    const found = await t.run(async (ctx) =>
+      ctx.db
+        .query("users")
+        .withIndex("by_email_normalized", (q) => q.eq("emailNormalized", "mixed@case.com"))
+        .unique(),
+    );
+    expect(found).not.toBeNull();
+  });
+
+  test("sessions and refresh tokens carry expiry, and identities bind by provider subject", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run((ctx) => ctx.db.insert("users", { email: "i@t.test" }));
+    await t.run(async (ctx) => {
+      await ctx.db.insert("authAccounts", {
+        userId,
+        provider: "google",
+        // The immutable OIDC `sub`, NOT the email — an attacker who acquires the
+        // address cannot inherit the identity.
+        providerAccountId: "117445678901234567890",
+      });
+    });
+    const account = await t.run(async (ctx) =>
+      ctx.db
+        .query("authAccounts")
+        .withIndex("providerAndAccountId", (q) =>
+          q.eq("provider", "google").eq("providerAccountId", "117445678901234567890"),
+        )
+        .unique(),
+    );
+    expect(account?.userId).toBe(userId);
+  });
+});

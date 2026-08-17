@@ -808,7 +808,7 @@ describe("AI ingress (/ai/ingress)", () => {
     // The read path orders by seq, so out-of-order arrival self-heals.
     expect(
       (live?.committedText ?? "") +
-        (live?.chunks ?? []).map((c) => c.text).join(""),
+        (live?.chunks ?? []).map((c: { text: string }) => c.text).join(""),
     ).toBe("Hello, world");
 
     await post(t, {
@@ -1075,7 +1075,9 @@ describe("send() invariants", () => {
     });
 
     const thread = await t.run(async (ctx) => ctx.db.get(threadId));
-    expect(thread?.streamingMessageId).toBeUndefined();
+      const streamingMessageId =
+        thread && "streamingMessageId" in thread ? thread.streamingMessageId : undefined;
+    expect(streamingMessageId).toBeUndefined();
 
     // The thread is usable again — this is the assertion that matters.
     const next = await u.mutation(api.chat.messages.send, {
@@ -1131,7 +1133,9 @@ describe("dispatch contract (Convex -> Python)", () => {
     expect(msg?.errorCode).toBe("dispatch_failed");
     // And crucially the thread is unblocked so the user can retry.
     const thread = await t.run(async (ctx) => ctx.db.get(threadId));
-    expect(thread?.streamingMessageId).toBeUndefined();
+      const streamingMessageId =
+        thread && "streamingMessageId" in thread ? thread.streamingMessageId : undefined;
+    expect(streamingMessageId).toBeUndefined();
   });
 });
 
@@ -1165,7 +1169,9 @@ describe("stall reaper", () => {
     );
     expect(msg?.status).toBe("error");
     const thread = await t.run(async (ctx) => ctx.db.get(threadId));
+      const streamingMessageId =
+        thread && "streamingMessageId" in thread ? thread.streamingMessageId : undefined;
     // Crucially the thread is unblocked, so the user can send again.
-    expect(thread?.streamingMessageId).toBeUndefined();
+    expect(streamingMessageId).toBeUndefined();
   });
 });

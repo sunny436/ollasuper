@@ -16,7 +16,39 @@ export default defineSchema({
     isAnonymous: v.optional(v.boolean()),
     username: v.optional(v.string()),
     imageId: v.optional(v.id("_storage")),
-  }).index("email", ["email"]),
+    // Account/security fields. ALL optional, and that is not laziness: the live
+    // deployment holds rows created before these existed, and a required field
+    // on an existing table fails schema validation on push (see CLAUDE.md).
+    // Canonical address for comparison; see authPolicy.normalizeEmail.
+    emailNormalized: v.optional(v.string()),
+    // "active" | "suspended" | "deleted". Absent means active.
+    accountStatus: v.optional(v.string()),
+    lastLoginAt: v.optional(v.number()),
+    // Refreshed by authed activity; the sliding-expiry signal is the refresh
+    // token itself, so this is for display and anomaly review, not enforcement.
+    lastActivityAt: v.optional(v.number()),
+    passwordChangedAt: v.optional(v.number()),
+  })
+    .index("email", ["email"])
+    .index("by_email_normalized", ["emailNormalized"]),
+
+  // Account-level security history. Deliberately NOT auditLogs: those are
+  // workspace-scoped product actions with a required workspaceId, whereas these
+  // exist before any workspace does and must outlive workspace membership.
+  // Purged after 90 days by crons.ts.
+  authEvents: defineTable({
+    userId: v.optional(v.id("users")),
+    type: v.string(),
+    at: v.number(),
+    // Client-supplied, so NOT evidence — retained to correlate sessions only.
+    userAgent: v.optional(v.string()),
+    // Network prefix (/24, /48), never a full address. Usually absent: Convex
+    // mutations get no request object, so only httpAction flows can supply one.
+    ipPrefix: v.optional(v.string()),
+    meta: v.optional(v.any()),
+  })
+    .index("by_user_at", ["userId", "at"])
+    .index("by_at", ["at"]),
 
   events: defineTable({
     workspaceId: v.optional(v.id("workspaces")),
