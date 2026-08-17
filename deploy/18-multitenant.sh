@@ -4,7 +4,7 @@ set -euo pipefail
 NODE=/usr/bin/node
 CVX=/opt/myos/node_modules/convex/bin/main.js
 echo "=== place files ==="
-for f in schema orgs jobs usage audit apiKeys; do
+for f in schema orgs usage audit apiKeys; do
   cp "/tmp/$f.ts" "/opt/myos/packages/backend/convex/$f.ts"
 done
 echo ok

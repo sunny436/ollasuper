@@ -10,6 +10,6 @@ for i in $(seq 1 12); do
   echo "batch $i deleted: $D"
   [ "$D" = "0" ] && break
 done
-A=$("$N" "$C" run jobs:firstUserId 2>/dev/null | tail -1 | tr -d '"[:space:]')
+A=$("$N" "$C" run seed:firstUserId 2>/dev/null | tail -1 | tr -d '"[:space:]')
 echo -n "admin unread now: "; "$N" "$C" run seed:profileUnreadOld "{\"userId\":\"$A\"}" 2>/dev/null | grep rowsRead
 echo CLEANUP_DONE

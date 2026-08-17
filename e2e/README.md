@@ -10,13 +10,11 @@ live in `packages/backend/convex/security.test.ts` and **do** run on every PR.
 |-------|-------|----------------|
 | `p2-idor.js` | adversarial / contract | 23 IDOR/RBAC probes as two real authed tenants against the live backend |
 | `p2-auth.js` | functional E2E | signup → email-verification → onboarding → reset → admin regression |
-| `p-sidebar.js` | E2E | left nav renders + navigates, workspace switcher |
-| `p-feedback.js` | E2E | toasts + confirm dialogs |
-| `p-home.js` | E2E | overview stat cards + recent activity |
+| `p-sidebar.js` | E2E | left nav renders + navigates, workspace switcher, `/` → `/chat` |
 | `p-notif.js` | E2E | notifications bell + panel |
 | `p-cmdk.js` | E2E | command palette (Ctrl/⌘+K) |
-| `p-paging.js` | E2E | pagination first-page cap + Load more |
-| `p-sessions.js` | E2E | active sessions list + sign-out-others |
+| `p-chat.js` | E2E | the chat UI end-to-end, plus the `/` → `/chat` redirect |
+| `p-chat-isolation.js` | adversarial | cross-user chat isolation the in-process tests can't reach |
 
 Every Playwright suite asserts **zero `console.error`** and captures failed network
 responses — that assertion catches the class of bug types/units can't see.

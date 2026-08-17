@@ -1,7 +1,8 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api, internal } from "./_generated/api";
+import { api } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { requireMember, requireRole } from "./orgs";
 
@@ -103,40 +104,18 @@ describe("member management (RBAC + integrity)", () => {
 });
 
 describe("cross-tenant isolation (IDOR)", () => {
-  test("an outsider cannot read another workspace's jobs", async () => {
+  test("an outsider cannot read another workspace's files", async () => {
     const t = convexTest(schema, modules);
     const { ws, outsider } = await seedWorkspace(t);
     await expect(
-      t.withIdentity(as(outsider)).query(api.jobs.list, { workspaceId: ws }),
+      t.withIdentity(as(outsider)).query(api.files.list, { workspaceId: ws }),
     ).rejects.toThrow(/Forbidden/);
   });
 
   test("unauthenticated reads return empty, not an error", async () => {
     const t = convexTest(schema, modules);
     const { ws } = await seedWorkspace(t);
-    expect(await t.query(api.jobs.list, { workspaceId: ws })).toEqual([]);
-  });
-});
-
-describe("jobs.complete idempotency (webhook replay defense)", () => {
-  test("completing an already-finished job is a no-op", async () => {
-    const t = convexTest(schema, modules);
-    const { ws, owner } = await seedWorkspace(t);
-    const jobId = await t.run(async (ctx) =>
-      ctx.db.insert("jobs", {
-        workspaceId: ws,
-        userId: owner,
-        kind: "demo",
-        status: "done",
-        result: { first: true },
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }),
-    );
-    await t.mutation(internal.jobs.complete, { jobId, result: { second: true } });
-    const job = await t.run(async (ctx) => ctx.db.get(jobId));
-    expect(job?.result).toEqual({ first: true });
-    expect(job?.status).toBe("done");
+    expect(await t.query(api.files.list, { workspaceId: ws })).toEqual([]);
   });
 });
 
@@ -145,16 +124,6 @@ describe("jobs.complete idempotency (webhook replay defense)", () => {
 describe("cross-tenant isolation matrix (outsider vs workspace)", () => {
   // biome-ignore lint/suspicious/noExplicitAny: heterogeneous fn table for a test matrix
   const cases: Array<[string, (b: any, ws: any) => Promise<unknown>]> = [
-    ["jobs.list", (b, ws) => b.query(api.jobs.list, { workspaceId: ws })],
-    [
-      "jobs.listPaged",
-      (b, ws) =>
-        b.query(api.jobs.listPaged, {
-          workspaceId: ws,
-          paginationOpts: { numItems: 5, cursor: null },
-        }),
-    ],
-    ["jobs.create", (b, ws) => b.mutation(api.jobs.create, { workspaceId: ws, kind: "x", input: {} })],
     ["apiKeys.listMine", (b, ws) => b.query(api.apiKeys.listMine, { workspaceId: ws })],
     ["apiKeys.create", (b, ws) => b.action(api.apiKeys.create, { workspaceId: ws, name: "x" })],
     ["orgs.members", (b, ws) => b.query(api.orgs.members, { workspaceId: ws })],
@@ -175,33 +144,41 @@ describe("cross-tenant isolation matrix (outsider vs workspace)", () => {
   }
 });
 
-describe("maintained counters (dashboard.stats stays O(1) + correct)", () => {
-  test("create workspace/job + complete keeps counters accurate", async () => {
+// The counters table is what keeps per-workspace counts off a full-table scan.
+// There is no public query over it, so read the rows directly — the invariant
+// under test is that bump() runs on both the create and the delete path.
+describe("maintained counters stay accurate", () => {
+  test("createWorkspace seeds members=1; saveFile/remove move files up and down", async () => {
     const t = convexTest(schema, modules);
+    const counter = (ws: Id<"workspaces">, metric: string) =>
+      t.run(async (ctx) => {
+        const row = await ctx.db
+          .query("counters")
+          .withIndex("by_workspace_metric", (q) =>
+            q.eq("workspaceId", ws).eq("metric", metric),
+          )
+          .unique();
+        return row?.value ?? 0;
+      });
+
     const userId = await t.run((ctx) => ctx.db.insert("users", { email: "c@t.test" }));
     const u = t.withIdentity(as(userId));
 
     const ws = await u.mutation(api.orgs.createWorkspace, { name: "C" });
-    let s = await u.query(api.dashboard.stats, { workspaceId: ws });
-    expect(s?.members).toBe(1); // owner
-    expect(s?.jobs).toBe(0);
+    expect(await counter(ws, "members")).toBe(1); // owner
+    expect(await counter(ws, "files")).toBe(0);
 
-    await u.mutation(api.jobs.create, { workspaceId: ws, kind: "demo", input: {} });
-    s = await u.query(api.dashboard.stats, { workspaceId: ws });
-    expect(s?.jobs).toBe(1);
-    expect(s?.openJobs).toBe(1);
-
-    const jobId = await t.run(async (ctx) => {
-      const j = await ctx.db
-        .query("jobs")
-        .withIndex("by_workspace", (q) => q.eq("workspaceId", ws))
-        .first();
-      if (!j) throw new Error("job not found");
-      return j._id;
+    const storageId = await t.run((ctx) => ctx.storage.store(new Blob(["hi"])));
+    const fileId = await u.mutation(api.files.saveFile, {
+      workspaceId: ws,
+      storageId,
+      name: "a.txt",
+      size: 2,
+      contentType: "text/plain",
     });
-    await t.mutation(internal.jobs.complete, { jobId, result: { ok: true } });
-    s = await u.query(api.dashboard.stats, { workspaceId: ws });
-    expect(s?.openJobs).toBe(0); // left the open set
-    expect(s?.jobs).toBe(1); // total unchanged
+    expect(await counter(ws, "files")).toBe(1);
+
+    await u.mutation(api.files.remove, { fileId });
+    expect(await counter(ws, "files")).toBe(0);
   });
 });

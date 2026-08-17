@@ -26,25 +26,16 @@ http.route({
       .catch(() => ({}))) as Record<string, unknown>;
     const type = typeof payload.type === "string" ? payload.type : "event";
 
-    if (type === "job.result" && typeof payload.jobId === "string") {
-      await ctx.runMutation(internal.jobs.complete, {
-        // biome-ignore lint/suspicious/noExplicitAny: id validated by Convex
-        jobId: payload.jobId as any,
-        result: payload.result,
-        error: typeof payload.error === "string" ? payload.error : undefined,
-      });
-    } else {
-      await ctx.runMutation(internal.backend.ingestEvent, {
-        workspaceId:
-          typeof payload.workspaceId === "string"
-            ? // biome-ignore lint/suspicious/noExplicitAny: id validated by Convex
-              (payload.workspaceId as any)
-            : undefined,
-        source: "backend",
-        type,
-        payload,
-      });
-    }
+    await ctx.runMutation(internal.backend.ingestEvent, {
+      workspaceId:
+        typeof payload.workspaceId === "string"
+          ? // biome-ignore lint/suspicious/noExplicitAny: id validated by Convex
+            (payload.workspaceId as any)
+          : undefined,
+      source: "backend",
+      type,
+      payload,
+    });
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { "content-type": "application/json" },

@@ -3,13 +3,33 @@
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
 ## ✅ Done (current state)
-Self-hosted Convex (Docker) · multi-tenant platform (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · jobs · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, folders, search, attachments, prompt library — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup.
+Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, folders, search, attachments, prompt library — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup.
+
+## 0. Section removal (2026-08-16) — chat-first surface
+The Dashboard, Sessions, Jobs and Platform sections were removed and `/` now redirects to `/chat`.
+(Two of the six sections named in the request — **Devices** and **AI Access** — did not exist in
+this repository; nothing was removed for them.) Remaining surfaces: **Chat · Files · Settings ·
+Billing**.
+
+- Deleted: the `/` (Dashboard), `/jobs` and `/platform` routes; `components/sessions-card.tsx`;
+  `convex/jobs.ts`, `convex/dashboard.ts`, `convex/sessions.ts`; the `jobs` table;
+  `counters.readCounters()`; the `job.result` branch of `/backend/webhook`.
+- **Kept, deliberately:** `orgs`/`apiKeys`/`usage`/`audit`/`notifications` and the `counters`,
+  `events`, `apiKeys`, `usage`, `auditLogs`, `workspaces`, `members`, `invites` tables. Platform
+  was only their *UI*. Tenancy, billing, auth and every chat/files path still depend on them, and
+  `backend-echo` on `:4000` still writes `events` through `/backend/webhook`.
+- `seed.firstUserId` took over from `jobs.firstUserId`; ~10 `deploy/` scripts use it as a generic
+  operator helper and were retargeted.
+- Removed with the sections: `e2e/p-home.js`, `p-sessions.js`, `p-paging.js`, `p-feedback.js`, and
+  `deploy/14-jobs.sh`, `15-verify-jobs.sh`, `39-home.sh`, `43-sessions.sh`. `43-sessions.sh` also
+  carried the only `DEV_SEED` gate probe — `devGuard.ts` is untouched, but that probe is now gone.
 
 ## 1. Dashboard UX (remaining increments)
-- **Home overview** — replace placeholder home with stat cards (open jobs, members, files, usage) + recent activity feed.
-- **Settings restructure + account security** — sectioned settings (Profile · Security · Notifications · Team · Billing · API keys · Danger zone); **change password**; **delete account** (`deleteCurrentUserAccount` exists, needs UI); **active sessions** / "sign out everywhere".
+> Superseded by section 0 for the home/sessions items — the home overview and the active-sessions
+> UI were removed rather than built out. The rest still stands.
+- **Settings restructure** — sectioned settings (Profile · Notifications · Team · Billing · API keys · Danger zone); **change password**; **delete account** (`deleteCurrentUserAccount` exists, needs UI).
 - **Command palette (⌘K)** (cmdk) + **notifications center** (needs a `notifications` table + functions + bell UI).
-- **Pagination / load-more** on jobs / files / audit / events (closes audit **BUG-8**; queries currently `take(50)` / unbounded `.collect()`).
+- **Pagination / load-more** on files / audit / events (closes audit **BUG-8**; queries currently `take(50)` / unbounded `.collect()`).
 - **Polish** — loading skeletons, consistent empty states, 404 page + error boundary, footer/version, help/docs link, keyboard shortcuts. Remove dead `_components/navigation.tsx` (old top-nav, no longer imported).
 
 ## 2. Production-readiness
@@ -31,7 +51,7 @@ Self-hosted Convex (Docker) · multi-tenant platform (workspaces/RBAC/invites) �
 - **Verify `deploy/setup.sh` on a clean VM** — the one-command clone install is written but never run end-to-end.
 
 ## 3. Audit backlog (low severity)
-- **BUG-6** — strip/gate internal seed/test functions (`createInternal`, `*ForUser`, `firstUserId`, `record`, `inviteForUser`) behind a `DEV_SEED` flag, and treat `backend-echo` as reference-only, for real deployments. (They're `internal*`, not publicly callable — cleanup, not a vuln.)
+- **BUG-6** — strip/gate internal seed/test functions (`*ForUser`, `seed:firstUserId`, `record`, `inviteForUser`) behind a `DEV_SEED` flag, and treat `backend-echo` as reference-only, for real deployments. (They're `internal*`, not publicly callable — cleanup, not a vuln.)
 - **BUG-8** — pagination (see Dashboard UX above).
 
 ## Performance (from the read-amplification audit)
@@ -39,12 +59,14 @@ Profiled with `convex/seed.ts` (DEV_SEED-gated load generators + profilers) on a
 seeded 8k-job / 5k-notification workspace:
 - **Fixed:** `notifications.unreadCount` read **5001 rows** (collect-all) → now **10**
   (indexed `by_user_read` + `take(10)`; the bell only needs 0..9 / "9+"). O(10) at any scale.
-- **FIXED:** `dashboard.stats` no longer scans every row. A `counters` table (jobs/openJobs/
-  files/members) is maintained via `bump()` in `jobs.create`/`complete`, `files.saveFile`/`remove`,
-  and member add/remove; `stats` reads O(#metrics) instead of O(workspace size). Drift-guarded by
-  a unit test (create→complete→counts) and backfilled for existing data (`counters:backfillAll`).
-  Was ~8001 rows/render on an 8k-job workspace. (`orgs.members`/`myWorkspaces` still do N+1
-  `ctx.db.get` per row — fine at team sizes; revisit only if memberships grow large.)
+- **FIXED:** counting a workspace no longer scans every row. A `counters` table is maintained via
+  `bump()` in `files.saveFile`/`remove`, member add/remove, and `chat/threads`/`chat/messages`,
+  so a count is O(#metrics) instead of O(workspace size). Drift-guarded by a unit test
+  (create/delete→counts) and backfilled for existing data (`counters:backfillAll`). The
+  `dashboard.stats` query this originally served was removed with the Dashboard section (see 0),
+  but the counters remain and the chat/files paths still depend on them. (`orgs.members`/
+  `myWorkspaces` still do N+1 `ctx.db.get` per row — fine at team sizes; revisit only if
+  memberships grow large.)
 
 ## AI chat (`/chat`) — the inference plane
 The AI half the template left as a seam (`TEMPLATE.md:3`) is now built, as a **hybrid**:

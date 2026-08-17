@@ -176,7 +176,10 @@ const step = async (n, f) => {
   await step("prompt library opens and saves a prompt", async () => {
     await page.getByRole("button", { name: /Prompt library/ }).click();
     await page.getByRole("dialog", { name: "Prompt library" }).waitFor({ timeout: 5000 });
-    await page.getByRole("button", { name: "New" }).click();
+    // exact: getByRole matches the accessible name as a SUBSTRING by default,
+    // so a bare "New" also hits "New chat" and "New folder" and Playwright
+    // throws a strict-mode violation on 3 matches.
+    await page.getByRole("button", { name: "New", exact: true }).click();
     await page.getByLabel("Prompt title").fill("E2E prompt");
     await page.getByLabel("Prompt text").fill("This came from the library.");
     await page.getByRole("button", { name: "Save" }).click();
@@ -204,17 +207,18 @@ const step = async (n, f) => {
   });
 
   await step("other dashboard pages still work", async () => {
-    for (const [path, marker] of [
-      ["/en/jobs", "Jobs"],
-      ["/en/files", "Files"],
-      ["/en", "Dashboard"],
-    ]) {
+    for (const [path, marker] of [["/en/files", "Files"]]) {
       await page.goto(BASE + path, { waitUntil: "domcontentloaded" });
       await page.waitForTimeout(1200);
       if (!(await page.getByText(marker).count())) {
         throw new Error(`${path} did not render`);
       }
     }
+  });
+
+  await step("root redirects to /chat", async () => {
+    await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
+    await page.waitForURL(/\/chat/, { timeout: 15000 });
   });
 
   await b.close();

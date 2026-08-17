@@ -1,10 +1,11 @@
 import { internalMutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { requireDevSeed } from "./devGuard";
 
-// Dependency-free counter helpers (no orgs import → no cycle). dashboard.stats reads these
-// instead of .collect()-ing whole tables; mutations keep them current via bump().
+// Dependency-free counter helpers (no orgs import → no cycle). Mutations keep the
+// per-workspace counts current via bump(), so nothing has to .collect() a whole
+// table to know how many rows are in it.
 
 async function counterRow(
   ctx: MutationCtx,
@@ -49,20 +50,6 @@ async function setCounter(
   else await ctx.db.insert("counters", { workspaceId, metric, value });
 }
 
-/** Read all counters for a workspace as a map (O(#metrics), ~5 rows). */
-export async function readCounters(
-  ctx: QueryCtx,
-  workspaceId: Id<"workspaces">,
-): Promise<Record<string, number>> {
-  const rows = await ctx.db
-    .query("counters")
-    .withIndex("by_workspace_metric", (q) => q.eq("workspaceId", workspaceId))
-    .collect();
-  const out: Record<string, number> = {};
-  for (const r of rows) out[r.metric] = r.value;
-  return out;
-}
-
 /** One-time migration: recompute counters from existing rows for every workspace. */
 export const backfillAll = internalMutation({
   args: {},
@@ -70,11 +57,7 @@ export const backfillAll = internalMutation({
     requireDevSeed();
     const workspaces = await ctx.db.query("workspaces").collect();
     for (const ws of workspaces) {
-      const [jobs, files, members] = await Promise.all([
-        ctx.db
-          .query("jobs")
-          .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
-          .collect(),
+      const [files, members] = await Promise.all([
         ctx.db
           .query("files")
           .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
@@ -84,11 +67,6 @@ export const backfillAll = internalMutation({
           .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
           .collect(),
       ]);
-      const openJobs = jobs.filter(
-        (j) => j.status === "pending" || j.status === "running",
-      ).length;
-      await setCounter(ctx, ws._id, "jobs", jobs.length);
-      await setCounter(ctx, ws._id, "openJobs", openJobs);
       await setCounter(ctx, ws._id, "files", files.length);
       await setCounter(ctx, ws._id, "members", members.length);
     }

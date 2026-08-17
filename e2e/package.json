@@ -7,7 +7,7 @@
   "scripts": {
     "idor": "node p2-idor.js",
     "auth": "node p2-auth.js",
-    "dashboard": "node p-sidebar.js && node p-feedback.js && node p-home.js && node p-notif.js && node p-cmdk.js && node p-paging.js && node p-sessions.js && node p-chat.js",
+    "dashboard": "node p-sidebar.js && node p-notif.js && node p-cmdk.js && node p-chat.js",
     "chat": "node p-chat.js",
     "chat:isolation": "node p-chat-isolation.js"
   },

@@ -5,14 +5,15 @@ import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useQuery } from "convex/react";
 import { PanelLeft } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { ComposerProvider } from "../_hooks/use-composer";
 import { DEFAULT_MODEL } from "../_lib/models";
 import { Composer } from "./composer";
 import { MessageList } from "./message-list";
 import { useChatSidebar } from "./chat-shell";
 
 export function ChatPane({ threadId }: { threadId: string | null }) {
-  const [streamingId, setStreamingId] = useState<Id<"chatMessages"> | null>(null);
+  const [streamingId, setStreamingId] = useState<Id<"chatMessages"> | null>(
+    null,
+  );
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
   const { openSidebar } = useChatSidebar();
 
@@ -36,42 +37,43 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
   // renders [locale]/not-found.tsx and destroys the whole chat shell.
   const notFound = threadId !== null && thread === null;
 
+  // ComposerProvider is hoisted to ChatShell — the prompt library in the
+  // conversation sidebar is a sibling of this pane and shares the same draft.
   return (
-    <ComposerProvider>
-      <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-4 xl:hidden">
-          <button
-            type="button"
-            onClick={openSidebar}
-            aria-label="Open conversations"
-            className="rounded-md p-1.5 text-primary/60 transition hover:bg-primary/5"
-          >
-            <PanelLeft className="h-4 w-4" />
-          </button>
-          <span className="truncate text-sm text-primary/80">
-            {thread?.title ?? "New chat"}
-          </span>
-        </header>
+    <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-4 xl:hidden">
+        <button
+          type="button"
+          onClick={openSidebar}
+          aria-label="Open conversations"
+          className="rounded-md p-1.5 text-primary/60 transition hover:bg-primary/5"
+        >
+          <PanelLeft className="h-4 w-4" />
+        </button>
+        <span className="truncate text-sm text-primary/80">
+          {thread?.title ?? "New chat"}
+        </span>
+      </header>
 
-        {notFound ? (
-          <div className="flex min-h-0 flex-1 items-center justify-center p-8">
-            <div className="text-center">
-              <p className="text-sm text-primary/70">Conversation not found</p>
-              <a
-                href="/chat"
-                className="mt-2 inline-block text-xs text-brand-ink hover:underline"
-              >
-                ← All conversations
-              </a>
-            </div>
+      {notFound ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center p-8">
+          <div className="text-center">
+            <p className="text-sm text-primary/70">Conversation not found</p>
+            <a
+              href="/chat"
+              className="mt-2 inline-block text-xs text-brand-ink hover:underline"
+            >
+              ← All conversations
+            </a>
           </div>
-        ) : (
-          <>
-            <MessageList
-              threadId={threadId}
-              onStreamingChange={onStreamingChange}
-            />
-            {/*
+        </div>
+      ) : (
+        <>
+          <MessageList
+            threadId={threadId}
+            onStreamingChange={onStreamingChange}
+          />
+          {/*
               Inside the guard, not beside it. A composer rendered next to
               "Conversation not found" still holds the bad URL string, and
               sending would hand it to a v.id() validator — an
@@ -80,15 +82,14 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
               assertion. Offering a send button that cannot work is also just
               a lie about what the UI does.
             */}
-            <Composer
-              threadId={threadId}
-              streamingMessageId={streamingId}
-              model={model}
-              onModelChange={setModel}
-            />
-          </>
-        )}
-      </section>
-    </ComposerProvider>
+          <Composer
+            threadId={threadId}
+            streamingMessageId={streamingId}
+            model={model}
+            onModelChange={setModel}
+          />
+        </>
+      )}
+    </section>
   );
 }

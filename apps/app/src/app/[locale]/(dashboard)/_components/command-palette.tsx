@@ -4,10 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 const COMMANDS = [
-  { label: "Dashboard", href: "/" },
   { label: "Chat", href: "/chat" },
-  { label: "Jobs", href: "/jobs" },
-  { label: "Platform", href: "/platform" },
   { label: "Files", href: "/files" },
   { label: "Settings", href: "/settings" },
   { label: "Billing", href: "/settings/billing" },

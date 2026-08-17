@@ -103,7 +103,13 @@ jobs:
           E2E_BASE_URL: http://localhost:3000
         run: |
           cd e2e
-          for s in p-sidebar p-feedback p-home p-notif p-cmdk p-paging p-sessions; do
+          # p-chat is deliberately NOT here: its header says it "requires a live
+          # deployed stack with the AI service configured", and this job runs no
+          # services/ai, so its streaming/stop steps can never pass. It stays a
+          # VM suite. p-sidebar is the CI guard for /chat instead — it now loads
+          # the route (which is the landing page, since / redirects there) and
+          # exits non-zero on any console error.
+          for s in p-sidebar p-notif p-cmdk; do
             echo "::group::$s"; node "$s.js" || { echo "::endgroup::"; exit 1; }; echo "::endgroup::"
           done
       - name: App + backend logs (on failure)

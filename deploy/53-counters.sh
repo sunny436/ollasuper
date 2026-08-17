@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Maintained counters for dashboard.stats (O(1)) + backfill existing workspaces.
+# Maintained per-workspace counters + backfill existing workspaces.
 set -uo pipefail
 N=/usr/bin/node; C=/opt/myos/node_modules/convex/bin/main.js
-for f in schema counters dashboard jobs files orgs; do
+for f in schema counters files orgs; do
   cp "/tmp/$f.ts" "/opt/myos/packages/backend/convex/$f.ts"
 done
 cd /opt/myos/packages/backend
