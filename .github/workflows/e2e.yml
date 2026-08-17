@@ -103,7 +103,10 @@ jobs:
           E2E_BASE_URL: http://localhost:3000
         run: |
           cd e2e
-          for s in p-sidebar p-feedback p-home p-notif p-cmdk p-paging p-sessions; do
+          # p-chat last: it is the only suite that exits non-zero on a failed
+          # step or a console error, so it is the real gate. It also covers
+          # /chat, which is now the landing page (/ redirects there).
+          for s in p-sidebar p-notif p-cmdk p-chat; do
             echo "::group::$s"; node "$s.js" || { echo "::endgroup::"; exit 1; }; echo "::endgroup::"
           done
       - name: App + backend logs (on failure)

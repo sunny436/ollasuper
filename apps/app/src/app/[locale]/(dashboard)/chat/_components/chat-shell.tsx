@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ComposerProvider } from "../_hooks/use-composer";
 import { ChatSidebar } from "./chat-sidebar";
 
 /**
@@ -91,38 +92,48 @@ export function ChatShell({ children }: { children: ReactNode }) {
 
   return (
     <SidebarCtx.Provider value={api}>
-      {/* Docked from xl up. <nav>, not a second <aside>: e2e/p-sidebar.js does
-          page.locator("aside") and Playwright strict mode throws on multiple
-          matches. */}
-      <nav
-        aria-label="Conversations"
-        className="hidden w-72 shrink-0 border-r border-border bg-card xl:block"
-      >
-        <ChatSidebar />
-      </nav>
+      {/*
+        ComposerProvider lives HERE, not around ChatPane alone. The prompt
+        library renders inside ChatSidebar — a sibling of {children} — and
+        calls useComposer() to fill the draft, which is exactly what the
+        provider exists for. Scoped to the pane it threw
+        "useComposer must be used inside ComposerProvider" and took the whole
+        chat route down with it. Both consumers must share one provider.
+      */}
+      <ComposerProvider>
+        {/* Docked from xl up. <nav>, not a second <aside>: e2e/p-sidebar.js does
+            page.locator("aside") and Playwright strict mode throws on multiple
+            matches. */}
+        <nav
+          aria-label="Conversations"
+          className="hidden w-72 shrink-0 border-r border-border bg-card xl:block"
+        >
+          <ChatSidebar />
+        </nav>
 
-      {children}
+        {children}
 
-      {/* Overlay for everything below xl, scoped INSIDE the chat area so the
-          app sidebar remains usable. */}
-      {open && (
-        <>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
-          <div
-            className="fixed inset-0 z-30 bg-black/50 xl:hidden"
-            onClick={closeSidebar}
-            aria-hidden="true"
-          />
-          <nav
-            ref={panelRef}
-            tabIndex={-1}
-            aria-label="Conversations"
-            className="fixed inset-y-0 left-0 z-40 w-72 border-r border-border bg-card outline-none xl:hidden"
-          >
-            <ChatSidebar onNavigate={closeSidebar} />
-          </nav>
-        </>
-      )}
+        {/* Overlay for everything below xl, scoped INSIDE the chat area so the
+            app sidebar remains usable. */}
+        {open && (
+          <>
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
+            <div
+              className="fixed inset-0 z-30 bg-black/50 xl:hidden"
+              onClick={closeSidebar}
+              aria-hidden="true"
+            />
+            <nav
+              ref={panelRef}
+              tabIndex={-1}
+              aria-label="Conversations"
+              className="fixed inset-y-0 left-0 z-40 w-72 border-r border-border bg-card outline-none xl:hidden"
+            >
+              <ChatSidebar onNavigate={closeSidebar} />
+            </nav>
+          </>
+        )}
+      </ComposerProvider>
     </SidebarCtx.Provider>
   );
 }
