@@ -1,24 +1,24 @@
-import { AuthForm } from "@/components/auth-form";
-import { EmailOtpSignin } from "@/components/email-otp-signin";
-import Image from "next/image";
+import { AuthPanel } from "@/components/auth/auth-panel";
+import { Toaster } from "sonner";
 
 export const metadata = {
   title: "Login",
 };
 
+/**
+ * Stays a Server Component so `metadata` keeps working — the interactive parts
+ * live in AuthPanel, which is the "use client" boundary.
+ *
+ * <Toaster /> is mounted here on purpose. It was previously only in
+ * (dashboard)/layout.tsx, and there is no (public) layout, so every toast() call
+ * on this page would have been a silent no-op. Position and richColors match the
+ * dashboard so the two halves of the app behave identically.
+ */
 export default function Page() {
   return (
-    <div className="h-screen w-screen flex flex-col items-center justify-center">
-      <div className="flex flex-col items-center justify-center gap-4 py-8">
-        <Image src="/logo.png" alt="logo" width={96} height={96} />
-        <AuthForm />
-        <div className="flex w-72 items-center gap-3 text-xs text-muted-foreground">
-          <span className="h-px flex-1 bg-border" />
-          one-time email code
-          <span className="h-px flex-1 bg-border" />
-        </div>
-        <EmailOtpSignin />
-      </div>
-    </div>
+    <>
+      <AuthPanel />
+      <Toaster richColors position="top-right" />
+    </>
   );
 }

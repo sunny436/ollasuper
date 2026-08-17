@@ -12,7 +12,7 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
     await page.waitForURL(/login/, { timeout: 20000 });
     await page.locator('input[type="email"]').first().fill("admin@myos.test");
     await page.locator('input[type="password"]').first().fill("MyosAdmin#2026");
-    await page.click('button:has-text("Sign in")');
+    await page.click('button[type="submit"]');
     await page.waitForTimeout(3500);
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2500); cur = page.url();

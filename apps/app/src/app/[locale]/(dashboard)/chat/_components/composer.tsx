@@ -24,7 +24,7 @@ import { ModelPicker } from "./model-picker";
 /**
  * MODULE SCOPE, and it must stay that way.
  *
- * auth-form.tsx:11-12 documents this exact bug: defining a sub-component
+ * components/auth/auth-panel.tsx documents this exact bug: defining a sub-component
  * inside its parent gives it a new identity every render, so React unmounts
  * and remounts the input on every keystroke — stealing focus after one
  * character. In a chat composer that also resets the caret and breaks IME
