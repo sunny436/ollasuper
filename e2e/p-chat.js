@@ -178,6 +178,12 @@ const step = async (n, f) => {
 
 
   await step("model picker lists the OpenRouter catalogue and selects", async () => {
+    // The rename step above leaves a Radix menu open, and Radix aria-hides the
+    // rest of the page while one is open -- so getByRole cannot see the
+    // composer at all until it is dismissed.
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(400);
+
     const trigger = page.getByRole("button", { name: "Choose model" });
     const before = (await trigger.innerText()).trim();
     await trigger.click();
@@ -195,6 +201,11 @@ const step = async (n, f) => {
     const picked = (await option.innerText()).split("\n")[0].trim();
     await option.click();
     await page.waitForTimeout(800);
+
+    // Selecting closes the menu, but press Escape defensively: an overlay
+    // left open here blocks every subsequent step.
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(300);
 
     const after = (await trigger.innerText()).trim();
     if (after === before) {
