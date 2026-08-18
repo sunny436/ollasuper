@@ -156,7 +156,7 @@ The AI service binds `127.0.0.1:8770`, **not 8000** — `deploy/47-glitchtip.sh`
 
 ## Deployment
 
-`deploy/` is 62 numbered, idempotent shell scripts run in order on the VM; `deploy/54-ai-service.sh` is the AI service. `OPENROUTER_API_KEY` is never generated, never defaulted and never written by a script — an operator fills it into `services/ai/.env` (0600) and the script hard-fails until they do. It now lives on **both** planes: `deploy/54-ai-service.sh` copies that same value onto the Convex deployment, because the model-catalogue fetch is a Convex action (`convex/chat/models.ts`) and Convex mutations cannot fetch. **Rotating the key means updating both.**
+`deploy/` is 62 numbered, idempotent shell scripts run in order on the VM; `deploy/54-ai-service.sh` is the AI service. `OPENROUTER_API_KEY` is never generated, never defaulted and never written by a script — an operator fills it into `services/ai/.env` (0600), and the script hard-fails until they do. It lives in **exactly one place**: the inference plane, which is the only thing that needs it to call a model. `convex/chat/models.ts` deliberately fetches the *unauthenticated* `/api/v1/models` (identical payload, no credentials) so the catalogue never becomes a second copy of the secret.
 
 `ROADMAP.md` is the house record of what is done and what is deferred; keep it current rather than adding new status docs.
 

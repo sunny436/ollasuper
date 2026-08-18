@@ -19,15 +19,21 @@ import { DEFAULT_MODEL } from "./authz";
  * internalAction (fetch) -> internalMutation (write) -> query (read), the same
  * shape chat/stream.ts already uses for dispatch.
  *
- * WHY /models/user AND NOT /models:
- * `/api/v1/models` returns an identical payload with or without credentials, so
- * it answers "what does OpenRouter offer", not "what can this key reach".
- * `/api/v1/models/user` is the account-filtered list and is the only one that
- * honours the account's provider preferences. Measured difference at the time
- * of writing: 414 vs 411.
+ * WHY THE UNAUTHENTICATED ENDPOINT:
+ * `/api/v1/models` needs no credentials and returns a byte-identical payload
+ * with or without them — measured. The account-filtered `/models/user` would
+ * be marginally more accurate (411 vs 414: it drops three free-tier models the
+ * account filters out) but requires the key, which would mean OPENROUTER_API_KEY
+ * living on two planes at once. It is deliberately kept in exactly one place,
+ * services/ai/.env, where the inference plane actually needs it to call the
+ * model. Three filtered-out free models is a cheap price for one copy of a
+ * secret.
+ *
+ * If this ever needs to be truly account-accurate, proxy it through the Python
+ * service (which already holds the key) rather than copying the key here.
  */
 
-const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models/user";
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
 /**
  * Refuse to apply deletions below this many models.
@@ -94,16 +100,9 @@ function toEntry(m: OpenRouterModel): CatalogueEntry | null {
 export const refresh = internalAction({
   args: {},
   handler: async (ctx): Promise<{ fetched: number; kept: number; applied: boolean }> => {
-    const key = process.env.OPENROUTER_API_KEY;
-    // Hard-fail at the call site rather than in env.ts: the deployment runs
-    // with VALIDATE_ENV=true, so declaring this required there would break the
-    // backend the moment this lands but before the key is set. Same reasoning
-    // as AI_BASE_URL.
-    if (!key) throw new Error("OPENROUTER_API_KEY is not set on this deployment");
-
-    const res = await fetch(OPENROUTER_MODELS_URL, {
-      headers: { Authorization: `Bearer ${key}` },
-    });
+    // No credentials: this endpoint is public, and keeping it that way is what
+    // lets the key stay on the inference plane only.
+    const res = await fetch(OPENROUTER_MODELS_URL);
     if (!res.ok) {
       throw new Error(`OpenRouter responded ${res.status}`);
     }
