@@ -5,6 +5,26 @@ Deferred work, captured so it isn't lost. Ordered roughly by priority.
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, folders, search, attachments, prompt library — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup.
 
+## 0b. Workspace re-skin (2026-08-18) — `/chat` goes full-bleed
+`/chat` moved from the `(dashboard)` route group to a sibling **`(workspace)`** group, so it no
+longer renders the app sidebar or the topbar. Route groups do not affect URLs. With the app rail
+gone the conversation rail docks at `md` instead of `xl` and gained a collapse toggle; the account
+menu at the foot of that rail is now the **only** route out to `/settings`, `/files` and
+`/billing`, which kept the dashboard shell.
+
+- Surfaces are re-skinned by a `.workspace` block in `globals.css` that re-points the *existing*
+  tokens, so components changed appearance without className churn. Radix portals mount outside
+  that scope and need `className="workspace"` (the model dropdown does).
+- The brand accent moved from green to sky/indigo/purple, re-derived for both themes. Blue is much
+  darker than green at equal HSL lightness, so the light fill takes near-white text where green
+  took near-black. Ratios verified against the shipped CSS: light 5.98 / 8.59 / 6.26, dark
+  8.02 / 8.84 / 8.84.
+- The rail orb reuses `components/auth/intelligence-core.tsx` through `next/dynamic({ssr:false})`.
+- Deliberately **not** built: the artifact/canvas panel from the prototype — the ask was a simple
+  ChatGPT/Gemini-style chat.
+- Rail collapse is a CSS width transition, not framer-motion: `/chat` is the landing route and
+  framer-motion is ~40kB gz for something CSS composites free. `/chat` first-load went 292 → 305kB.
+
 ## 0. Section removal (2026-08-16) — chat-first surface
 The Dashboard, Sessions, Jobs and Platform sections were removed and `/` now redirects to `/chat`.
 (Two of the six sections named in the request — **Devices** and **AI Access** — did not exist in
@@ -116,6 +136,22 @@ Convex stays the data plane; a separate **Python FastAPI + LangGraph** service a
   streaming path, because the writer already filters on `langgraph_node == "model"`).
 
 ## Notes / caveats
+- **OPEN P0 — chat generation is down on the production VM.** Convex actions call the inference
+  plane at `AI_BASE_URL=http://127.0.0.1:8770`, but Convex runs **in Docker** (`self-hosted_default`,
+  gateway `172.18.0.1`) while `myos-ai` binds host loopback only. A process bound to `127.0.0.1` is
+  unreachable from another network namespace, so every generation fails with
+  `Connection refused (os error 111)` and the assistant row lands in `error`. The service itself is
+  healthy (`/healthz` and `/readyz` both 200 **from the host**).
+  This is the same class of bug as the SMTP-at-container-loopback issue fixed earlier.
+  Not caught by e2e because `p-chat`'s reply assertion is `body.innerText.includes("PONG")`, which
+  matches the user's own echoed message — so the step passes with no reply. It is also the real
+  cause of the two long-standing `p-chat` failures (`scroll-to-bottom pill`, `stop generation`):
+  with no generated text the transcript never overflows and no Stop button ever appears.
+  Fix (not applied — it widens a bind on live production, so it wants a decision):
+  bind uvicorn to `0.0.0.0` in `deploy/54-ai-service.sh` and add
+  `ufw allow from 172.18.0.0/16 to any port 8770 proto tcp`. ufw is active and currently allows only
+  22/tcp, so net exposure stays effectively loopback-equivalent. Tighten the e2e assertion at the
+  same time so this cannot regress silently again.
 - Email is **log-fallback** until Resend is configured (codes appear in Convex logs).
 - `NEXT_PUBLIC_CONVEX_URL` is baked in at **build** time, so any change of Convex hostname needs a full
   `next build` — restarting the service is not enough, and a stale `.next` will keep serving the old origin.
