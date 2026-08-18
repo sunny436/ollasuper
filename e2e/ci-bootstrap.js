@@ -38,7 +38,8 @@ async function run() {
     });
     token = verifyRes?.tokens?.token;
   }
-  // Complete onboarding (set a username) so the dashboard doesn't redirect.
+  // Give the CI admin a display name. No longer required to reach the
+  // dashboard — onboarding was removed — but it keeps the sidebar readable.
   if (token) {
     const authed = new ConvexHttpClient(URL);
     authed.setAuth(token);

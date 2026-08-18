@@ -5,7 +5,6 @@ NODE=/usr/bin/node; NEXT=/opt/myos/node_modules/next/dist/bin/next; CVX=/opt/myo
 
 echo "=== place fixed files ==="
 cp /tmp/orgs.ts /opt/myos/packages/backend/convex/orgs.ts
-cp /tmp/onboarding_page.tsx "/opt/myos/apps/app/src/app/[locale]/onboarding/page.tsx"
 cp /tmp/docker-compose.override.yml /opt/myos/self-hosted/docker-compose.override.yml
 mkdir -p /opt/myos/deploy && cp /tmp/backup.sh /opt/myos/deploy/backup.sh && chmod +x /opt/myos/deploy/backup.sh
 echo ok

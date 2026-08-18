@@ -128,7 +128,11 @@ export function EmptyState({ threadId }: { threadId: string | null }) {
     setGreeting(h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening");
   }, []);
 
-  const firstName = user?.username?.split(" ")[0] ?? "";
+  // getUser resolves this as (username || name), so it survives username being
+  // optional — and picks up the name Google supplies or the one captured at
+  // sign-up. Reading the raw `username` field here would greet most users
+  // anonymously now that onboarding no longer forces one.
+  const firstName = user?.name?.split(" ")[0] ?? "";
 
   return (
     <div className="mx-auto w-full max-w-3xl animate-fade-in-up px-4 py-10 motion-reduce:animate-none">

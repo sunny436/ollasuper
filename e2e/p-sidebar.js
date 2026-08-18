@@ -20,7 +20,7 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
     await page.waitForTimeout(3500);
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2500); cur = page.url();
-    if (/login|onboarding/.test(cur)) throw new Error("not logged in: " + cur);
+    if (/login/.test(cur)) throw new Error("not logged in: " + cur);
   });
   await step("root redirects to /chat", async () => {
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
