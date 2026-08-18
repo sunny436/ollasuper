@@ -3,7 +3,7 @@
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
 ## ✅ Done (current state)
-Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup.
+Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
 
 ## 0b. Workspace re-skin (2026-08-18) — `/chat` goes full-bleed
 `/chat` moved from the `(dashboard)` route group to a sibling **`(workspace)`** group, so it no
@@ -136,6 +136,25 @@ Convex stays the data plane; a separate **Python FastAPI + LangGraph** service a
   streaming path, because the writer already filters on `langgraph_node == "model"`).
 
 ## Notes / caveats
+- **Backups did not exist on the rebuilt VM (fixed 2026-08-18).** `/opt/backups` was absent,
+  no cron was installed, there was no log, and `deploy/backup.sh` was not executable — so
+  production had no recovery point at all, despite "nightly backup" being listed under Done.
+  The cron is installed by `deploy/29-fixes.sh`, which was never run during the rebuild of
+  `172.16.70.25`. That script must NOT be re-run to fix it: it opens with `cp /tmp/orgs.ts …`
+  and runs without `set -e`, so on a VM lacking those staged files it fails the copies,
+  continues anyway, and then deploys whatever is on disk. `deploy/61-backups.sh` now does the
+  backup half idempotently.
+  `backup.sh` itself also gained `--include-file-storage` (without it, archives held rows whose
+  avatar/file/attachment blobs were absent) and now verifies the new archive exists and is
+  non-trivial **before** pruning, so a failed export can no longer delete the last good one.
+- **Convex Cloud is a dev/staging target, not production.** `deploy/60-convex-cloud-dev.sh`
+  points a build at any Cloud deployment; it refuses a non-empty one unless `ALLOW_NONEMPTY=1`.
+  A production cutover is blocked on three things, none of them config:
+  (a) Cloud actions cannot reach `AI_BASE_URL`/`BACKEND_BASE_URL` on private addresses;
+  (b) `POLAR_ORGANIZATION_TOKEN`/`POLAR_WEBHOOK_SECRET` are required in `convex/env.ts` but set
+  by no script; (c) Polar’s `customers` join table is component state that `convex export` does
+  not cover and has no upstream source. Moving also re-registers the Google redirect URI and
+  invalidates every session.
 - **OPEN P0 — chat generation is down on the production VM.** Convex actions call the inference
   plane at `AI_BASE_URL=http://127.0.0.1:8770`, but Convex runs **in Docker** (`self-hosted_default`,
   gateway `172.18.0.1`) while `myos-ai` binds host loopback only. A process bound to `127.0.0.1` is
