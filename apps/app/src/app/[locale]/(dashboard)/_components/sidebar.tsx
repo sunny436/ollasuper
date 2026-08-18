@@ -18,7 +18,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { ThemeSwitcher } from "./theme-switcher";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 
 const NAV = [
   // prefix: /chat/<id> must keep this row highlighted. Opt-in per entry so

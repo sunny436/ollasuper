@@ -31,7 +31,13 @@ export function ModelPicker({
           <ChevronDown className="h-3 w-3" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-52">
+      {/*
+        `workspace` is repeated here because Radix portals this content to
+        document.body, OUTSIDE the .workspace element that scopes the surface
+        tokens. Without it the dropdown renders against the base palette while
+        everything behind it uses the glass one.
+      */}
+      <DropdownMenuContent align="start" className="workspace w-52 bg-popover">
         {MODELS.map((m) => (
           <DropdownMenuItem
             key={m.id}

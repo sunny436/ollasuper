@@ -47,6 +47,13 @@ const FRAGMENT_SHADER = /* glsl */ `
 `;
 
 /**
+ * The mask shape belongs to the caller: the auth panel wants a circle, the
+ * workspace rail a rounded square. Everything else about the render is fixed.
+ */
+const DEFAULT_MASK =
+  "relative flex h-full w-full items-center justify-center overflow-hidden rounded-full";
+
+/**
  * The morphing WebGL sphere in the auth panel header.
  *
  * Loaded only through `next/dynamic(..., { ssr: false })` so three.js lands in
@@ -62,7 +69,7 @@ const FRAGMENT_SHADER = /* glsl */ `
  *    waiting for GC to get around to it.
  *  - `prefers-reduced-motion` renders a single frame and never starts the loop.
  */
-export function IntelligenceCore() {
+export function IntelligenceCore({ className }: { className?: string }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -150,7 +157,7 @@ export function IntelligenceCore() {
     <div
       ref={mountRef}
       aria-hidden="true"
-      className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-full"
+      className={className ?? DEFAULT_MASK}
     />
   );
 }

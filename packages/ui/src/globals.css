@@ -30,19 +30,19 @@
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
 
-    /* Chat brand accent. Hue locked at 152 across both themes.
-       One green cannot be both a legible fill and legible text on white, so
+    /* Workspace accent. Hue locked in the sky/indigo family across both
+       themes. One shade cannot be both a legible fill and legible text, so
        there are three tokens with strict roles:
          --brand            fills, borders, rings ONLY
          --brand-foreground text ON a brand fill ONLY
          --brand-ink        brand-coloured text on a page background ONLY
-       Contrast (WCAG): brand-foreground on brand 5.24:1, brand-ink on
-       background 5.62:1, brand vs background 3.05:1 (1.4.11 non-text).
-       Do NOT lighten the light fill: at 152 74% 40% the boundary contrast
-       drops to 2.77:1 and fails. */
-    --brand: 152 74% 38%;
-    --brand-foreground: 152 95% 8%;
-    --brand-ink: 152 72% 27%;
+       Blue is far darker than green at equal HSL lightness, so unlike the
+       green theme this fill needs NEAR-WHITE text on it, not near-black.
+       Contrast (WCAG): brand-foreground on brand 5.98:1, brand-ink on
+       background 8.59:1, brand vs background 6.26:1 (1.4.11 non-text). */
+    --brand: 224 76% 50%;
+    --brand-foreground: 210 40% 98%;
+    --brand-ink: 226 64% 40%;
   }
 
   .dark {
@@ -71,12 +71,54 @@
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
 
-    /* On the pure-black dark theme the fill is light enough to double as ink.
-       Contrast: brand-foreground on brand 9.37:1, brand-ink on background
-       12.30:1. */
-    --brand: 152 76% 52%;
-    --brand-foreground: 152 95% 8%;
-    --brand-ink: 152 76% 52%;
+    /* On the dark theme the fill is light enough to double as ink, so the
+       text-on-fill token flips to a dark navy. Contrast: brand-foreground on
+       brand 8.02:1, brand-ink on background 8.84:1. */
+    --brand: 204 94% 62%;
+    --brand-foreground: 226 95% 10%;
+    --brand-ink: 204 94% 62%;
+  }
+}
+
+@layer base {
+  /* Workspace surface palette.
+     This re-points the EXISTING tokens for the /chat subtree rather than
+     inventing parallel ones, so every component below keeps using bg-card,
+     border-border and text-primary and re-skins with no className changes.
+     Routes that kept the dashboard shell sit outside .workspace and are
+     untouched.
+     .dark .workspace (0,2,0) correctly outranks .workspace (0,1,0), so the
+     dark block does not need !important or source-order luck.
+     NOTE: Radix portals mount at document.body, outside this scope — any
+     portalled surface needs className="workspace" to inherit these. */
+  .workspace {
+    --background: 220 43% 98%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 47% 11%;
+    --secondary: 220 33% 96%;
+    --muted: 220 33% 96%;
+    --muted-foreground: 220 12% 46%;
+    --accent: 220 33% 94%;
+    --border: 220 25% 90%;
+    --input: 220 25% 90%;
+  }
+
+  .dark .workspace {
+    /* The prototype ground: a blue-tinted near-black, not the pure #000 of the
+       app-wide dark theme. Cards sit two steps up so glass edges read. */
+    --background: 228 27% 4%;
+    --card: 230 30% 7%;
+    --card-foreground: 0 0% 100%;
+    --popover: 231 28% 10%;
+    --popover-foreground: 0 0% 100%;
+    --secondary: 230 26% 9%;
+    --muted: 230 26% 9%;
+    --muted-foreground: 220 14% 65%;
+    --accent: 228 25% 14%;
+    --border: 225 20% 17%;
+    --input: 225 20% 17%;
   }
 }
 
@@ -89,21 +131,16 @@
   }
 }
 @layer utilities {
-  /* Chat viewport height.
+  /* Full viewport height.
      Two declarations so the browser cascade picks dvh where supported and
      falls back to vh otherwise — Tailwind arbitrary values cannot express a
      fallback pair, and tailwind-merge would collapse them into one.
-     Subtracts the chrome above the chat pane: the h-12 topbar on desktop,
-     plus the h-14 mobile sidebar header below md. */
-  .h-chat-shell {
-    height: calc(100vh - 6.5rem);
-    height: calc(100dvh - 6.5rem);
-  }
-  @media (min-width: 768px) {
-    .h-chat-shell {
-      height: calc(100vh - 3rem);
-      height: calc(100dvh - 3rem);
-    }
+     This replaced .h-chat-shell, whose 6.5rem/3rem subtractions encoded the
+     dashboard topbar and mobile header. The workspace route group has no
+     chrome above the chat pane, so there is nothing left to subtract. */
+  .h-dvh-safe {
+    height: 100vh;
+    height: 100dvh;
   }
 }
 

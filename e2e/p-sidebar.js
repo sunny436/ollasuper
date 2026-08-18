@@ -26,7 +26,33 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
     await page.waitForURL(/\/chat/, { timeout: 15000 }); cur = page.url();
   });
+  await step("workspace chrome renders on /chat", async () => {
+    // /chat is full-bleed: no dashboard aside, its own conversation rail.
+    if (await page.locator("aside").count()) throw new Error("dashboard shell leaked into /chat");
+    await page.waitForSelector('nav[aria-label="Conversations"]', { timeout: 12000 });
+    await page.waitForSelector("#chat-composer", { timeout: 12000 });
+  });
+  await step("workspace rail collapses and restores", async () => {
+    const rail = page.locator('nav[aria-label="Conversations"]').first();
+    await page.getByRole("button", { name: "Hide conversations" }).click();
+    await page.waitForTimeout(600);
+    if (await rail.isVisible()) throw new Error("rail did not collapse");
+    await page.getByRole("button", { name: "Open conversations" }).click();
+    await page.waitForTimeout(600);
+    if (!(await rail.isVisible())) throw new Error("rail did not restore");
+  });
+  await step("account menu exposes the routes that kept the shell", async () => {
+    await page.getByRole("button", { name: "Account menu" }).click();
+    for (const label of ["Settings", "Files", "Billing"]) {
+      if (!(await page.getByRole("link", { name: label }).first().isVisible()))
+        throw new Error("missing account-menu link: " + label);
+    }
+    await page.keyboard.press("Escape");
+  });
   await step("sidebar shows all nav links (left)", async () => {
+    // The dashboard shell lives on the routes that kept it.
+    await page.goto(BASE + "/en/files", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2000); cur = page.url();
     const aside = page.locator("aside");
     for (const label of ["Chat", "Files", "Settings", "Billing"]) {
       if (!(await aside.getByRole("link", { name: label }).first().isVisible())) throw new Error("missing nav: " + label);
