@@ -10,7 +10,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { useParams } from "next/navigation";
+import { ChatSessionProvider } from "../_hooks/use-chat-session";
 import { ComposerProvider } from "../_hooks/use-composer";
+import { DEFAULT_MODEL } from "../_lib/models";
+import { ChatLayout } from "./chat-layout";
 import { ChatSidebar } from "./chat-sidebar";
 
 /**
@@ -54,6 +58,14 @@ export function useChatSidebar() {
 }
 
 export function ChatShell({ children }: { children: ReactNode }) {
+  // Read here rather than taking it as a prop from the page: the composer now
+  // lives in this (persistent) subtree, and the page components below are what
+  // get swapped on navigation. Stays a raw string — never cast to
+  // Id<"chatThreads">, because a typo'd URL reaching a v.id() validator throws
+  // ArgumentValidationError, which the Convex client logs via console.error.
+  const params = useParams<{ threadId?: string }>();
+  const threadId = params?.threadId ?? null;
+
   const [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -173,7 +185,14 @@ export function ChatShell({ children }: { children: ReactNode }) {
           </div>
         </nav>
 
-        {children}
+        {/*
+          ChatLayout wraps the route segment rather than sitting beside it: it
+          owns the composer, and the composer has to outlive the /chat ->
+          /chat/[threadId] navigation for the centred->bottom spring to play.
+        */}
+        <ChatSessionProvider threadId={threadId} defaultModel={DEFAULT_MODEL}>
+          <ChatLayout>{children}</ChatLayout>
+        </ChatSessionProvider>
 
         {/* Drawer for everything below md. */}
         {open && (

@@ -7,10 +7,10 @@ import { Check, Copy, Pencil, RefreshCw, RotateCcw, Sparkles } from "lucide-reac
 import { memo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { modelLabel } from "../_lib/models";
-import { Markdown } from "./markdown";
-import { TypingIndicator } from "./typing-indicator";
+import { IntelligenceCore } from "./intelligence-core";
+import { StreamingText } from "./streaming-text";
 
-export interface ChatMessage {
+export interface ChatMessageDoc {
   _id: Id<"chatMessages">;
   role: "user" | "assistant" | "system";
   seq: number;
@@ -48,10 +48,13 @@ function MessageMeta({
   who,
   at,
   assistant,
+  orb,
 }: {
   who: string;
   at: number;
   assistant?: boolean;
+  /** Swap the flat glyph for the live WebGL orb. One instance per page. */
+  orb?: boolean;
 }) {
   return (
     <div
@@ -59,9 +62,12 @@ function MessageMeta({
         assistant ? "" : "justify-end"
       }`}
     >
-      {assistant && (
-        <Sparkles className="h-3 w-3 text-brand-ink" aria-hidden="true" />
-      )}
+      {assistant &&
+        (orb ? (
+          <IntelligenceCore className="h-6 w-6" />
+        ) : (
+          <Sparkles className="h-3 w-3 text-brand-ink" aria-hidden="true" />
+        ))}
       <span
         className={assistant ? "font-medium text-brand-ink" : "text-primary/50"}
       >
@@ -77,16 +83,18 @@ function MessageMeta({
     </div>
   );
 }
-function MessageBubbleImpl({
+function ChatMessageImpl({
   message,
   isStreaming,
   liveText,
+  showOrb,
   onEdit,
 }: {
-  message: ChatMessage;
+  message: ChatMessageDoc;
   isStreaming: boolean;
   liveText?: string;
-  onEdit?: (m: ChatMessage) => void;
+  showOrb?: boolean;
+  onEdit?: (m: ChatMessageDoc) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -170,31 +178,16 @@ function MessageBubbleImpl({
 
   // --- assistant turn ----------------------------------------------------
   // Full width, no bubble: bubbles wreck code blocks and tables.
-  const showTyping = isStreaming && !text;
 
   return (
     <div className="group my-5">
       <MessageMeta
         assistant
+        orb={showOrb}
         who={modelLabel(message.model)}
         at={message.createdAt}
       />
-      {showTyping ? (
-        <TypingIndicator />
-      ) : (
-        <div
-          // polite + non-atomic so a screen reader announces increments as they
-          // stream instead of re-reading the whole message per token.
-          aria-live={isStreaming ? "polite" : "off"}
-          aria-atomic="false"
-          aria-busy={isStreaming}
-        >
-          <Markdown content={text} streaming={isStreaming} />
-          {isStreaming && (
-            <span className="ml-0.5 inline-block h-[1.05em] w-[2px] translate-y-[0.15em] bg-brand animate-caret-blink motion-reduce:animate-none" />
-          )}
-        </div>
-      )}
+      <StreamingText text={text} isStreaming={isStreaming} />
 
       {message.status === "error" && (
         <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
@@ -273,12 +266,13 @@ function IconButton({
  * default shallow compare is always false and React.memo would silently do
  * nothing — the whole memoisation strategy would be a no-op.
  */
-export const MessageBubble = memo(
-  MessageBubbleImpl,
+export const ChatMessage = memo(
+  ChatMessageImpl,
   (a, b) =>
     a.message._id === b.message._id &&
     a.message.content === b.message.content &&
     a.message.status === b.message.status &&
     a.isStreaming === b.isStreaming &&
-    a.liveText === b.liveText,
+    a.liveText === b.liveText &&
+    a.showOrb === b.showOrb,
 );

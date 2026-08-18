@@ -1,21 +1,16 @@
 "use client";
 
 import { api } from "@v1/backend/convex/_generated/api";
-import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useQuery } from "convex/react";
 import { SlidersHorizontal } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_MODEL } from "../_lib/models";
-import { Composer } from "./composer";
+import { useEffect } from "react";
+import { useChatSession } from "../_hooks/use-chat-session";
 import { MessageList } from "./message-list";
 import { useChatSidebar } from "./chat-shell";
 
 export function ChatPane({ threadId }: { threadId: string | null }) {
-  const [streamingId, setStreamingId] = useState<Id<"chatMessages"> | null>(
-    null,
-  );
-  const [model, setModel] = useState<string>(DEFAULT_MODEL);
   const { openSidebar, collapsed, toggleCollapsed } = useChatSidebar();
+  const { setThreadStatus, setModel } = useChatSession();
 
   // threadId is a raw URL string, so this query takes v.string() and
   // normalizeId's it server-side. Returns null for a bad or foreign id.
@@ -26,12 +21,20 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
 
   useEffect(() => {
     if (thread?.model) setModel(thread.model);
-  }, [thread?.model]);
+  }, [thread?.model, setModel]);
 
-  const onStreamingChange = useCallback(
-    (id: Id<"chatMessages"> | null) => setStreamingId(id),
-    [],
-  );
+  // The composer now lives above the route segment (chat-layout.tsx), so it
+  // cannot see this query. Publish the outcome instead of making the shell run
+  // a second copy of it: "notfound" is what withholds the composer, and
+  // use-send-message.ts casts the id to Id<"chatThreads">, so letting someone
+  // send with a bad URL id would throw ArgumentValidationError and fail every
+  // e2e run on its zero-console-error assertion.
+  useEffect(() => {
+    if (threadId === null) setThreadStatus("none");
+    else if (thread === undefined) setThreadStatus("loading");
+    else if (thread === null) setThreadStatus("notfound");
+    else setThreadStatus("ok");
+  }, [threadId, thread, setThreadStatus]);
 
   // A bad/deleted thread id renders inline. Deliberately NOT notFound(): that
   // renders [locale]/not-found.tsx and destroys the whole chat shell.
@@ -93,27 +96,7 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
           </div>
         </div>
       ) : (
-        <>
-          <MessageList
-            threadId={threadId}
-            onStreamingChange={onStreamingChange}
-          />
-          {/*
-              Inside the guard, not beside it. A composer rendered next to
-              "Conversation not found" still holds the bad URL string, and
-              sending would hand it to a v.id() validator — an
-              ArgumentValidationError that the Convex client reports through
-              console.error, which fails every e2e script's zero-console-error
-              assertion. Offering a send button that cannot work is also just
-              a lie about what the UI does.
-            */}
-          <Composer
-            threadId={threadId}
-            streamingMessageId={streamingId}
-            model={model}
-            onModelChange={setModel}
-          />
-        </>
+        <MessageList threadId={threadId} />
       )}
     </section>
   );

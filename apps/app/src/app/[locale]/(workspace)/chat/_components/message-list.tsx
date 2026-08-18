@@ -5,23 +5,19 @@ import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useChatSession } from "../_hooks/use-chat-session";
+import { useReveal } from "../_hooks/use-reveal";
 import { useStickToBottom } from "../_hooks/use-stick-to-bottom";
 import { useThrottledValue } from "../_hooks/use-throttled-value";
-import { EmptyState } from "./empty-state";
-import { type ChatMessage, MessageBubble } from "./message-bubble";
+import { ChatMessage, type ChatMessageDoc } from "./chat-message";
 import { MessageSkeleton } from "./message-skeleton";
 import { ScrollToBottom } from "./scroll-to-bottom";
 
 const PAGE = 30;
 
-export function MessageList({
-  threadId,
-  onStreamingChange,
-}: {
-  threadId: string | null;
-  onStreamingChange: (id: Id<"chatMessages"> | null) => void;
-}) {
-  const [editing, setEditing] = useState<ChatMessage | null>(null);
+export function MessageList({ threadId }: { threadId: string | null }) {
+  const { setStreamingId } = useChatSession();
+  const [editing, setEditing] = useState<ChatMessageDoc | null>(null);
   const editMessage = useMutation(api.chat.messages.editUserMessage);
 
   const {
@@ -55,22 +51,28 @@ export function MessageList({
 
   const settled = useMemo(() => {
     // listPaged is newest-first for backwards pagination; display oldest-first.
-    return [...(results ?? [])].reverse() as unknown as ChatMessage[];
+    return [...(results ?? [])].reverse() as unknown as ChatMessageDoc[];
   }, [results]);
 
   const streamingId = (live?.messageId as Id<"chatMessages"> | undefined) ?? null;
-  // Report upward so the composer can swap Send for Stop. An effect, not a
-  // memo: this is a side effect on the parent, and useMemo is not guaranteed
-  // to run when React decides to discard the memo cache.
+  // Published so the composer — which now lives above this route segment — can
+  // swap Send for Stop. An effect, not a memo: this is a side effect on shared
+  // state, and useMemo is not guaranteed to run when React discards its cache.
   useEffect(() => {
-    onStreamingChange(streamingId);
-  }, [streamingId, onStreamingChange]);
+    setStreamingId(streamingId);
+  }, [streamingId, setStreamingId]);
 
+  // Smooth the arrival of tokens. See use-reveal.ts for why this converges on
+  // the backlog rather than running at a fixed chars/sec.
+  const revealed = useReveal(liveText, streamingId !== null);
+
+  // Keyed on the REVEALED text, not liveText: the scroller has to follow what
+  // is actually painted, or it pins to a height the reader cannot see yet.
   const { scrollerRef, sentinelRef, atBottom, hasNew, scrollToBottom } =
-    useStickToBottom([liveText, settled.length, threadId]);
+    useStickToBottom([revealed, settled.length, threadId]);
 
   const onEdit = useCallback(
-    async (m: ChatMessage) => {
+    async (m: ChatMessageDoc) => {
       const next = window.prompt("Edit your message", m.content);
       if (next === null || !next.trim() || next === m.content) return;
       setEditing(m);
@@ -90,7 +92,6 @@ export function MessageList({
   );
 
   const loadingFirst = threadId !== null && status === "LoadingFirstPage";
-  const isEmpty = !loadingFirst && settled.length === 0 && !live;
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -110,8 +111,6 @@ export function MessageList({
             </>
           )}
 
-          {isEmpty && <EmptyState threadId={threadId} />}
-
           {status === "CanLoadMore" && (
             <div className="mb-4 flex justify-center">
               <button
@@ -125,7 +124,7 @@ export function MessageList({
           )}
 
           {settled.map((m) => (
-            <MessageBubble
+            <ChatMessage
               key={m._id}
               message={m}
               isStreaming={false}
@@ -134,21 +133,25 @@ export function MessageList({
           ))}
 
           {live && streamingId && (
-            <MessageBubble
+            <ChatMessage
               key={streamingId}
               message={
                 {
                   _id: streamingId,
                   role: "assistant",
                   seq: live.seq,
-                  content: liveText,
+                  content: revealed,
                   status: "streaming",
                   model: live.model,
                   createdAt: live.startedAt,
-                } as ChatMessage
+                } as ChatMessageDoc
               }
               isStreaming
-              liveText={liveText}
+              liveText={revealed}
+              // The orb is a live WebGL context and browsers cap those (~16
+              // before the oldest get dropped), so exactly one exists: on the
+              // turn being generated. Settled turns keep the flat glyph.
+              showOrb
             />
           )}
 
