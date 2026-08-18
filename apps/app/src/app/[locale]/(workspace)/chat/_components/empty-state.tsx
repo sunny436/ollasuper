@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { useComposer } from "../_hooks/use-composer";
 import { useSendMessage } from "../_hooks/use-send-message";
 
-type Mode = "text" | "code" | "image";
+export type Mode = "text" | "code" | "image";
 
 const MODES: { id: Mode; label: string; caption: string; Icon: typeof Code2 }[] = [
   { id: "text", label: "Write", caption: "Draft, summarise, translate", Icon: PenLine },
@@ -113,12 +113,23 @@ function PromptCard({
   );
 }
 
-export function EmptyState({ threadId }: { threadId: string | null }) {
-  const [mode, setMode] = useState<Mode>("text");
+/**
+ * Split into two halves on purpose.
+ *
+ * chat-layout.tsx centres greeting -> mode picker -> COMPOSER -> prompt cards
+ * on an empty thread, so the composer sits between these two blocks and cannot
+ * be a child of either. `mode` therefore lives in chat-layout and is passed
+ * down, which also keeps the two halves in sync for free.
+ */
+export function EmptyHero({
+  mode,
+  onModeChange,
+}: {
+  mode: Mode;
+  onModeChange: (m: Mode) => void;
+}) {
   const [greeting, setGreeting] = useState("");
   const user = useQuery(api.users.getUser);
-  const { setDraft } = useComposer();
-  const { send } = useSendMessage(threadId);
 
   // Computed in an effect, never during render: a server-rendered time of day
   // can differ from the client's, which is a hydration mismatch, which React
@@ -135,7 +146,7 @@ export function EmptyState({ threadId }: { threadId: string | null }) {
   const firstName = user?.name?.split(" ")[0] ?? "";
 
   return (
-    <div className="mx-auto w-full max-w-3xl animate-fade-in-up px-4 py-10 motion-reduce:animate-none">
+    <div className="w-full">
       <div className="h-12 w-12 rounded-2xl bg-gradient-to-tr from-sky-400 via-indigo-500 to-purple-500 p-[1.5px] shadow-[0_0_36px_hsl(var(--brand)/0.3)]">
         <div className="grid h-full w-full place-items-center rounded-[14px] bg-card">
           <Sparkles className="h-5 w-5 text-brand-ink" />
@@ -163,7 +174,7 @@ export function EmptyState({ threadId }: { threadId: string | null }) {
               type="button"
               role="radio"
               aria-checked={selected}
-              onClick={() => setMode(id)}
+              onClick={() => onModeChange(id)}
               className={`rounded-xl border p-3 text-left transition ${
                 selected
                   ? "border-brand/40 bg-brand/10 text-brand-ink ring-1 ring-brand/30"
@@ -179,21 +190,34 @@ export function EmptyState({ threadId }: { threadId: string | null }) {
           );
         })}
       </div>
+    </div>
+  );
+}
 
-      <div className="mt-4 grid gap-2.5 sm:grid-cols-2">
-        {SUGGESTIONS[mode].map((s) => (
-          <PromptCard
-            key={s.title}
-            title={s.title}
-            hint={s.hint}
-            // Card body fills the composer rather than sending: people almost
-            // always tweak a suggestion, and auto-sending burns a request and
-            // an inference bill on a prompt they did not finish writing.
-            onPick={() => setDraft(s.prompt)}
-            onSend={() => void send(s.prompt)}
-          />
-        ))}
-      </div>
+export function EmptyPrompts({
+  mode,
+  threadId,
+}: {
+  mode: Mode;
+  threadId: string | null;
+}) {
+  const { setDraft } = useComposer();
+  const { send } = useSendMessage(threadId);
+
+  return (
+    <div className="grid w-full gap-2.5 sm:grid-cols-2">
+      {SUGGESTIONS[mode].map((s) => (
+        <PromptCard
+          key={s.title}
+          title={s.title}
+          hint={s.hint}
+          // Card body fills the composer rather than sending: people almost
+          // always tweak a suggestion, and auto-sending burns a request and
+          // an inference bill on a prompt they did not finish writing.
+          onPick={() => setDraft(s.prompt)}
+          onSend={() => void send(s.prompt)}
+        />
+      ))}
     </div>
   );
 }

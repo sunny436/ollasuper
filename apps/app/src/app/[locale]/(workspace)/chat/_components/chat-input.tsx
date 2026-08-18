@@ -1,7 +1,6 @@
 "use client";
 
 import { api } from "@v1/backend/convex/_generated/api";
-import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
 import { ArrowUp, Loader2, Paperclip, Square } from "lucide-react";
 import {
@@ -17,6 +16,7 @@ import { toast } from "sonner";
 import { useAttachments } from "../_hooks/use-attachments";
 import { useComposer } from "../_hooks/use-composer";
 import { useMediaQuery } from "../_hooks/use-media-query";
+import { useChatSession } from "../_hooks/use-chat-session";
 import { useSendMessage } from "../_hooks/use-send-message";
 import { AttachmentChip } from "./attachment-chip";
 import { ModelPicker } from "./model-picker";
@@ -50,17 +50,13 @@ const ComposerTextarea = forwardRef<
 ));
 ComposerTextarea.displayName = "ComposerTextarea";
 
-export function Composer({
-  threadId,
-  streamingMessageId,
-  model,
-  onModelChange,
-}: {
-  threadId: string | null;
-  streamingMessageId: Id<"chatMessages"> | null;
-  model: string;
-  onModelChange: (m: string) => void;
-}) {
+export function ChatInput() {
+  // Pulled from context rather than props: this component is rendered by
+  // chat-layout.tsx, which sits ABOVE the route segment so the centred->bottom
+  // spring survives router.replace on the first send. The transcript that
+  // knows about streaming, and the pane that resolves the thread, are no
+  // longer its ancestors.
+  const { threadId, streamingId, model, setModel } = useChatSession();
   const { draft, setDraft } = useComposer();
   const [value, setValue] = useState("");
   const taRef = useRef<HTMLTextAreaElement | null>(null);
@@ -146,13 +142,13 @@ export function Composer({
     void doSend();
   };
 
-  const isStreaming = Boolean(streamingMessageId);
+  const isStreaming = Boolean(streamingId);
   const hasContent = value.trim().length > 0 || attachments.readyIds.length > 0;
 
   const onStop = async () => {
-    if (!streamingMessageId) return;
+    if (!streamingId) return;
     try {
-      await stop({ messageId: streamingMessageId });
+      await stop({ messageId: streamingId });
     } catch {
       toast.error("Couldn't stop the response");
     }
@@ -264,7 +260,7 @@ export function Composer({
               >
                 <Paperclip className="h-4 w-4" />
               </button>
-              <ModelPicker value={model} onChange={onModelChange} disabled={isStreaming} />
+              <ModelPicker value={model} onChange={setModel} disabled={isStreaming} />
             </div>
             <div className="flex items-center gap-2">
               <span

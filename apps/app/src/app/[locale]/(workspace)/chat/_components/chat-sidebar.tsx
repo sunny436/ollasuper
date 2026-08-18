@@ -1,6 +1,6 @@
 "use client";
 
-import { BrandCore } from "./brand-core";
+import { IntelligenceCore } from "./intelligence-core";
 import { ThemeSwitcher } from "@/components/theme-switcher";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
@@ -48,7 +48,7 @@ interface ThreadItem {
 function BrandHeader() {
   return (
     <div className="flex items-center gap-3 border-b border-border px-3 py-3.5">
-      <BrandCore />
+      <IntelligenceCore />
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
           <span className="text-sm font-semibold tracking-tight text-primary">

@@ -197,10 +197,21 @@ const step = async (n, f) => {
         const el = [...document.querySelectorAll("div")].find(
           (d) =>
             d.scrollHeight > d.clientHeight + 200 &&
-            getComputedStyle(d).overflowY === "auto",
+            getComputedStyle(d).overflowY === "auto" &&
+            // Exclude the conversation rail. It sits earlier in the DOM and,
+            // once an account has accumulated enough threads, it overflows
+            // too — so a plain "first scrollable div" scrolls the SIDEBAR and
+            // the pill, which belongs to the transcript, correctly never shows.
+            !d.closest("nav"),
         );
         if (!el) return null;
         el.scrollTop = 0;
+        // A programmatic scrollTop is NOT user intent. use-stick-to-bottom.ts
+        // keeps a synchronous latch on wheel/touchstart/keys precisely because
+        // its IntersectionObserver can be a frame late, so without a real
+        // gesture the hook re-pins to the bottom and the pill — which exists to
+        // say "you scrolled away" — correctly never appears.
+        el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -400 }));
         return { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
       });
       if (scrolled) break;
