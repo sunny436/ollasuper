@@ -1,8 +1,0 @@
-Cloud URL
-https://benevolent-koala-651.convex.cloud
-HTTP Actions URL
-https://benevolent-koala-651.convex.site
-
-Deployment Key
-
-dev:benevolent-koala-651|eyJ2MiI6ImMwZmE5ZTJjY2RmMjRkMzk5ZjQ0ZmQxYmM4N2Y2ZjIzIn0=

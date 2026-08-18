@@ -81,6 +81,7 @@ graphify-out/
 cf_tunnel_info.txt
 open_router_key.txt
 google_auth.txt
+convex.txt
 *_auth*.txt
 *.client_secret*.json
 *_token*.txt
