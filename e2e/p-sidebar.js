@@ -5,6 +5,16 @@ const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
 // run). Any deployment reachable from the internet must set ADMIN_PASSWORD.
 const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
 const errs = [], results = []; let cur = BASE;
+// Wait for the rail to reach a visibility state, polling instead of sleeping.
+// Fails in 8s if it genuinely never gets there, so a real break is still loud.
+const railState = async (rail, want, what) => {
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    if ((await rail.isVisible()) === want) return;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error(`rail did not ${what}`);
+};
 const step = async (n, f) => { try { const d = await f(); results.push([true, n, d || ""]); console.log("PASS  " + n + (d ? " — " + d : "")); } catch (e) { results.push([false, n, e.message.split("\n")[0]]); console.log("FAIL  " + n + " — " + e.message.split("\n")[0]); } };
 (async () => {
   const b = await chromium.launch({ headless: !!process.env.CI, slowMo: process.env.CI ? 0 : 120 });
@@ -34,14 +44,25 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
   });
   await step("workspace rail collapses and restores", async () => {
     const rail = page.locator('nav[aria-label="Conversations"]').first();
+    // Poll rather than sleep a fixed 600ms. The rail restores its persisted
+    // state in an effect and then animates a 300ms width transition, so on a
+    // cold CI runner the collapse can land AFTER a fixed wait. That produced a
+    // 1-in-8 "rail did not collapse", and then cascaded: the rail collapsed a
+    // moment later, taking the account-menu button (which lives inside it) out
+    // of view, so the next step hung for its full 30s click timeout.
     await page.getByRole("button", { name: "Hide conversations" }).click();
-    await page.waitForTimeout(600);
-    if (await rail.isVisible()) throw new Error("rail did not collapse");
+    await railState(rail, false, "collapse");
     await page.getByRole("button", { name: "Open conversations" }).click();
-    await page.waitForTimeout(600);
-    if (!(await rail.isVisible())) throw new Error("rail did not restore");
+    await railState(rail, true, "restore");
   });
   await step("account menu exposes the routes that kept the shell", async () => {
+    // The account menu lives inside the rail, so make this step independent of
+    // whatever state the previous one left behind.
+    const rail = page.locator('nav[aria-label="Conversations"]').first();
+    if (!(await rail.isVisible())) {
+      await page.getByRole("button", { name: "Open conversations" }).click();
+      await railState(rail, true, "restore before account menu");
+    }
     await page.getByRole("button", { name: "Account menu" }).click();
     for (const label of ["Settings", "Files", "Billing"]) {
       if (!(await page.getByRole("link", { name: label }).first().isVisible()))
