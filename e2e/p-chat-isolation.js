@@ -13,7 +13,11 @@
 const { ConvexHttpClient } = require("convex/browser");
 const { anyApi } = require("convex/server");
 
-const CONVEX_URL = process.env.CONVEX_URL || "http://10.1.30.14:3210";
+// Default to the local backend. The previous default was the OLD VM's address,
+// which still answers, so this suite silently exercised a different deployment
+// and failed with "Could not find public function for 'chat/threads:create'"
+// — a confusing way to discover you are talking to the wrong server.
+const CONVEX_URL = process.env.CONVEX_URL || "http://127.0.0.1:3210";
 const results = [];
 
 const step = async (n, f) => {
@@ -48,7 +52,37 @@ const denied = async (label, fn) => {
   }
 };
 
-/** Sign up and verify, capturing the code the backend logs (see ci-bootstrap.js). */
+const MAILPIT = process.env.E2E_MAILPIT_URL || "http://127.0.0.1:8025";
+
+/** Read a verification code out of Mailpit, newest message first. */
+async function codeFromMailpit(email) {
+  const res = await fetch(
+    `${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:${email}`)}&limit=25`,
+  ).catch(() => null);
+  if (!res || !res.ok) return null;
+  const { messages = [] } = await res.json();
+  for (const m of messages) {
+    const full = await fetch(`${MAILPIT}/api/v1/message/${m.ID}`).catch(() => null);
+    if (!full || !full.ok) continue;
+    const body = await full.json();
+    const text = `${body.Subject || ""} ${body.Text || ""}`;
+    if (!text.toLowerCase().includes("verification")) continue;
+    const hit = text.match(/\b(\d{6,8})\b/);
+    if (hit) return hit[1];
+  }
+  return null;
+}
+
+/**
+ * Sign up and verify.
+ *
+ * The code is read from Mailpit, falling back to captured log output. The log
+ * path alone is NOT sufficient: `authCodes.deliverCode` only logs the code when
+ * no mail transport is configured, so once SMTP points at Mailpit the code stops
+ * appearing in logs entirely and this failed with "no verification code
+ * captured". Logging codes was also flagged as an auth-bypass risk for anyone
+ * with log access, so the mail path is the one worth depending on.
+ */
 async function signUp(email, password) {
   const captured = [];
   const orig = { warn: console.warn, log: console.log, error: console.error };
@@ -63,7 +97,14 @@ async function signUp(email, password) {
       provider: "password",
       params: { email, password, flow: "signUp" },
     });
-    const m = captured.join("\n").match(/code for [^:]+: '?(\d+)/);
+    let code = null;
+    for (let i = 0; i < 14 && !code; i++) {
+      code = await codeFromMailpit(email);
+      if (!code) await new Promise((r) => setTimeout(r, 1500));
+    }
+    const m = code
+      ? [null, code]
+      : captured.join("\n").match(/code for [^:]+: '?(\d+)/);
     if (!m) throw new Error("no verification code captured for " + email);
     const verified = await c.action(anyApi.auth.signIn, {
       provider: "password",
@@ -112,6 +153,22 @@ async function signUp(email, password) {
     threadId,
     content: SECRET_BODY,
     clientId: `iso-${ts}`,
+  });
+
+  // Pin the title as user-set, or the auto-titler will replace it.
+  //
+  // threads.create stores titleSource "auto" even when a title is supplied, and
+  // once the first turn completes the Python plane calls chat/ingest:setTitle,
+  // which overwrites any title that is not "user"-sourced. SECRET_TITLE then no
+  // longer exists and the owner-side search control fails, which reads alarmingly
+  // as "the isolation results above are vacuous". rename() sets titleSource
+  // "user", which setTitle explicitly refuses to overwrite.
+  //
+  // This only began failing once chat generation worked again: with the AI plane
+  // unreachable no title was ever generated, so the planted title survived.
+  await owner.mutation(anyApi.chat.threads.rename, {
+    threadId,
+    title: SECRET_TITLE,
   });
 
   await step("peer is a real member of the workspace", async () => {
@@ -183,13 +240,28 @@ async function signUp(email, password) {
   );
 
   await step("owner CAN find it by search (proves search actually works)", async () => {
-    const hits = await owner.query(anyApi.chat.search.threads, {
-      workspaceId: ws,
-      query: SECRET_TITLE,
-    });
+    // Convex text indexes are eventually consistent: writes land in the SQL store
+    // immediately, but the index itself is rebuilt by the TextLiveFlusher into
+    // file storage a moment later. Asserting instantly tests index latency rather
+    // than search correctness, and it fails in the worst possible way — by
+    // declaring the isolation checks above vacuous when they were in fact fine.
+    //
+    // Still bounded: if search is genuinely broken this fails after 30s, so the
+    // control keeps its teeth. The peer-side denials above are NOT polled, on
+    // purpose — a leak must never be given time to appear.
+    let hits = [];
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      hits = await owner.query(anyApi.chat.search.threads, {
+        workspaceId: ws,
+        query: SECRET_TITLE,
+      });
+      if (hits && hits.length) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
     if (!hits || hits.length === 0) {
       throw new Error(
-        "owner's own search returned nothing — the isolation results above are vacuous",
+        "owner's own search returned nothing after 30s — the isolation results above are vacuous",
       );
     }
   });

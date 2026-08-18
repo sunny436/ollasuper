@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**myos** — a self-hosted, multi-tenant SaaS control-plane forked from `get-convex/v1`, plus an AI chat product built on top of it. It is **live in production** on a VM at `10.1.30.14` (Convex `:3210`/`:3211`, Next `:3000`, backend-echo `:4000`, dashboard `:6791`), publicly tunnelled at `app.ollasuper.com` — with Convex reachable at `convex.ollasuper.com` (`:3210`) and `convex-site.ollasuper.com` (`:3211`), because the browser opens its WebSocket to Convex directly and cannot ride on the app's hostname. Treat pushes to it accordingly.
+**myos** — a self-hosted, multi-tenant SaaS control-plane forked from `get-convex/v1`, plus an AI chat product built on top of it. It is **live in production** on a VM at `10.1.30.14` (Convex `:3210`/`:3211`, Next `:3000`, backend-echo `:4000`, dashboard `:6791`), publicly tunnelled at `app.ollasuper.com`. Treat pushes to it accordingly.
+
+The browser opens a WebSocket to Convex directly, and it reaches it **through the app's own hostname** on the path form — `app.ollasuper.com/__cvx` → `:3210`, `/__cvx-site` → `:3211` — which is what `NEXT_PUBLIC_CONVEX_URL` is set to. This works because `edge/proxy.js:68` installs an `upgrade` handler (its own comment: *"load-bearing: the Convex browser client is a WSS"*) and path routing is matched before host routing. An earlier version of this file claimed the WebSocket "cannot ride on the app's hostname" — that is **wrong**, and it was wrong in a costly direction, because it implies Cloudflare Tunnel and DNS work that is not needed. The host form (`convex.ollasuper.com`, `convex-site.ollasuper.com`) is the optional clean alternative: DNS for both already resolves, but neither is a Public Hostname on the tunnel, so both currently return **404** while `/__cvx` returns 200.
 
 `ollasuper.com` itself is **not ours** — the apex, `www` and `tokens.` serve other properties (a marketing site and a design-token site on Cloudflare Pages), and the zone carries live MX/SPF/DKIM/DMARC mail records. Anything touching DNS must operate on an allowlist of our three hostnames; `deploy/58-ollasuper-dns.sh` does, and diffs the whole zone afterwards to prove nothing else moved.
 
@@ -12,11 +14,71 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The dashboard, devices, sessions, AI-access, jobs and platform sections were removed; `/` redirects to `/chat`. The remaining surfaces are **Chat**, **Files**, **Settings** and **Billing**. Tenancy, RBAC, API keys, usage, audit and events survived the removal as backend-only modules — they lost their Platform UI, not their function.
 
-## Where the data lives (changed 2026-08-18)
+## Where the data lives (PostgreSQL since 2026-08-18)
 
-**Convex Cloud (`benevolent-koala-651`) is the source of truth for ALL Convex
-data**, including users, accounts, sessions, workspaces, members and chat. The
-self-hosted Convex on the VM is retained only as a rollback snapshot.
+**PostgreSQL 16 on the VM is the persistent database.** Self-hosted Convex runs
+with `--db postgres-v5` against database `convex_self_hosted`, so every Convex
+function, auth flow, subscription, scheduler and the whole frontend are unchanged
+— only the storage engine moved. Convex Cloud (`benevolent-koala-651`) is left
+running and untouched as the rollback of record.
+
+Read this before touching any of it:
+
+- **Convex does NOT map its tables to SQL tables.** `\dt` shows exactly five
+  relations — `documents · indexes · leases · persistence_globals · read_only` —
+  and all 25 logical tables live as rows inside `documents`. That is correct, not
+  a failed migration. Your data is **not** queryable as relational SQL.
+- **Not everything is in PostgreSQL.** Without the six `S3_STORAGE_*` vars,
+  `run_backend.sh` passes `--local-storage`, so compiled **modules**, **text
+  search indexes**, exports and snapshot-import staging stay on the docker volume
+  (`storage/{modules,search,exports,files,snapshot_imports}`). PostgreSQL holds
+  tables, documents, index data, scheduler and cron state.
+- **`POSTGRES_URL` must carry `?sslmode=disable`** (despite upstream saying "no
+  query params"). `DO_NOT_REQUIRE_SSL` makes TLS *optional*, not *unverified*:
+  the driver still prefers TLS and dies with `invalid peer certificate:
+  UnknownIssuer` against this host's snakeoil cert, which carries only
+  `DNS:ollasuper-vm` and no IP SAN, so connecting by IP can never validate.
+- **The backend does not create its own database.** It connects straight to the
+  name derived from `INSTANCE_NAME` (`-`→`_`) and exits `FATAL: database ... does
+  not exist`. `CREATEDB` on the role is not enough; pre-create it.
+- **MIGRATION ORDER IS LOAD-BEARING: import BEFORE deploy, then restart.**
+  `--replace-all` replaces module *metadata* in the SQL store, but module *blobs*
+  live in local file storage and no snapshot restores them. Deploying first leaves
+  `couldn't open .../modules/<uuid>.blob` and a permanently failing
+  `reap stalled chat streams` cron; a later deploy re-uploads blobs but does not
+  rebind existing crons.
+- **The compose network subnet is pinned** to `172.18.0.0/16` in
+  `docker-compose.override.yml` because `deploy/62-convex-postgres.sh` scopes one
+  `pg_hba` line and one `ufw` rule to it. `ufw`'s INPUT policy is DROP, so a
+  mismatch presents as a **hang**, not an error.
+- **`listen_addresses` must be `*`, never the bridge gateway.** PostgreSQL binds
+  its sockets once at startup and boots *before* Docker creates the bridge, so
+  naming the gateway fails with `could not bind IPv4 address "172.18.0.1":
+  Cannot assign requested address`; Postgres then serves loopback only and the
+  backend restart-loops on `Connection refused (os error 111)`. Docker also
+  renames the interface across reboots (`br-6c73df06e774` → `br-4a4201efea2e`),
+  so a named interface is racy by construction. Only a **reboot test** catches
+  this — it is invisible whenever the bridge already happens to exist. Exposure
+  stays closed by ufw plus pg_hba, not by the bind address.
+- The backend image is pinned **by digest** — a silently newer backend could
+  migrate the persistence layout of a live database on an unattended restart.
+- The admin key is `f(INSTANCE_NAME, INSTANCE_SECRET)`, both persisted in the
+  volume's `credentials/`, so it survives the storage swap unchanged.
+- `db.sqlite3` is renamed to `db.sqlite3.disabled-proof` on the volume. Leave it
+  that way: if `POSTGRES_URL` ever goes missing, `run_backend.sh` silently falls
+  back to SQLite, and an absent file makes that failure obvious instead of
+  serving stale pre-migration data.
+
+Scripts: `deploy/62-convex-postgres.sh` (Postgres prep), `63-convex-pg-cutover.sh`
+(data), `64-convex-pg-app-cutover.sh` (app repoint). All idempotent.
+
+### Historical note — the Cloud migration this replaced
+
+`users` could not be moved on its own: `Id<T>` is deployment-scoped, 16
+`v.id("users")` foreign keys span the schema, `upsertUserAndAccount` writes
+`users`+`authAccounts` in one transaction, and `getAuthUserId` is a bare cast on
+the JWT `sub` with no DB lookup — so a split fails *silently*, not loudly. The
+whole deployment therefore moved together, and the same held moving back.
 
 `users` could not be moved on its own: `Id<T>` is deployment-scoped, 16
 `v.id("users")` foreign keys span the schema, `upsertUserAndAccount` writes
