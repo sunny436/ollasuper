@@ -1,19 +1,25 @@
 "use client";
 
+import { BrandCore } from "./brand-core";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import {
+  CreditCard,
   Folder,
   FolderOpen,
   FolderPlus,
+  FolderSearch,
+  LogOut,
   MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
   Plus,
   Search,
+  Settings,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -22,6 +28,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { timeBucket } from "../_lib/format";
+import { useAuthActions } from "@convex-dev/auth/react";
 import { PromptLibrary } from "./prompt-library";
 
 const PAGE = 30;
@@ -35,6 +42,144 @@ interface ThreadItem {
   isStreaming: boolean;
 }
 
+
+/**
+ * Module scope, never nested inside ChatSidebar.
+ *
+ * A sub-component declared inside its parent is a NEW component type on every
+ * parent render, so React unmounts and remounts it — which in this file would
+ * blow away the search input's focus and value on each keystroke. The same bug
+ * is documented above Shell in components/auth/auth-form.tsx.
+ */
+function BrandHeader() {
+  return (
+    <div className="flex items-center gap-3 border-b border-border px-3 py-3.5">
+      <BrandCore />
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-semibold tracking-tight text-primary">
+            Ollasuper
+          </span>
+          <span className="rounded border border-brand/25 bg-brand/10 px-1.5 py-px text-[9px] font-semibold text-brand-ink">
+            v4.0
+          </span>
+        </div>
+        <p className="truncate text-[11px] text-primary/50">AI Workspace</p>
+      </div>
+    </div>
+  );
+}
+
+function ProfileMenuItem({
+  href,
+  icon: Icon,
+  label,
+  onNavigate,
+}: {
+  href: string;
+  icon: typeof Settings;
+  label: string;
+  onNavigate?: () => void;
+}) {
+  return (
+    <Link
+      href={href}
+      onClick={onNavigate}
+      className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs text-primary/75 transition hover:bg-primary/5 hover:text-primary"
+    >
+      <Icon className="h-3.5 w-3.5 text-primary/45" />
+      {label}
+    </Link>
+  );
+}
+
+/**
+ * The workspace has no app rail, so this footer is the ONLY route out to the
+ * pages that kept the dashboard shell. Losing it would strand the user in
+ * /chat with no way to reach Settings or Billing.
+ */
+function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
+  const user = useQuery(api.users.getUser);
+  const { signOut } = useAuthActions();
+  const [open, setOpen] = useState(false);
+
+  // Escape closes, matching the drawer and the command palette.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div className="relative border-t border-border p-2">
+      {open && (
+        <>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
+          <div
+            className="fixed inset-0 z-10"
+            onClick={() => setOpen(false)}
+            aria-hidden="true"
+          />
+          <div className="absolute bottom-[calc(100%-0.25rem)] left-2 right-2 z-20 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+            <ProfileMenuItem
+              href="/settings"
+              icon={Settings}
+              label="Settings"
+              onNavigate={onNavigate}
+            />
+            <ProfileMenuItem
+              href="/files"
+              icon={FolderSearch}
+              label="Files"
+              onNavigate={onNavigate}
+            />
+            <ProfileMenuItem
+              href="/settings/billing"
+              icon={CreditCard}
+              label="Billing"
+              onNavigate={onNavigate}
+            />
+            <div className="my-1.5 border-t border-border" />
+            <div className="flex items-center justify-between gap-2 px-1.5 py-0.5">
+              <ThemeSwitcher />
+              <button
+                type="button"
+                onClick={() => void signOut()}
+                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-primary/60 transition hover:bg-primary/5 hover:text-primary"
+              >
+                <LogOut className="h-3.5 w-3.5" /> Log out
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-label="Account menu"
+        className="flex w-full items-center gap-2.5 rounded-xl border border-border bg-card/60 p-2 text-left transition hover:bg-primary/5"
+      >
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-sky-400 to-indigo-600 text-xs font-semibold text-white">
+          {(user?.name || user?.email || "?").charAt(0).toUpperCase()}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-primary/85">
+            {user?.name || "Account"}
+          </span>
+          <span className="block truncate text-[10px] text-primary/45">
+            {user?.email}
+          </span>
+        </span>
+        <Settings className="h-4 w-4 shrink-0 text-primary/40" />
+      </button>
+    </div>
+  );
+}
 export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const params = useParams<{ threadId?: string }>();
@@ -144,14 +289,18 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-border p-3">
+      <BrandHeader />
+
+      <div className="flex items-center gap-2 p-3">
         <button
           type="button"
           onClick={() => void onNewChat()}
-          className="flex flex-1 items-center gap-2 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:brightness-110"
+          className="group flex flex-1 items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm font-medium text-primary shadow-sm transition hover:bg-primary/5"
         >
-          <Plus className="h-4 w-4" />
-          New chat
+          <span className="flex items-center gap-2">
+            <Plus className="h-4 w-4 text-brand-ink transition-transform duration-300 group-hover:rotate-90 motion-reduce:transition-none" />
+            New chat
+          </span>
         </button>
         <button
           type="button"
@@ -306,6 +455,8 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           </button>
         )}
       </div>
+
+      <ProfileFooter onNavigate={onNavigate} />
 
       <PromptLibrary open={libraryOpen} onClose={() => setLibraryOpen(false)} />
     </div>

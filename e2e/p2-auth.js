@@ -111,8 +111,9 @@ async function getCode(label, email) {
     if (!cur.includes("/chat")) throw new Error("did not land on /chat: " + cur);
   });
   await step("Sign out", async () => {
-    // The sidebar footer has a plain "Log out" button; the old selector
-    // (nav button.rounded-full) described an avatar dropdown that no longer exists.
+    // Log out now lives in the workspace account menu rather than in an
+    // always-visible shell footer, so open it first.
+    await page.getByRole("button", { name: "Account menu" }).click({ timeout: 8000 });
     await page.getByRole("button", { name: "Log out" }).click({ timeout: 8000 });
     await page.waitForTimeout(2500);
   });
@@ -132,6 +133,7 @@ async function getCode(label, email) {
     if (/login/.test(cur)) throw new Error("reset login failed");
   });
   await step("Admin password sign-in still works (regression)", async () => {
+    await page.getByRole("button", { name: "Account menu" }).click({ timeout: 8000 }).catch(() => {});
     await page.getByRole("button", { name: "Log out" }).click({ timeout: 8000 }).catch(() => {});
     await page.waitForTimeout(2000);
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });

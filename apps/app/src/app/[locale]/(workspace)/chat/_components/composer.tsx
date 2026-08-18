@@ -208,7 +208,7 @@ export function Composer({
         <label htmlFor="chat-composer" className="sr-only">
           Message
         </label>
-        <div className="rounded-2xl border border-border bg-card px-3 py-2 shadow-sm transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25">
+        <div className="rounded-3xl border border-border bg-card/70 px-3 py-2.5 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25">
           {attachments.items.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {attachments.items.map((item) => (

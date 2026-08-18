@@ -3,9 +3,10 @@
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
-import { Check, Copy, Pencil, RefreshCw, RotateCcw } from "lucide-react";
+import { Check, Copy, Pencil, RefreshCw, RotateCcw, Sparkles } from "lucide-react";
 import { memo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { modelLabel } from "../_lib/models";
 import { Markdown } from "./markdown";
 import { TypingIndicator } from "./typing-indicator";
 
@@ -28,6 +29,54 @@ export interface ChatMessage {
   createdAt: number;
 }
 
+
+/**
+ * The `You - 10:14 AM` / `Model - 10:14 AM` line above each turn.
+ *
+ * toLocaleTimeString is locale- and timezone-dependent, which is normally a
+ * hydration hazard: the server formats in the server's zone and the client in
+ * the browser's, React reports the difference through console.error, and every
+ * e2e script fails the run on one of those.
+ *
+ * It is safe HERE and only here because no message bubble is ever server
+ * rendered: messages arrive through useQuery/usePaginatedQuery, which resolve
+ * to undefined during SSR under ConvexAuthNextjsProvider, so MessageList paints
+ * skeletons on the server and real turns exist on the client only. Do not lift
+ * this into anything that renders with server-supplied data.
+ */
+function MessageMeta({
+  who,
+  at,
+  assistant,
+}: {
+  who: string;
+  at: number;
+  assistant?: boolean;
+}) {
+  return (
+    <div
+      className={`mb-1.5 flex items-center gap-1.5 px-1 text-[11px] text-primary/40 ${
+        assistant ? "" : "justify-end"
+      }`}
+    >
+      {assistant && (
+        <Sparkles className="h-3 w-3 text-brand-ink" aria-hidden="true" />
+      )}
+      <span
+        className={assistant ? "font-medium text-brand-ink" : "text-primary/50"}
+      >
+        {who}
+      </span>
+      <span aria-hidden="true">·</span>
+      <time dateTime={new Date(at).toISOString()}>
+        {new Date(at).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        })}
+      </time>
+    </div>
+  );
+}
 function MessageBubbleImpl({
   message,
   isStreaming,
@@ -70,8 +119,9 @@ function MessageBubbleImpl({
   // --- user turn ---------------------------------------------------------
   if (message.role === "user") {
     return (
-      <div className="group my-5 flex justify-end">
+      <div className="group my-5 flex flex-col items-end">
         <div className="max-w-[85%] md:max-w-[75%]">
+          <MessageMeta who="You" at={message.createdAt} />
           {message.attachments && message.attachments.length > 0 && (
             <div className="mb-1.5 flex flex-wrap justify-end gap-1.5">
               {message.attachments.map((a) =>
@@ -93,7 +143,14 @@ function MessageBubbleImpl({
               )}
             </div>
           )}
-          <div className="rounded-2xl rounded-br-md bg-primary/[0.06] px-4 py-2.5 text-[15px] leading-[1.7] text-primary/90 dark:bg-primary/10">
+          {/*
+            The gradient is the one place the prototype's sky-indigo-purple ramp
+            appears literally rather than through the brand tokens: it is a
+            three-stop ramp and --brand is a single colour. Text is fixed white
+            because every stop is dark enough for it (>= 4.5:1 across the ramp),
+            in both themes -- so this block deliberately does NOT invert.
+          */}
+          <div className="rounded-2xl rounded-br-md bg-gradient-to-br from-sky-500 via-indigo-600 to-purple-600 px-4 py-2.5 text-[15px] leading-[1.7] text-white shadow-sm">
             <p className="whitespace-pre-wrap break-words">{message.content}</p>
           </div>
           <div className="mt-1 flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
@@ -117,6 +174,11 @@ function MessageBubbleImpl({
 
   return (
     <div className="group my-5">
+      <MessageMeta
+        assistant
+        who={modelLabel(message.model)}
+        at={message.createdAt}
+      />
       {showTyping ? (
         <TypingIndicator />
       ) : (

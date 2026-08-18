@@ -1,6 +1,6 @@
 import { WorkspaceProvider } from "@/lib/workspace-provider";
 import { Toaster } from "sonner";
-import { CommandPalette } from "./_components/command-palette";
+import { CommandPalette } from "@/components/command-palette";
 import { Sidebar } from "./_components/sidebar";
 import { Topbar } from "./_components/topbar";
 

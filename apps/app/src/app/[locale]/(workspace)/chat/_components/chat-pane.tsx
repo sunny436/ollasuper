@@ -3,7 +3,7 @@
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useQuery } from "convex/react";
-import { PanelLeft } from "lucide-react";
+import { SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_MODEL } from "../_lib/models";
 import { Composer } from "./composer";
@@ -15,7 +15,7 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
     null,
   );
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
-  const { openSidebar } = useChatSidebar();
+  const { openSidebar, collapsed, toggleCollapsed } = useChatSidebar();
 
   // threadId is a raw URL string, so this query takes v.string() and
   // normalizeId's it server-side. Returns null for a bad or foreign id.
@@ -41,18 +41,43 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
   // conversation sidebar is a sibling of this pane and shares the same draft.
   return (
     <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-4 xl:hidden">
+      {/*
+        The workspace header. Always present now, not xl:hidden — with the app
+        topbar gone this is the only chrome above the transcript.
+
+        Two buttons, never both visible: below md the rail is a drawer, so the
+        control opens it; from md up the rail is docked, so the control toggles
+        the dock. They are separate elements rather than one with a switched
+        handler because the accessible name has to differ, and Playwright's
+        name matcher is substring-based — a label of `Close conversations`
+        would collide with the prompt library's `Close` button and throw on
+        strict mode. Hence `Hide`.
+      */}
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/50 px-4 backdrop-blur-xl">
         <button
           type="button"
           onClick={openSidebar}
           aria-label="Open conversations"
-          className="rounded-md p-1.5 text-primary/60 transition hover:bg-primary/5"
+          className="rounded-lg border border-border p-2 text-primary/60 transition hover:bg-primary/5 hover:text-primary md:hidden"
         >
-          <PanelLeft className="h-4 w-4" />
+          <SlidersHorizontal className="h-4 w-4" />
         </button>
-        <span className="truncate text-sm text-primary/80">
-          {thread?.title ?? "New chat"}
-        </span>
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-label={collapsed ? "Open conversations" : "Hide conversations"}
+          className="hidden rounded-lg border border-border p-2 text-primary/60 transition hover:bg-primary/5 hover:text-primary md:block"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </button>
+
+        <div className="flex min-w-0 items-center gap-2 text-xs">
+          <span className="hidden text-primary/45 sm:inline">Ollasuper</span>
+          <span className="hidden text-primary/25 sm:inline">/</span>
+          <span className="truncate font-medium text-primary/85">
+            {thread?.title ?? "AI Workspace"}
+          </span>
+        </div>
       </header>
 
       {notFound ? (

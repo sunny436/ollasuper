@@ -17,7 +17,9 @@ const step = async (n, f) => { try { await f(); results.push(true); console.log(
     await page.locator('input[type="password"]').first().fill(PASSWORD);
     await page.click('button[type="submit"]');
     await page.waitForTimeout(3500);
-    await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
+    // /files, not /en: the bell is in the dashboard topbar, and /chat is now
+    // full-bleed with no topbar.
+    await page.goto(BASE + "/en/files", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
   });
   await step("notifications bell visible in topbar", async () => {

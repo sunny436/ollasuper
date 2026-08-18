@@ -51,6 +51,9 @@ const step = async (n, f) => {
   });
 
   await step("Chat appears in the sidebar and navigates", async () => {
+    // /chat is full-bleed and has no dashboard aside, so drive the shell nav
+    // from a route that kept it. Still proves shell -> chat navigation works.
+    await page.goto(BASE + "/en/files", { waitUntil: "domcontentloaded" });
     await page.locator("aside").getByRole("link", { name: "Chat" }).click();
     await page.waitForURL(/\/chat/, { timeout: 10000 });
   });

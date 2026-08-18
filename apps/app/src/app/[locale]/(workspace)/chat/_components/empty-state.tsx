@@ -96,7 +96,7 @@ function PromptCard({
   onSend: () => void;
 }) {
   return (
-    <div className="group relative rounded-xl border border-border bg-card p-3.5 transition-colors hover:border-brand/40 hover:bg-primary/5">
+    <div className="group relative rounded-2xl border border-border bg-card/60 p-3.5 backdrop-blur-sm transition-colors hover:border-brand/40 hover:bg-primary/5">
       <button type="button" onClick={onPick} className="block w-full text-left">
         <span className="block text-sm text-primary/85">{title}</span>
         <span className="mt-0.5 block text-xs text-primary/45">{hint}</span>
@@ -136,8 +136,10 @@ export function EmptyState({ threadId }: { threadId: string | null }) {
 
   return (
     <div className="mx-auto w-full max-w-3xl animate-fade-in-up px-4 py-10 motion-reduce:animate-none">
-      <div className="grid h-11 w-11 place-items-center rounded-xl bg-brand/[0.12] ring-1 ring-brand/25">
-        <Sparkles className="h-5 w-5 text-brand-ink" />
+      <div className="h-12 w-12 rounded-2xl bg-gradient-to-tr from-sky-400 via-indigo-500 to-purple-500 p-[1.5px] shadow-[0_0_36px_hsl(var(--brand)/0.3)]">
+        <div className="grid h-full w-full place-items-center rounded-[14px] bg-card">
+          <Sparkles className="h-5 w-5 text-brand-ink" />
+        </div>
       </div>
 
       <h1 className="mt-4 text-2xl font-medium text-primary">
@@ -164,8 +166,8 @@ export function EmptyState({ threadId }: { threadId: string | null }) {
               onClick={() => setMode(id)}
               className={`rounded-xl border p-3 text-left transition ${
                 selected
-                  ? "border-brand bg-brand/10 text-brand-ink ring-1 ring-brand/40"
-                  : "border-border bg-card text-primary/70 hover:bg-primary/5"
+                  ? "border-brand/40 bg-brand/10 text-brand-ink ring-1 ring-brand/30"
+                  : "border-border bg-card/60 text-primary/70 backdrop-blur-sm hover:border-brand/25 hover:bg-primary/5"
               }`}
             >
               <Icon className="h-4 w-4" />
