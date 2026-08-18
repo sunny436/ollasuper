@@ -128,8 +128,19 @@ echo "SITE_URL=$("$NODE" "$CVX" env get SITE_URL 2>&1 | tail -1)"
 # ------------------------------------------------------------ 4. app + echo env
 say "4/6 app + backend-echo env"
 cp -a /opt/myos/apps/app/.env "/opt/myos/apps/app/.env.bak-$STAMP" 2>/dev/null
+# Convex Cloud is the source of truth for user/account data as of the
+# 2026-08-18 migration, so this script must NOT silently drag the app back
+# onto the self-hosted deployment. An existing value wins; override with
+# FORCE_CONVEX_URL=1 only if you genuinely mean to repoint it.
+EXISTING_CVX=$(grep -oP "(?<=^NEXT_PUBLIC_CONVEX_URL=).*" /opt/myos/apps/app/.env 2>/dev/null || true)
+if [ -n "${EXISTING_CVX:-}" ] && [ "${FORCE_CONVEX_URL:-0}" != "1" ]; then
+  CVX_TARGET=$EXISTING_CVX
+  echo "  keeping existing NEXT_PUBLIC_CONVEX_URL=$CVX_TARGET (FORCE_CONVEX_URL=1 to override)"
+else
+  CVX_TARGET=https://$CVX_HOST
+fi
 cat > /opt/myos/apps/app/.env <<EOF
-NEXT_PUBLIC_CONVEX_URL=https://$CVX_HOST
+NEXT_PUBLIC_CONVEX_URL=$CVX_TARGET
 NEXT_PUBLIC_BACKEND_URL=http://10.1.30.14:4000
 EOF
 cat /opt/myos/apps/app/.env

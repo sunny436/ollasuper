@@ -136,6 +136,14 @@ Convex stays the data plane; a separate **Python FastAPI + LangGraph** service a
   streaming path, because the writer already filters on `langgraph_node == "model"`).
 
 ## Notes / caveats
+- **Convex Cloud is now the production source of truth (2026-08-18).** The whole
+  deployment moved (1121 rows, 30 tables, 0 storage blobs); ids were preserved so
+  all 16 `v.id("users")` foreign keys resolved with zero dangling refs. Proven by
+  a real signup landing on Cloud (users 26->27) while self-hosted stayed at 26.
+  Self-hosted is kept as a rollback; `deploy/57-ollasuper-domain.sh` now refuses
+  to repoint the app back unless `FORCE_CONVEX_URL=1`.
+  Outstanding: Google redirect URI for `*.convex.site` must be registered, and
+  `RESEND_API_KEY` must be set so auth codes stop being written to logs.
 - **Backups did not exist on the rebuilt VM (fixed 2026-08-18).** `/opt/backups` was absent,
   no cron was installed, there was no log, and `deploy/backup.sh` was not executable — so
   production had no recovery point at all, despite "nightly backup" being listed under Done.
