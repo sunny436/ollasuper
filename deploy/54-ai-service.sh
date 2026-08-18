@@ -83,6 +83,11 @@ cd "$REPO/packages/backend"
 "$NODE" "$CVX" env set -- AI_BASE_URL       "http://127.0.0.1:8770" >/dev/null
 "$NODE" "$CVX" env set -- AI_SERVICE_KEY    "$AI_SERVICE_KEY"       >/dev/null
 "$NODE" "$CVX" env set -- AI_INGRESS_SECRET "$AI_INGRESS_SECRET"    >/dev/null
+# The catalogue fetch lives in a Convex action (mutations cannot fetch), so the
+# key has to exist on BOTH planes. It is still never generated or defaulted --
+# this only copies the value the operator put in services/ai/.env above, and the
+# script has already hard-failed if that was blank.
+"$NODE" "$CVX" env set -- OPENROUTER_API_KEY "$OPENROUTER_API_KEY"   >/dev/null
 "$NODE" "$CVX" deploy -y
 
 echo "[5/5] systemd"

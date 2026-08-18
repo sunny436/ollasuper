@@ -125,11 +125,34 @@ async def test_per_user_concurrency_cap(client):
     assert r.headers.get("Retry-After")
 
 
-async def test_unknown_model_is_rejected_by_validation(client):
+async def test_an_arbitrary_catalogue_model_is_accepted(client):
+    """The model list is fetched live from OpenRouter, so the service must not
+    second-guess it. Convex is the authority on what is allowed; this side only
+    rejects structurally invalid values.
+
+    This previously asserted the opposite (422 for "openai/gpt-4o") against a
+    hard-coded three-model enum. That id is a real, selectable model now.
+    """
     c, _, runner = client
     r = await c.post(
         "/v1/generate",
         json=_payload(model="openai/gpt-4o"),
+        headers={"x-service-key": SERVICE_KEY},
+    )
+    assert r.status_code == 202
+    # The runner is scheduled as a background task, so yield once before
+    # asserting -- same as test_generate_accepts_and_starts above.
+    await asyncio.sleep(0.05)
+    assert runner.started == 1
+
+
+async def test_an_empty_model_is_rejected_by_validation(client):
+    """min_length=1 still holds: an empty model would reach the provider as a
+    malformed request, so it should fail loudly here instead."""
+    c, _, runner = client
+    r = await c.post(
+        "/v1/generate",
+        json=_payload(model=""),
         headers={"x-service-key": SERVICE_KEY},
     )
     assert r.status_code == 422

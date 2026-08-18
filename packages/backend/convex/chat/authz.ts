@@ -98,47 +98,6 @@ export async function requireAttachmentAccess(
   return attachment;
 }
 
-export async function requireFolderAccess(
-  ctx: QueryCtx,
-  userId: Id<"users">,
-  folderId: Id<"chatFolders">,
-): Promise<Doc<"chatFolders">> {
-  const folder = await ctx.db.get(folderId);
-  if (!folder || folder.userId !== userId) throw new ConvexError("Not found");
-  await requireMember(ctx, userId, folder.workspaceId);
-  return folder;
-}
-
-/**
- * Prompts are the one chat entity that can be workspace-shared, so read access
- * is "mine, or shared within a workspace I belong to". Writes always require
- * ownership — use requireOwnedPrompt for those.
- */
-export async function requirePromptReadAccess(
-  ctx: QueryCtx,
-  userId: Id<"users">,
-  promptId: Id<"chatPrompts">,
-): Promise<Doc<"chatPrompts">> {
-  const prompt = await ctx.db.get(promptId);
-  if (!prompt) throw new ConvexError("Not found");
-  if (prompt.userId !== userId && !prompt.shared) {
-    throw new ConvexError("Not found");
-  }
-  await requireMember(ctx, userId, prompt.workspaceId);
-  return prompt;
-}
-
-export async function requireOwnedPrompt(
-  ctx: QueryCtx,
-  userId: Id<"users">,
-  promptId: Id<"chatPrompts">,
-): Promise<Doc<"chatPrompts">> {
-  const prompt = await ctx.db.get(promptId);
-  if (!prompt || prompt.userId !== userId) throw new ConvexError("Not found");
-  await requireMember(ctx, userId, prompt.workspaceId);
-  return prompt;
-}
-
 export async function requireStreamAccess(
   ctx: QueryCtx,
   userId: Id<"users">,
@@ -176,18 +135,63 @@ export function timingSafeEqualStr(
   return diff === 0;
 }
 
-/** Models the chat plane is allowed to request. Enforced server-side. */
-export const ALLOWED_MODELS = [
-  "anthropic/claude-opus-5",
-  "anthropic/claude-sonnet-5",
-  "anthropic/claude-haiku-4.5",
-] as const;
-
+/**
+ * The model the plane falls back to whenever no valid choice is available:
+ * a fresh deployment with an unrefreshed catalogue, or a thread pinned to a
+ * model OpenRouter has since delisted.
+ */
 export const DEFAULT_MODEL = "anthropic/claude-opus-5";
 
-export function assertAllowedModel(model: string): string {
-  if (!(ALLOWED_MODELS as readonly string[]).includes(model)) {
-    throw new ConvexError("Unsupported model");
-  }
-  return model;
+/**
+ * Validate a model against the cached OpenRouter catalogue.
+ *
+ * This used to be a pure function over a 3-element constant. It now reads the
+ * database, because the allow-list is fetched from OpenRouter and Convex
+ * mutations cannot fetch — see chat/models.ts.
+ *
+ * Two failure modes are handled deliberately rather than by throwing:
+ *
+ *  - `explicit: false` means the caller supplied no model and we are falling
+ *    back to whatever the thread already stores. If that stored id has since
+ *    left the catalogue, throwing would make the user unable to continue their
+ *    OWN conversation, with no way to fix it from the UI. Silently re-home
+ *    them onto the default instead.
+ *  - `explicit: true` means the user picked this model in the picker. A bad id
+ *    there is a real error and must surface.
+ */
+export async function assertAllowedModel(
+  ctx: QueryCtx,
+  model: string,
+  opts?: { explicit?: boolean },
+): Promise<string> {
+  if (await isKnownModel(ctx, model)) return model;
+  if (opts?.explicit) throw new ConvexError("Unsupported model");
+  return DEFAULT_MODEL;
+}
+
+/**
+ * Catalogue membership.
+ *
+ * Deliberately defined HERE and not in chat/models.ts, even though that is
+ * where the table is owned: models.ts imports DEFAULT_MODEL from this file, so
+ * importing back would reintroduce exactly the cycle this module exists to
+ * avoid (see the header comment).
+ *
+ * Bootstrap rule: an empty catalogue allows DEFAULT_MODEL and nothing else.
+ * Never allow-everything (a failed refresh would become a spend incident) and
+ * never allow-nothing (that bricks chat). It is also what keeps the backend
+ * tests green: convex-test has no network, so the table is always empty there.
+ */
+export async function isKnownModel(
+  ctx: QueryCtx,
+  model: string,
+): Promise<boolean> {
+  const row = await ctx.db
+    .query("chatModels")
+    .withIndex("by_model_id", (q) => q.eq("modelId", model))
+    .unique();
+  if (row) return true;
+
+  const any = await ctx.db.query("chatModels").first();
+  return any === null && model === DEFAULT_MODEL;
 }

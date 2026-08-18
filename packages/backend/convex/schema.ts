@@ -162,7 +162,6 @@ export default defineSchema({
     title: v.string(),
     // "auto" titles may be overwritten by the title generator; "user" never are.
     titleSource: v.union(v.literal("auto"), v.literal("user")),
-    folderId: v.optional(v.id("chatFolders")),
     status: v.union(
       v.literal("active"),
       v.literal("archived"),
@@ -199,12 +198,6 @@ export default defineSchema({
       "userId",
       "workspaceId",
       "pinned",
-      "updatedAt",
-    ])
-    .index("by_user_ws_folder_updated", [
-      "userId",
-      "workspaceId",
-      "folderId",
       "updatedAt",
     ])
     .index("by_trashed", ["status", "trashedAt"])
@@ -314,32 +307,7 @@ export default defineSchema({
     text: v.string(),
   }).index("by_message_seq", ["messageId", "seq"]),
 
-  chatFolders: defineTable({
-    workspaceId: v.id("workspaces"),
-    userId: v.id("users"),
-    name: v.string(),
-    color: v.optional(v.string()),
-    order: v.number(),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  }).index("by_user_ws_order", ["userId", "workspaceId", "order"]),
 
-  // Prompts are the one chat entity where workspace sharing is sane: they are
-  // authored artefacts, not private conversations. Opt-in, defaults to false.
-  chatPrompts: defineTable({
-    workspaceId: v.id("workspaces"),
-    userId: v.id("users"),
-    title: v.string(),
-    body: v.string(),
-    description: v.optional(v.string()),
-    tags: v.array(v.string()),
-    shared: v.boolean(),
-    usageCount: v.number(),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_user_ws_updated", ["userId", "workspaceId", "updatedAt"])
-    .index("by_ws_shared_updated", ["workspaceId", "shared", "updatedAt"]),
 
   chatSettings: defineTable({
     workspaceId: v.id("workspaces"),
@@ -357,6 +325,27 @@ export default defineSchema({
     rateWindowCount: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_user_workspace", ["userId", "workspaceId"]),
+
+  // The OpenRouter catalogue, refreshed by chat/models.ts:refresh.
+  //
+  // This is a CACHE, not user data: it exists because assertAllowedModel runs
+  // inside mutations, and Convex mutations cannot fetch. Validation therefore
+  // has to read the allow-list from the database rather than from the network.
+  //
+  // One row per model rather than a single JSON blob, because the hot path is
+  // an indexed point lookup by modelId on every send/regenerate/retry.
+  chatModels: defineTable({
+    modelId: v.string(),
+    name: v.string(),
+    contextLength: v.number(),
+    // Kept as the raw per-token strings OpenRouter returns. The 5 meta-routers
+    // (openrouter/auto, fusion, ...) report "-1" for variable pricing, so this
+    // is deliberately not a number: the UI has to distinguish that from free.
+    promptPrice: v.string(),
+    completionPrice: v.string(),
+    vision: v.boolean(),
+    updatedAt: v.number(),
+  }).index("by_model_id", ["modelId"]),
 
   // Separate from `files` ON PURPOSE: files.list returns every row in the
   // workspace to any member, which is right for a shared Files page and wrong

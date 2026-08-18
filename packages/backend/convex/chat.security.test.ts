@@ -274,28 +274,6 @@ describe("cross-tenant isolation matrix — chat surfaces", () => {
       (b, ws) => b.mutation(api.chat.threads.create, { workspaceId: ws }),
     ],
     [
-      "chat.folders.list",
-      (b, ws) => b.query(api.chat.folders.list, { workspaceId: ws }),
-    ],
-    [
-      "chat.folders.create",
-      (b, ws) =>
-        b.mutation(api.chat.folders.create, { workspaceId: ws, name: "f" }),
-    ],
-    [
-      "chat.prompts.list",
-      (b, ws) => b.query(api.chat.prompts.list, { workspaceId: ws }),
-    ],
-    [
-      "chat.prompts.create",
-      (b, ws) =>
-        b.mutation(api.chat.prompts.create, {
-          workspaceId: ws,
-          title: "t",
-          body: "b",
-        }),
-    ],
-    [
       "chat.settings.get",
       (b, ws) => b.query(api.chat.settings.get, { workspaceId: ws }),
     ],
@@ -1028,7 +1006,9 @@ describe("send() invariants", () => {
         threadId,
         content: "hi",
         clientId: "c1",
-        model: "openai/gpt-4o",
+        // Deliberately an id OpenRouter will never list. "openai/gpt-4o" was
+        // the old probe and is a real, selectable model now.
+        model: "not-a-real/model",
       }),
     ).rejects.toThrow(/Unsupported model/);
   });

@@ -77,7 +77,14 @@ class GenerateRequest(BaseModel):
     messageId: str
     userId: str
     workspaceId: str
-    model: ModelId = ModelId.OPUS
+    # A plain str, not ModelId: the model list is fetched live from
+    # OpenRouter, so an enum here would 422 every model but three. ModelId
+    # survives below as the key for the curated per-model tuning tables.
+    model: str = Field(default=ModelId.OPUS, min_length=1, max_length=200)
+    # Context window for `model`, supplied by Convex from the cached
+    # catalogue. 0/absent means unknown and the caller falls back to the
+    # conservative default in CONTEXT_WINDOW.
+    contextWindow: int = 0
     systemPrompt: str | None = Field(default=None, max_length=8000)
     customInstructionsAbout: str | None = Field(default=None, max_length=2000)
     customInstructionsStyle: str | None = Field(default=None, max_length=2000)

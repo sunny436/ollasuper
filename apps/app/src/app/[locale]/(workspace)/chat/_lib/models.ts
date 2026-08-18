@@ -1,35 +1,56 @@
 /**
- * Client-side mirror of ALLOWED_MODELS in convex/chat/authz.ts.
+ * Client-side model helpers.
  *
- * The server is the authority — it rejects anything not on its list — this is
- * only for labelling the picker. Keep the ids in sync.
+ * The list itself is no longer here: it is fetched from OpenRouter, cached in
+ * the `chatModels` table and read through `api.chat.models.list`. Only the two
+ * things that must work WITHOUT a query survive in this module.
  */
-export interface ModelOption {
-  id: string;
-  label: string;
-  hint: string;
-}
 
-export const MODELS: ModelOption[] = [
-  {
-    id: "anthropic/claude-opus-5",
-    label: "Opus 5",
-    hint: "Most capable",
-  },
-  {
-    id: "anthropic/claude-sonnet-5",
-    label: "Sonnet 5",
-    hint: "Balanced",
-  },
-  {
-    id: "anthropic/claude-haiku-4.5",
-    label: "Haiku 4.5",
-    hint: "Fastest",
-  },
-];
-
+/** Mirrors DEFAULT_MODEL in convex/chat/authz.ts. Keep the ids in sync. */
 export const DEFAULT_MODEL = "anthropic/claude-opus-5";
 
+/**
+ * A readable name for a model id, derived purely from the string.
+ *
+ * This MUST stay synchronous and query-free. Its main caller is MessageBubble,
+ * which is memoised with a custom comparator precisely because Convex hands
+ * back fresh object identities on every push — giving it a `useQuery` would
+ * re-render every message in the thread on every token.
+ *
+ * It used to return "Opus 5" for anything it did not recognise, which was
+ * harmless against a hard-coded list of three and actively wrong against a
+ * catalogue of several hundred: every model would have been labelled "Opus 5"
+ * in both the picker trigger and the transcript.
+ *
+ *   anthropic/claude-opus-5  ->  Claude Opus 5
+ *   openai/gpt-4o            ->  Gpt 4o
+ *   openrouter/auto          ->  Auto
+ */
 export function modelLabel(id: string | null | undefined): string {
-  return MODELS.find((m) => m.id === id)?.label ?? "Opus 5";
+  if (!id) return "Model";
+  const slug = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
+  const words = slug
+    .replace(/[-_.]+/g, " ")
+    .replace(/:/g, " ")
+    .trim()
+    .split(/\s+/);
+  if (words.length === 0) return id;
+  return words
+    .map((w) => (w.length > 0 ? w[0]?.toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+/**
+ * Per-million-token price for display, or null when it cannot be shown.
+ *
+ * OpenRouter reports "-1" for its five meta-routers (openrouter/auto, fusion,
+ * …) where the real price depends on which model the router picks. Rendering
+ * that arithmetically produces "-$1000000.00/1M", so those return null and the
+ * UI says "variable" instead.
+ */
+export function pricePerMillion(raw: string | null | undefined): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n * 1_000_000;
 }

@@ -82,6 +82,7 @@ async def run_generation(
             max_output=settings.ai_max_output_tokens,
             base_budget=settings.ai_context_budget_tokens,
             safety_factor=settings.ai_token_safety_factor,
+            context_window=req.contextWindow,
         )
 
         system = build_system_prompt(
@@ -92,7 +93,7 @@ async def run_generation(
             summary_through_seq=req.summaryThroughSeq,
         )
 
-        llm = build_llm(settings, model=req.model)
+        llm = build_llm(settings, model=req.model, context_window=req.contextWindow)
         graph = build_graph(llm)
 
         state = {

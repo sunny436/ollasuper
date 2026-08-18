@@ -8,9 +8,6 @@ import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import {
   CreditCard,
-  Folder,
-  FolderOpen,
-  FolderPlus,
   FolderSearch,
   LogOut,
   MoreHorizontal,
@@ -20,7 +17,6 @@ import {
   Plus,
   Search,
   Settings,
-  Sparkles,
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
@@ -29,7 +25,6 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { timeBucket } from "../_lib/format";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { PromptLibrary } from "./prompt-library";
 
 const PAGE = 30;
 
@@ -37,7 +32,6 @@ interface ThreadItem {
   _id: Id<"chatThreads">;
   title: string;
   pinned: boolean;
-  folderId: Id<"chatFolders"> | null;
   updatedAt: number;
   isStreaming: boolean;
 }
@@ -187,7 +181,6 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { current } = useWorkspace();
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [libraryOpen, setLibraryOpen] = useState(false);
 
   // Debounced so each keystroke does not fire a new search subscription.
   useEffect(() => {
@@ -196,15 +189,10 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   }, [query]);
 
   const createThread = useMutation(api.chat.threads.create);
-  const createFolder = useMutation(api.chat.folders.create);
   const renameThread = useMutation(api.chat.threads.rename);
   const removeThread = useMutation(api.chat.threads.remove);
   const setPinned = useMutation(api.chat.threads.setPinned);
 
-  const folders = useQuery(
-    api.chat.folders.list,
-    current ? { workspaceId: current } : "skip",
-  );
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.chat.threads.list,
@@ -237,7 +225,6 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           _id: r.threadId,
           title: r.title,
           pinned: false,
-          folderId: null,
           updatedAt: r.updatedAt,
           isStreaming: false,
         },
@@ -277,39 +264,21 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
     onNavigate?.();
   };
 
-  const onNewFolder = async () => {
-    if (!current) return;
-    const name = window.prompt("Folder name");
-    if (!name?.trim()) return;
-    await guard(
-      () => createFolder({ workspaceId: current, name }),
-      "Couldn't create that folder",
-    );
-  };
 
   return (
     <div className="flex h-full flex-col">
       <BrandHeader />
 
-      <div className="flex items-center gap-2 p-3">
+      <div className="p-3">
         <button
           type="button"
           onClick={() => void onNewChat()}
-          className="group flex flex-1 items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm font-medium text-primary shadow-sm transition hover:bg-primary/5"
+          className="group flex w-full items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm font-medium text-primary shadow-sm transition hover:bg-primary/5"
         >
           <span className="flex items-center gap-2">
             <Plus className="h-4 w-4 text-brand-ink transition-transform duration-300 group-hover:rotate-90 motion-reduce:transition-none" />
             New chat
           </span>
-        </button>
-        <button
-          type="button"
-          onClick={() => void onNewFolder()}
-          aria-label="New folder"
-          title="New folder"
-          className="rounded-lg border border-border p-2 text-primary/60 transition hover:bg-primary/5"
-        >
-          <FolderPlus className="h-4 w-4" />
         </button>
       </div>
 
@@ -325,33 +294,6 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           />
         </div>
       </div>
-
-      <div className="border-b border-border px-3 pb-3">
-        <button
-          type="button"
-          onClick={() => setLibraryOpen(true)}
-          className="flex w-full items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-xs text-primary/70 transition hover:bg-primary/5"
-        >
-          <Sparkles className="h-3.5 w-3.5 text-brand-ink" />
-          Prompt library
-        </button>
-      </div>
-
-      {folders && folders.length > 0 && !searching && (
-        <div className="border-b border-border px-2 py-2">
-          <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-primary/35">
-            Folders
-          </p>
-          {folders.map((f) => (
-            <FolderRow
-              key={f._id}
-              folder={f}
-              activeThreadId={activeId}
-              onNavigate={onNavigate}
-            />
-          ))}
-        </div>
-      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {status === "LoadingFirstPage" && (
@@ -457,115 +399,6 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <ProfileFooter onNavigate={onNavigate} />
-
-      <PromptLibrary open={libraryOpen} onClose={() => setLibraryOpen(false)} />
-    </div>
-  );
-}
-
-/** A folder and the conversations filed under it. */
-function FolderRow({
-  folder,
-  activeThreadId,
-  onNavigate,
-}: {
-  folder: { _id: Id<"chatFolders">; name: string; color: string | null };
-  activeThreadId: string | null;
-  onNavigate?: () => void;
-}) {
-  const { current } = useWorkspace();
-  const [open, setOpen] = useState(false);
-  const renameFolder = useMutation(api.chat.folders.rename);
-  const removeFolder = useMutation(api.chat.folders.remove);
-
-  // Only subscribes once expanded, so a sidebar with twenty folders does not
-  // open twenty paginated subscriptions on mount.
-  const { results } = usePaginatedQuery(
-    api.chat.threads.listByFolder,
-    current && open ? { workspaceId: current, folderId: folder._id } : "skip",
-    { initialNumItems: 20 },
-  );
-
-  const rename = async () => {
-    const name = window.prompt("Rename folder", folder.name);
-    if (!name || !name.trim() || name === folder.name) return;
-    try {
-      await renameFolder({ folderId: folder._id, name });
-    } catch {
-      toast.error("Couldn't rename that folder");
-    }
-  };
-
-  const destroy = async () => {
-    // Deleting a folder never deletes its conversations — it unfiles them.
-    // Say so, so nobody hesitates over the button.
-    const ok = window.confirm(
-      "Delete this folder? The conversations inside are kept.",
-    );
-    if (!ok) return;
-    try {
-      await removeFolder({ folderId: folder._id });
-    } catch {
-      toast.error("Couldn't delete that folder");
-    }
-  };
-
-  return (
-    <div>
-      <div className="group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm text-primary/70 transition hover:bg-primary/5">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-        >
-          {open ? (
-            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-brand-ink" />
-          ) : (
-            <Folder className="h-3.5 w-3.5 shrink-0 text-primary/40" />
-          )}
-          <span className="truncate">{folder.name}</span>
-        </button>
-        <button
-          type="button"
-          aria-label="Rename folder"
-          onClick={() => void rename()}
-          className="shrink-0 rounded p-0.5 text-primary/25 opacity-0 transition hover:text-primary/70 group-hover:opacity-100"
-        >
-          <Pencil className="h-3 w-3" />
-        </button>
-        <button
-          type="button"
-          aria-label="Delete folder"
-          onClick={() => void destroy()}
-          className="shrink-0 rounded p-0.5 text-primary/25 opacity-0 transition hover:text-destructive group-hover:opacity-100"
-        >
-          <Trash2 className="h-3 w-3" />
-        </button>
-      </div>
-
-      {open && (
-        <div className="ml-4 border-l border-border pl-2">
-          {(results ?? []).length === 0 && (
-            <p className="px-2 py-1 text-[11px] text-primary/35">Empty</p>
-          )}
-          {(results ?? []).map((t) => (
-            <Link
-              key={t._id}
-              href={`/chat/${t._id}`}
-              prefetch={false}
-              onClick={onNavigate}
-              className={`block truncate rounded-md px-2 py-1 text-xs transition ${
-                activeThreadId === t._id
-                  ? "bg-primary/10 text-primary"
-                  : "text-primary/65 hover:bg-primary/5"
-              }`}
-            >
-              {t.title}
-            </Link>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

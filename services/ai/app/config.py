@@ -52,7 +52,6 @@ class Settings(BaseSettings):
     openrouter_app_title: str = "myos"
 
     ai_default_model: str = "anthropic/claude-opus-5"
-    ai_title_model: str = "anthropic/claude-haiku-4.5"
     ai_max_output_tokens: int = 8192
 
     # --- context -----------------------------------------------------------
