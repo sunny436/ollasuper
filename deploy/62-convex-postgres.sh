@@ -115,9 +115,24 @@ sudo -u postgres psql -qc "ALTER SYSTEM SET max_connections = 200"
 # Was 2GB on a 7GB box. The Convex database is ~15MB, so 2GB was pure waste and
 # the RAM is needed by the Rust backend + V8 isolates + Next + the Python AI plane.
 sudo -u postgres psql -qc "ALTER SYSTEM SET shared_buffers = '512MB'"
-# Listen on loopback plus the compose network's gateway — host-local only.
-sudo -u postgres psql -qc "ALTER SYSTEM SET listen_addresses = 'localhost,$GW'"
-say "max_connections=200  shared_buffers=512MB  listen_addresses=localhost,$GW"
+# listen_addresses MUST be '*', not 'localhost,$GW'.
+#
+# PostgreSQL binds its listen sockets once, at startup. On boot it starts BEFORE
+# Docker creates the compose bridge, so naming the gateway explicitly fails:
+#     could not bind IPv4 address "172.18.0.1": Cannot assign requested address
+#     WARNING: could not create listen socket for "172.18.0.1"
+# Postgres then serves loopback only, and the backend restart-loops on
+#     Error: error connecting to server: Connection refused (os error 111)
+# A reboot test is the only thing that catches this; it is invisible while the
+# bridge happens to already exist. Docker also renames the interface across
+# reboots (br-6c73df06e774 -> br-4a4201efea2e), so binding a named interface is
+# racy by construction.
+#
+# '*' binds 0.0.0.0, which covers interfaces created later. Exposure is still
+# closed off by two independent layers: ufw (INPUT policy DROP; only 22/tcp, plus
+# 5432/tcp from $SUBNET) and pg_hba (this role, this database, from $SUBNET only).
+sudo -u postgres psql -qc "ALTER SYSTEM SET listen_addresses = '*'"
+say "max_connections=200  shared_buffers=512MB  listen_addresses=* (ufw+pg_hba scope it)"
 
 # ---------------------------------------------------------------------------
 echo "--- 4. pg_hba: ONE line, scoped to this role AND this database ---"

@@ -48,9 +48,18 @@ Read this before touching any of it:
   `reap stalled chat streams` cron; a later deploy re-uploads blobs but does not
   rebind existing crons.
 - **The compose network subnet is pinned** to `172.18.0.0/16` in
-  `docker-compose.override.yml` because `deploy/62-convex-postgres.sh` scopes
-  `listen_addresses`, one `pg_hba` line and one `ufw` rule to it. `ufw`'s INPUT
-  policy is DROP, so a mismatch presents as a **hang**, not an error.
+  `docker-compose.override.yml` because `deploy/62-convex-postgres.sh` scopes one
+  `pg_hba` line and one `ufw` rule to it. `ufw`'s INPUT policy is DROP, so a
+  mismatch presents as a **hang**, not an error.
+- **`listen_addresses` must be `*`, never the bridge gateway.** PostgreSQL binds
+  its sockets once at startup and boots *before* Docker creates the bridge, so
+  naming the gateway fails with `could not bind IPv4 address "172.18.0.1":
+  Cannot assign requested address`; Postgres then serves loopback only and the
+  backend restart-loops on `Connection refused (os error 111)`. Docker also
+  renames the interface across reboots (`br-6c73df06e774` → `br-4a4201efea2e`),
+  so a named interface is racy by construction. Only a **reboot test** catches
+  this — it is invisible whenever the bridge already happens to exist. Exposure
+  stays closed by ufw plus pg_hba, not by the bind address.
 - The backend image is pinned **by digest** — a silently newer backend could
   migrate the persistence layout of a live database on an unattended restart.
 - The admin key is `f(INSTANCE_NAME, INSTANCE_SECRET)`, both persisted in the
