@@ -184,6 +184,13 @@ const step = async (n, f) => {
     await page.keyboard.press("Escape");
     await page.waitForTimeout(400);
 
+    // Start a fresh conversation. Earlier steps can leave a generation in
+    // flight, and messages.send rejects a second turn on the same thread with
+    // "already generating" -- which would silently make the persistence check
+    // below a no-op rather than a failure.
+    await page.getByRole("button", { name: "New chat" }).click();
+    await page.waitForTimeout(1500);
+
     const trigger = page.getByRole("button", { name: "Choose model" });
     const before = (await trigger.innerText()).trim();
     await trigger.click();
