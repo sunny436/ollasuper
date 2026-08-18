@@ -51,27 +51,3 @@ export function ThemeSwitcher({ triggerClass }: { triggerClass?: string }) {
     </Select>
   );
 }
-
-export function ThemeSwitcherHome() {
-  const { setTheme, themes } = useTheme();
-  return (
-    <div className="flex gap-3">
-      {themes.map((theme) => (
-        <button
-          key={theme}
-          name="theme"
-          onClick={() => setTheme(theme)}
-          type="button"
-        >
-          {theme === "light" ? (
-            <Sun className="h-4 w-4 text-primary/80 hover:text-primary" />
-          ) : theme === "dark" ? (
-            <Moon className="h-4 w-4 text-primary/80 hover:text-primary" />
-          ) : (
-            <Monitor className="h-4 w-4 text-primary/80 hover:text-primary" />
-          )}
-        </button>
-      ))}
-    </div>
-  );
-}
