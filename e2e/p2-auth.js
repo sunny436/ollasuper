@@ -101,11 +101,14 @@ async function getCode(label, email) {
     await page.waitForTimeout(3500);
     return code;
   });
-  await step("Onboarding + dashboard (new tenant)", async () => {
-    await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" }); await page.waitForTimeout(2500); cur = page.url();
-    if (/onboarding/.test(cur)) { await page.fill('input[placeholder="Username"]', `auth${String(ts).slice(-6)}`); await page.click('button:has-text("Continue")'); await page.waitForTimeout(3000); }
-    await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" }); await page.waitForTimeout(2000); cur = page.url();
-    if (/login|onboarding/.test(cur)) throw new Error("not in dashboard: " + cur);
+  await step("Fresh account lands on /chat directly (no onboarding)", async () => {
+    await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2500); cur = page.url();
+    if (/login/.test(cur)) throw new Error("not signed in: " + cur);
+    if (/onboarding/.test(cur)) throw new Error("still gated by onboarding: " + cur);
+    // The point of removing onboarding: a brand-new account reaches chat with
+    // no interstitial. Root redirects there, so this is the whole journey.
+    if (!cur.includes("/chat")) throw new Error("did not land on /chat: " + cur);
   });
   await step("Sign out", async () => {
     // The sidebar footer has a plain "Log out" button; the old selector
@@ -138,7 +141,7 @@ async function getCode(label, email) {
     await page.click('button[type="submit"]');
     await page.waitForTimeout(3500);
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" }); await page.waitForTimeout(2000); cur = page.url();
-    if (/login|onboarding/.test(cur)) throw new Error("admin bounced: " + cur);
+    if (/login/.test(cur)) throw new Error("admin bounced: " + cur);
   });
 
   await b.close();

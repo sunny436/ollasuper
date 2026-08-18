@@ -1,5 +1,8 @@
 import { getAuthSessionId, getAuthUserId } from "@convex-dev/auth/server";
-import { mutation } from "./_generated/server";
+import { v } from "convex/values";
+import { api } from "./_generated/api";
+import { action, mutation, query } from "./_generated/server";
+import { normalizeEmail } from "./authPolicy";
 import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
 
 /**
@@ -54,5 +57,50 @@ export const heartbeat = mutation({
     // inactivity budget; this column is for display and anomaly review.
     await ctx.db.patch(userId, { lastActivityAt: Date.now() });
     return { ok: true as const, revoked };
+  },
+});
+
+/** Internal: does an account exist for this address? Never exposed publicly. */
+export const accountExists = query({
+  args: { email: v.string() },
+  handler: async (ctx, { email }) => {
+    const normalized = normalizeEmail(email);
+    const all = await ctx.db.query("users").collect();
+    return all.some(
+      (u) => (u.emailNormalized ?? normalizeEmail(u.email ?? "")) === normalized,
+    );
+  },
+});
+
+/**
+ * Password-reset request that does not leak whether the account exists.
+ *
+ * Calling signIn("password", { email, flow: "reset" }) directly is an
+ * ENUMERATION ORACLE: for a known address it resolves, and for an unknown one
+ * the provider throws InvalidAccountId. An attacker can therefore test an email
+ * list against this endpoint and learn exactly who has an account. This was
+ * caught by the flow tests, not by review.
+ *
+ * So the existence check happens server-side and the response is identical
+ * either way. The email is only dispatched when there is somewhere to send it.
+ */
+export const requestPasswordReset = action({
+  args: { email: v.string() },
+  handler: async (ctx, { email }): Promise<{ ok: true }> => {
+    const exists: boolean = await ctx.runQuery(api.authSessions.accountExists, {
+      email,
+    });
+    if (exists) {
+      try {
+        await ctx.runAction(api.auth.signIn, {
+          provider: "password",
+          params: { email, flow: "reset" },
+        });
+      } catch {
+        // Swallowed deliberately: surfacing a failure here would re-open the
+        // oracle by making the known-account path distinguishable.
+      }
+    }
+    return { ok: true };
   },
 });

@@ -2,7 +2,9 @@
 
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
+import { useAuthActions } from "@convex-dev/auth/react";
 import { useMutation, useQuery } from "convex/react";
+import { DISPLACED_KEY } from "./displaced-session";
 import { createContext, useContext, useEffect, useState } from "react";
 
 type WS = { _id: Id<"workspaces">; name: string; role: string };
@@ -26,12 +28,26 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // writes happen server-side in one mutation; this only supplies the trigger,
   // because @convex-dev/auth has no callback that spans every sign-in path.
   const heartbeat = useMutation(api.authSessions.heartbeat);
+  const { signOut } = useAuthActions();
   const [current, setCurrent] = useState<Id<"workspaces"> | null>(null);
   const [ensuring, setEnsuring] = useState(false);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: run once per mount
   useEffect(() => {
-    void heartbeat({}).catch(() => {});
+    void heartbeat({})
+      .then((r) => {
+        // The server revoked this session because the account signed in
+        // elsewhere. The access token still works until it expires, so end the
+        // session here rather than leaving the user in a half-valid state, and
+        // leave a note for the login page to explain why they landed there.
+        if (r && r.ok === false) {
+          try {
+            window.sessionStorage.setItem(DISPLACED_KEY, "1");
+          } catch {}
+          void signOut();
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {

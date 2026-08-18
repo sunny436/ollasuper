@@ -9,7 +9,7 @@ live in `packages/backend/convex/security.test.ts` and **do** run on every PR.
 | Suite | Layer | What it proves |
 |-------|-------|----------------|
 | `p2-idor.js` | adversarial / contract | 23 IDOR/RBAC probes as two real authed tenants against the live backend |
-| `p2-auth.js` | functional E2E | signup → email-verification → onboarding → reset → admin regression |
+| `p2-auth.js` | functional E2E | signup → email-verification → reset → admin regression |
 | `p-sidebar.js` | E2E | left nav renders + navigates, workspace switcher, `/` → `/chat` |
 | `p-notif.js` | E2E | notifications bell + panel |
 | `p-cmdk.js` | E2E | command palette (Ctrl/⌘+K) |

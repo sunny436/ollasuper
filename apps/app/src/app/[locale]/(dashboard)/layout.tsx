@@ -1,24 +1,20 @@
 import { WorkspaceProvider } from "@/lib/workspace-provider";
-import { convexAuthNextjsToken } from "@convex-dev/auth/nextjs/server";
-import { api } from "@v1/backend/convex/_generated/api";
-import { fetchQuery } from "convex/nextjs";
-import { redirect } from "next/navigation";
 import { Toaster } from "sonner";
 import { CommandPalette } from "./_components/command-palette";
 import { Sidebar } from "./_components/sidebar";
 import { Topbar } from "./_components/topbar";
 
-export default async function Layout({
-  children,
-}: { children: React.ReactNode }) {
-  const user = await fetchQuery(
-    api.users.getUser,
-    {},
-    { token: await convexAuthNextjsToken() },
-  );
-  if (!user?.username) {
-    return redirect("/onboarding");
-  }
+/**
+ * No user fetch here any more.
+ *
+ * This layout used to await getUser purely to gate on `username` and bounce to
+ * /onboarding. Picking a username is no longer a precondition for using the app —
+ * it is optional, and editable in Settings — so the gate and the route are gone,
+ * and with them a blocking server round trip on every dashboard navigation.
+ *
+ * Authentication itself is enforced by middleware.ts, not here.
+ */
+export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <WorkspaceProvider>
       <div className="min-h-screen w-full bg-secondary dark:bg-black md:flex">
