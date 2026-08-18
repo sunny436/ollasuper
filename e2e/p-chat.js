@@ -11,6 +11,29 @@ const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
 
 const errs = [];
 const results = [];
+
+// Wait for any in-flight generation to finish.
+//
+// messages.send rejects a second turn on the same thread with "This conversation
+// is already generating a reply" (chat/messages.ts:186, a deliberate cost control).
+// When that fires it does two bad things at once: it logs a console error, which
+// this suite treats as a failure, and it silently turns the step under test into a
+// no-op — the send never happens, so whatever the step was asserting cannot appear.
+//
+// This only started biting once chat generation actually worked again; while the
+// AI plane was unreachable, sends failed instantly and never overlapped. The
+// composer swaps Send for Stop while generating, so the absence of "Stop
+// generating" is the idle signal.
+const settle = async (page, ms = 60000) => {
+  const stop = page.getByRole("button", { name: "Stop generating" });
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if ((await stop.count()) === 0) return true;
+    await page.waitForTimeout(300);
+  }
+  return false;
+};
+
 const step = async (n, f) => {
   try {
     await f();
@@ -138,20 +161,69 @@ const step = async (n, f) => {
 
   await step("scroll-to-bottom pill appears when scrolled away", async () => {
     // Generate enough content to make the transcript scrollable.
+    await settle(page); // an earlier reply may still be streaming
+    // Ask for a MARKDOWN list, not "one per line". The transcript renders through
+    // react-markdown, which collapses single newlines into spaces — so the old
+    // prompt came back as ~170 characters that laid out as one wrapped paragraph
+    // and the transcript never overflowed, making the pill correctly invisible.
+    // Markdown list items each render as their own block, which actually is tall.
     await page
       .locator("#chat-composer")
-      .fill("List the numbers 1 to 60, one per line.");
+      .fill(
+        "Output a markdown numbered list of the numbers 1 to 60. " +
+          "Each item on its own line, formatted exactly like '1. one'. " +
+          "No preamble, no summary.",
+      );
     await page.keyboard.press("Enter");
-    await page.waitForTimeout(6000);
-    await page.mouse.wheel(0, -3000);
-    await page.waitForTimeout(600);
+    // Let the reply finish rather than sleeping a fixed 6s: the transcript is only
+    // scrollable once enough of it has arrived, and generation speed is not ours.
+    await settle(page, 90000);
+
+    // Scroll the transcript container directly instead of page.mouse.wheel.
+    // The wheel is delivered to whatever sits under the pointer, which defaults to
+    // (0,0) — the conversation rail, not the transcript — so the transcript never
+    // moved and the pill was correctly hidden. Assigning scrollTop fires a real
+    // scroll event, so the component's handler runs exactly as it would for a user.
+    // Poll until the transcript actually overflows. settle() only proves the
+    // Stop button is gone, i.e. the stream finalised; the finalised text lands a
+    // moment later, because listPaged deliberately excludes in-flight rows and
+    // the settled row arrives on the next query result. Measuring immediately
+    // catches the transcript at its pre-render height and reports a false
+    // "not scrollable".
+    let scrolled = null;
+    const growDeadline = Date.now() + 20000;
+    while (Date.now() < growDeadline) {
+      scrolled = await page.evaluate(() => {
+        const el = [...document.querySelectorAll("div")].find(
+          (d) =>
+            d.scrollHeight > d.clientHeight + 200 &&
+            getComputedStyle(d).overflowY === "auto",
+        );
+        if (!el) return null;
+        el.scrollTop = 0;
+        return { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+      });
+      if (scrolled) break;
+      await page.waitForTimeout(500);
+    }
+    if (!scrolled) {
+      throw new Error("transcript never became scrollable (reply too short to overflow)");
+    }
+    await page.waitForTimeout(800);
     const pill = page.getByRole("button", { name: "Scroll to latest message" });
-    if ((await pill.count()) === 0) throw new Error("pill missing");
+    // The pill is always in the DOM and toggles aria-hidden, which removes it from
+    // the accessibility tree — so getByRole().count() === 0 means "not shown".
+    if ((await pill.count()) === 0) {
+      throw new Error(
+        `pill missing (scrollHeight=${scrolled.scrollHeight} clientHeight=${scrolled.clientHeight})`,
+      );
+    }
     await pill.click();
     await page.waitForTimeout(600);
   });
 
   await step("stop generation works", async () => {
+    await settle(page); // the pill step's reply must not still be streaming
     await page
       .locator("#chat-composer")
       .fill("Write a very long essay about the ocean, at least 800 words.");
