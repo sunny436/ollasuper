@@ -162,7 +162,6 @@ export default defineSchema({
     title: v.string(),
     // "auto" titles may be overwritten by the title generator; "user" never are.
     titleSource: v.union(v.literal("auto"), v.literal("user")),
-    folderId: v.optional(v.id("chatFolders")),
     status: v.union(
       v.literal("active"),
       v.literal("archived"),
@@ -199,12 +198,6 @@ export default defineSchema({
       "userId",
       "workspaceId",
       "pinned",
-      "updatedAt",
-    ])
-    .index("by_user_ws_folder_updated", [
-      "userId",
-      "workspaceId",
-      "folderId",
       "updatedAt",
     ])
     .index("by_trashed", ["status", "trashedAt"])
@@ -314,32 +307,7 @@ export default defineSchema({
     text: v.string(),
   }).index("by_message_seq", ["messageId", "seq"]),
 
-  chatFolders: defineTable({
-    workspaceId: v.id("workspaces"),
-    userId: v.id("users"),
-    name: v.string(),
-    color: v.optional(v.string()),
-    order: v.number(),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  }).index("by_user_ws_order", ["userId", "workspaceId", "order"]),
 
-  // Prompts are the one chat entity where workspace sharing is sane: they are
-  // authored artefacts, not private conversations. Opt-in, defaults to false.
-  chatPrompts: defineTable({
-    workspaceId: v.id("workspaces"),
-    userId: v.id("users"),
-    title: v.string(),
-    body: v.string(),
-    description: v.optional(v.string()),
-    tags: v.array(v.string()),
-    shared: v.boolean(),
-    usageCount: v.number(),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_user_ws_updated", ["userId", "workspaceId", "updatedAt"])
-    .index("by_ws_shared_updated", ["workspaceId", "shared", "updatedAt"]),
 
   chatSettings: defineTable({
     workspaceId: v.id("workspaces"),
