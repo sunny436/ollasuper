@@ -12,6 +12,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The dashboard, devices, sessions, AI-access, jobs and platform sections were removed; `/` redirects to `/chat`. The remaining surfaces are **Chat**, **Files**, **Settings** and **Billing**. Tenancy, RBAC, API keys, usage, audit and events survived the removal as backend-only modules — they lost their Platform UI, not their function.
 
+## Where the data lives (changed 2026-08-18)
+
+**Convex Cloud (`benevolent-koala-651`) is the source of truth for ALL Convex
+data**, including users, accounts, sessions, workspaces, members and chat. The
+self-hosted Convex on the VM is retained only as a rollback snapshot.
+
+`users` could not be moved on its own: `Id<T>` is deployment-scoped, 16
+`v.id("users")` foreign keys span the schema, `upsertUserAndAccount` writes
+`users`+`authAccounts` in one transaction, and `getAuthUserId` is a bare cast on
+the JWT `sub` with no DB lookup — so a split fails *silently*, not loudly. The
+whole deployment therefore moved together.
+
+- The app selects its deployment purely through **`NEXT_PUBLIC_CONVEX_URL`** in
+  `/opt/myos/apps/app/.env`. It is **build-time**: changing it needs
+  `rm -rf .next` + a full rebuild; a service restart alone does nothing.
+- **Rollback:** restore `/opt/myos/apps/app/.env.pre-cloud`, rebuild, restart,
+  and `docker compose up -d` in `self-hosted/` if it was stopped. The
+  pre-migration snapshot is pinned at `/opt/backups/PRE-CLOUD-MIGRATION.zip`.
+- **`packages/backend/.env.local` takes precedence over `CONVEX_DEPLOY_KEY`.**
+  Any CLI command meant for Cloud must pass `--env-file` at an empty file, or it
+  silently acts on self-hosted instead. Verify by reading the value back.
+- The Cloud **deploy key** lives at `/root/.cvx-cloud-key` (0600) on the VM,
+  mirroring how the self-hosted admin key lives in `packages/backend/.env.local`.
+  It is needed for `convex deploy`/`env`/`logs`, never by the running app.
+  `/root/cloud-logs.sh` wraps `convex logs` with a timeout so e2e can read auth
+  codes (`convex logs` streams forever and would hang a blocking exec).
+- On Cloud, `CONVEX_SITE_URL` is **injected** — never set it. `SMTP_*` and
+  `AI_BASE_URL` are deliberately **not** carried: both point at private
+  addresses Cloud cannot reach.
+- Because no mail transport is configured on Cloud, `authCodes.deliverCode`
+  falls back to **logging** OTP/verification/reset codes. That is an
+  authentication-bypass risk for anyone with log access: set `RESEND_API_KEY`
+  before real users depend on it.
+
 ## Commands
 
 Bun workspaces + Turborepo. Run from the repo root unless noted.
