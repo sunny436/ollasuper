@@ -20,11 +20,6 @@ export const env = createEnv({
     AI_BASE_URL: z.optional(z.string().url()),
     AI_SERVICE_KEY: z.optional(z.string().min(1)),
     AI_INGRESS_SECRET: z.optional(z.string().min(1)),
-    // Optional for the same reason as the AI_* vars above: VALIDATE_ENV=true
-    // on the live deployment, so a required var fails validation the moment
-    // this lands but before the key is set. chat/models.ts:refresh hard-fails
-    // at the call site instead.
-    OPENROUTER_API_KEY: z.optional(z.string().min(1)),
   },
   runtimeEnv: {
     CONVEX_SITE_URL: process.env.CONVEX_SITE_URL,
@@ -39,7 +34,6 @@ export const env = createEnv({
     AI_BASE_URL: process.env.AI_BASE_URL,
     AI_SERVICE_KEY: process.env.AI_SERVICE_KEY,
     AI_INGRESS_SECRET: process.env.AI_INGRESS_SECRET,
-    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
   },
   skipValidation: !process.env.VALIDATE_ENV,
 });
