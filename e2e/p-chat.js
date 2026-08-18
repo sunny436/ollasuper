@@ -215,6 +215,17 @@ const step = async (n, f) => {
       // Loose check: the trigger shows the catalogue's display name.
       console.log(`    note: trigger "${after}" vs picked "${picked}"`);
     }
+
+    // Selecting only sets React state — chatThreads.model is patched by
+    // messages.send. Send once so the choice actually reaches the data plane,
+    // and print the thread id so the run can be checked against the database.
+    await page.locator("#chat-composer").fill("model-persistence-probe");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(3000);
+    const u = page.url();
+    console.log(
+      `    selected="${after}" thread=${u.slice(u.lastIndexOf("/") + 1)}`,
+    );
   });
 
   await step("mobile: sidebar becomes a drawer and nothing overflows", async () => {
