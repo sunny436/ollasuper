@@ -22,7 +22,7 @@ from langchain_core.messages import (
 )
 from langchain_core.messages.utils import count_tokens_approximately
 
-from app.models.chat import CONTEXT_WINDOW, IMAGE_TOKENS, HistoryMessage, ModelId
+from app.models.chat import CONTEXT_WINDOW, IMAGE_TOKENS, HistoryMessage
 
 SYSTEM_BASE = (
     "You are the assistant in myos. Be direct and useful.\n"
@@ -52,9 +52,21 @@ def build_system_prompt(
     return "\n\n".join(parts)
 
 
-def budget_for(model: str, n_images: int, max_output: int, base_budget: int) -> int:
-    """Token budget for history, after reserving output and image costs."""
-    window = CONTEXT_WINDOW.get(model, 200_000)
+def budget_for(
+    model: str,
+    n_images: int,
+    max_output: int,
+    base_budget: int,
+    context_window: int = 0,
+) -> int:
+    """Token budget for history, after reserving output and image costs.
+
+    `context_window` is the real value from the OpenRouter catalogue, passed
+    through by Convex. It wins over the curated table because that table only
+    covers three models and the catalogue covers several hundred -- including
+    models with a 4k window, where the 200k default would overrun badly.
+    """
+    window = context_window or CONTEXT_WINDOW.get(model, 200_000)
     hard = window - max_output - 4_000  # headroom for the system block
     image_cost = n_images * IMAGE_TOKENS.get(model, 1_600)
     return max(2_000, min(base_budget, hard) - image_cost)
@@ -80,6 +92,7 @@ def trim(
     max_output: int,
     base_budget: int,
     safety_factor: float,
+    context_window: int = 0,
 ) -> list[AnyMessage]:
     """Trim to the token budget, oldest-first.
 
@@ -90,7 +103,7 @@ def trim(
     """
     if not messages:
         return []
-    budget = budget_for(model, n_images, max_output, base_budget)
+    budget = budget_for(model, n_images, max_output, base_budget, context_window)
     return trim_messages(
         messages,
         max_tokens=int(budget / max(1.0, safety_factor)),
@@ -104,8 +117,3 @@ def trim(
     )
 
 
-def resolve_model(model: str | None) -> str:
-    try:
-        return ModelId(model or ModelId.OPUS)
-    except ValueError:
-        return ModelId.OPUS

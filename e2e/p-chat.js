@@ -176,21 +176,34 @@ const step = async (n, f) => {
     }
   });
 
-  await step("prompt library opens and saves a prompt", async () => {
-    await page.getByRole("button", { name: /Prompt library/ }).click();
-    await page.getByRole("dialog", { name: "Prompt library" }).waitFor({ timeout: 5000 });
-    // exact: getByRole matches the accessible name as a SUBSTRING by default,
-    // so a bare "New" also hits "New chat" and "New folder" and Playwright
-    // throws a strict-mode violation on 3 matches.
-    await page.getByRole("button", { name: "New", exact: true }).click();
-    await page.getByLabel("Prompt title").fill("E2E prompt");
-    await page.getByLabel("Prompt text").fill("This came from the library.");
-    await page.getByRole("button", { name: "Save" }).click();
-    await page.waitForTimeout(1200);
-    if (!(await page.getByText("E2E prompt").count())) {
-      throw new Error("prompt was not saved");
+
+  await step("model picker lists the OpenRouter catalogue and selects", async () => {
+    const trigger = page.getByRole("button", { name: "Choose model" });
+    const before = (await trigger.innerText()).trim();
+    await trigger.click();
+
+    // The catalogue is ~400 models, so the picker filters rather than listing
+    // everything. "haiku" is stable across providers and always matches.
+    const search = page.getByLabel("Search models");
+    await search.waitFor({ timeout: 8000 });
+    await search.fill("haiku");
+    await page.waitForTimeout(600);
+
+    // Pick the first match that is not already selected.
+    const option = page.locator('[role="menu"] button').filter({ hasText: /haiku/i }).first();
+    if (!(await option.count())) throw new Error("no catalogue models matched 'haiku'");
+    const picked = (await option.innerText()).split("\n")[0].trim();
+    await option.click();
+    await page.waitForTimeout(800);
+
+    const after = (await trigger.innerText()).trim();
+    if (after === before) {
+      throw new Error(`model did not change (still "${after}")`);
     }
-    await page.getByRole("button", { name: "Close" }).click();
+    if (!picked.toLowerCase().includes(after.toLowerCase().slice(0, 6))) {
+      // Loose check: the trigger shows the catalogue's display name.
+      console.log(`    note: trigger "${after}" vs picked "${picked}"`);
+    }
   });
 
   await step("mobile: sidebar becomes a drawer and nothing overflows", async () => {

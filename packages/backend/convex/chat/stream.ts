@@ -10,6 +10,7 @@ import {
 } from "../_generated/server";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
 import { buildHistory } from "./messages";
+import { contextWindowFor } from "./models";
 
 /**
  * A stream is considered dead if the Python service has not sent a delta or a
@@ -65,6 +66,11 @@ export const active = query({
       status: stream.status,
       cancelRequested: stream.cancelRequested,
       model: message.model ?? thread.model,
+      // Sent so the Python plane can size its context budget and clamp
+      // max_tokens for small-context models -- 4095-token models exist, and a
+      // fixed 8192-token output request is an immediate provider 400. 0 means
+      // "unknown", and Python keeps its own conservative default.
+      contextWindow: await contextWindowFor(ctx, message.model ?? thread.model),
       // Client renders committedText + chunks joined in seq order.
       committedText: stream.committedText,
       chunks: chunks.map((c) => ({ seq: c.seq, text: c.text })),

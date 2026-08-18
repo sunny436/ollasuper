@@ -38,4 +38,19 @@ crons.interval(
   {},
 );
 
+/**
+ * Keep the OpenRouter catalogue fresh.
+ *
+ * 6h rather than hourly: the model list changes on the order of days, and the
+ * refresh rewrites up to ~400 rows. chat/models.ts:apply refuses to apply an
+ * implausibly short response, so a bad fetch keeps the previous catalogue
+ * rather than emptying it.
+ */
+crons.interval(
+  "refresh openrouter model catalogue",
+  { hours: 6 },
+  internal.chat.models.refresh,
+  {},
+);
+
 export default crons;

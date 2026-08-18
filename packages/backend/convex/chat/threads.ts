@@ -10,7 +10,6 @@ import {
   DEFAULT_MODEL,
   assertAllowedModel,
   getUserIdOrNull,
-  requireFolderAccess,
   requireThreadAccess,
   requireThreadAccessIncludingTrashed,
   requireUserId,
@@ -47,7 +46,6 @@ function toListItem(t: {
   _id: Id<"chatThreads">;
   title: string;
   pinned: boolean;
-  folderId?: Id<"chatFolders">;
   status: string;
   model: string;
   messageCount: number;
@@ -59,7 +57,6 @@ function toListItem(t: {
     _id: t._id,
     title: t.title,
     pinned: t.pinned,
-    folderId: t.folderId ?? null,
     status: t.status,
     model: t.model,
     messageCount: t.messageCount,
@@ -93,34 +90,6 @@ export const list = query({
       .order("desc")
       .paginate(args.paginationOpts);
     return { ...res, page: res.page.map(toListItem) };
-  },
-});
-
-export const listByFolder = query({
-  args: {
-    workspaceId: v.id("workspaces"),
-    folderId: v.union(v.id("chatFolders"), v.null()),
-    paginationOpts: paginationOptsValidator,
-  },
-  handler: async (ctx, args) => {
-    const uid = await getUserIdOrNull(ctx);
-    if (!uid) return EMPTY_PAGE;
-    await requireMember(ctx, uid, args.workspaceId);
-    if (args.folderId) await requireFolderAccess(ctx, uid, args.folderId);
-    const res = await ctx.db
-      .query("chatThreads")
-      .withIndex("by_user_ws_folder_updated", (q) =>
-        q
-          .eq("userId", uid)
-          .eq("workspaceId", args.workspaceId)
-          .eq("folderId", args.folderId ?? undefined),
-      )
-      .order("desc")
-      .paginate(args.paginationOpts);
-    return {
-      ...res,
-      page: res.page.filter((t) => t.status === "active").map(toListItem),
-    };
   },
 });
 
@@ -179,12 +148,10 @@ export const create = mutation({
     workspaceId: v.id("workspaces"),
     title: v.optional(v.string()),
     model: v.optional(v.string()),
-    folderId: v.optional(v.id("chatFolders")),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, args.workspaceId);
-    if (args.folderId) await requireFolderAccess(ctx, userId, args.folderId);
 
     const settings = await ctx.db
       .query("chatSettings")
@@ -193,8 +160,12 @@ export const create = mutation({
       )
       .unique();
 
-    const model = assertAllowedModel(
+    // explicit only when the caller named a model: a stale saved default
+    // should re-home rather than block thread creation outright.
+    const model = await assertAllowedModel(
+      ctx,
       args.model ?? settings?.defaultModel ?? DEFAULT_MODEL,
+      { explicit: args.model !== undefined },
     );
     const now = Date.now();
     const threadId = await ctx.db.insert("chatThreads", {
@@ -202,7 +173,6 @@ export const create = mutation({
       userId,
       title: args.title ? cleanTitle(args.title) : "New chat",
       titleSource: "auto",
-      folderId: args.folderId,
       status: "active",
       pinned: false,
       model,
@@ -246,31 +216,13 @@ export const setPinned = mutation({
   },
 });
 
-export const setFolder = mutation({
-  args: {
-    threadId: v.id("chatThreads"),
-    folderId: v.union(v.id("chatFolders"), v.null()),
-  },
-  handler: async (ctx, { threadId, folderId }) => {
-    const userId = await requireUserId(ctx);
-    await requireThreadAccess(ctx, userId, threadId);
-    // The destination folder must be the caller's too, or a user could file a
-    // thread into someone else's folder id.
-    if (folderId) await requireFolderAccess(ctx, userId, folderId);
-    await ctx.db.patch(threadId, {
-      folderId: folderId ?? undefined,
-      updatedAt: Date.now(),
-    });
-  },
-});
-
 export const setModel = mutation({
   args: { threadId: v.id("chatThreads"), model: v.string() },
   handler: async (ctx, { threadId, model }) => {
     const userId = await requireUserId(ctx);
     await requireThreadAccess(ctx, userId, threadId);
     await ctx.db.patch(threadId, {
-      model: assertAllowedModel(model),
+      model: await assertAllowedModel(ctx, model, { explicit: true }),
       updatedAt: Date.now(),
     });
   },

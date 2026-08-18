@@ -75,7 +75,9 @@ export const upsert = mutation({
     const next = {
       defaultModel:
         args.defaultModel !== undefined
-          ? assertAllowedModel(args.defaultModel)
+          ? await assertAllowedModel(ctx, args.defaultModel, {
+              explicit: true,
+            })
           : existing?.defaultModel ?? DEFAULT_MODEL,
       systemPrompt:
         args.systemPrompt !== undefined

@@ -17,11 +17,19 @@ from langchain_openai import ChatOpenAI
 from app.config import Settings
 
 
+def _clamp_output(requested: int, context_window: int) -> int:
+    """Cap the output request so it cannot exceed what the window can hold."""
+    if context_window <= 0:
+        return requested
+    return max(256, min(requested, context_window // 4))
+
+
 def build_llm(
     settings: Settings,
     *,
     model: str,
     max_tokens: int | None = None,
+    context_window: int = 0,
     streaming: bool = True,
 ) -> ChatOpenAI:
     return ChatOpenAI(
@@ -32,7 +40,13 @@ def build_llm(
         # token accounting is silently always zero.
         stream_usage=True,
         streaming=streaming,
-        max_tokens=max_tokens or settings.ai_max_output_tokens,
+        # Clamped against the context window: the catalogue contains models
+        # with a 4095-token window, and asking those for 8192 output tokens is
+        # an immediate provider 400. Quarter of the window leaves room for the
+        # prompt; the floor keeps a reply possible at all.
+        max_tokens=_clamp_output(
+            max_tokens or settings.ai_max_output_tokens, context_window
+        ),
         temperature=None,
         timeout=180.0,
         max_retries=2,

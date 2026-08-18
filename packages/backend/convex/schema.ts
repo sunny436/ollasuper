@@ -358,6 +358,27 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_user_workspace", ["userId", "workspaceId"]),
 
+  // The OpenRouter catalogue, refreshed by chat/models.ts:refresh.
+  //
+  // This is a CACHE, not user data: it exists because assertAllowedModel runs
+  // inside mutations, and Convex mutations cannot fetch. Validation therefore
+  // has to read the allow-list from the database rather than from the network.
+  //
+  // One row per model rather than a single JSON blob, because the hot path is
+  // an indexed point lookup by modelId on every send/regenerate/retry.
+  chatModels: defineTable({
+    modelId: v.string(),
+    name: v.string(),
+    contextLength: v.number(),
+    // Kept as the raw per-token strings OpenRouter returns. The 5 meta-routers
+    // (openrouter/auto, fusion, ...) report "-1" for variable pricing, so this
+    // is deliberately not a number: the UI has to distinguish that from free.
+    promptPrice: v.string(),
+    completionPrice: v.string(),
+    vision: v.boolean(),
+    updatedAt: v.number(),
+  }).index("by_model_id", ["modelId"]),
+
   // Separate from `files` ON PURPOSE: files.list returns every row in the
   // workspace to any member, which is right for a shared Files page and wrong
   // for chat uploads. These are private to the uploader and never listed there.

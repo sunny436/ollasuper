@@ -351,7 +351,9 @@ export const send = mutation({
       attachmentIds,
     );
 
-    const model = assertAllowedModel(args.model ?? thread.model);
+    const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
+      explicit: args.model !== undefined,
+    });
     const now = Date.now();
     const userSeq = thread.nextSeq;
     const assistantSeq = userSeq + 1;
@@ -428,7 +430,9 @@ export const regenerate = mutation({
     }
     await assertCanGenerate(ctx, userId, thread);
 
-    const model = assertAllowedModel(args.model ?? thread.model);
+    const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
+      explicit: args.model !== undefined,
+    });
     const parentId = message.parentId;
     let variantIndex = 0;
     if (parentId) {
@@ -467,7 +471,9 @@ export const retry = mutation({
       throw new ConvexError("Only failed replies can be retried");
     }
     await assertCanGenerate(ctx, userId, thread);
-    const model = assertAllowedModel(args.model ?? thread.model);
+    const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
+      explicit: args.model !== undefined,
+    });
     const { streamId } = await startAssistantTurn(ctx, thread, userId, {
       seq: message.seq,
       model,
@@ -553,7 +559,10 @@ export const editUserMessage = mutation({
       userId,
       {
         seq: assistantSeq,
-        model: thread.model,
+        // Not explicit: an edit re-uses whatever the thread already stores,
+        // and that id may have left the catalogue since. Re-home rather than
+        // refuse — otherwise editing strands the user in their own thread.
+        model: await assertAllowedModel(ctx, thread.model),
         parentId: userMessageId,
         variantIndex: 0,
       },
