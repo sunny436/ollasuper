@@ -1,6 +1,25 @@
-# Ensures Convex auto-starts on Docker boot / VM reboot (merged with docker-compose.yml).
+# Merged with docker-compose.yml. Three concerns, all deliberate.
 services:
   backend:
+    # Auto-start on Docker boot / VM reboot.
     restart: unless-stopped
+    # Pin the backend by DIGEST, not :latest. PostgreSQL is now the persistent
+    # store, so a silently-newer backend could migrate the persistence layout of a
+    # live database on an unattended restart. This digest is the build that Phase 0
+    # verified end-to-end against PostgreSQL 16.14 with CLI 1.19.2.
+    image: ghcr.io/get-convex/convex-backend@sha256:1f2044e3eac463ac78973b136c0baf72d4ada602611d853d6f99f280e29e0a98
   dashboard:
     restart: unless-stopped
+
+networks:
+  default:
+    # PINNED so it cannot drift. deploy/62-convex-postgres.sh scopes Postgres's
+    # listen_addresses, its pg_hba line and a ufw rule to exactly this subnet and
+    # gateway. If Docker were left to auto-assign, recreating the network could
+    # move it to 172.19.x and the backend would silently lose its database:
+    # ufw drops the packets, so the failure presents as a HANG, not an error.
+    # Change this in one place only, then re-run 62-convex-postgres.sh.
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
