@@ -6,16 +6,31 @@ import { useEffect, useRef } from "react";
 import { useWorkspace } from "@/lib/workspace-provider";
 import { useAmbience } from "./ambience-provider";
 
+const TS_KEY = "ambience-ts";
+const readTs = () => {
+  try {
+    return Number(localStorage.getItem(TS_KEY) || 0);
+  } catch {
+    return 0;
+  }
+};
+const writeTs = (t: number) => {
+  try {
+    localStorage.setItem(TS_KEY, String(t));
+  } catch {}
+};
+
 /**
  * Cross-device ambience sync. Renders nothing. Mounted under WorkspaceProvider +
- * ConvexClientProvider (the AmbienceProvider itself stays Convex-free, above them),
- * so it can read the current workspace + Convex while driving the shared theme.
+ * ConvexClientProvider (the AmbienceProvider stays Convex-free, above them).
  *
- * Policy: localStorage still wins the instant pre-paint render (no flash). Once the
- * per-user/workspace server value resolves, if it differs — because another device
- * changed it — we smoothly tween to it. Local changes here upsert (debounced) so the
- * theme is one shared preference. The value we just adopted from the server is never
- * written back, so there is no echo loop; a drag coalesces to a single write.
+ * Last-write-wins by timestamp so a device NEVER loses a fresh local change to a
+ * stale server value: localStorage still wins the instant pre-paint render (no
+ * flash); on the first server resolution we adopt the server value only if it is
+ * newer (another device changed it more recently), else we push the local value
+ * up. Afterwards we adopt live pushes from other devices — but only when the
+ * ambience VALUE actually differs (guarding against `updatedAt` bumps from other
+ * settings fields). Local changes upsert debounced; a drag coalesces to one write.
  */
 export function AmbienceSync() {
   const { current } = useWorkspace();
@@ -26,27 +41,50 @@ export function AmbienceSync() {
   );
   const upsert = useMutation(api.chat.settings.upsert);
   const lastServer = useRef<number | null>(null);
+  const decided = useRef(false);
 
-  const serverAmbience = settings?.ambience ?? null;
+  const serverA = settings?.ambience ?? null;
+  const serverTs = settings?.updatedAt ?? 0;
 
-  // Server → local: adopt a value set on another device (smooth, not a snap).
-  useEffect(() => {
-    if (serverAmbience == null || serverAmbience === lastServer.current) return;
-    lastServer.current = serverAmbience;
-    setIntensityAnimated(serverAmbience);
-  }, [serverAmbience, setIntensityAnimated]);
-
-  // Local → server (debounced). Skip the value we just adopted, and wait for the
-  // initial query so we don't clobber the server before we've seen it.
+  // Reconcile local <-> server.
   useEffect(() => {
     if (!current || settings === undefined) return;
-    if (intensity === lastServer.current || intensity === serverAmbience) return;
+
+    if (!decided.current) {
+      decided.current = true;
+      if (serverA != null && serverTs > readTs()) {
+        lastServer.current = serverA;
+        writeTs(serverTs);
+        setIntensityAnimated(serverA);
+      } else if (intensity !== serverA) {
+        lastServer.current = intensity;
+        writeTs(Date.now());
+        upsert({ workspaceId: current, ambience: intensity }).catch(() => {});
+      } else {
+        lastServer.current = serverA;
+      }
+      return;
+    }
+
+    // A live push from another device (value actually changed + newer).
+    if (serverA != null && serverA !== lastServer.current && serverTs > readTs()) {
+      lastServer.current = serverA;
+      writeTs(serverTs);
+      setIntensityAnimated(serverA);
+    }
+  }, [settings, current, serverA, serverTs, setIntensityAnimated, upsert, intensity]);
+
+  // Local change → push up (debounced), skipping the value we just adopted.
+  useEffect(() => {
+    if (!decided.current || !current) return;
+    if (intensity === lastServer.current) return;
     const id = setTimeout(() => {
       lastServer.current = intensity;
+      writeTs(Date.now());
       upsert({ workspaceId: current, ambience: intensity }).catch(() => {});
     }, 1000);
     return () => clearTimeout(id);
-  }, [intensity, current, settings, serverAmbience, upsert]);
+  }, [intensity, current, upsert]);
 
   return null;
 }

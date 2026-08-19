@@ -23,6 +23,7 @@ const DEFAULTS = {
   customInstructionsStyle: null as string | null,
   sendOnEnter: true,
   ambience: null as number | null,
+  updatedAt: 0,
 };
 
 const clampAmbience = (n: number) => Math.min(100, Math.max(0, Math.round(n)));
@@ -51,6 +52,7 @@ export const get = query({
       customInstructionsStyle: row.customInstructionsStyle ?? null,
       sendOnEnter: row.sendOnEnter,
       ambience: row.ambience ?? null,
+      updatedAt: row.updatedAt,
     };
   },
 });
