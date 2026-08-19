@@ -81,35 +81,11 @@ const step = async (n, f) => {
     await page.waitForURL(/\/chat/, { timeout: 10000 });
   });
 
-  await step("empty state renders with prompt cards", async () => {
-    await page.waitForSelector("text=What would you like to make today?", {
-      timeout: 10000,
-    });
-    const cards = await page.locator("text=Summarise a document").count();
-    if (cards === 0) throw new Error("no suggested prompt cards");
-  });
-
-  await step("suggestion chips render", async () => {
-    // The Gemini restyle replaced the Write/Code/Visuals mode tabs with a flat
-    // set of suggestion chips. Confirm a couple beyond the first are present.
-    await page.waitForSelector("text=Draft an email", { timeout: 5000 });
-    if ((await page.locator("text=Explain simply").count()) === 0) {
-      throw new Error("suggestion chips did not render");
-    }
-  });
-
-  await step("a prompt card populates the composer without sending", async () => {
-    await page.click("text=Draft an email");
-    await page.waitForTimeout(300);
-    const v = await page.locator("#chat-composer").inputValue();
-    if (!v.includes("Draft a short, professional email")) {
-      throw new Error("composer was not populated");
-    }
-    // And it must NOT have sent: no assistant turn yet.
-    const stopBtn = await page
-      .getByRole("button", { name: "Stop generating" })
-      .count();
-    if (stopBtn > 0) throw new Error("card auto-sent the prompt");
+  await step("empty state renders the greeting + composer", async () => {
+    // The empty new-chat screen is now just the personalised gradient greeting
+    // and the composer — the subtitle and suggestion chips were removed.
+    await page.waitForSelector("h1:has-text('Good')", { timeout: 10000 });
+    await page.waitForSelector("#chat-composer", { timeout: 10000 });
   });
 
   await step("send a message and receive a streamed reply", async () => {

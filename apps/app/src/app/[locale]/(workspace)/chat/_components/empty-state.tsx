@@ -1,39 +1,7 @@
 "use client";
 
-import { ArrowUpRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useCachedUser } from "../_hooks/use-cached-user";
-import { useComposer } from "../_hooks/use-composer";
-import { useSendMessage } from "../_hooks/use-send-message";
-
-/**
- * A flat, curated set of starter prompts, shown as Gemini-style suggestion
- * chips below the composer. (The old Write/Code/Visuals mode tabs were dropped
- * with the Gemini restyle — Gemini has no such switcher.) "Summarise a document"
- * is kept as the first chip; the chat e2e asserts it renders.
- */
-const SUGGESTIONS: { title: string; hint: string; prompt: string }[] = [
-  {
-    title: "Summarise a document",
-    hint: "Paste it and get the key points",
-    prompt: "Summarise the following document into five key points:\n\n",
-  },
-  {
-    title: "Write code",
-    hint: "Explain, debug or refactor",
-    prompt: "Write code that ",
-  },
-  {
-    title: "Draft an email",
-    hint: "Professional, to the point",
-    prompt: "Draft a short, professional email that ",
-  },
-  {
-    title: "Explain simply",
-    hint: "Plain language, no jargon",
-    prompt: "Explain this in plain language, assuming no background knowledge:\n\n",
-  },
-];
 
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
@@ -51,14 +19,14 @@ function usePrefersReducedMotion(): boolean {
 /**
  * The greeting, revealed character by character on a gradient — the signature
  * Gemini landing motion. Each glyph lifts and un-rotates into place on a
- * staggered spring. Reduced-motion renders the final state with no transform.
+ * staggered spring, then settles to `transform: none` so no residual 3D context
+ * clips the descenders (the 'g'/'y' tails). Reduced-motion renders final state.
  */
 function AnimatedHeadline({ text }: { text: string }) {
   const reduced = usePrefersReducedMotion();
   const [revealed, setRevealed] = useState(false);
-  // The stagger plays exactly ONCE. If the text changes afterwards (e.g. the name
-  // arrives a beat after the greeting on a first-ever load), it snaps to the final
-  // state rather than re-animating — which read as broken.
+  // The stagger plays exactly ONCE. A later text change (name arriving after the
+  // greeting) snaps to the final state rather than re-animating.
   const animatedOnce = useRef(false);
 
   useEffect(() => {
@@ -72,20 +40,21 @@ function AnimatedHeadline({ text }: { text: string }) {
   const chars = useMemo(() => Array.from(text), [text]);
 
   return (
-    <h1 className="pb-2 text-4xl font-medium leading-[1.2] sm:text-5xl">
+    <h1 className="pb-3 text-4xl font-medium leading-[1.35] sm:text-5xl">
       {chars.map((char, i) => (
         <span
           // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph run
           key={i}
-          className="inline-block bg-gradient-to-br from-sky-500 via-indigo-500 to-purple-500 bg-clip-text text-transparent will-change-transform dark:from-sky-300 dark:via-indigo-300 dark:to-fuchsia-300"
+          className="inline-block bg-gradient-to-br from-sky-500 via-indigo-500 to-purple-500 bg-clip-text text-transparent dark:from-sky-300 dark:via-indigo-300 dark:to-fuchsia-300"
           style={
             reduced
               ? undefined
               : {
                   opacity: settled ? 1 : 0,
-                  transform: settled
-                    ? "translateY(0) rotateX(0deg)"
-                    : "translateY(20px) rotateX(-20deg)",
+                  // `none` once settled — a lingering rotateX(0) keeps a 3D
+                  // rendering context that clips the glyph box and eats the
+                  // descenders.
+                  transform: settled ? "none" : "translateY(20px) rotateX(-20deg)",
                   transition: `opacity 0.5s ease, transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) ${0.06 + i * 0.03}s`,
                 }
           }
@@ -98,11 +67,9 @@ function AnimatedHeadline({ text }: { text: string }) {
 }
 
 /**
- * Split into two halves on purpose.
- *
- * chat-layout.tsx centres greeting -> COMPOSER -> suggestion chips on an empty
- * thread, so the composer sits between these two blocks and cannot be a child of
- * either.
+ * The empty new-chat hero: just the personalised gradient greeting. The subtitle
+ * and the suggestion chips were removed for the minimal Gemini look — only the
+ * greeting sits above the composer now.
  */
 export function EmptyHero() {
   const [greeting, setGreeting] = useState("");
@@ -116,58 +83,16 @@ export function EmptyHero() {
     setGreeting(h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening");
   }, []);
 
-  // getUser resolves this as (username || name), so it survives username being
-  // optional — and picks up the name Google supplies or the one captured at
-  // sign-up.
   const firstName = user?.name?.split(" ")[0] ?? "";
   const headline = greeting ? `${greeting}${firstName ? `, ${firstName}` : ""}` : "";
 
   return (
     <div className="w-full text-center">
-      {/* Reserve the line height so the pill below does not jump when the
-          greeting resolves and the animation runs. */}
-      <div className="min-h-[4rem] overflow-visible sm:min-h-[4.75rem]">
+      {/* Reserve the line height (overflow-visible so descenders are never
+          clipped) so the pill below does not jump when the greeting resolves. */}
+      <div className="min-h-[4.5rem] overflow-visible sm:min-h-[5.25rem]">
         {headline && <AnimatedHeadline text={headline} />}
       </div>
-      <p className="mt-2 text-sm text-primary/55">
-        What would you like to make today?
-      </p>
-    </div>
-  );
-}
-
-export function EmptyPrompts({ threadId }: { threadId: string | null }) {
-  const { setDraft } = useComposer();
-  const { send } = useSendMessage(threadId);
-
-  return (
-    <div className="flex w-full flex-wrap justify-center gap-2">
-      {SUGGESTIONS.map((s) => (
-        <div
-          key={s.title}
-          className="group relative flex items-center rounded-2xl border border-border bg-card/60 py-2 pl-3.5 pr-9 backdrop-blur-sm transition-colors hover:border-brand/40 hover:bg-primary/5"
-        >
-          <button
-            type="button"
-            // Card body fills the composer rather than sending: people almost
-            // always tweak a suggestion, and auto-sending burns a request and an
-            // inference bill on a prompt they did not finish writing.
-            onClick={() => setDraft(s.prompt)}
-            className="text-left"
-            title={s.hint}
-          >
-            <span className="block text-sm text-primary/85">{s.title}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => void send(s.prompt)}
-            aria-label={`Send: ${s.title}`}
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-primary/25 transition group-hover:text-brand-ink hover:bg-primary/5"
-          >
-            <ArrowUpRight className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      ))}
     </div>
   );
 }

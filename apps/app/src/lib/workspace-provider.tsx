@@ -31,6 +31,17 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const { signOut } = useAuthActions();
   const [selected, setSelected] = useState<Id<"workspaces"> | null>(null);
   const [ensuring, setEnsuring] = useState(false);
+  // Optimistic workspace from the last session, hydrated in an EFFECT (not during
+  // render → no hydration mismatch). Lets the composer become usable at hydration
+  // on a reload instead of waiting for myWorkspaces to land over the WebSocket —
+  // i.e. no "Preparing your workspace…" flash for a returning user.
+  const [optimistic, setOptimistic] = useState<Id<"workspaces"> | null>(null);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("ws");
+      if (saved) setOptimistic(saved as Id<"workspaces">);
+    } catch {}
+  }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: run once per mount
   useEffect(() => {
@@ -78,11 +89,23 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     return match?._id ?? workspaces[0]?._id ?? null;
   }, [workspaces, selected]);
 
+  // Persist the resolved id so the NEXT reload can seed `optimistic` before the
+  // query returns. (Previously only select() wrote it, so a user who never
+  // switched workspaces had nothing cached.)
+  useEffect(() => {
+    if (resolved && typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem("ws", resolved);
+      } catch {}
+    }
+  }, [resolved]);
+
   // Preserves the previous effect's `?? prev` behaviour: once a workspace has
   // resolved, a transiently empty or in-flight list never clears it back to null.
+  // Falls back to the optimistic (cached) id while myWorkspaces is still loading.
   const sticky = useRef<Id<"workspaces"> | null>(null);
   if (resolved !== null) sticky.current = resolved;
-  const current = resolved ?? sticky.current;
+  const current = resolved ?? sticky.current ?? optimistic;
 
   const select = (id: Id<"workspaces">) => {
     if (typeof window !== "undefined") window.localStorage.setItem("ws", id);

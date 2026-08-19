@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, LazyMotion, m } from "framer-motion";
-import { EmptyHero, EmptyPrompts } from "./empty-state";
+import { EmptyHero } from "./empty-state";
 import { ChatInput } from "./chat-input";
 import { useChatSession } from "../_hooks/use-chat-session";
 
@@ -78,7 +78,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                 : "relative z-20 shrink-0"
             }
           >
-            <div className="pointer-events-auto mx-auto flex w-full max-w-3xl flex-col items-center gap-5">
+            <div className={`pointer-events-auto mx-auto flex w-full flex-col items-center gap-5 ${centred ? "max-w-[58rem]" : "max-w-3xl"}`}>
               <AnimatePresence mode="popLayout">
                 {centred && (
                   <m.div
@@ -104,21 +104,6 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                 <ChatInput />
               </m.div>
 
-              <AnimatePresence mode="popLayout">
-                {centred && (
-                  <m.div
-                    key="prompts"
-                    layout
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 20, filter: "blur(12px)", scale: 0.95 }}
-                    transition={ITEM_SPRING}
-                    className="w-full"
-                  >
-                    <EmptyPrompts threadId={threadId} />
-                  </m.div>
-                )}
-              </AnimatePresence>
             </div>
           </m.div>
         </LazyMotion>
