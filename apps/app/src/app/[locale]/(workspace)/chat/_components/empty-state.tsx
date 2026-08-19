@@ -40,7 +40,7 @@ function AnimatedHeadline({ text }: { text: string }) {
   const chars = useMemo(() => Array.from(text), [text]);
 
   return (
-    <h1 className="pb-3 text-4xl font-medium leading-[1.35] sm:text-5xl">
+    <h1 className="whitespace-nowrap pb-3 text-2xl font-medium leading-[1.35] sm:text-4xl">
       {chars.map((char, i) => (
         <span
           // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph run
@@ -68,8 +68,9 @@ function AnimatedHeadline({ text }: { text: string }) {
 
 type Bucket = "morning" | "afternoon" | "evening" | "night";
 
-// 20 greetings (5 per time bucket), name-aware and readable when the name is not
-// yet known. One is picked at random per new-chat load.
+// Time-of-day greetings (5 per bucket), name-aware and readable when the name is
+// not yet known. The current bucket's five are mixed into the pool alongside the
+// time-agnostic GENERIC list below, and one is picked at random per new-chat load.
 const GREETINGS: Record<Bucket, ((n: string) => string)[]> = {
   morning: [
     (n) => (n ? `Good morning, ${n}` : "Good morning"),
@@ -101,6 +102,44 @@ const GREETINGS: Record<Bucket, ((n: string) => string)[]> = {
   ],
 };
 
+// Time-agnostic greetings — shown at any hour, mixed into the pool alongside the
+// current bucket's time greetings above. A handful fold the name in; the rest read
+// the same for everyone. Kept short-to-medium so they stay on one line.
+const GENERIC: ((n: string) => string)[] = [
+  // Direct / helpful
+  () => "What can I help you with?",
+  () => "What are you working on?",
+  () => "What's on your mind?",
+  (n) => (n ? `How can I help today, ${n}?` : "How can I help today?"),
+  (n) => (n ? `Where should we start, ${n}?` : "Where should we start?"),
+  () => "What would you like to explore?",
+  () => "What can we work on together?",
+  () => "What would you like to accomplish?",
+  () => "What can I help you figure out?",
+  (n) => (n ? `What's on your agenda today, ${n}?` : "What's on your agenda today?"),
+  // Friendly / conversational
+  () => "Got something on your mind?",
+  () => "What would you like to know?",
+  () => "Need a hand with something?",
+  () => "Tell me what you're thinking.",
+  (n) => (n ? `What can we tackle today, ${n}?` : "What can we tackle today?"),
+  () => "What would you like to do?",
+  () => "What should we dive into?",
+  () => "Have a question? Ask away.",
+  (n) => (n ? `Ready to get started, ${n}?` : "Ready to get started?"),
+  // Modern / product
+  () => "Turn your ideas into action.",
+  () => "Let's make something happen.",
+  () => "Bring your next idea to life.",
+  () => "Think. Ask. Create.",
+  () => "Your next idea starts here.",
+  () => "Let's build something great.",
+  () => "Explore. Create. Get things done.",
+  () => "Start with an idea.",
+  () => "Your AI workspace starts here.",
+  (n) => (n ? `What will we build today, ${n}?` : "What will we build today?"),
+];
+
 function bucketFor(hour: number): Bucket {
   if (hour >= 5 && hour < 12) return "morning";
   if (hour >= 12 && hour < 17) return "afternoon";
@@ -115,25 +154,28 @@ function bucketFor(hour: number): Bucket {
  */
 export function EmptyHero() {
   const user = useCachedUser();
-  // Pick the time bucket + a random greeting ONCE, client-side (Math.random and
-  // local time in an effect → no hydration mismatch; every e2e asserts zero
-  // console errors). The name is folded in during render below, so it fills in
-  // when useCachedUser resolves without changing which greeting was chosen.
-  const [pick, setPick] = useState<{ bucket: Bucket; index: number } | null>(null);
+  // Pick ONE greeting at random, ONCE, client-side (Math.random + local time in an
+  // effect → no hydration mismatch; every e2e asserts zero console errors). The
+  // pool is the current time bucket's five greetings plus the time-agnostic GENERIC
+  // list, so a load may land on a personalised "Good evening, Sunny" or a neutral
+  // "What's on your mind?". The chosen fn is stored and called with the name during
+  // render, so the name fills in when useCachedUser resolves without re-picking.
+  const [greet, setGreet] = useState<((n: string) => string) | null>(null);
   useEffect(() => {
     const bucket = bucketFor(new Date().getHours());
-    const index = Math.floor(Math.random() * GREETINGS[bucket].length);
-    setPick({ bucket, index });
+    const pool = [...GREETINGS[bucket], ...GENERIC];
+    const fn = pool[Math.floor(Math.random() * pool.length)] ?? null;
+    setGreet(() => fn);
   }, []);
 
   const firstName = user?.name?.split(" ")[0] ?? "";
-  const headline = pick ? (GREETINGS[pick.bucket][pick.index]?.(firstName) ?? "") : "";
+  const headline = greet ? greet(firstName) : "";
 
   return (
     <div className="w-full text-center">
       {/* Reserve the line height (overflow-visible so descenders are never
           clipped) so the pill below does not jump when the greeting resolves. */}
-      <div className="min-h-[4.5rem] overflow-visible sm:min-h-[5.25rem]">
+      <div className="min-h-[3.25rem] overflow-visible sm:min-h-[4rem]">
         {headline && <AnimatedHeadline text={headline} />}
       </div>
     </div>
