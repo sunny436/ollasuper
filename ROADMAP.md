@@ -5,6 +5,31 @@ Deferred work, captured so it isn't lost. Ordered roughly by priority.
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
 
+## 0c. Ambience theme (2026-08-19) — continuous slider replaces Light/Dark/System
+The discrete next-themes control was replaced by a continuous **Ambience slider (0–100)**
+that themes the whole app through **Daylight → warm Amber → Midnight**, plus a Gemini-style
+empty-`/chat` landing (parallax glow orbs + a starfield). Engine in `apps/app/src/lib/ambience`.
+
+- **Reversible by construction:** `globals.css` reads every token from
+  `var(--amb-<token>, <today's-literal>)`; the engine writes `--amb-*` on `<html>` only
+  (inheritance covers all scopes + late Radix `.workspace` portals). Engine off
+  (`NEXT_PUBLIC_AMBIENCE=off`) → pixel-identical to before. `tailwind.config` untouched.
+  next-themes was retired (it was the sole `useTheme` consumer via `theme-switcher`).
+- **No mid-transition washout:** surfaces interpolate through 4 stops
+  `[day, amber(50%), dusk(75%), night]`; **text tokens never lerp through grey** — each
+  outputs whichever ink (light day→amber / dark night) has the higher WCAG contrast against
+  its paired surface. `primary` is a text token (it's the body text; `text-muted-foreground`
+  is unused in chat). A smooth light→dark surface must cross medium luminance, where even
+  black/white caps ~3.9:1, so body text is **≥3.5 through the ~52–76% crossover and ≥4.5
+  elsewhere** (vs the ~1.3 wash before). Guarded by `contrast.check.ts`, wired into CI via
+  the apps/app `test` script.
+- **No flash:** a pre-hydration inline script mirrors the engine math (byte-exact parity
+  verified) and stamps vars + `.dark` before paint. `.dark` toggles off the interpolated
+  background luminance so `dark:` utilities + Shiki flip in lockstep with the text.
+- Accents (user bubble, Send button, dictation-active mic) ride `--brand`, so they warm to
+  bronze at the amber phase. Persistence is per-device localStorage; **cross-device sync via
+  an additive `chatSettings.ambience` field is deferred to a follow-up.**
+
 ## 0b. Workspace re-skin (2026-08-18) — `/chat` goes full-bleed
 `/chat` moved from the `(dashboard)` route group to a sibling **`(workspace)`** group, so it no
 longer renders the app sidebar or the topbar. Route groups do not affect URLs. With the app rail
