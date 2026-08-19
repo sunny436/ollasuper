@@ -10,6 +10,7 @@ import { useReveal } from "../_hooks/use-reveal";
 import { useStickToBottom } from "../_hooks/use-stick-to-bottom";
 import { useThrottledValue } from "../_hooks/use-throttled-value";
 import { ChatMessage, type ChatMessageDoc } from "./chat-message";
+import { preloadMarkdown } from "./lazy-markdown";
 import { MessageSkeleton } from "./message-skeleton";
 import { ScrollToBottom } from "./scroll-to-bottom";
 
@@ -53,6 +54,27 @@ export function MessageList({ threadId }: { threadId: string | null }) {
     // listPaged is newest-first for backwards pagination; display oldest-first.
     return [...(results ?? [])].reverse() as unknown as ChatMessageDoc[];
   }, [results]);
+
+  // The markdown renderer is a lazy chunk (kept out of /chat's first-load so the
+  // empty landing hydrates faster). Preload it off the critical path: as soon as a
+  // transcript has messages, and otherwise on idle — so it is ready before any
+  // reply streams and settled messages never show the raw-text fallback.
+  useEffect(() => {
+    if (settled.length > 0) {
+      void preloadMarkdown();
+      return;
+    }
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (w.requestIdleCallback) {
+      const id = w.requestIdleCallback(() => void preloadMarkdown());
+      return () => w.cancelIdleCallback?.(id);
+    }
+    const t = setTimeout(() => void preloadMarkdown(), 1500);
+    return () => clearTimeout(t);
+  }, [settled.length]);
 
   const streamingId = (live?.messageId as Id<"chatMessages"> | undefined) ?? null;
   // Published so the composer — which now lives above this route segment — can

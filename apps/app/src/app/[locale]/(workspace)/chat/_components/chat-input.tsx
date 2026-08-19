@@ -19,6 +19,7 @@ import { useComposer } from "../_hooks/use-composer";
 import { useDictation } from "../_hooks/use-dictation";
 import { useMediaQuery } from "../_hooks/use-media-query";
 import { useSendMessage } from "../_hooks/use-send-message";
+import { preloadMarkdown } from "./lazy-markdown";
 import { AttachmentChip } from "./attachment-chip";
 import { ModelPicker } from "./model-picker";
 
@@ -185,8 +186,12 @@ export function ChatInput() {
     }
   };
 
-  const iconBtn =
-    "shrink-0 rounded-full p-2 text-primary/45 transition hover:bg-primary/5 hover:text-primary/80";
+  // Centred = the Gemini pill, scaled ~1.8x; docked keeps today's sizes.
+  const iconBtn = `shrink-0 rounded-full ${centred ? "p-3" : "p-2"} text-primary/45 transition hover:bg-primary/5 hover:text-primary/80`;
+  const btnBox = `flex ${centred ? "h-14 w-14" : "h-9 w-9"} items-center justify-center rounded-full`;
+  const bigIcon = centred ? "h-7 w-7" : "h-4 w-4";
+  const stopIcon = centred ? "h-6 w-6" : "h-3.5 w-3.5";
+  const micIcon = centred ? "h-7 w-7" : "h-[18px] w-[18px]";
 
   return (
     <div
@@ -233,7 +238,7 @@ export function ChatInput() {
         <div
           className={
             centred
-              ? "flex flex-nowrap items-center gap-1 rounded-[26px] border border-white/60 bg-card/70 px-2 py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.10)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_12px_40px_rgba(0,0,0,0.13)] dark:border-white/10"
+              ? "flex flex-nowrap items-center gap-2 rounded-[40px] border border-white/60 bg-card/70 px-4 py-4 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10"
               : "flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-3xl border border-border bg-card/70 px-3 py-2.5 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25"
           }
         >
@@ -251,7 +256,7 @@ export function ChatInput() {
 
           {/* LEFT controls: attach + model picker */}
           <div
-            className={`flex items-center gap-0.5 ${centred ? "order-1" : "order-2"}`}
+            className={`flex items-center gap-0.5 ${centred ? "order-1 gap-1.5 [&_button]:text-sm" : "order-2"}`}
           >
             <input
               ref={fileInput}
@@ -271,7 +276,7 @@ export function ChatInput() {
               title="Attach files"
               className={iconBtn}
             >
-              <Paperclip className="h-[18px] w-[18px]" />
+              <Paperclip className={centred ? "h-7 w-7" : "h-[18px] w-[18px]"} />
             </button>
             <ModelPicker value={model} onChange={setModel} disabled={isStreaming} />
           </div>
@@ -280,7 +285,7 @@ export function ChatInput() {
           <div
             className={
               centred
-                ? "order-2 min-w-0 flex-1"
+                ? "order-2 min-w-0 flex-1 [&_textarea]:text-xl [&_textarea]:leading-9"
                 : "order-1 w-full basis-full"
             }
           >
@@ -294,6 +299,7 @@ export function ChatInput() {
               aria-describedby="chat-composer-hint"
               aria-keyshortcuts="Enter"
               onChange={(e) => setValue(e.target.value)}
+              onFocus={() => void preloadMarkdown()}
               onInput={autosize}
               onKeyDown={onKeyDown}
               onCompositionStart={() => {
@@ -329,9 +335,9 @@ export function ChatInput() {
                 type="button"
                 onClick={onStop}
                 aria-label="Stop generating"
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-border transition hover:bg-primary/15"
+                className={`${btnBox} bg-primary/10 text-primary ring-1 ring-border transition hover:bg-primary/15`}
               >
-                <Square className="h-3.5 w-3.5 fill-current" />
+                <Square className={`${stopIcon} fill-current`} />
               </button>
             ) : hasContent ? (
               <button
@@ -340,7 +346,7 @@ export function ChatInput() {
                 disabled={sending || !canSend}
                 aria-label={sending ? "Sending" : "Send message"}
                 // Gemini blue accent on the pill; brand accent when docked.
-                className={`flex h-9 w-9 items-center justify-center rounded-full text-white shadow-md transition ${
+                className={`${btnBox} text-white shadow-md transition ${
                   sending || !canSend
                     ? "bg-primary/10 text-primary/30"
                     : centred
@@ -349,9 +355,9 @@ export function ChatInput() {
                 }`}
               >
                 {sending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className={`${bigIcon} animate-spin`} />
                 ) : (
-                  <ArrowUp className="h-4 w-4" />
+                  <ArrowUp className={bigIcon} />
                 )}
               </button>
             ) : dictation.supported ? (
@@ -361,14 +367,14 @@ export function ChatInput() {
                 aria-label={dictation.listening ? "Stop dictation" : "Dictate"}
                 title={dictation.listening ? "Stop dictation" : "Dictate"}
                 aria-pressed={dictation.listening}
-                className={`flex h-9 w-9 items-center justify-center rounded-full transition ${
+                className={`${btnBox} transition ${
                   dictation.listening
                     ? "bg-[#1a73e8] text-white"
                     : "text-primary/45 hover:bg-primary/5 hover:text-primary/80"
                 }`}
               >
                 <Mic
-                  className={`h-[18px] w-[18px] ${dictation.listening ? "animate-pulse" : ""}`}
+                  className={`${micIcon} ${dictation.listening ? "animate-pulse" : ""}`}
                 />
               </button>
             ) : (
@@ -378,9 +384,9 @@ export function ChatInput() {
                 type="button"
                 disabled
                 aria-label="Send message"
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary/30"
+                className={`${btnBox} bg-primary/10 text-primary/30`}
               >
-                <ArrowUp className="h-4 w-4" />
+                <ArrowUp className={bigIcon} />
               </button>
             )}
           </div>

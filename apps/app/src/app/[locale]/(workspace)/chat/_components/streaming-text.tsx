@@ -1,6 +1,6 @@
 "use client";
 
-import { Markdown } from "./markdown";
+import { LazyMarkdown } from "./lazy-markdown";
 import { TypingIndicator } from "./typing-indicator";
 
 /**
@@ -37,7 +37,7 @@ export function StreamingText({
       aria-atomic="false"
       aria-busy={isStreaming}
     >
-      <Markdown content={text} streaming={isStreaming} />
+      <LazyMarkdown content={text} streaming={isStreaming} />
       {isStreaming && (
         <span className="ml-0.5 inline-block h-[1.05em] w-[2px] translate-y-[0.15em] bg-brand animate-caret-blink motion-reduce:animate-none" />
       )}

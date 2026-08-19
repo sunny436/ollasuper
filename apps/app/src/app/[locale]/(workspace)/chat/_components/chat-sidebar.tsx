@@ -6,6 +6,7 @@ import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import { useCachedUser } from "../_hooks/use-cached-user";
 import {
   CreditCard,
   FolderSearch,
@@ -93,7 +94,7 @@ function ProfileMenuItem({
  * /chat with no way to reach Settings or Billing.
  */
 function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
-  const user = useQuery(api.users.getUser);
+  const user = useCachedUser();
   const { signOut } = useAuthActions();
   const [open, setOpen] = useState(false);
 
