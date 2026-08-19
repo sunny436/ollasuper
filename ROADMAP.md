@@ -27,8 +27,11 @@ empty-`/chat` landing (parallax glow orbs + a starfield). Engine in `apps/app/sr
   verified) and stamps vars + `.dark` before paint. `.dark` toggles off the interpolated
   background luminance so `dark:` utilities + Shiki flip in lockstep with the text.
 - Accents (user bubble, Send button, dictation-active mic) ride `--brand`, so they warm to
-  bronze at the amber phase. Persistence is per-device localStorage; **cross-device sync via
-  an additive `chatSettings.ambience` field is deferred to a follow-up.**
+  bronze at the amber phase.
+- **Cross-device sync** (shipped): an additive `chatSettings.ambience` field + `updatedAt`
+  persist the theme per user+workspace; `<AmbienceSync/>` (in both route-group layouts)
+  reconciles local↔server by **last-write-wins timestamp** so a fresh local change never
+  loses to a stale server value, while localStorage still wins the pre-paint render (no flash).
 
 ## 0b. Workspace re-skin (2026-08-18) — `/chat` goes full-bleed
 `/chat` moved from the `(dashboard)` route group to a sibling **`(workspace)`** group, so it no
