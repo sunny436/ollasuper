@@ -65,6 +65,17 @@ export const accountExists = query({
   args: { email: v.string() },
   handler: async (ctx, { email }) => {
     const normalized = normalizeEmail(email);
+    // Fast path: by_email_normalized (schema.ts) exists precisely for this.
+    const hit = await ctx.db
+      .query("users")
+      .withIndex("by_email_normalized", (q) => q.eq("emailNormalized", normalized))
+      .first();
+    if (hit) return true;
+    // Slow path, kept deliberately. Rows written before emailNormalized existed
+    // have it unset and are invisible to that index, and their raw email may be
+    // any case, which no index can match case-insensitively. Scanning here is
+    // the only answer that cannot regress an existing account — it just no
+    // longer runs for the overwhelmingly common case of a normalised hit.
     const all = await ctx.db.query("users").collect();
     return all.some(
       (u) => (u.emailNormalized ?? normalizeEmail(u.email ?? "")) === normalized,

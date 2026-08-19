@@ -84,7 +84,14 @@ export function IntelligenceCore({ className }: { className?: string }) {
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
     camera.position.set(0, 0, 3.2);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      // A hint only — asks the driver not to spin up the discrete GPU for an
+      // ambient decoration. antialias and pixelRatio are deliberately left
+      // alone: both are visible in the render, unlike this.
+      powerPreference: "low-power",
+    });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
     // updateStyle=false kept the canvas at its intrinsic size instead of filling
@@ -130,18 +137,67 @@ export function IntelligenceCore({ className }: { className?: string }) {
       renderer.render(scene, camera);
     };
 
+    // Bounds on an ambient loop that used to run flat out for the life of the
+    // page. Measured on an otherwise idle /chat: the main thread was 55% busy,
+    // and hiding this one canvas took it to 10% — i.e. ~82% of all idle
+    // main-thread work was this render loop. Neither bound changes how the orb
+    // looks while it is on screen.
+    //
+    //   1. Cap the rate. The sphere turns at 0.45 rad/s, so 30fps and 60fps are
+    //      indistinguishable, and it halves the fill cost.
+    //   2. Do not render what nobody can see. The rail collapses to w-0 and is
+    //      display:none on mobile, but the element stays in the DOM, and rAF
+    //      keeps firing for a background tab too.
+    const FRAME_MS = 1000 / 30;
+    let lastMs = Number.NEGATIVE_INFINITY;
+    let onScreen = true;
+    let pageVisible = true;
+    let visibility: IntersectionObserver | undefined;
+    let onVisibilityChange: (() => void) | undefined;
+
     if (reduceMotion) {
       renderFrame(0);
     } else {
       const animate = () => {
         frameId = requestAnimationFrame(animate);
-        renderFrame(clock.getElapsedTime());
+        const ms = clock.getElapsedTime() * 1000;
+        if (ms - lastMs < FRAME_MS) return;
+        lastMs = ms;
+        renderFrame(ms / 1000);
       };
-      animate();
+      const start = () => {
+        if (frameId === undefined && onScreen && pageVisible) animate();
+      };
+      const stop = () => {
+        if (frameId !== undefined) {
+          cancelAnimationFrame(frameId);
+          frameId = undefined;
+        }
+      };
+
+      // The clock is never stopped, so resuming continues from where wall time
+      // says the animation should be rather than snapping back.
+      visibility = new IntersectionObserver((entries) => {
+        onScreen = entries.some((e) => e.isIntersecting);
+        onScreen ? start() : stop();
+      });
+      visibility.observe(container);
+
+      onVisibilityChange = () => {
+        pageVisible = document.visibilityState !== "hidden";
+        pageVisible ? start() : stop();
+      };
+      document.addEventListener("visibilitychange", onVisibilityChange);
+
+      start();
     }
 
     return () => {
       if (frameId !== undefined) cancelAnimationFrame(frameId);
+      visibility?.disconnect();
+      if (onVisibilityChange) {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
       observer.disconnect();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
