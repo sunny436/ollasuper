@@ -95,6 +95,32 @@ const step = async (n, f) => {
     );
   });
 
+  await step("ambience slider themes the whole app", async () => {
+    // The header Ambience slider (native range) drives ~31 --amb-* vars on
+    // <html> and toggles .dark by the interpolated background luminance. Drive
+    // it to Midnight via the keyboard (native range → End=max → React onChange),
+    // then back to Daylight so later steps render light.
+    const slider = page.locator('input[aria-label="Ambience"]');
+    if ((await slider.count()) === 0) throw new Error("no ambience slider");
+    await slider.focus();
+    await page.keyboard.press("End");
+    await page.waitForTimeout(400);
+    const midnight = await page.evaluate(() => ({
+      amb: getComputedStyle(document.documentElement)
+        .getPropertyValue("--amb-background")
+        .trim(),
+      dark: document.documentElement.classList.contains("dark"),
+      ds: document.documentElement.dataset.ambience,
+    }));
+    if (!midnight.amb) throw new Error("no --amb-background applied");
+    if (!midnight.dark) throw new Error("intensity 100 did not toggle .dark");
+    if (midnight.ds !== "100")
+      throw new Error(`dataset.ambience expected 100, got ${midnight.ds}`);
+    await slider.focus();
+    await page.keyboard.press("Home");
+    await page.waitForTimeout(300);
+  });
+
   await step("send a message and receive a streamed reply", async () => {
     await page.locator("#chat-composer").fill("");
     await page
