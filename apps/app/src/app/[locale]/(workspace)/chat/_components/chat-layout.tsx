@@ -1,8 +1,7 @@
 "use client";
 
 import { AnimatePresence, LazyMotion, m } from "framer-motion";
-import { useState } from "react";
-import { type Mode, EmptyHero, EmptyPrompts } from "./empty-state";
+import { EmptyHero, EmptyPrompts } from "./empty-state";
 import { ChatInput } from "./chat-input";
 import { useChatSession } from "../_hooks/use-chat-session";
 
@@ -42,7 +41,6 @@ const ITEM_SPRING = { type: "spring", stiffness: 350, damping: 30 } as const;
 
 export function ChatLayout({ children }: { children: React.ReactNode }) {
   const { threadId, threadStatus } = useChatSession();
-  const [mode, setMode] = useState<Mode>("text");
 
   // Centred only for a genuinely new conversation. A thread opened from the
   // rail mounts straight into the docked state — `layout` animates between
@@ -92,7 +90,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                     transition={ITEM_SPRING}
                     className="w-full"
                   >
-                    <EmptyHero mode={mode} onModeChange={setMode} />
+                    <EmptyHero />
                   </m.div>
                 )}
               </AnimatePresence>
@@ -117,7 +115,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                     transition={ITEM_SPRING}
                     className="w-full"
                   >
-                    <EmptyPrompts mode={mode} threadId={threadId} />
+                    <EmptyPrompts threadId={threadId} />
                   </m.div>
                 )}
               </AnimatePresence>
