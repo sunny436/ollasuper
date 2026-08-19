@@ -11,7 +11,7 @@ cp /tmp/passwordProviders.ts /opt/myos/packages/backend/convex/passwordProviders
 rm -f /opt/myos/packages/backend/convex/nodetest.ts
 cd /opt/myos/packages/backend
 echo "=== set SMTP env (-> Mailpit) ==="
-"$N" "$C" env set SMTP_HOST 10.1.30.14 >/dev/null && echo "SMTP_HOST set"
+"$N" "$C" env set SMTP_HOST 172.16.70.25 >/dev/null && echo "SMTP_HOST set"
 "$N" "$C" env set SMTP_PORT 1025 >/dev/null && echo "SMTP_PORT set"
 "$N" "$C" env set SMTP_FROM "auth@myos.local" >/dev/null && echo "SMTP_FROM set"
 echo "=== deploy ==="

@@ -4,7 +4,7 @@
 set -euo pipefail
 export PATH="$HOME/.bun/bin:$PATH"
 
-VM_IP=10.1.30.14
+VM_IP=172.16.70.25
 SH_DIR=/opt/myos/self-hosted
 mkdir -p "$SH_DIR"
 cd "$SH_DIR"

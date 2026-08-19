@@ -13,7 +13,7 @@ PORT=3210
 SITE_PROXY_PORT=3211
 DASHBOARD_PORT=6791
 CONVEX_CLOUD_ORIGIN=$CVX_URL
-CONVEX_SITE_ORIGIN=http://10.1.30.14:3211
+CONVEX_SITE_ORIGIN=http://172.16.70.25:3211
 NEXT_PUBLIC_DEPLOYMENT_URL=$CVX_URL
 EOF
 ( cd /opt/myos/self-hosted && docker compose up -d )
@@ -24,7 +24,7 @@ cd /opt/myos/packages/backend
 
 cat > /opt/myos/apps/app/.env <<EOF
 NEXT_PUBLIC_CONVEX_URL=$CVX_URL
-NEXT_PUBLIC_BACKEND_URL=http://10.1.30.14:4000
+NEXT_PUBLIC_BACKEND_URL=http://172.16.70.25:4000
 EOF
 cd /opt/myos/apps/app
 "$NODE" "$NEXT" build 2>&1 | tail -4

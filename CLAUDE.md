@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**myos** — a self-hosted, multi-tenant SaaS control-plane forked from `get-convex/v1`, plus an AI chat product built on top of it. It is **live in production** on a VM at `10.1.30.14` (Convex `:3210`/`:3211`, Next `:3000`, backend-echo `:4000`, dashboard `:6791`), publicly tunnelled at `app.ollasuper.com`. Treat pushes to it accordingly.
+**myos** — a self-hosted, multi-tenant SaaS control-plane forked from `get-convex/v1`, plus an AI chat product built on top of it. It is **live in production** on a VM at `172.16.70.25` (Convex `:3210`/`:3211`, Next `:3000`, backend-echo `:4000`, dashboard `:6791`), publicly tunnelled at `app.ollasuper.com`. Treat pushes to it accordingly.
 
 The browser opens a WebSocket to Convex directly, and it reaches it **through the app's own hostname** on the path form — `app.ollasuper.com/__cvx` → `:3210`, `/__cvx-site` → `:3211` — which is what `NEXT_PUBLIC_CONVEX_URL` is set to. This works because `edge/proxy.js:68` installs an `upgrade` handler (its own comment: *"load-bearing: the Convex browser client is a WSS"*) and path routing is matched before host routing. An earlier version of this file claimed the WebSocket "cannot ride on the app's hostname" — that is **wrong**, and it was wrong in a costly direction, because it implies Cloudflare Tunnel and DNS work that is not needed. The host form (`convex.ollasuper.com`, `convex-site.ollasuper.com`) is the optional clean alternative: DNS for both already resolves, but neither is a Public Hostname on the tunnel, so both currently return **404** while `/__cvx` returns 200.
 
@@ -165,7 +165,7 @@ Every script asserts **zero console errors**. That gate is load-bearing: a `cons
 `bun run build` fails at `@v1/app` with `Invalid environment variables: NEXT_PUBLIC_CONVEX_URL` unless that var is set. It is public, not a secret:
 
 ```bash
-cd apps/app && NEXT_PUBLIC_CONVEX_URL=http://10.1.30.14:3210 bun run build
+cd apps/app && NEXT_PUBLIC_CONVEX_URL=http://172.16.70.25:3210 bun run build
 ```
 
 ## Architecture

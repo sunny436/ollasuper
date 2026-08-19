@@ -2,7 +2,7 @@
 const { ConvexHttpClient } = require("convex/browser");
 const { anyApi } = require("convex/server");
 const api = anyApi;
-const URL = process.env.CONVEX_URL || "http://10.1.30.14:3210";
+const URL = process.env.CONVEX_URL || "http://172.16.70.25:3210";
 const ts = Date.now();
 const results = [];
 const rec = (name, pass, detail = "") => {

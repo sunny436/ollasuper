@@ -18,7 +18,7 @@
 #      CONVEX_SITE_URL), so EVERY EXISTING SESSION IS INVALIDATED. All users are
 #      signed out. This is unavoidable, not a bug.
 #   2. deploy/28-fix-issuer.sh deliberately pinned the site origin to plain
-#      http://10.1.30.14:3211 because a self-signed Caddy cert broke the backend's
+#      http://172.16.70.25:3211 because a self-signed Caddy cert broke the backend's
 #      OIDC self-discovery. A real Cloudflare cert is exactly what retires that
 #      workaround — but the fetch now hairpins out to Cloudflare and back, so
 #      step 6 proves it works and REFUSES to hand over to 58 if it does not.
@@ -141,7 +141,7 @@ else
 fi
 cat > /opt/myos/apps/app/.env <<EOF
 NEXT_PUBLIC_CONVEX_URL=$CVX_TARGET
-NEXT_PUBLIC_BACKEND_URL=http://10.1.30.14:4000
+NEXT_PUBLIC_BACKEND_URL=http://172.16.70.25:4000
 EOF
 cat /opt/myos/apps/app/.env
 if [ -f /opt/myos/backend-echo/.env ]; then

@@ -3,7 +3,7 @@
 set -uo pipefail
 NODE=/usr/bin/node
 NEXT=/opt/myos/node_modules/next/dist/bin/next
-VM_IP=10.1.30.14
+VM_IP=172.16.70.25
 
 echo "=== write apps/app/.env ==="
 cat > /opt/myos/apps/app/.env <<EOF

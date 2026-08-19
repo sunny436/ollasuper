@@ -8,7 +8,7 @@ export const projectConfig = {
   name: "myos",
 
   /** Where the stack runs — a LAN IP or a domain. setup.sh injects this as $HOST. */
-  host: "10.1.30.14",
+  host: "172.16.70.25",
 
   ports: {
     convex: 3210, // backend API
@@ -20,10 +20,10 @@ export const projectConfig = {
 
   /** The external ("real") backend the dashboard attaches to. */
   backend: {
-    url: "http://10.1.30.14:4000",
+    url: "http://172.16.70.25:4000",
     /** JWT audience your backend must require when verifying the Convex token. */
     audience: "convex",
     /** JWKS endpoint your backend fetches to verify Convex-issued JWTs. */
-    jwks: "http://10.1.30.14:3211/.well-known/jwks.json",
+    jwks: "http://172.16.70.25:3211/.well-known/jwks.json",
   },
 } as const;

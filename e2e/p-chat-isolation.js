@@ -9,7 +9,7 @@
 // trust model — everywhere else a workspace member may read any job, file or
 // audit log; conversations are private to their author.
 //
-//   CONVEX_URL=http://10.1.30.14:3210 node p-chat-isolation.js
+//   CONVEX_URL=http://172.16.70.25:3210 node p-chat-isolation.js
 const { ConvexHttpClient } = require("convex/browser");
 const { anyApi } = require("convex/server");
 

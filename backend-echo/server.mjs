@@ -10,7 +10,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 const PORT = process.env.PORT || 4000;
 const SERVICE_KEY = process.env.SERVICE_KEY || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
-const CONVEX_SITE_URL = process.env.CONVEX_SITE_URL || "http://10.1.30.14:3211";
+const CONVEX_SITE_URL = process.env.CONVEX_SITE_URL || "http://172.16.70.25:3211";
 const AUDIENCE = process.env.CONVEX_AUDIENCE || "convex";
 
 // Public-key verification only — this is the whole "attach to any backend" trick.

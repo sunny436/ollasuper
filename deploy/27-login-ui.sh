@@ -10,5 +10,5 @@ cd /opt/myos/apps/app
 systemctl restart myos-app
 sleep 6
 echo "app=$(systemctl is-active myos-app)"
-curl -sk -o /dev/null -w "login: %{http_code}\n" -L https://10.1.30.14/en/login
+curl -sk -o /dev/null -w "login: %{http_code}\n" -L https://172.16.70.25/en/login
 echo LOGIN_UI_DONE
