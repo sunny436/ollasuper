@@ -22,7 +22,7 @@ JWKS="$(cat /tmp/jwks)"
 echo "=== set deployment env vars (JWT_PRIVATE_KEY, JWKS, SITE_URL) ==="
 "$NODE" "$CVX" env set JWT_PRIVATE_KEY "$JWT_PRIVATE_KEY" >/dev/null && echo "JWT_PRIVATE_KEY set"
 "$NODE" "$CVX" env set JWKS "$JWKS" >/dev/null && echo "JWKS set"
-"$NODE" "$CVX" env set SITE_URL "http://10.1.30.14:3000" >/dev/null && echo "SITE_URL set"
+"$NODE" "$CVX" env set SITE_URL "http://172.16.70.25:3000" >/dev/null && echo "SITE_URL set"
 rm -f /tmp/jwt_private_key /tmp/jwks
 
 echo "=== deploy backend functions (Node) ==="

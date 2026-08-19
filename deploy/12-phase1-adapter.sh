@@ -23,7 +23,7 @@ if [ ! -f /opt/myos/backend-echo/.env ]; then
 PORT=4000
 SERVICE_KEY=${SERVICE_KEY}
 WEBHOOK_SECRET=${WEBHOOK_SECRET}
-CONVEX_SITE_URL=http://10.1.30.14:3211
+CONVEX_SITE_URL=http://172.16.70.25:3211
 CONVEX_AUDIENCE=convex
 EOF
 fi
@@ -31,7 +31,7 @@ set -a; . /opt/myos/backend-echo/.env; set +a
 
 echo "=== set Convex deployment env (adapter) ==="
 cd /opt/myos/packages/backend
-"$NODE" "$CVX" env set -- BACKEND_BASE_URL "http://10.1.30.14:4000" >/dev/null && echo "BACKEND_BASE_URL set"
+"$NODE" "$CVX" env set -- BACKEND_BASE_URL "http://172.16.70.25:4000" >/dev/null && echo "BACKEND_BASE_URL set"
 "$NODE" "$CVX" env set -- BACKEND_SERVICE_KEY "$SERVICE_KEY" >/dev/null && echo "BACKEND_SERVICE_KEY set"
 "$NODE" "$CVX" env set -- BACKEND_WEBHOOK_SECRET "$WEBHOOK_SECRET" >/dev/null && echo "BACKEND_WEBHOOK_SECRET set"
 

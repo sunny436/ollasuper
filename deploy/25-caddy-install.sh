@@ -15,15 +15,15 @@ cat > /etc/caddy/Caddyfile <<'EOF'
 {
 	auto_https disable_redirects
 }
-https://10.1.30.14 {
+https://172.16.70.25 {
 	tls internal
 	reverse_proxy 127.0.0.1:3000
 }
-https://10.1.30.14:3215 {
+https://172.16.70.25:3215 {
 	tls internal
 	reverse_proxy 127.0.0.1:3210
 }
-https://10.1.30.14:3216 {
+https://172.16.70.25:3216 {
 	tls internal
 	reverse_proxy 127.0.0.1:3211
 }
@@ -34,9 +34,9 @@ systemctl restart caddy
 sleep 6
 echo "caddy=$(systemctl is-active caddy)"
 echo "=== curl -k checks ==="
-curl -sk -o /dev/null -w "app 443 /en/login: %{http_code}\n" https://10.1.30.14/en/login
-curl -sk -o /dev/null -w "convex 3215 /version: %{http_code}\n" https://10.1.30.14:3215/version
-curl -sk -o /dev/null -w "site 3216 jwks: %{http_code}\n" https://10.1.30.14:3216/.well-known/jwks.json
+curl -sk -o /dev/null -w "app 443 /en/login: %{http_code}\n" https://172.16.70.25/en/login
+curl -sk -o /dev/null -w "convex 3215 /version: %{http_code}\n" https://172.16.70.25:3215/version
+curl -sk -o /dev/null -w "site 3216 jwks: %{http_code}\n" https://172.16.70.25:3216/.well-known/jwks.json
 echo "=== caddy root CA ==="
 find /var/lib/caddy /root -name root.crt -path '*caddy*pki*' 2>/dev/null | head
 echo CADDY_DONE

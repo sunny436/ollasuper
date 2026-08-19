@@ -3,7 +3,7 @@
 # then build the whole monorepo. Sequential build to stay within the VM's RAM.
 set -euo pipefail
 export PATH="$HOME/.bun/bin:$PATH"
-VM_IP=10.1.30.14
+VM_IP=172.16.70.25
 cd /opt/myos
 
 echo "=== apps/app/.env ==="

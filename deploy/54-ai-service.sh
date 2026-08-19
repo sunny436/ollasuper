@@ -10,7 +10,7 @@ REPO=${REPO:-/opt/myos}
 AI="$REPO/services/ai"
 NODE=/usr/bin/node
 CVX="$REPO/node_modules/convex/bin/main.js"
-HOST=${HOST:-10.1.30.14}
+HOST=${HOST:-172.16.70.25}
 
 echo "[1/5] uv (single static binary, brings its own CPython 3.12)"
 if ! command -v uv >/dev/null 2>&1; then

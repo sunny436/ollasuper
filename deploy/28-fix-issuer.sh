@@ -10,14 +10,14 @@ DISABLE_BEACON=true
 PORT=3210
 SITE_PROXY_PORT=3211
 DASHBOARD_PORT=6791
-CONVEX_CLOUD_ORIGIN=https://10.1.30.14:3215
-CONVEX_SITE_ORIGIN=http://10.1.30.14:3211
-NEXT_PUBLIC_DEPLOYMENT_URL=https://10.1.30.14:3215
+CONVEX_CLOUD_ORIGIN=https://172.16.70.25:3215
+CONVEX_SITE_ORIGIN=http://172.16.70.25:3211
+NEXT_PUBLIC_DEPLOYMENT_URL=https://172.16.70.25:3215
 EOF
 ( cd /opt/myos/self-hosted && docker compose up -d --force-recreate )
 sleep 6
 
-sed -i 's#^CONVEX_SITE_URL=.*#CONVEX_SITE_URL=http://10.1.30.14:3211#' /opt/myos/backend-echo/.env
+sed -i 's#^CONVEX_SITE_URL=.*#CONVEX_SITE_URL=http://172.16.70.25:3211#' /opt/myos/backend-echo/.env
 systemctl restart myos-echo
 
 cd /opt/myos/packages/backend
