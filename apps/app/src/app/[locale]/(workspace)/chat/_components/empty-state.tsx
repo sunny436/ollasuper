@@ -1,9 +1,8 @@
 "use client";
 
-import { api } from "@v1/backend/convex/_generated/api";
-import { useQuery } from "convex/react";
 import { ArrowUpRight } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useCachedUser } from "../_hooks/use-cached-user";
 import { useComposer } from "../_hooks/use-composer";
 import { useSendMessage } from "../_hooks/use-send-message";
 
@@ -57,20 +56,23 @@ function usePrefersReducedMotion(): boolean {
 function AnimatedHeadline({ text }: { text: string }) {
   const reduced = usePrefersReducedMotion();
   const [revealed, setRevealed] = useState(false);
+  // The stagger plays exactly ONCE. If the text changes afterwards (e.g. the name
+  // arrives a beat after the greeting on a first-ever load), it snaps to the final
+  // state rather than re-animating — which read as broken.
+  const animatedOnce = useRef(false);
 
-  // Re-trigger whenever the text resolves (greeting + name arrive async), so the
-  // reveal plays on the real string rather than an empty placeholder.
   useEffect(() => {
-    if (!text) return;
-    setRevealed(false);
+    if (!text || animatedOnce.current) return;
+    animatedOnce.current = true;
     const id = requestAnimationFrame(() => setRevealed(true));
     return () => cancelAnimationFrame(id);
   }, [text]);
 
+  const settled = revealed || animatedOnce.current;
   const chars = useMemo(() => Array.from(text), [text]);
 
   return (
-    <h1 className="text-4xl font-medium leading-tight sm:text-5xl">
+    <h1 className="pb-2 text-4xl font-medium leading-[1.2] sm:text-5xl">
       {chars.map((char, i) => (
         <span
           // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph run
@@ -80,8 +82,8 @@ function AnimatedHeadline({ text }: { text: string }) {
             reduced
               ? undefined
               : {
-                  opacity: revealed ? 1 : 0,
-                  transform: revealed
+                  opacity: settled ? 1 : 0,
+                  transform: settled
                     ? "translateY(0) rotateX(0deg)"
                     : "translateY(20px) rotateX(-20deg)",
                   transition: `opacity 0.5s ease, transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) ${0.06 + i * 0.03}s`,
@@ -104,7 +106,7 @@ function AnimatedHeadline({ text }: { text: string }) {
  */
 export function EmptyHero() {
   const [greeting, setGreeting] = useState("");
-  const user = useQuery(api.users.getUser);
+  const user = useCachedUser();
 
   // Computed in an effect, never during render: a server-rendered time of day
   // can differ from the client's, which is a hydration mismatch, which React
@@ -124,7 +126,7 @@ export function EmptyHero() {
     <div className="w-full text-center">
       {/* Reserve the line height so the pill below does not jump when the
           greeting resolves and the animation runs. */}
-      <div className="min-h-[3rem] sm:min-h-[3.5rem]">
+      <div className="min-h-[4rem] overflow-visible sm:min-h-[4.75rem]">
         {headline && <AnimatedHeadline text={headline} />}
       </div>
       <p className="mt-2 text-sm text-primary/55">

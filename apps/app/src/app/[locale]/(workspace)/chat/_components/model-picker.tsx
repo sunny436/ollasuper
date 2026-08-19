@@ -41,7 +41,12 @@ export function ModelPicker({
   onChange: (id: string) => void;
   disabled?: boolean;
 }) {
-  const models = useQuery(api.chat.models.list, {});
+  // The 67KB catalogue is not needed until the picker is opened, and it would
+  // otherwise ride the initial WS batch on every /chat load (delaying getUser /
+  // myWorkspaces / threads). Load it on first open and keep it thereafter. The
+  // trigger label falls back to modelLabel(value), so it reads fine meanwhile.
+  const [opened, setOpened] = useState(false);
+  const models = useQuery(api.chat.models.list, opened ? {} : "skip");
   const [q, setQ] = useState("");
 
   const filtered = useMemo(() => {
@@ -63,7 +68,12 @@ export function ModelPicker({
   const current = models?.find((m) => m.modelId === value);
 
   return (
-    <DropdownMenu onOpenChange={(open) => !open && setQ("")}>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (open) setOpened(true);
+        else setQ("");
+      }}
+    >
       <DropdownMenuTrigger asChild>
         <button
           type="button"
