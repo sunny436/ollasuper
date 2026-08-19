@@ -1,4 +1,5 @@
 import { CommandPalette } from "@/components/command-palette";
+import { AmbienceSync } from "@/lib/ambience/ambience-sync";
 import { WorkspaceProvider } from "@/lib/workspace-provider";
 import { Toaster } from "sonner";
 import { AmbientBackdrop } from "./_components/ambient-backdrop";
@@ -29,6 +30,7 @@ export default function WorkspaceLayout({
 }) {
   return (
     <WorkspaceProvider>
+      <AmbienceSync />
       {/*
         `workspace` re-points the existing design tokens (--card, --border,
         --background …) to the glass palette for this subtree only, so every
