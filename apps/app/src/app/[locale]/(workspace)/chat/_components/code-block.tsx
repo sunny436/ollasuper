@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Download } from "lucide-react";
 import { type ReactNode, memo, useEffect, useRef, useState } from "react";
 import { highlight } from "../_lib/highlighter";
 
@@ -49,6 +49,38 @@ function CodeBlockImpl({
     [],
   );
 
+  // Filename extension for the download, keyed by the fence language. Falls
+  // back to .txt for prose / unknown languages.
+  const EXT: Record<string, string> = {
+    typescript: "ts", javascript: "js", tsx: "tsx", jsx: "jsx", json: "json",
+    python: "py", bash: "sh", shell: "sh", sql: "sql", html: "html", css: "css",
+    scss: "scss", yaml: "yml", yml: "yml", markdown: "md", md: "md", rust: "rs",
+    go: "go", c: "c", cpp: "cpp", "c++": "cpp", csharp: "cs", "c#": "cs", cs: "cs",
+    java: "java", swift: "swift", kotlin: "kt", kt: "kt", php: "php", ruby: "rb",
+    rb: "rb", r: "r", dart: "dart", lua: "lua", perl: "pl", asm: "asm", matlab: "m",
+    xml: "xml", svg: "svg", graphql: "graphql", powershell: "ps1", batch: "bat",
+    toml: "toml", csv: "csv", tsv: "tsv", docker: "dockerfile", dockerfile: "dockerfile",
+    ini: "ini", dotenv: "env", nginx: "conf", make: "mk", makefile: "mk",
+    diff: "diff", patch: "diff", mermaid: "mmd",
+  };
+
+  const onDownload = () => {
+    try {
+      const ext = (lang && EXT[lang.toLowerCase()]) || "txt";
+      const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `snippet.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* download blocked — nothing useful to say, and never console.error */
+    }
+  };
+
   const onCopy = () => {
     navigator.clipboard?.writeText(code).then(
       () => {
@@ -68,6 +100,15 @@ function CodeBlockImpl({
         <span className="font-geist-mono text-[11px] uppercase tracking-wide text-primary/40">
           {lang ?? "text"}
         </span>
+        <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={onDownload}
+          aria-label="Download code"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-primary/50 transition hover:bg-primary/5 hover:text-primary/80"
+        >
+          <Download className="h-3 w-3" /> Download
+        </button>
         <button
           type="button"
           onClick={onCopy}
@@ -84,6 +125,7 @@ function CodeBlockImpl({
             </>
           )}
         </button>
+        </div>
       </div>
       {nodes ? (
         <div className={`${PRE} rounded-t-none [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0`}>

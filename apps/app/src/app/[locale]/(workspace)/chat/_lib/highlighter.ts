@@ -11,15 +11,28 @@ import type { ReactNode } from "react";
  * The async cost is fine because highlighting happens exactly ONCE, when a
  * fence closes — never per token. The whole engine is behind a dynamic import,
  * so /chat's first paint carries none of it.
+ *
+ * Languages are loaded ON DEMAND (hl.loadLanguage) the first time each one is
+ * used, not all up front: a single grammar can be hundreds of KB (cpp is
+ * ~530KB of source), so eager-loading the whole catalogue would defeat the
+ * lazy-import. Any language shiki bundles is therefore supported, plus the
+ * aliases below; anything unknown falls back to a plain <pre>.
  */
 
 // Loaded on demand. `unknown` avoids importing shiki's types eagerly.
 let highlighterPromise: Promise<unknown> | null = null;
+// Grammar ids already registered on the singleton, so we call loadLanguage once.
+const loaded = new Set<string>();
+// Resolves once to shiki's bundled-language id map (for membership checks).
+let bundledPromise: Promise<Record<string, unknown>> | null = null;
 
 const CACHE_MAX = 60;
 const cache = new Map<string, ReactNode>();
 
-const LANGS = [
+// The small set registered when the highlighter is created — the common ones,
+// so the very first highlight needs no extra grammar fetch. Everything else is
+// loaded lazily on first use.
+const BASE_LANGS = [
   "typescript",
   "javascript",
   "tsx",
@@ -37,6 +50,8 @@ const LANGS = [
   "diff",
 ];
 
+// Aliases shiki does not already resolve, or that map onto a near neighbour
+// when there is no dedicated grammar (svg→xml, mysql→sql, gitignore→ini, …).
 const ALIASES: Record<string, string> = {
   ts: "typescript",
   js: "javascript",
@@ -49,7 +64,30 @@ const ALIASES: Record<string, string> = {
   rs: "rust",
   golang: "go",
   postgres: "sql",
+  postgresql: "sql",
   psql: "sql",
+  mysql: "sql",
+  "c#": "csharp",
+  cs: "csharp",
+  kt: "kotlin",
+  rb: "ruby",
+  pl: "perl",
+  assembly: "asm",
+  ps: "powershell",
+  ps1: "powershell",
+  pwsh: "powershell",
+  cmd: "batch",
+  bat: "batch",
+  dockerfile: "docker",
+  svg: "xml",
+  tsv: "csv",
+  gitignore: "ini",
+  env: "dotenv",
+  dotenv: "dotenv",
+  conf: "ini",
+  makefile: "make",
+  gql: "graphql",
+  patch: "diff",
 };
 
 function djb2(s: string): string {
@@ -58,23 +96,35 @@ function djb2(s: string): string {
   return (h >>> 0).toString(36);
 }
 
+async function getBundled(): Promise<Record<string, unknown>> {
+  if (!bundledPromise) {
+    bundledPromise = import("shiki").then(
+      // biome-ignore lint/suspicious/noExplicitAny: shiki types are loaded lazily
+      (shiki) => (shiki as any).bundledLanguages as Record<string, unknown>,
+    );
+  }
+  return bundledPromise;
+}
+
+/** Alias-resolve; returns null only for an empty/whitespace lang. */
 function normaliseLang(lang?: string): string | null {
   if (!lang) return null;
-  const l = lang.toLowerCase();
-  const resolved = ALIASES[l] ?? l;
-  return LANGS.includes(resolved) ? resolved : null;
+  const l = lang.toLowerCase().trim();
+  if (!l) return null;
+  return ALIASES[l] ?? l;
 }
 
 async function getHighlighter() {
   if (!highlighterPromise) {
-    highlighterPromise = import("shiki").then((shiki) =>
-      shiki.createHighlighter({
+    highlighterPromise = import("shiki").then((shiki) => {
+      for (const l of BASE_LANGS) loaded.add(l);
+      return shiki.createHighlighter({
         // Dual theme emitted as CSS variables, so a next-themes toggle flips
         // colours with zero re-highlighting (see .shiki span in globals.css).
         themes: ["github-light", "github-dark-default"],
-        langs: LANGS,
-      }),
-    );
+        langs: BASE_LANGS,
+      });
+    });
   }
   return highlighterPromise;
 }
@@ -106,6 +156,16 @@ export async function highlight(
       import("hast-util-to-jsx-runtime"),
       import("react/jsx-runtime"),
     ]);
+
+    // Register the grammar on first use. Unknown ids (no bundled grammar) fall
+    // through to a plain <pre> rather than throwing.
+    if (!loaded.has(resolved)) {
+      const bundled = await getBundled();
+      if (!(resolved in bundled)) return null;
+      // biome-ignore lint/suspicious/noExplicitAny: shiki types are loaded lazily
+      await (hl as any).loadLanguage(resolved);
+      loaded.add(resolved);
+    }
 
     // biome-ignore lint/suspicious/noExplicitAny: shiki types are loaded lazily
     const hast = (hl as any).codeToHast(code, {
