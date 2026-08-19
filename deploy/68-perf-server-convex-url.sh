@@ -73,7 +73,7 @@ say "public /login -> $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 htt
 # /chat bundle — being shipped to every visitor for nothing.
 DSN=$(grep -E '^NEXT_PUBLIC_SENTRY_DSN=' "$APP/.env" | cut -d= -f2- || true)
 if [ -z "$DSN" ]; then
-  FIRSTLOAD=$(grep -rl "@sentry/nextjs\|sentryWrapped" .next/static/chunks/*.js 2>/dev/null | wc -l)
+  FIRSTLOAD=$(grep -rl "@sentry/nextjs\|sentryWrapped" .next/static/chunks/*.js 2>/dev/null | wc -l || true)
   say "NEXT_PUBLIC_SENTRY_DSN empty; sentry-bearing client chunks: $FIRSTLOAD (global-error only is expected)"
 else
   say "NEXT_PUBLIC_SENTRY_DSN set — Sentry intentionally bundled"
@@ -81,7 +81,7 @@ fi
 
 # The public URL must still be what the browser gets baked in, or the websocket
 # breaks. 64-convex-pg-app-cutover.sh checks the same thing for the same reason.
-BAKED=$(grep -rhoE "https://[a-z0-9.-]+\.convex\.cloud|https://app\.ollasuper\.com/__cvx" .next/static 2>/dev/null | sort -u | tr '\n' ' ')
+BAKED=$(grep -rhoE "https://[a-z0-9.-]+\.convex\.cloud|https://app\.ollasuper\.com/__cvx" .next/static 2>/dev/null | sort -u | tr '\n' ' ' || true)
 say "baked into the client bundle: ${BAKED:-none}"
 case "$BAKED" in
   *127.0.0.1*) echo "FATAL: a loopback URL reached the CLIENT bundle — the browser cannot use it" >&2; exit 1;;

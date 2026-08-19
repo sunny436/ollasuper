@@ -49,7 +49,11 @@ async function isAuthenticated(token: string | undefined): Promise<boolean> {
       {},
       { token, url: SERVER_CONVEX_URL },
     );
-  } catch {
+  } catch (e) {
+    // Fail closed, but not silently. The library's isAuthenticated logged the
+    // cause here; a bare `catch {}` turned a misconfigured/unreachable
+    // SERVER_CONVEX_URL into an undiagnosable "everyone is bounced to /login".
+    console.error("[middleware] isAuthenticated check failed:", e);
     return false;
   }
 }
@@ -75,7 +79,9 @@ export default convexAuthNextjsMiddleware(
 
     return I18nMiddleware(request);
   },
-  // Sign-in/sign-out proxying and token refresh ride the same internal URL.
+  // Routes the /api/auth sign-in/sign-out proxy through the internal URL too.
+  // (Token refresh and OAuth code-exchange ignore this option and stay on the
+  // public URL — the library passes no `url` for those.)
   { convexUrl: SERVER_CONVEX_URL },
 );
 

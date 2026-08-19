@@ -96,9 +96,9 @@ seeded 8k-job / 5k-notification workspace:
   so a count is O(#metrics) instead of O(workspace size). Drift-guarded by a unit test
   (create/delete→counts) and backfilled for existing data (`counters:backfillAll`). The
   `dashboard.stats` query this originally served was removed with the Dashboard section (see 0),
-  but the counters remain and the chat/files paths still depend on them. (`orgs.members`/
-  `myWorkspaces` still do N+1 `ctx.db.get` per row — fine at team sizes; revisit only if
-  memberships grow large.)
+  but the counters remain and the chat/files paths still depend on them. (`orgs.members` still does N+1 `ctx.db.get` per
+  row; `myWorkspaces` now issues them in parallel via `Promise.all`. Fine at team
+  sizes; revisit only if memberships grow large.)
 
 ## AI chat (`/chat`) — the inference plane
 The AI half the template left as a seam (`TEMPLATE.md:3`) is now built, as a **hybrid**:
