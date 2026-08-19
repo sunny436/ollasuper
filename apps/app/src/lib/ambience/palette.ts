@@ -1,75 +1,138 @@
 /**
- * Ambience palette — the 3-stop colour ramps that drive the whole app.
+ * Ambience palette — the colour ramps that drive the whole app.
  *
- * Each token maps to `[day, amber, night]` as HSL-triple strings ("H S% L%"),
- * the same format the CSS custom properties expect (consumed as hsl(var(--x))).
+ * Two kinds of token, and the split is load-bearing for legibility:
  *
- *   day   = VERBATIM the current light literal in packages/ui/src/globals.css
- *   night = VERBATIM the current .dark literal
- *   amber = the new warm mid-tone (design rules in the plan §7)
+ *  SURFACES / fills interpolate continuously through 4 stops
+ *  [day, amber, dusk, night] (dusk = a deep warm mid so the amber->night journey
+ *  is a deliberate warm dusk, not muddy grey). day/night are VERBATIM the current
+ *  light/.dark literals in globals.css so intensity 0/100 match the var() fallbacks.
  *
- * Keeping day/night verbatim is load-bearing: interpolate.ts snaps t=0/t=1 to
- * these exact strings, so intensity 0 and 100 match the globals.css var()
- * fallbacks pixel-for-pixel (engine-on at the extremes === engine-off).
+ *  TEXT / on-surface tokens NEVER lerp through grey (that is what washes out
+ *  mid-transition). Each has two inks — `onLight` (interpolated day->amber, dark)
+ *  and `onDark` (night, light) — and a paired `surface`; interpolate.ts outputs
+ *  whichever ink has the higher contrast against that surface at the current
+ *  intensity, so text is always the max-contrast choice.
  *
- * ROOT drives `--amb-<token>` (app-wide: dashboard, settings, portals).
- * WORKSPACE drives `--amb-ws-<token>` (the .chat subtree surface palette).
+ * `primary` is a TEXT token (paired with background): `text-primary/*` is the
+ * dominant body text in chat; its only fills are translucent (bg-primary/10).
+ * `brand-ink` is brand-hued text: its inks are dark-brand / light-brand shades so
+ * it stays branded AND legible. brand-foreground/*-foreground pair with their fill.
  */
 
-export type Ramp = readonly [day: string, amber: string, night: string];
-
-export const AMBIENCE_KEY = "ambience";
-
-/** SSR + first-client-render default (constant → no hydration mismatch). The
- *  real value is stamped pre-paint by the inline script and reconciled in the
- *  provider's mount effect. A low value keeps the un-scripted default light. */
-export const DEFAULT_INTENSITY = 15;
-
-/** Luminance thresholds (0..1) for toggling the `.dark` class off the
- *  interpolated background, with a hysteresis dead-band so a drag across the
- *  boundary doesn't strobe binary `dark:` styles. */
-export const DARK_ON_LUM = 0.4; // become dark when bg darker than this
-export const DARK_OFF_LUM = 0.47; // leave dark when bg brighter than this
-
-export const ROOT: Record<string, Ramp> = {
-  background: ["0 0% 100%", "38 60% 96%", "0 0% 0%"],
-  foreground: ["222.2 84% 4.9%", "25 40% 15%", "0 0% 100%"],
-  card: ["0 0% 100%", "40 55% 98%", "0 0% 3%"],
-  "card-foreground": ["222.2 84% 4.9%", "25 40% 15%", "0 0% 100%"],
-  popover: ["0 0% 100%", "40 55% 98%", "0 0% 3%"],
-  "popover-foreground": ["222.2 84% 4.9%", "25 40% 15%", "0 0% 100%"],
-  primary: ["222.2 47.4% 11.2%", "25 45% 18%", "0 0% 100%"],
-  "primary-foreground": ["210 40% 98%", "40 50% 97%", "0 0% 0%"],
-  secondary: ["210 40% 96.1%", "38 45% 90%", "0 0% 10%"],
-  "secondary-foreground": ["222.2 47.4% 11.2%", "25 45% 18%", "0 0% 100%"],
-  muted: ["210 40% 96.1%", "38 45% 90%", "0 0% 10%"],
-  "muted-foreground": ["215.4 16.3% 46.9%", "30 25% 40%", "0 0% 70%"],
-  accent: ["210 40% 96.1%", "38 40% 88%", "0 0% 15%"],
-  "accent-foreground": ["222.2 47.4% 11.2%", "25 45% 18%", "0 0% 100%"],
-  destructive: ["0 84.2% 60.2%", "8 75% 50%", "0 100% 30%"],
-  "destructive-foreground": ["210 40% 98%", "40 50% 97%", "0 0% 100%"],
-  border: ["214.3 31.8% 91.4%", "36 40% 82%", "0 0% 20%"],
-  input: ["214.3 31.8% 91.4%", "36 40% 82%", "0 0% 20%"],
-  ring: ["222.2 84% 4.9%", "35 85% 44%", "0 0% 80%"],
-  // brand fill stays DARK (blue -> bronze) across day->amber so near-white text
-  // is always legible on it (the blue<->amber midpoint is muddy, and a light
-  // amber fill would fail white text at the amber preset). It brightens to sky
-  // and flips to dark ink only in the amber->night half.
-  brand: ["224 76% 50%", "28 80% 30%", "204 94% 62%"],
-  "brand-foreground": ["210 40% 98%", "40 60% 96%", "226 95% 10%"],
-  "brand-ink": ["226 64% 40%", "30 80% 30%", "204 94% 62%"],
+export type Ramp = readonly string[];
+export type TextSpec = {
+  onLight: Ramp; // [day, amber] dark inks, interpolated over the light range
+  onDark: string; // night, light ink
+  surface: string; // paired surface token (same scope)
 };
 
-export const WORKSPACE: Record<string, Ramp> = {
-  background: ["220 43% 98%", "40 55% 97.5%", "228 27% 4%"],
-  card: ["0 0% 100%", "44 60% 99%", "230 30% 7%"],
-  "card-foreground": ["224 47% 11%", "25 42% 16%", "0 0% 100%"],
-  popover: ["0 0% 100%", "44 60% 99%", "231 28% 10%"],
-  "popover-foreground": ["224 47% 11%", "25 42% 16%", "0 0% 100%"],
-  secondary: ["220 33% 96%", "40 45% 92%", "230 26% 9%"],
-  muted: ["220 33% 96%", "40 45% 92%", "230 26% 9%"],
-  "muted-foreground": ["220 12% 46%", "30 25% 42%", "220 14% 65%"],
-  accent: ["220 33% 94%", "38 42% 90%", "228 25% 14%"],
-  border: ["220 25% 90%", "36 38% 84%", "225 20% 17%"],
-  input: ["220 25% 90%", "36 38% 84%", "225 20% 17%"],
+export const AMBIENCE_KEY = "ambience";
+export const DEFAULT_INTENSITY = 15;
+
+/** Amber is stop index 1 of 4 → peaks at t = 0.5 (non-uniform stops). onLight inks interpolate over
+ *  [0, AMBER_T] then hold. */
+export const AMBER_T = 0.5;
+
+/** `.dark` toggle off the interpolated background's WCAG relative luminance, with
+ *  a hysteresis dead-band (values are relative luminance 0..1). Set at the text
+ *  contrast-crossover (~0.22) so `dark:` utilities + Shiki flip together with the
+ *  contrast-picked text — one clean light→night moment. */
+export const DARK_ON_LUM = 0.22;
+export const DARK_OFF_LUM = 0.25;
+
+// ── Surfaces (4-stop) ────────────────────────────────────────────────────────
+export const ROOT_SURFACE: Record<string, Ramp> = {
+  background: ["0 0% 100%", "38 60% 96%", "25 35% 14%", "0 0% 0%"],
+  card: ["0 0% 100%", "40 55% 98%", "26 34% 16%", "0 0% 3%"],
+  popover: ["0 0% 100%", "40 55% 98%", "26 32% 18%", "0 0% 3%"],
+  secondary: ["210 40% 96.1%", "38 45% 90%", "25 25% 20%", "0 0% 10%"],
+  muted: ["210 40% 96.1%", "38 45% 90%", "25 25% 20%", "0 0% 10%"],
+  accent: ["210 40% 96.1%", "38 40% 88%", "25 24% 24%", "0 0% 15%"],
+  border: ["214.3 31.8% 91.4%", "36 40% 82%", "25 20% 28%", "0 0% 20%"],
+  input: ["214.3 31.8% 91.4%", "36 40% 82%", "25 20% 28%", "0 0% 20%"],
+  destructive: ["0 84.2% 60.2%", "8 75% 50%", "4 68% 42%", "0 100% 30%"],
+  brand: ["224 76% 50%", "28 80% 30%", "215 70% 46%", "204 94% 62%"],
+  ring: ["222.2 84% 4.9%", "35 85% 44%", "30 70% 40%", "0 0% 80%"],
+};
+
+export const WS_SURFACE: Record<string, Ramp> = {
+  background: ["220 43% 98%", "40 55% 97.5%", "25 28% 12%", "228 27% 4%"],
+  card: ["0 0% 100%", "44 60% 99%", "26 30% 15%", "230 30% 7%"],
+  popover: ["0 0% 100%", "44 60% 99%", "26 28% 18%", "231 28% 10%"],
+  secondary: ["220 33% 96%", "40 45% 92%", "25 22% 18%", "230 26% 9%"],
+  muted: ["220 33% 96%", "40 45% 92%", "25 22% 18%", "230 26% 9%"],
+  accent: ["220 33% 94%", "38 42% 90%", "25 22% 22%", "228 25% 14%"],
+  border: ["220 25% 90%", "36 38% 84%", "25 18% 26%", "225 20% 17%"],
+  input: ["220 25% 90%", "36 38% 84%", "25 18% 26%", "225 20% 17%"],
+};
+
+// ── Text / on-surface (contrast-picked, never lerp through grey) ──────────────
+const DARK_INK: Ramp = ["222.2 84% 4.9%", "25 40% 15%"];
+const DARK_INK_SOFT: Ramp = ["222.2 47.4% 11.2%", "25 45% 18%"];
+const LIGHT_INK = "0 0% 100%";
+
+export const ROOT_TEXT: Record<string, TextSpec> = {
+  foreground: { onLight: DARK_INK, onDark: LIGHT_INK, surface: "background" },
+  primary: { onLight: DARK_INK_SOFT, onDark: LIGHT_INK, surface: "background" },
+  "muted-foreground": {
+    onLight: ["215.4 16.3% 46.9%", "28 28% 34%"],
+    onDark: "0 0% 84%",
+    surface: "background",
+  },
+  "card-foreground": { onLight: DARK_INK, onDark: LIGHT_INK, surface: "card" },
+  "popover-foreground": { onLight: DARK_INK, onDark: LIGHT_INK, surface: "popover" },
+  "secondary-foreground": {
+    onLight: DARK_INK_SOFT,
+    onDark: LIGHT_INK,
+    surface: "secondary",
+  },
+  "accent-foreground": {
+    onLight: DARK_INK_SOFT,
+    onDark: LIGHT_INK,
+    surface: "accent",
+  },
+  // Text on the primary FILL (which is itself contrast-picked, so its ink flips
+  // opposite): light on the dark day/amber fill, dark on the light night fill.
+  "primary-foreground": {
+    onLight: ["210 40% 98%", "40 50% 97%"],
+    onDark: "0 0% 0%",
+    surface: "primary",
+  },
+  "destructive-foreground": {
+    onLight: ["210 40% 98%", "40 50% 97%"],
+    onDark: LIGHT_INK,
+    surface: "destructive",
+  },
+  "brand-foreground": {
+    onLight: ["210 40% 98%", "40 60% 96%"],
+    onDark: "226 95% 10%",
+    surface: "brand",
+  },
+  // Brand-hued text on the page: dark-brand for light bg, light-brand for dark bg.
+  // Inks pushed toward the extremes (deep navy-bronze / bright sky) so the accent
+  // stays legible where the background is mid-toned, keeping a brand tint.
+  "brand-ink": {
+    onLight: ["226 64% 40%", "26 85% 18%"],
+    onDark: "200 95% 74%",
+    surface: "background",
+  },
+};
+
+export const WS_TEXT: Record<string, TextSpec> = {
+  "card-foreground": {
+    onLight: ["224 47% 11%", "25 42% 16%"],
+    onDark: LIGHT_INK,
+    surface: "card",
+  },
+  "popover-foreground": {
+    onLight: ["224 47% 11%", "25 42% 16%"],
+    onDark: LIGHT_INK,
+    surface: "popover",
+  },
+  "muted-foreground": {
+    onLight: ["220 12% 46%", "28 26% 36%"],
+    onDark: "220 10% 84%",
+    surface: "background",
+  },
 };

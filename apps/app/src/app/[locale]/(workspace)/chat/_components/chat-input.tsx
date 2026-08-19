@@ -345,13 +345,11 @@ export function ChatInput() {
                 onClick={() => void doSend()}
                 disabled={sending || !canSend}
                 aria-label={sending ? "Sending" : "Send message"}
-                // Gemini blue accent on the pill; brand accent when docked.
-                className={`${btnBox} text-white shadow-md transition ${
+                // Brand accent — warms with the ambience theme (bronze at amber).
+                className={`${btnBox} shadow-md transition ${
                   sending || !canSend
                     ? "bg-primary/10 text-primary/30"
-                    : centred
-                      ? "bg-[#1a73e8] hover:bg-[#1557b0]"
-                      : "bg-brand text-brand-foreground hover:brightness-110 active:brightness-95"
+                    : "bg-brand text-brand-foreground hover:brightness-110 active:brightness-95"
                 }`}
               >
                 {sending ? (
@@ -369,7 +367,7 @@ export function ChatInput() {
                 aria-pressed={dictation.listening}
                 className={`${btnBox} transition ${
                   dictation.listening
-                    ? "bg-[#1a73e8] text-white"
+                    ? "bg-brand text-brand-foreground"
                     : "text-primary/45 hover:bg-primary/5 hover:text-primary/80"
                 }`}
               >
