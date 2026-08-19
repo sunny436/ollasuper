@@ -2,132 +2,107 @@
 
 import { api } from "@v1/backend/convex/_generated/api";
 import { useQuery } from "convex/react";
-import { ArrowUpRight, Code2, ImageIcon, PenLine, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowUpRight } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useComposer } from "../_hooks/use-composer";
 import { useSendMessage } from "../_hooks/use-send-message";
 
-export type Mode = "text" | "code" | "image";
-
-const MODES: { id: Mode; label: string; caption: string; Icon: typeof Code2 }[] = [
-  { id: "text", label: "Write", caption: "Draft, summarise, translate", Icon: PenLine },
-  { id: "code", label: "Code", caption: "Write, explain or debug", Icon: Code2 },
-  { id: "image", label: "Visuals", caption: "Describe and analyse", Icon: ImageIcon },
+/**
+ * A flat, curated set of starter prompts, shown as Gemini-style suggestion
+ * chips below the composer. (The old Write/Code/Visuals mode tabs were dropped
+ * with the Gemini restyle — Gemini has no such switcher.) "Summarise a document"
+ * is kept as the first chip; the chat e2e asserts it renders.
+ */
+const SUGGESTIONS: { title: string; hint: string; prompt: string }[] = [
+  {
+    title: "Summarise a document",
+    hint: "Paste it and get the key points",
+    prompt: "Summarise the following document into five key points:\n\n",
+  },
+  {
+    title: "Write code",
+    hint: "Explain, debug or refactor",
+    prompt: "Write code that ",
+  },
+  {
+    title: "Draft an email",
+    hint: "Professional, to the point",
+    prompt: "Draft a short, professional email that ",
+  },
+  {
+    title: "Explain simply",
+    hint: "Plain language, no jargon",
+    prompt: "Explain this in plain language, assuming no background knowledge:\n\n",
+  },
 ];
 
-const SUGGESTIONS: Record<Mode, { title: string; hint: string; prompt: string }[]> = {
-  text: [
-    {
-      title: "Summarise a document",
-      hint: "Paste it and get the key points",
-      prompt: "Summarise the following document into five key points:\n\n",
-    },
-    {
-      title: "Rewrite for clarity",
-      hint: "Tighten prose without losing meaning",
-      prompt: "Rewrite this so it is clearer and more concise, keeping the meaning:\n\n",
-    },
-    {
-      title: "Draft an email",
-      hint: "Professional, to the point",
-      prompt: "Draft a short, professional email that ",
-    },
-    {
-      title: "Explain simply",
-      hint: "Plain language, no jargon",
-      prompt: "Explain this in plain language, assuming no background knowledge:\n\n",
-    },
-  ],
-  code: [
-    {
-      title: "Explain this code",
-      hint: "Line by line, with the why",
-      prompt: "Explain what this code does and why it is written this way:\n\n```\n\n```",
-    },
-    {
-      title: "Find the bug",
-      hint: "Describe the symptom, get a diagnosis",
-      prompt: "This code misbehaves. Find the bug and explain the fix:\n\n```\n\n```",
-    },
-    {
-      title: "Write a test",
-      hint: "Covering the edge cases",
-      prompt: "Write tests for the following, covering the edge cases:\n\n```\n\n```",
-    },
-    {
-      title: "Refactor",
-      hint: "Same behaviour, better shape",
-      prompt: "Refactor this for readability without changing behaviour:\n\n```\n\n```",
-    },
-  ],
-  image: [
-    {
-      title: "Describe an image",
-      hint: "Attach one and ask",
-      prompt: "Describe what is in this image in detail.",
-    },
-    {
-      title: "Extract text",
-      hint: "Read a screenshot or scan",
-      prompt: "Transcribe all the text visible in this image.",
-    },
-    {
-      title: "Explain a diagram",
-      hint: "Architecture, charts, flows",
-      prompt: "Explain what this diagram shows and how the pieces relate.",
-    },
-    {
-      title: "Critique a design",
-      hint: "Concrete, actionable feedback",
-      prompt: "Give concrete, actionable feedback on this UI design.",
-    },
-  ],
-};
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReduced(mq.matches);
+    const on = () => setReduced(mq.matches);
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, []);
+  return reduced;
+}
 
-function PromptCard({
-  title,
-  hint,
-  onPick,
-  onSend,
-}: {
-  title: string;
-  hint: string;
-  onPick: () => void;
-  onSend: () => void;
-}) {
+/**
+ * The greeting, revealed character by character on a gradient — the signature
+ * Gemini landing motion. Each glyph lifts and un-rotates into place on a
+ * staggered spring. Reduced-motion renders the final state with no transform.
+ */
+function AnimatedHeadline({ text }: { text: string }) {
+  const reduced = usePrefersReducedMotion();
+  const [revealed, setRevealed] = useState(false);
+
+  // Re-trigger whenever the text resolves (greeting + name arrive async), so the
+  // reveal plays on the real string rather than an empty placeholder.
+  useEffect(() => {
+    if (!text) return;
+    setRevealed(false);
+    const id = requestAnimationFrame(() => setRevealed(true));
+    return () => cancelAnimationFrame(id);
+  }, [text]);
+
+  const chars = useMemo(() => Array.from(text), [text]);
+
   return (
-    <div className="group relative rounded-2xl border border-border bg-card/60 p-3.5 backdrop-blur-sm transition-colors hover:border-brand/40 hover:bg-primary/5">
-      <button type="button" onClick={onPick} className="block w-full text-left">
-        <span className="block text-sm text-primary/85">{title}</span>
-        <span className="mt-0.5 block text-xs text-primary/45">{hint}</span>
-      </button>
-      <button
-        type="button"
-        onClick={onSend}
-        aria-label={`Send: ${title}`}
-        className="absolute right-2 top-2 rounded-md p-1 text-primary/25 transition group-hover:text-brand-ink hover:bg-primary/5"
-      >
-        <ArrowUpRight className="h-3.5 w-3.5" />
-      </button>
-    </div>
+    <h1 className="text-4xl font-medium leading-tight sm:text-5xl">
+      {chars.map((char, i) => (
+        <span
+          // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph run
+          key={i}
+          className="inline-block bg-gradient-to-br from-sky-500 via-indigo-500 to-purple-500 bg-clip-text text-transparent will-change-transform dark:from-sky-300 dark:via-indigo-300 dark:to-fuchsia-300"
+          style={
+            reduced
+              ? undefined
+              : {
+                  opacity: revealed ? 1 : 0,
+                  transform: revealed
+                    ? "translateY(0) rotateX(0deg)"
+                    : "translateY(20px) rotateX(-20deg)",
+                  transition: `opacity 0.5s ease, transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) ${0.06 + i * 0.03}s`,
+                }
+          }
+        >
+          {char === " " ? " " : char}
+        </span>
+      ))}
+    </h1>
   );
 }
 
 /**
  * Split into two halves on purpose.
  *
- * chat-layout.tsx centres greeting -> mode picker -> COMPOSER -> prompt cards
- * on an empty thread, so the composer sits between these two blocks and cannot
- * be a child of either. `mode` therefore lives in chat-layout and is passed
- * down, which also keeps the two halves in sync for free.
+ * chat-layout.tsx centres greeting -> COMPOSER -> suggestion chips on an empty
+ * thread, so the composer sits between these two blocks and cannot be a child of
+ * either.
  */
-export function EmptyHero({
-  mode,
-  onModeChange,
-}: {
-  mode: Mode;
-  onModeChange: (m: Mode) => void;
-}) {
+export function EmptyHero() {
   const [greeting, setGreeting] = useState("");
   const user = useQuery(api.users.getUser);
 
@@ -141,82 +116,55 @@ export function EmptyHero({
 
   // getUser resolves this as (username || name), so it survives username being
   // optional — and picks up the name Google supplies or the one captured at
-  // sign-up. Reading the raw `username` field here would greet most users
-  // anonymously now that onboarding no longer forces one.
+  // sign-up.
   const firstName = user?.name?.split(" ")[0] ?? "";
+  const headline = greeting ? `${greeting}${firstName ? `, ${firstName}` : ""}` : "";
 
   return (
-    <div className="w-full">
-      <div className="h-12 w-12 rounded-2xl bg-gradient-to-tr from-sky-400 via-indigo-500 to-purple-500 p-[1.5px] shadow-[0_0_36px_hsl(var(--brand)/0.3)]">
-        <div className="grid h-full w-full place-items-center rounded-[14px] bg-card">
-          <Sparkles className="h-5 w-5 text-brand-ink" />
-        </div>
+    <div className="w-full text-center">
+      {/* Reserve the line height so the pill below does not jump when the
+          greeting resolves and the animation runs. */}
+      <div className="min-h-[3rem] sm:min-h-[3.5rem]">
+        {headline && <AnimatedHeadline text={headline} />}
       </div>
-
-      <h1 className="mt-4 text-2xl font-medium text-primary">
-        {greeting}
-        {greeting && firstName ? `, ${firstName}` : ""}
-      </h1>
-      <p className="mt-1 text-sm text-primary/60">
+      <p className="mt-2 text-sm text-primary/55">
         What would you like to make today?
       </p>
-
-      <div
-        role="radiogroup"
-        aria-label="What do you want to create?"
-        className="mt-6 grid grid-cols-3 gap-2"
-      >
-        {MODES.map(({ id, label, caption, Icon }) => {
-          const selected = mode === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              onClick={() => onModeChange(id)}
-              className={`rounded-xl border p-3 text-left transition ${
-                selected
-                  ? "border-brand/40 bg-brand/10 text-brand-ink ring-1 ring-brand/30"
-                  : "border-border bg-card/60 text-primary/70 backdrop-blur-sm hover:border-brand/25 hover:bg-primary/5"
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-              <span className="mt-2 block text-sm font-medium">{label}</span>
-              <span className="mt-0.5 block text-[11px] text-primary/45">
-                {caption}
-              </span>
-            </button>
-          );
-        })}
-      </div>
     </div>
   );
 }
 
-export function EmptyPrompts({
-  mode,
-  threadId,
-}: {
-  mode: Mode;
-  threadId: string | null;
-}) {
+export function EmptyPrompts({ threadId }: { threadId: string | null }) {
   const { setDraft } = useComposer();
   const { send } = useSendMessage(threadId);
 
   return (
-    <div className="grid w-full gap-2.5 sm:grid-cols-2">
-      {SUGGESTIONS[mode].map((s) => (
-        <PromptCard
+    <div className="flex w-full flex-wrap justify-center gap-2">
+      {SUGGESTIONS.map((s) => (
+        <div
           key={s.title}
-          title={s.title}
-          hint={s.hint}
-          // Card body fills the composer rather than sending: people almost
-          // always tweak a suggestion, and auto-sending burns a request and
-          // an inference bill on a prompt they did not finish writing.
-          onPick={() => setDraft(s.prompt)}
-          onSend={() => void send(s.prompt)}
-        />
+          className="group relative flex items-center rounded-2xl border border-border bg-card/60 py-2 pl-3.5 pr-9 backdrop-blur-sm transition-colors hover:border-brand/40 hover:bg-primary/5"
+        >
+          <button
+            type="button"
+            // Card body fills the composer rather than sending: people almost
+            // always tweak a suggestion, and auto-sending burns a request and an
+            // inference bill on a prompt they did not finish writing.
+            onClick={() => setDraft(s.prompt)}
+            className="text-left"
+            title={s.hint}
+          >
+            <span className="block text-sm text-primary/85">{s.title}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void send(s.prompt)}
+            aria-label={`Send: ${s.title}`}
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-primary/25 transition group-hover:text-brand-ink hover:bg-primary/5"
+          >
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
       ))}
     </div>
   );

@@ -89,16 +89,20 @@ const step = async (n, f) => {
     if (cards === 0) throw new Error("no suggested prompt cards");
   });
 
-  await step("the starter menu switches the suggestions", async () => {
-    await page.getByRole("radio", { name: /Code/ }).click();
-    await page.waitForSelector("text=Explain this code", { timeout: 5000 });
+  await step("suggestion chips render", async () => {
+    // The Gemini restyle replaced the Write/Code/Visuals mode tabs with a flat
+    // set of suggestion chips. Confirm a couple beyond the first are present.
+    await page.waitForSelector("text=Draft an email", { timeout: 5000 });
+    if ((await page.locator("text=Explain simply").count()) === 0) {
+      throw new Error("suggestion chips did not render");
+    }
   });
 
   await step("a prompt card populates the composer without sending", async () => {
-    await page.click("text=Explain this code");
+    await page.click("text=Draft an email");
     await page.waitForTimeout(300);
     const v = await page.locator("#chat-composer").inputValue();
-    if (!v.includes("Explain what this code does")) {
+    if (!v.includes("Draft a short, professional email")) {
       throw new Error("composer was not populated");
     }
     // And it must NOT have sent: no assistant turn yet.

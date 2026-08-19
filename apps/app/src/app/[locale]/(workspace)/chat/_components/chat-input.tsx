@@ -2,7 +2,7 @@
 
 import { api } from "@v1/backend/convex/_generated/api";
 import { useMutation } from "convex/react";
-import { ArrowUp, Loader2, Paperclip, Square } from "lucide-react";
+import { ArrowUp, Loader2, Mic, Paperclip, Square } from "lucide-react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   forwardRef,
@@ -14,9 +14,10 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { useAttachments } from "../_hooks/use-attachments";
-import { useComposer } from "../_hooks/use-composer";
-import { useMediaQuery } from "../_hooks/use-media-query";
 import { useChatSession } from "../_hooks/use-chat-session";
+import { useComposer } from "../_hooks/use-composer";
+import { useDictation } from "../_hooks/use-dictation";
+import { useMediaQuery } from "../_hooks/use-media-query";
 import { useSendMessage } from "../_hooks/use-send-message";
 import { AttachmentChip } from "./attachment-chip";
 import { ModelPicker } from "./model-picker";
@@ -76,14 +77,11 @@ export function ChatInput() {
   const composing = useRef(false);
   const composedAt = useRef(0);
 
-  useEffect(() => {
-    registerTextarea(taRef.current);
-  }, [registerTextarea]);
-
-  // Draft pushed in from a prompt card / the library.
-  useEffect(() => {
-    if (draft) setValue(draft);
-  }, [draft]);
+  // The centred (empty new-chat) state is the Gemini-style floating pill; once a
+  // thread exists the SAME instance reflows to the docked multi-line composer.
+  // This is the ONLY structural driver, and it matches chat-layout.tsx's
+  // centred->docked morph exactly because both read the same threadId.
+  const centred = threadId === null;
 
   const autosize = useCallback(() => {
     const el = taRef.current;
@@ -93,6 +91,24 @@ export function ChatInput() {
     el.style.height = `${Math.min(el.scrollHeight, max)}px`;
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
   }, []);
+
+  const appendDictation = useCallback(
+    (chunk: string) => {
+      setValue((v) => (v ? `${v.replace(/\s*$/, "")} ${chunk}` : chunk));
+      requestAnimationFrame(autosize);
+    },
+    [autosize],
+  );
+  const dictation = useDictation(appendDictation);
+
+  useEffect(() => {
+    registerTextarea(taRef.current);
+  }, [registerTextarea]);
+
+  // Draft pushed in from a prompt card / the library.
+  useEffect(() => {
+    if (draft) setValue(draft);
+  }, [draft]);
 
   // Runs for programmatic fills too (setDraft), before paint so there is no
   // visible jump between the text landing and the box growing.
@@ -169,6 +185,9 @@ export function ChatInput() {
     }
   };
 
+  const iconBtn =
+    "shrink-0 rounded-full p-2 text-primary/45 transition hover:bg-primary/5 hover:text-primary/80";
+
   return (
     <div
       className="relative shrink-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6"
@@ -204,9 +223,22 @@ export function ChatInput() {
         <label htmlFor="chat-composer" className="sr-only">
           Message
         </label>
-        <div className="rounded-3xl border border-border bg-card/70 px-3 py-2.5 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25">
+        {/*
+          ONE shell, two looks. Centred = the Gemini floating glass pill (single
+          row); docked = today's multi-line composer. Only Tailwind classes and
+          flex `order`/`basis` change between them — the textarea keeps the same
+          position in the tree, so it never remounts and the draft/caret/IME
+          survive the first-send morph.
+        */}
+        <div
+          className={
+            centred
+              ? "flex flex-nowrap items-center gap-1 rounded-[26px] border border-white/60 bg-card/70 px-2 py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.10)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_12px_40px_rgba(0,0,0,0.13)] dark:border-white/10"
+              : "flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-3xl border border-border bg-card/70 px-3 py-2.5 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25"
+          }
+        >
           {attachments.items.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1.5">
+            <div className="order-0 mb-1 flex w-full basis-full flex-wrap gap-1.5">
               {attachments.items.map((item) => (
                 <AttachmentChip
                   key={item.localId}
@@ -216,88 +248,141 @@ export function ChatInput() {
               ))}
             </div>
           )}
-          <ComposerTextarea
-            onPaste={onPaste}
-            id="chat-composer"
-            ref={taRef}
-            value={value}
-            placeholder={
-              canSend ? "Ask anything…" : "Preparing your workspace…"
+
+          {/* LEFT controls: attach + model picker */}
+          <div
+            className={`flex items-center gap-0.5 ${centred ? "order-1" : "order-2"}`}
+          >
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              hidden
+              accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,application/json"
+              onChange={(e) => {
+                attachments.add(Array.from(e.target.files ?? []));
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => fileInput.current?.click()}
+              aria-label="Attach files"
+              title="Attach files"
+              className={iconBtn}
+            >
+              <Paperclip className="h-[18px] w-[18px]" />
+            </button>
+            <ModelPicker value={model} onChange={setModel} disabled={isStreaming} />
+          </div>
+
+          {/* TEXTAREA — same node in both layouts; only order/basis differ. */}
+          <div
+            className={
+              centred
+                ? "order-2 min-w-0 flex-1"
+                : "order-1 w-full basis-full"
             }
-            disabled={!canSend}
-            aria-describedby="chat-composer-hint"
-            aria-keyshortcuts="Enter"
-            onChange={(e) => setValue(e.target.value)}
-            onInput={autosize}
-            onKeyDown={onKeyDown}
-            onCompositionStart={() => {
-              composing.current = true;
-            }}
-            onCompositionEnd={() => {
-              composing.current = false;
-              composedAt.current = performance.now();
-            }}
-          />
-          <div className="mt-1.5 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1">
-              <input
-                ref={fileInput}
-                type="file"
-                multiple
-                hidden
-                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,application/json"
-                onChange={(e) => {
-                  attachments.add(Array.from(e.target.files ?? []));
-                  e.target.value = "";
-                }}
-              />
+          >
+            <ComposerTextarea
+              onPaste={onPaste}
+              id="chat-composer"
+              ref={taRef}
+              value={value}
+              placeholder={canSend ? "Ask anything…" : "Preparing your workspace…"}
+              disabled={!canSend}
+              aria-describedby="chat-composer-hint"
+              aria-keyshortcuts="Enter"
+              onChange={(e) => setValue(e.target.value)}
+              onInput={autosize}
+              onKeyDown={onKeyDown}
+              onCompositionStart={() => {
+                composing.current = true;
+              }}
+              onCompositionEnd={() => {
+                composing.current = false;
+                composedAt.current = performance.now();
+              }}
+            />
+          </div>
+
+          {/* Docked-only hint, pushed to the right of the controls row. */}
+          <span
+            id="chat-composer-hint"
+            className={
+              centred
+                ? "hidden"
+                : "order-3 ml-auto hidden text-[11px] text-primary/30 sm:inline"
+            }
+          >
+            Enter to send · Shift+Enter for a new line
+          </span>
+
+          {/* RIGHT controls: mic / send / stop */}
+          <div
+            className={`flex items-center gap-1 ${
+              centred ? "order-3" : "order-4 ml-auto"
+            }`}
+          >
+            {isStreaming ? (
               <button
                 type="button"
-                onClick={() => fileInput.current?.click()}
-                aria-label="Attach files"
-                title="Attach files"
-                className="rounded-md p-1 text-primary/45 transition hover:bg-primary/5 hover:text-primary/80"
+                onClick={onStop}
+                aria-label="Stop generating"
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-border transition hover:bg-primary/15"
               >
-                <Paperclip className="h-4 w-4" />
+                <Square className="h-3.5 w-3.5 fill-current" />
               </button>
-              <ModelPicker value={model} onChange={setModel} disabled={isStreaming} />
-            </div>
-            <div className="flex items-center gap-2">
-              <span
-                id="chat-composer-hint"
-                className="hidden text-[11px] text-primary/30 sm:inline"
+            ) : hasContent ? (
+              <button
+                type="button"
+                onClick={() => void doSend()}
+                disabled={sending || !canSend}
+                aria-label={sending ? "Sending" : "Send message"}
+                // Gemini blue accent on the pill; brand accent when docked.
+                className={`flex h-9 w-9 items-center justify-center rounded-full text-white shadow-md transition ${
+                  sending || !canSend
+                    ? "bg-primary/10 text-primary/30"
+                    : centred
+                      ? "bg-[#1a73e8] hover:bg-[#1557b0]"
+                      : "bg-brand text-brand-foreground hover:brightness-110 active:brightness-95"
+                }`}
               >
-                Enter to send · Shift+Enter for a new line
-              </span>
-              {isStreaming ? (
-                <button
-                  type="button"
-                  onClick={onStop}
-                  aria-label="Stop generating"
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-border transition hover:bg-primary/15"
-                >
-                  <Square className="h-3.5 w-3.5 fill-current" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void doSend()}
-                  disabled={!hasContent || sending || !canSend}
-                  aria-label={sending ? "Sending" : "Send message"}
-                  className={`flex h-8 w-8 items-center justify-center rounded-full transition ${
-                    hasContent && !sending && canSend
-                      ? "bg-brand text-brand-foreground hover:brightness-110 active:brightness-95"
-                      : "bg-primary/10 text-primary/30"
-                  }`}
-                >
-                  {sending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <ArrowUp className="h-4 w-4" />
-                  )}
-                </button>
-              )}
-            </div>
+                {sending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ArrowUp className="h-4 w-4" />
+                )}
+              </button>
+            ) : dictation.supported ? (
+              <button
+                type="button"
+                onClick={dictation.toggle}
+                aria-label={dictation.listening ? "Stop dictation" : "Dictate"}
+                title={dictation.listening ? "Stop dictation" : "Dictate"}
+                aria-pressed={dictation.listening}
+                className={`flex h-9 w-9 items-center justify-center rounded-full transition ${
+                  dictation.listening
+                    ? "bg-[#1a73e8] text-white"
+                    : "text-primary/45 hover:bg-primary/5 hover:text-primary/80"
+                }`}
+              >
+                <Mic
+                  className={`h-[18px] w-[18px] ${dictation.listening ? "animate-pulse" : ""}`}
+                />
+              </button>
+            ) : (
+              // No speech support and nothing to send yet: a disabled send keeps
+              // the control's footprint stable so the pill doesn't jump.
+              <button
+                type="button"
+                disabled
+                aria-label="Send message"
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary/30"
+              >
+                <ArrowUp className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>
