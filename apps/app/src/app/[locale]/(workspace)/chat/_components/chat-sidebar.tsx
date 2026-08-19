@@ -1,15 +1,12 @@
 "use client";
 
 import { IntelligenceCore } from "./intelligence-core";
-import { ThemeSwitcher } from "@/components/theme-switcher";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { useCachedUser } from "../_hooks/use-cached-user";
 import {
-  CreditCard,
-  FolderSearch,
   LogOut,
   MoreHorizontal,
   Pencil,
@@ -89,9 +86,9 @@ function ProfileMenuItem({
 }
 
 /**
- * The workspace has no app rail, so this footer is the ONLY route out to the
- * pages that kept the dashboard shell. Losing it would strand the user in
- * /chat with no way to reach Settings or Billing.
+ * The workspace has no app rail, so this footer is the ONLY route out to
+ * Settings (which itself carries the dashboard aside → Files/Billing). Losing
+ * the Settings link would strand the user in /chat.
  */
 function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
   const user = useCachedUser();
@@ -125,29 +122,14 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
               label="Settings"
               onNavigate={onNavigate}
             />
-            <ProfileMenuItem
-              href="/files"
-              icon={FolderSearch}
-              label="Files"
-              onNavigate={onNavigate}
-            />
-            <ProfileMenuItem
-              href="/settings/billing"
-              icon={CreditCard}
-              label="Billing"
-              onNavigate={onNavigate}
-            />
             <div className="my-1.5 border-t border-border" />
-            <div className="flex items-center justify-between gap-2 px-1.5 py-0.5">
-              <ThemeSwitcher />
-              <button
-                type="button"
-                onClick={() => void signOut()}
-                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-primary/60 transition hover:bg-primary/5 hover:text-primary"
-              >
-                <LogOut className="h-3.5 w-3.5" /> Log out
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs text-primary/75 transition hover:bg-primary/5 hover:text-primary"
+            >
+              <LogOut className="h-3.5 w-3.5 text-primary/45" /> Log out
+            </button>
           </div>
         </>
       )}
@@ -170,7 +152,6 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
             {user?.email}
           </span>
         </span>
-        <Settings className="h-4 w-4 shrink-0 text-primary/40" />
       </button>
     </div>
   );

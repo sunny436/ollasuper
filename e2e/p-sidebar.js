@@ -64,10 +64,10 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
       await railState(rail, true, "restore before account menu");
     }
     await page.getByRole("button", { name: "Account menu" }).click();
-    for (const label of ["Settings", "Files", "Billing"]) {
-      if (!(await page.getByRole("link", { name: label }).first().isVisible()))
-        throw new Error("missing account-menu link: " + label);
-    }
+    // Files + Billing were removed from the account menu; only Settings remains
+    // there (Files/Billing stay in the dashboard aside, checked below).
+    if (!(await page.getByRole("link", { name: "Settings" }).first().isVisible()))
+      throw new Error("missing account-menu link: Settings");
     await page.keyboard.press("Escape");
   });
   await step("sidebar shows all nav links (left)", async () => {

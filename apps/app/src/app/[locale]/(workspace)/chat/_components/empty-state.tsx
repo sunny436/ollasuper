@@ -66,25 +66,68 @@ function AnimatedHeadline({ text }: { text: string }) {
   );
 }
 
+type Bucket = "morning" | "afternoon" | "evening" | "night";
+
+// 20 greetings (5 per time bucket), name-aware and readable when the name is not
+// yet known. One is picked at random per new-chat load.
+const GREETINGS: Record<Bucket, ((n: string) => string)[]> = {
+  morning: [
+    (n) => (n ? `Good morning, ${n}` : "Good morning"),
+    (n) => (n ? `Rise and shine, ${n}` : "Rise and shine"),
+    (n) => (n ? `Morning, ${n}` : "Morning"),
+    (n) => (n ? `Top of the morning, ${n}` : "Top of the morning"),
+    (n) => (n ? `A fresh start, ${n}` : "A fresh start"),
+  ],
+  afternoon: [
+    (n) => (n ? `Good afternoon, ${n}` : "Good afternoon"),
+    (n) => (n ? `Afternoon, ${n}` : "Afternoon"),
+    (n) => (n ? `Hope your day's going well, ${n}` : "Hope your day's going well"),
+    (n) => (n ? `Back at it, ${n}?` : "Back at it?"),
+    (n) => (n ? `Good to see you, ${n}` : "Good to see you"),
+  ],
+  evening: [
+    (n) => (n ? `Good evening, ${n}` : "Good evening"),
+    (n) => (n ? `Evening, ${n}` : "Evening"),
+    (n) => (n ? `Winding down, ${n}?` : "Winding down?"),
+    (n) => (n ? `Welcome back, ${n}` : "Welcome back"),
+    (n) => (n ? `How was your day, ${n}?` : "How was your day?"),
+  ],
+  night: [
+    (n) => (n ? `Working late, ${n}?` : "Working late?"),
+    (n) => (n ? `Burning the midnight oil, ${n}?` : "Burning the midnight oil?"),
+    (n) => (n ? `Still up, ${n}?` : "Still up?"),
+    (n) => (n ? `Late night, ${n}?` : "Late night?"),
+    (n) => (n ? `The quiet hours, ${n}` : "The quiet hours"),
+  ],
+};
+
+function bucketFor(hour: number): Bucket {
+  if (hour >= 5 && hour < 12) return "morning";
+  if (hour >= 12 && hour < 17) return "afternoon";
+  if (hour >= 17 && hour < 21) return "evening";
+  return "night";
+}
+
 /**
  * The empty new-chat hero: just the personalised gradient greeting. The subtitle
  * and the suggestion chips were removed for the minimal Gemini look — only the
  * greeting sits above the composer now.
  */
 export function EmptyHero() {
-  const [greeting, setGreeting] = useState("");
   const user = useCachedUser();
-
-  // Computed in an effect, never during render: a server-rendered time of day
-  // can differ from the client's, which is a hydration mismatch, which React
-  // reports via console.error — and every e2e script asserts zero of those.
+  // Pick the time bucket + a random greeting ONCE, client-side (Math.random and
+  // local time in an effect → no hydration mismatch; every e2e asserts zero
+  // console errors). The name is folded in during render below, so it fills in
+  // when useCachedUser resolves without changing which greeting was chosen.
+  const [pick, setPick] = useState<{ bucket: Bucket; index: number } | null>(null);
   useEffect(() => {
-    const h = new Date().getHours();
-    setGreeting(h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening");
+    const bucket = bucketFor(new Date().getHours());
+    const index = Math.floor(Math.random() * GREETINGS[bucket].length);
+    setPick({ bucket, index });
   }, []);
 
   const firstName = user?.name?.split(" ")[0] ?? "";
-  const headline = greeting ? `${greeting}${firstName ? `, ${firstName}` : ""}` : "";
+  const headline = pick ? (GREETINGS[pick.bucket][pick.index]?.(firstName) ?? "") : "";
 
   return (
     <div className="w-full text-center">

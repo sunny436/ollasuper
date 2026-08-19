@@ -82,10 +82,17 @@ const step = async (n, f) => {
   });
 
   await step("empty state renders the greeting + composer", async () => {
-    // The empty new-chat screen is now just the personalised gradient greeting
-    // and the composer — the subtitle and suggestion chips were removed.
-    await page.waitForSelector("h1:has-text('Good')", { timeout: 10000 });
+    // The empty new-chat screen is just the personalised gradient greeting + the
+    // composer. The greeting is randomised (20 variants, not all start "Good"),
+    // so assert an h1 with non-empty text rather than a specific phrase.
     await page.waitForSelector("#chat-composer", { timeout: 10000 });
+    await page.waitForFunction(
+      () => {
+        const h = document.querySelector("h1");
+        return !!h && (h.textContent || "").trim().length > 0;
+      },
+      { timeout: 10000 },
+    );
   });
 
   await step("send a message and receive a streamed reply", async () => {
