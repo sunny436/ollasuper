@@ -187,11 +187,11 @@ export function ChatInput() {
   };
 
   // Centred = the Gemini pill, scaled ~1.8x; docked keeps today's sizes.
-  const iconBtn = `shrink-0 rounded-full ${centred ? "p-3" : "p-2"} text-primary/45 transition hover:bg-primary/5 hover:text-primary/80`;
-  const btnBox = `flex ${centred ? "h-14 w-14" : "h-9 w-9"} items-center justify-center rounded-full`;
-  const bigIcon = centred ? "h-7 w-7" : "h-4 w-4";
-  const stopIcon = centred ? "h-6 w-6" : "h-3.5 w-3.5";
-  const micIcon = centred ? "h-7 w-7" : "h-[18px] w-[18px]";
+  const iconBtn = `shrink-0 rounded-full ${centred ? "p-2.5" : "p-2"} text-primary/45 transition hover:bg-primary/5 hover:text-primary/80`;
+  const btnBox = `flex ${centred ? "h-12 w-12" : "h-9 w-9"} items-center justify-center rounded-full`;
+  const bigIcon = centred ? "h-6 w-6" : "h-4 w-4";
+  const stopIcon = centred ? "h-5 w-5" : "h-3.5 w-3.5";
+  const micIcon = centred ? "h-6 w-6" : "h-[18px] w-[18px]";
 
   return (
     <div
@@ -224,7 +224,7 @@ export function ChatInput() {
           <span className="text-sm font-medium text-brand-ink">Drop to attach</span>
         </div>
       )}
-      <div className="mx-auto w-full max-w-3xl">
+      <div className={`mx-auto w-full ${centred ? "max-w-[58rem]" : "max-w-3xl"}`}>
         <label htmlFor="chat-composer" className="sr-only">
           Message
         </label>
@@ -238,7 +238,7 @@ export function ChatInput() {
         <div
           className={
             centred
-              ? "flex flex-nowrap items-center gap-2 rounded-[40px] border border-white/60 bg-card/70 px-4 py-4 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10"
+              ? "flex flex-nowrap items-center gap-1.5 rounded-[32px] border border-white/60 bg-card/70 px-3.5 py-3 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10"
               : "flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-3xl border border-border bg-card/70 px-3 py-2.5 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25"
           }
         >
@@ -276,7 +276,7 @@ export function ChatInput() {
               title="Attach files"
               className={iconBtn}
             >
-              <Paperclip className={centred ? "h-7 w-7" : "h-[18px] w-[18px]"} />
+              <Paperclip className={centred ? "h-6 w-6" : "h-[18px] w-[18px]"} />
             </button>
             <ModelPicker value={model} onChange={setModel} disabled={isStreaming} />
           </div>
@@ -285,7 +285,7 @@ export function ChatInput() {
           <div
             className={
               centred
-                ? "order-2 min-w-0 flex-1 [&_textarea]:text-xl [&_textarea]:leading-9"
+                ? "order-2 min-w-0 flex-1 [&_textarea]:text-lg [&_textarea]:leading-8"
                 : "order-1 w-full basis-full"
             }
           >
@@ -294,7 +294,7 @@ export function ChatInput() {
               id="chat-composer"
               ref={taRef}
               value={value}
-              placeholder={canSend ? "Ask anything…" : "Preparing your workspace…"}
+              placeholder="Ask anything…"
               disabled={!canSend}
               aria-describedby="chat-composer-hint"
               aria-keyshortcuts="Enter"
