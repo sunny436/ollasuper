@@ -5,7 +5,8 @@ import { cn } from "@v1/ui/utils";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
-import { ThemeProvider } from "next-themes";
+import { AmbienceProvider } from "@/lib/ambience/ambience-provider";
+import { AmbienceScript } from "@/lib/ambience/ambience-script";
 import { ConvexClientProvider } from "../convex-client-provider";
 
 export const metadata: Metadata = {
@@ -34,16 +35,15 @@ export default function RootLayout({
             "antialiased",
           )}
         >
-          <ThemeProvider
-            attribute="class"
-            defaultTheme="system"
-            enableSystem
-            disableTransitionOnChange
-          >
+          {/* Stamps ambience vars + .dark on <html> before first paint (no
+              flash). Must be the first thing in <body> so it runs before the
+              app content is styled. */}
+          <AmbienceScript />
+          <AmbienceProvider>
             <TooltipProvider delayDuration={0}>
               <ConvexClientProvider>{children}</ConvexClientProvider>
             </TooltipProvider>
-          </ThemeProvider>
+          </AmbienceProvider>
         </body>
       </html>
     </ConvexAuthNextjsServerProvider>

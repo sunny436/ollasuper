@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useAmbience } from "@/lib/ambience/ambience-provider";
 import { useCachedUser } from "../_hooks/use-cached-user";
 
 function usePrefersReducedMotion(): boolean {
@@ -17,13 +18,17 @@ function usePrefersReducedMotion(): boolean {
 }
 
 /**
- * The greeting, revealed character by character on a gradient — the signature
- * Gemini landing motion. Each glyph lifts and un-rotates into place on a
- * staggered spring, then settles to `transform: none` so no residual 3D context
- * clips the descenders (the 'g'/'y' tails). Reduced-motion renders final state.
+ * The greeting, revealed character by character — the signature Gemini landing
+ * motion. Each glyph lifts and un-rotates into place on a staggered spring, then
+ * settles to `transform: none` so no residual 3D context clips the descenders
+ * (the 'g'/'y' tails). The colour is the ambience-interpolated foreground so it
+ * stays legible across daylight/amber/midnight (the old fixed sky→indigo
+ * gradient clashed on amber and washed out on daylight). Reduced-motion renders
+ * final state; the colour still applies.
  */
 function AnimatedHeadline({ text }: { text: string }) {
   const reduced = usePrefersReducedMotion();
+  const { colors } = useAmbience();
   const [revealed, setRevealed] = useState(false);
   // The stagger plays exactly ONCE. A later text change (name arriving after the
   // greeting) snaps to the final state rather than re-animating.
@@ -45,19 +50,20 @@ function AnimatedHeadline({ text }: { text: string }) {
         <span
           // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph run
           key={i}
-          className="inline-block bg-gradient-to-br from-sky-500 via-indigo-500 to-purple-500 bg-clip-text text-transparent dark:from-sky-300 dark:via-indigo-300 dark:to-fuchsia-300"
-          style={
-            reduced
-              ? undefined
+          className="inline-block"
+          style={{
+            color: colors.text,
+            ...(reduced
+              ? {}
               : {
                   opacity: settled ? 1 : 0,
                   // `none` once settled — a lingering rotateX(0) keeps a 3D
                   // rendering context that clips the glyph box and eats the
                   // descenders.
                   transform: settled ? "none" : "translateY(20px) rotateX(-20deg)",
-                  transition: `opacity 0.5s ease, transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) ${0.06 + i * 0.03}s`,
-                }
-          }
+                  transition: `opacity 0.5s ease, transform 0.7s cubic-bezier(0.16, 1, 0.3, 1) ${0.1 + i * 0.035}s`,
+                }),
+          }}
         >
           {char === " " ? " " : char}
         </span>

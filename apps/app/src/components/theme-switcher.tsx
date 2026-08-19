@@ -1,3 +1,5 @@
+"use client";
+
 import {
   Select,
   SelectContent,
@@ -5,16 +7,39 @@ import {
   SelectTrigger,
 } from "@v1/ui/select";
 import { cn } from "@v1/ui/utils";
-import { Monitor, Moon, Sun } from "lucide-react";
-import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
+import { Moon, Sun, Sunset } from "lucide-react";
+import { useAmbience } from "@/lib/ambience/ambience-provider";
+
+/**
+ * The compact ambience control for the dashboard sidebar (the chat header uses
+ * the full <AmbienceSlider/>). Both write the same single source of truth via
+ * useAmbience — this offers the three named stops as a dropdown so the routes
+ * that kept the dashboard shell get a familiar control. Was the Light/Dark/System
+ * next-themes switcher; ambience replaced next-themes.
+ */
+const PRESETS = [
+  { value: "day", label: "Daylight", intensity: 0, Icon: Sun },
+  { value: "amber", label: "Amber", intensity: 50, Icon: Sunset },
+  { value: "midnight", label: "Midnight", intensity: 100, Icon: Moon },
+] as const;
+
+function currentPreset(i: number): (typeof PRESETS)[number]["value"] {
+  return i < 34 ? "day" : i < 67 ? "amber" : "midnight";
+}
 
 export function ThemeSwitcher({ triggerClass }: { triggerClass?: string }) {
-  const { theme: currentTheme, setTheme, themes } = useTheme();
+  const { intensity, setIntensityAnimated } = useAmbience();
+  const value = currentPreset(intensity);
+  const active = PRESETS.find((p) => p.value === value) ?? PRESETS[0];
+  const Icon = active.Icon;
+
   return (
     <Select
-      value={currentTheme}
-      onValueChange={(theme) => setTheme(theme as (typeof themes)[number])}
+      value={value}
+      onValueChange={(v) => {
+        const preset = PRESETS.find((p) => p.value === v);
+        if (preset) setIntensityAnimated(preset.intensity);
+      }}
     >
       <SelectTrigger
         className={cn(
@@ -22,29 +47,19 @@ export function ThemeSwitcher({ triggerClass }: { triggerClass?: string }) {
           triggerClass,
         )}
       >
-        <div className="flex items-start gap-2">
-          {currentTheme === "light" ? (
-            <Sun className="h-[14px] w-[14px]" />
-          ) : currentTheme === "dark" ? (
-            <Moon className="h-[14px] w-[14px]" />
-          ) : (
-            <Monitor className="h-[14px] w-[14px]" />
-          )}
-          {currentTheme && (
-            <span className="text-xs font-medium">
-              {currentTheme.charAt(0).toUpperCase() + currentTheme.slice(1)}
-            </span>
-          )}
+        <div className="flex items-center gap-2">
+          <Icon className="h-[14px] w-[14px]" />
+          <span className="text-xs font-medium">{active.label}</span>
         </div>
       </SelectTrigger>
       <SelectContent>
-        {themes.map((theme) => (
+        {PRESETS.map((p) => (
           <SelectItem
-            key={theme}
-            value={theme}
-            className={`text-sm font-medium text-primary/60 ${theme === currentTheme && "text-primary"}`}
+            key={p.value}
+            value={p.value}
+            className={`text-sm font-medium ${p.value === value ? "text-primary" : "text-primary/60"}`}
           >
-            {theme && theme.charAt(0).toUpperCase() + theme.slice(1)}
+            {p.label}
           </SelectItem>
         ))}
       </SelectContent>

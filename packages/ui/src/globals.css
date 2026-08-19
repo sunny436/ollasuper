@@ -2,27 +2,40 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  AMBIENCE INDIRECTION.
+  Every colour token below reads from an engine var `--amb-<token>` and falls
+  back to its original literal. The ambience engine (apps/app lib/ambience)
+  writes `--amb-*` / `--amb-ws-*` on <html>; because custom properties inherit,
+  every element — including Radix portals mounted at document.body — resolves
+  them with no per-node writes. When the engine is OFF (no provider, or the
+  NEXT_PUBLIC_AMBIENCE kill-switch) the var() is undefined and each token falls
+  back to the literal, so the app renders pixel-identical to before. The
+  literals are therefore load-bearing: they are the still-authoritative default
+  theme AND the ramp endpoints (day = these light values, night = the .dark
+  values). tailwind.config maps every token as hsl(var(--token)); unchanged.
+*/
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --background: var(--amb-background, 0 0% 100%);
+    --foreground: var(--amb-foreground, 222.2 84% 4.9%);
+    --card: var(--amb-card, 0 0% 100%);
+    --card-foreground: var(--amb-card-foreground, 222.2 84% 4.9%);
+    --popover: var(--amb-popover, 0 0% 100%);
+    --popover-foreground: var(--amb-popover-foreground, 222.2 84% 4.9%);
+    --primary: var(--amb-primary, 222.2 47.4% 11.2%);
+    --primary-foreground: var(--amb-primary-foreground, 210 40% 98%);
+    --secondary: var(--amb-secondary, 210 40% 96.1%);
+    --secondary-foreground: var(--amb-secondary-foreground, 222.2 47.4% 11.2%);
+    --muted: var(--amb-muted, 210 40% 96.1%);
+    --muted-foreground: var(--amb-muted-foreground, 215.4 16.3% 46.9%);
+    --accent: var(--amb-accent, 210 40% 96.1%);
+    --accent-foreground: var(--amb-accent-foreground, 222.2 47.4% 11.2%);
+    --destructive: var(--amb-destructive, 0 84.2% 60.2%);
+    --destructive-foreground: var(--amb-destructive-foreground, 210 40% 98%);
+    --border: var(--amb-border, 214.3 31.8% 91.4%);
+    --input: var(--amb-input, 214.3 31.8% 91.4%);
+    --ring: var(--amb-ring, 222.2 84% 4.9%);
     --radius: 0.5rem;
     --chart-1: 12 76% 61%;
     --chart-2: 173 58% 39%;
@@ -40,31 +53,31 @@
        green theme this fill needs NEAR-WHITE text on it, not near-black.
        Contrast (WCAG): brand-foreground on brand 5.98:1, brand-ink on
        background 8.59:1, brand vs background 6.26:1 (1.4.11 non-text). */
-    --brand: 224 76% 50%;
-    --brand-foreground: 210 40% 98%;
-    --brand-ink: 226 64% 40%;
+    --brand: var(--amb-brand, 224 76% 50%);
+    --brand-foreground: var(--amb-brand-foreground, 210 40% 98%);
+    --brand-ink: var(--amb-brand-ink, 226 64% 40%);
   }
 
   .dark {
-    --background: 0 0% 0%;
-    --foreground: 0 0% 100%;
-    --card: 0 0% 3%;
-    --card-foreground: 0 0% 100%;
-    --popover: 0 0% 3%;
-    --popover-foreground: 0 0% 100%;
-    --primary: 0 0% 100%;
-    --primary-foreground: 0 0% 0%;
-    --secondary: 0 0% 10%;
-    --secondary-foreground: 0 0% 100%;
-    --muted: 0 0% 10%;
-    --muted-foreground: 0 0% 70%;
-    --accent: 0 0% 15%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 100% 30%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 20%;
-    --input: 0 0% 20%;
-    --ring: 0 0% 80%;
+    --background: var(--amb-background, 0 0% 0%);
+    --foreground: var(--amb-foreground, 0 0% 100%);
+    --card: var(--amb-card, 0 0% 3%);
+    --card-foreground: var(--amb-card-foreground, 0 0% 100%);
+    --popover: var(--amb-popover, 0 0% 3%);
+    --popover-foreground: var(--amb-popover-foreground, 0 0% 100%);
+    --primary: var(--amb-primary, 0 0% 100%);
+    --primary-foreground: var(--amb-primary-foreground, 0 0% 0%);
+    --secondary: var(--amb-secondary, 0 0% 10%);
+    --secondary-foreground: var(--amb-secondary-foreground, 0 0% 100%);
+    --muted: var(--amb-muted, 0 0% 10%);
+    --muted-foreground: var(--amb-muted-foreground, 0 0% 70%);
+    --accent: var(--amb-accent, 0 0% 15%);
+    --accent-foreground: var(--amb-accent-foreground, 0 0% 100%);
+    --destructive: var(--amb-destructive, 0 100% 30%);
+    --destructive-foreground: var(--amb-destructive-foreground, 0 0% 100%);
+    --border: var(--amb-border, 0 0% 20%);
+    --input: var(--amb-input, 0 0% 20%);
+    --ring: var(--amb-ring, 0 0% 80%);
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
@@ -74,9 +87,9 @@
     /* On the dark theme the fill is light enough to double as ink, so the
        text-on-fill token flips to a dark navy. Contrast: brand-foreground on
        brand 8.02:1, brand-ink on background 8.84:1. */
-    --brand: 204 94% 62%;
-    --brand-foreground: 226 95% 10%;
-    --brand-ink: 204 94% 62%;
+    --brand: var(--amb-brand, 204 94% 62%);
+    --brand-foreground: var(--amb-brand-foreground, 226 95% 10%);
+    --brand-ink: var(--amb-brand-ink, 204 94% 62%);
   }
 }
 
@@ -90,35 +103,37 @@
      .dark .workspace (0,2,0) correctly outranks .workspace (0,1,0), so the
      dark block does not need !important or source-order luck.
      NOTE: Radix portals mount at document.body, outside this scope — any
-     portalled surface needs className="workspace" to inherit these. */
+     portalled surface needs className="workspace" to inherit these.
+     Each token reads --amb-ws-* (engine) and falls back to the literal, same
+     as the root scope above. */
   .workspace {
-    --background: 220 43% 98%;
-    --card: 0 0% 100%;
-    --card-foreground: 224 47% 11%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 224 47% 11%;
-    --secondary: 220 33% 96%;
-    --muted: 220 33% 96%;
-    --muted-foreground: 220 12% 46%;
-    --accent: 220 33% 94%;
-    --border: 220 25% 90%;
-    --input: 220 25% 90%;
+    --background: var(--amb-ws-background, 220 43% 98%);
+    --card: var(--amb-ws-card, 0 0% 100%);
+    --card-foreground: var(--amb-ws-card-foreground, 224 47% 11%);
+    --popover: var(--amb-ws-popover, 0 0% 100%);
+    --popover-foreground: var(--amb-ws-popover-foreground, 224 47% 11%);
+    --secondary: var(--amb-ws-secondary, 220 33% 96%);
+    --muted: var(--amb-ws-muted, 220 33% 96%);
+    --muted-foreground: var(--amb-ws-muted-foreground, 220 12% 46%);
+    --accent: var(--amb-ws-accent, 220 33% 94%);
+    --border: var(--amb-ws-border, 220 25% 90%);
+    --input: var(--amb-ws-input, 220 25% 90%);
   }
 
   .dark .workspace {
     /* The prototype ground: a blue-tinted near-black, not the pure #000 of the
        app-wide dark theme. Cards sit two steps up so glass edges read. */
-    --background: 228 27% 4%;
-    --card: 230 30% 7%;
-    --card-foreground: 0 0% 100%;
-    --popover: 231 28% 10%;
-    --popover-foreground: 0 0% 100%;
-    --secondary: 230 26% 9%;
-    --muted: 230 26% 9%;
-    --muted-foreground: 220 14% 65%;
-    --accent: 228 25% 14%;
-    --border: 225 20% 17%;
-    --input: 225 20% 17%;
+    --background: var(--amb-ws-background, 228 27% 4%);
+    --card: var(--amb-ws-card, 230 30% 7%);
+    --card-foreground: var(--amb-ws-card-foreground, 0 0% 100%);
+    --popover: var(--amb-ws-popover, 231 28% 10%);
+    --popover-foreground: var(--amb-ws-popover-foreground, 0 0% 100%);
+    --secondary: var(--amb-ws-secondary, 230 26% 9%);
+    --muted: var(--amb-ws-muted, 230 26% 9%);
+    --muted-foreground: var(--amb-ws-muted-foreground, 220 14% 65%);
+    --accent: var(--amb-ws-accent, 228 25% 14%);
+    --border: var(--amb-ws-border, 225 20% 17%);
+    --input: var(--amb-ws-input, 225 20% 17%);
   }
 }
 

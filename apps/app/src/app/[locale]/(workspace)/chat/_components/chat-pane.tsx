@@ -7,7 +7,7 @@ import { useEffect } from "react";
 import { useChatSession } from "../_hooks/use-chat-session";
 import { MessageList } from "./message-list";
 import { useChatSidebar } from "./chat-shell";
-import { ThemeSwitcher } from "@/components/theme-switcher";
+import { AmbienceSlider } from "./ambience-slider";
 
 export function ChatPane({ threadId }: { threadId: string | null }) {
   const { openSidebar, collapsed, toggleCollapsed } = useChatSidebar();
@@ -83,9 +83,9 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
           </span>
         </div>
 
-        {/* Theme selector — top-right of the chat header. */}
+        {/* Ambience control — top-right of the chat header. */}
         <div className="ml-auto shrink-0">
-          <ThemeSwitcher />
+          <AmbienceSlider />
         </div>
       </header>
 
