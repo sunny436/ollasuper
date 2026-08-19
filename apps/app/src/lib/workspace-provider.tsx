@@ -5,7 +5,7 @@ import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useMutation, useQuery } from "convex/react";
 import { DISPLACED_KEY } from "./displaced-session";
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 type WS = { _id: Id<"workspaces">; name: string; role: string };
 type Ctx = {
@@ -29,7 +29,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // because @convex-dev/auth has no callback that spans every sign-in path.
   const heartbeat = useMutation(api.authSessions.heartbeat);
   const { signOut } = useAuthActions();
-  const [current, setCurrent] = useState<Id<"workspaces"> | null>(null);
+  const [selected, setSelected] = useState<Id<"workspaces"> | null>(null);
   const [ensuring, setEnsuring] = useState(false);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: run once per mount
@@ -50,26 +50,43 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       .catch(() => {});
   }, []);
 
+  // Creating a workspace is a write, so it stays in an effect. Resolving which
+  // existing workspace is current does not, and used to — see below.
   useEffect(() => {
-    if (workspaces === undefined) return;
-    if (workspaces.length === 0) {
-      if (!ensuring) {
-        setEnsuring(true);
-        void ensure({}).finally(() => setEnsuring(false));
-      }
-      return;
-    }
-    setCurrent((prev) => {
-      if (prev && workspaces.some((w) => w._id === prev)) return prev;
-      const saved = typeof window !== "undefined" ? window.localStorage.getItem("ws") : null;
-      const match = workspaces.find((w) => w._id === saved);
-      return match?._id ?? workspaces[0]?._id ?? prev;
-    });
+    if (workspaces === undefined || workspaces.length > 0 || ensuring) return;
+    setEnsuring(true);
+    void ensure({}).finally(() => setEnsuring(false));
   }, [workspaces, ensure, ensuring]);
+
+  /**
+   * Derived during render, not committed by a post-paint effect.
+   *
+   * Everything workspace-scoped is gated on this: chat-sidebar passes "skip" to
+   * chat.threads.list until it is set, and the composer renders disabled with
+   * "Preparing your workspace…" (use-send-message reports canSend: false). While
+   * this lived in an effect, the thread query could not even be issued until a
+   * whole extra React commit after myWorkspaces resolved.
+   *
+   * SSR-safe: `workspaces` is undefined on the server, so this is null on the
+   * server and on the first client render alike — no hydration mismatch.
+   */
+  const resolved = useMemo<Id<"workspaces"> | null>(() => {
+    if (workspaces === undefined || workspaces.length === 0) return null;
+    if (selected && workspaces.some((w) => w._id === selected)) return selected;
+    const saved = typeof window !== "undefined" ? window.localStorage.getItem("ws") : null;
+    const match = workspaces.find((w) => w._id === saved);
+    return match?._id ?? workspaces[0]?._id ?? null;
+  }, [workspaces, selected]);
+
+  // Preserves the previous effect's `?? prev` behaviour: once a workspace has
+  // resolved, a transiently empty or in-flight list never clears it back to null.
+  const sticky = useRef<Id<"workspaces"> | null>(null);
+  if (resolved !== null) sticky.current = resolved;
+  const current = resolved ?? sticky.current;
 
   const select = (id: Id<"workspaces">) => {
     if (typeof window !== "undefined") window.localStorage.setItem("ws", id);
-    setCurrent(id);
+    setSelected(id);
   };
 
   return (

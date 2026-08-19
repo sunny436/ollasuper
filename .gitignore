@@ -88,3 +88,5 @@ convex.txt
 *_secret*.txt
 *_key*.txt
 *.credentials.json
+# perf harness output (measurements, not source)
+e2e/.perf/

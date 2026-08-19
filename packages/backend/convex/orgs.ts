@@ -104,12 +104,15 @@ export const myWorkspaces = query({
       .query("members")
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
-    const out = [];
-    for (const m of mems) {
-      const ws = await ctx.db.get(m.workspaceId);
-      if (ws) out.push({ ...ws, role: m.role });
-    }
-    return out;
+    // Parallel, not sequential: this query is subscribed on every page in the
+    // app, and each membership was costing a serialised round trip.
+    const rows = await Promise.all(
+      mems.map(async (m) => {
+        const ws = await ctx.db.get(m.workspaceId);
+        return ws ? { ...ws, role: m.role } : null;
+      }),
+    );
+    return rows.filter((w) => w !== null);
   },
 });
 

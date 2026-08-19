@@ -19,6 +19,7 @@ import {
   User,
 } from "lucide-react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { AmbientBackdrop } from "./ambient-backdrop";
@@ -179,6 +180,7 @@ function FieldShell({
 
 export function AuthPanel() {
   const { signIn } = useAuthActions();
+  const router = useRouter();
   // NOT signIn("password", { flow: "reset" }): that resolves for a known address
   // and throws InvalidAccountId for an unknown one, which is an enumeration
   // oracle. This action responds identically either way.
@@ -218,12 +220,25 @@ export function AuthPanel() {
     }
   };
 
+  /**
+   * Land the user in the app after a flow that actually completes a sign-in.
+   *
+   * Without this the app relied on an accident: signIn triggers an RSC refresh
+   * of /login, middleware 307s to "/", and only the server-side redirect("/chat")
+   * inside (dashboard)/page.tsx finally makes the router commit. Measured on
+   * production that took 4.6s from clicking submit to landing on /chat. The
+   * middleware redirect is still there for anyone who opens /login while already
+   * signed in; this just stops a fresh sign-in waiting on it.
+   */
+  const enter = () => router.replace("/chat");
+
   const signInForm = useForm({
     validatorAdapter: zodValidator(),
     defaultValues: { email: "", password: "" },
     onSubmit: ({ value }) =>
       go(async () => {
         await signIn("password", { ...value, flow: "signIn" });
+        enter();
       })(),
   });
 
@@ -247,6 +262,7 @@ export function AuthPanel() {
     onSubmit: ({ value }) =>
       go(async () => {
         await signIn("password", { email, code: value.code, flow: "email-verification" });
+        enter();
       })(),
   });
 
@@ -274,6 +290,7 @@ export function AuthPanel() {
           newPassword: value.newPassword,
           flow: "reset-verification",
         });
+        enter();
       })(),
   });
 
@@ -294,6 +311,7 @@ export function AuthPanel() {
     onSubmit: ({ value }) =>
       go(async () => {
         await signIn("resend-otp", { email, code: value.code });
+        enter();
       })(),
   });
 
