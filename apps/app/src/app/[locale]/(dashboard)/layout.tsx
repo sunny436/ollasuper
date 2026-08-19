@@ -1,5 +1,6 @@
 import { WorkspaceProvider } from "@/lib/workspace-provider";
 import { Toaster } from "sonner";
+import { AmbienceSync } from "@/lib/ambience/ambience-sync";
 import { CommandPalette } from "@/components/command-palette";
 import { Sidebar } from "./_components/sidebar";
 import { Topbar } from "./_components/topbar";
@@ -17,6 +18,7 @@ import { Topbar } from "./_components/topbar";
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <WorkspaceProvider>
+      <AmbienceSync />
       <div className="min-h-screen w-full bg-secondary dark:bg-black md:flex">
         <Sidebar />
         <main className="flex min-w-0 flex-1 flex-col">

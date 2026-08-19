@@ -1155,3 +1155,33 @@ describe("stall reaper", () => {
     expect(streamingMessageId).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ambience theme intensity persists per user+workspace (cross-device sync).
+// Foreign-workspace access is already covered by the generic settings.get/upsert
+// refusal above; this checks the round-trip, clamping, and partial-upsert safety.
+// ---------------------------------------------------------------------------
+describe("chat settings: ambience syncs per user+workspace", () => {
+  test("defaults null, round-trips, clamps, survives partial upsert, clears on null", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    const u = t.withIdentity(as(owner));
+
+    expect((await u.query(api.chat.settings.get, { workspaceId: ws })).ambience).toBe(null);
+
+    await u.mutation(api.chat.settings.upsert, { workspaceId: ws, ambience: 73 });
+    expect((await u.query(api.chat.settings.get, { workspaceId: ws })).ambience).toBe(73);
+
+    // Out of range is clamped and rounded.
+    await u.mutation(api.chat.settings.upsert, { workspaceId: ws, ambience: 250.6 });
+    expect((await u.query(api.chat.settings.get, { workspaceId: ws })).ambience).toBe(100);
+
+    // A partial upsert of a different field must not clear ambience.
+    await u.mutation(api.chat.settings.upsert, { workspaceId: ws, sendOnEnter: false });
+    expect((await u.query(api.chat.settings.get, { workspaceId: ws })).ambience).toBe(100);
+
+    // null explicitly clears it.
+    await u.mutation(api.chat.settings.upsert, { workspaceId: ws, ambience: null });
+    expect((await u.query(api.chat.settings.get, { workspaceId: ws })).ambience).toBe(null);
+  });
+});

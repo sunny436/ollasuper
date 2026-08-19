@@ -317,6 +317,9 @@ export default defineSchema({
     customInstructionsAbout: v.optional(v.string()),
     customInstructionsStyle: v.optional(v.string()),
     sendOnEnter: v.boolean(),
+    // Ambience theme intensity (0-100), synced across a user's devices. Optional
+    // and additive so pre-migration rows validate on the live deployment.
+    ambience: v.optional(v.number()),
     // Fixed-window generation counter. Lives here rather than in its own table
     // because this row is per-user-per-workspace, already indexed on exactly
     // that key, and already loaded on the dispatch path — so the rate check

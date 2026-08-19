@@ -22,7 +22,10 @@ const DEFAULTS = {
   customInstructionsAbout: null as string | null,
   customInstructionsStyle: null as string | null,
   sendOnEnter: true,
+  ambience: null as number | null,
 };
+
+const clampAmbience = (n: number) => Math.min(100, Math.max(0, Math.round(n)));
 
 /**
  * Returns defaults when no row exists — a query must never insert. The row is
@@ -47,6 +50,7 @@ export const get = query({
       customInstructionsAbout: row.customInstructionsAbout ?? null,
       customInstructionsStyle: row.customInstructionsStyle ?? null,
       sendOnEnter: row.sendOnEnter,
+      ambience: row.ambience ?? null,
     };
   },
 });
@@ -59,6 +63,7 @@ export const upsert = mutation({
     customInstructionsAbout: v.optional(v.union(v.string(), v.null())),
     customInstructionsStyle: v.optional(v.union(v.string(), v.null())),
     sendOnEnter: v.optional(v.boolean()),
+    ambience: v.optional(v.union(v.number(), v.null())),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
@@ -92,6 +97,12 @@ export const upsert = mutation({
           ? args.customInstructionsStyle?.slice(0, MAX_INSTRUCTION) ?? undefined
           : existing?.customInstructionsStyle,
       sendOnEnter: args.sendOnEnter ?? existing?.sendOnEnter ?? true,
+      ambience:
+        args.ambience !== undefined
+          ? args.ambience === null
+            ? undefined
+            : clampAmbience(args.ambience)
+          : existing?.ambience,
       updatedAt: Date.now(),
     };
 
