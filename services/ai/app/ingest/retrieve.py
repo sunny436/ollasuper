@@ -67,6 +67,16 @@ async def retrieve_context(
         for r in rows
         if r.get("distance") is None or r["distance"] <= cutoff
     ]
+    # Recall safety net: `store.retrieve` returns rows ordered by ascending
+    # distance, so rows[0] is the single best match. If a meta-phrased query left
+    # nothing above the floor but the best chunk is still reasonably close, keep
+    # it — the user's own document should surface rather than the model claiming
+    # it "can't see" a file the user just uploaded.
+    if not kept and rows:
+        best = rows[0]
+        d = best.get("distance")
+        if d is None or d <= settings.ai_rag_fallback_max_distance:
+            kept = [best]
     return kept[: settings.ai_rag_top_k]
 
 
