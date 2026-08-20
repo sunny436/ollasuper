@@ -103,3 +103,17 @@ class GenerateAccepted(BaseModel):
 class CancelResult(BaseModel):
     cancelled: bool
     messageId: str
+
+
+class TitleRequest(BaseModel):
+    """First user input + first assistant output — the only context a title needs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    firstUser: str = Field(min_length=1, max_length=8000)
+    firstAssistant: str = Field(min_length=1, max_length=16000)
+
+
+class TitleResponse(BaseModel):
+    # Empty string signals "no usable title" — Convex keeps the existing title.
+    title: str

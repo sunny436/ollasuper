@@ -29,6 +29,7 @@ import type * as chat_settings from "../chat/settings.js";
 import type * as chat_shares from "../chat/shares.js";
 import type * as chat_stream from "../chat/stream.js";
 import type * as chat_threads from "../chat/threads.js";
+import type * as chat_title from "../chat/title.js";
 import type * as crons from "../crons.js";
 import type * as counters from "../counters.js";
 import type * as devGuard from "../devGuard.js";
@@ -84,6 +85,7 @@ declare const fullApi: ApiFromModules<{
   "chat/shares": typeof chat_shares;
   "chat/stream": typeof chat_stream;
   "chat/threads": typeof chat_threads;
+  "chat/title": typeof chat_title;
   crons: typeof crons;
   counters: typeof counters;
   devGuard: typeof devGuard;

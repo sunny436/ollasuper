@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     openrouter_app_title: str = "myos"
 
     ai_default_model: str = "anthropic/claude-opus-5"
+    # Title generation model — intentionally a tiny/fast model (Gemini Flash).
+    ai_title_model: str = "google/gemini-2.0-flash-001"
     ai_max_output_tokens: int = 8192
 
     # --- context -----------------------------------------------------------

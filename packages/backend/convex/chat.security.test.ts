@@ -806,6 +806,11 @@ describe("AI ingress (/ai/ingress)", () => {
       async (ctx) => (await ctx.db.query("chatStreamChunks").collect()).length,
     );
     expect(left).toBe(0); // chunks cleaned up
+
+    // finishStream now schedules the auto-title task; run it to completion
+    // inside the test so it cannot leak as an unhandled "Write outside of
+    // transaction" after the test ends.
+    await drain(t);
   });
 
   test("finalize after stop does not resurrect an aborted message", async () => {

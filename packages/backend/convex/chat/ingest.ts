@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { internalMutation } from "../_generated/server";
@@ -245,6 +246,25 @@ export const finishStream = internalMutation({
         args.tokensOut,
       );
     }
+
+    // Auto-title: fire the separate, non-blocking title task ONCE, on the first
+    // assistant turn's success only. seq === 1 is the exactly-once key —
+    // regenerate allocates a new seq, and error/abort go through failStream, not
+    // here. Skip if the user already renamed the thread. This scheduled action
+    // never blocks or affects the response the user just received. Gated on
+    // AI_BASE_URL so we do not schedule a task the plane could never service
+    // when the inference plane is unconfigured (generate would no-op anyway).
+    const finishedMsg = await ctx.db.get(stream.messageId);
+    if (
+      finishedMsg?.seq === 1 &&
+      thread?.titleSource === "auto" &&
+      process.env.AI_BASE_URL
+    ) {
+      await ctx.scheduler.runAfter(0, internal.chat.title.generate, {
+        streamId: args.streamId,
+      });
+    }
+
     return { ok: true };
   },
 });
@@ -295,7 +315,42 @@ export const failStream = internalMutation({
   },
 });
 
-/** Model-generated conversation title. Never overwrites a user-set title. */
+const GENERIC_TITLES = new Set([
+  "new chat",
+  "chat",
+  "conversation",
+  "untitled",
+  "discussion",
+]);
+
+/**
+ * Validate + normalize a model-generated title before it is ever persisted —
+ * we never blindly trust LLM output. Strips newlines / markdown / emoji /
+ * surrounding quotes, collapses whitespace, hard-caps at 5 words, and rejects
+ * generic non-titles. Returns null to skip (keep the existing title).
+ */
+function normalizeTitle(raw: string): string | null {
+  let t = raw
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[*_`~#>|]/g, "")
+    .replace(
+      /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}]/gu,
+      "",
+    )
+    .replace(/FE0F/g, "")
+    .replace(/^[\s"'“”‘’]+|[\s"'“”‘’]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return null;
+  const words = t.split(" ");
+  if (words.length > 5) t = words.slice(0, 5).join(" ");
+  if (GENERIC_TITLES.has(t.toLowerCase())) return null;
+  return t.slice(0, 120);
+}
+
+/** Model-generated conversation title. Never overwrites a user-set title, and
+ *  deliberately does NOT bump updatedAt (so the sidebar text updates in place
+ *  without reordering). */
 export const setTitle = internalMutation({
   args: { streamId: v.string(), title: v.string() },
   handler: async (ctx, { streamId, title }) => {
@@ -303,7 +358,7 @@ export const setTitle = internalMutation({
     if (!stream) return { ok: false };
     const thread = await ctx.db.get(stream.threadId);
     if (!thread || thread.titleSource === "user") return { ok: true };
-    const clean = title.replace(/\s+/g, " ").trim().slice(0, 120);
+    const clean = normalizeTitle(title);
     if (!clean) return { ok: true };
     await ctx.db.patch(thread._id, { title: clean, titleSource: "auto" });
     return { ok: true };
