@@ -38,6 +38,7 @@ def build_system_prompt(
     style: str | None,
     summary: str | None,
     summary_through_seq: int,
+    rag: str | None = None,
 ) -> str:
     parts = [custom.strip() if custom and custom.strip() else SYSTEM_BASE]
     if about and about.strip():
@@ -49,6 +50,10 @@ def build_system_prompt(
             f'<conversation_summary through_message="{summary_through_seq}">\n'
             f"{summary.strip()}\n</conversation_summary>"
         )
+    # Retrieved knowledge goes LAST and is pre-framed as untrusted DATA (see
+    # ingest/retrieve.render_rag_block), so genuine instructions keep precedence.
+    if rag and rag.strip():
+        parts.append(rag)
     return "\n\n".join(parts)
 
 

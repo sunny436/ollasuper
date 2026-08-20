@@ -18,8 +18,9 @@ from starlette.requests import Request
 
 from app.clients.convex import ConvexClient
 from app.config import get_settings
+from app.db.engine import create_knowledge_engine
 from app.logging import configure, get_logger
-from app.routers import generate, health
+from app.routers import files, generate, health
 from app.runtime.registry import Registry
 
 log = get_logger(__name__)
@@ -38,6 +39,17 @@ async def lifespan(app: FastAPI):
         max_per_user=settings.ai_max_concurrent_per_user,
         max_global=settings.ai_max_concurrent_global,
     )
+    # File ingestion runs on its OWN registry pool so a burst of uploads can't
+    # starve chat generations.
+    app.state.ingest_registry = Registry(
+        max_per_user=settings.ai_ingest_max_concurrent_per_user,
+        max_global=settings.ai_ingest_max_concurrent_global,
+    )
+    # Knowledge DB (pgvector). None when unconfigured — RAG then degrades to off
+    # and /v1/ingest returns 503, but chat is unaffected.
+    app.state.db = (
+        create_knowledge_engine(settings) if settings.rag_enabled else None
+    )
 
     log.info(
         "startup",
@@ -45,6 +57,7 @@ async def lifespan(app: FastAPI):
             "bind": f"{settings.ai_bind_host}:{settings.ai_port}",
             "model": settings.ai_default_model,
             "configured": bool(settings.openrouter_api_key),
+            "rag": settings.rag_enabled,
         },
     )
     try:
@@ -55,6 +68,9 @@ async def lifespan(app: FastAPI):
         # `finally:` finalize as cancelled, instead of leaving messages spinning
         # until the Convex reaper fires 90s later.
         await app.state.registry.shutdown()
+        await app.state.ingest_registry.shutdown()
+        if app.state.db is not None:
+            await app.state.db.dispose()
         await http.aclose()
         log.info("shutdown")
 
@@ -70,6 +86,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(health.router)
     app.include_router(generate.router)
+    app.include_router(files.router)
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:

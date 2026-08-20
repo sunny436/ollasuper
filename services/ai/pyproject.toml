@@ -20,6 +20,25 @@ dependencies = [
     "pyjwt[crypto]>=2.10,<3",
     "pillow>=11,<12",
     "pypdf>=5,<6",
+    # --- File Knowledge System (RAG) ---
+    # Dedicated pgvector DB accessed only from this service. psycopg3 (not
+    # asyncpg): it takes the libpq URL — including ?sslmode=disable — as-is, so
+    # SQLAlchemy needs no query-param translation.
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "psycopg[binary]>=3.2,<4",
+    "pgvector>=0.3,<1",
+    "alembic>=1.13,<2",
+    # Document parsing + chunking. langchain-text-splitters tracks the pinned
+    # langchain line; the rest are mature, single-purpose parsers.
+    "langchain-text-splitters>=1,<2",
+    "python-docx>=1.1,<2",
+    "openpyxl>=3.1,<4",
+    "beautifulsoup4>=4.12,<5",
+    "lxml>=5,<6",
+    "filetype>=1.2,<2",
+    # defusedxml hardens the XML parsing that openpyxl/python-docx do under the
+    # hood (XXE / billion-laughs) for untrusted uploads.
+    "defusedxml>=0.7,<1",
 ]
 
 # Deliberately NOT langchain-anthropic: it speaks the native Anthropic Messages
@@ -37,6 +56,11 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# DB-backed tests are gated: they self-skip unless TEST_DATABASE_URL points at a
+# Postgres+pgvector (>=0.8). The default `uv run pytest` stays hermetic/no-network.
+markers = [
+    "db: requires a live Postgres+pgvector via TEST_DATABASE_URL",
+]
 
 [tool.ruff]
 line-length = 88
@@ -48,6 +72,10 @@ ignore = ["S101"]  # assert is fine in tests
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S105", "S106"]  # hardcoded test secrets are intentional
+# The only f-string in these queries interpolates `embedding_dimensions`, a
+# trusted int from config that is the SQL vector TYPE size (vector(N)/halfvec(N))
+# — a type parameter, which cannot be a bind. Every value is a bind parameter.
+"app/db/store.py" = ["S608"]
 
 [build-system]
 requires = ["hatchling"]

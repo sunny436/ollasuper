@@ -123,6 +123,61 @@ class ConvexClient:
             raise ConvexUnavailable(f"file fetch failed: {r.status_code}")
         return r.content, r.headers.get("content-type", "application/octet-stream")
 
+    async def fetch_ingest_file(self, ingest_id: str) -> tuple[bytes, str]:
+        """Fetch the staging bytes for a knowledge-base file.
+
+        Sibling of fetch_file, scoped by the ingestId capability (not streamId).
+        Convex resolves the storageId server-side and returns the blob only if it
+        is this row's own staging blob — the storageId never crosses to Python.
+        """
+        r = await self._c.post(
+            self._s.ingest_file_url,
+            json={"fileId": ingest_id},
+            headers={
+                "content-type": "application/json",
+                "x-ai-key": self._s.ai_ingress_secret,
+            },
+            timeout=httpx.Timeout(connect=2.0, read=30.0, write=8.0, pool=2.0),
+        )
+        if r.status_code == 404:
+            raise ConvexRejected("ingest file not available")
+        if r.status_code != 200:
+            raise ConvexUnavailable(f"ingest file fetch failed: {r.status_code}")
+        return r.content, r.headers.get("content-type", "application/octet-stream")
+
+    async def set_file_status(
+        self,
+        ingest_id: str,
+        status: str,
+        *,
+        chunk_count: int | None = None,
+        parser_used: str | None = None,
+        page_count: int | None = None,
+        detected_type: str | None = None,
+        content_hash: str | None = None,
+        error: str | None = None,
+    ) -> dict:
+        """Report terminal ingestion status back to Convex (op:"file").
+
+        Goes through the retrying ingress() so a transient Convex blip doesn't
+        strand the file in `processing` (the stall reaper is the backstop). A 404
+        (file deleted mid-ingest) surfaces as {unknown: True} and is not an error.
+        """
+        body: dict = {"op": "file", "fileId": ingest_id, "status": status}
+        if chunk_count is not None:
+            body["chunkCount"] = chunk_count
+        if parser_used is not None:
+            body["parserUsed"] = parser_used
+        if page_count is not None:
+            body["pageCount"] = page_count
+        if detected_type is not None:
+            body["detectedType"] = detected_type
+        if content_hash is not None:
+            body["contentHash"] = content_hash
+        if error is not None:
+            body["error"] = error[:500]
+        return await self.ingress(body)
+
     async def healthy(self) -> bool:
         try:
             r = await self._c.get(

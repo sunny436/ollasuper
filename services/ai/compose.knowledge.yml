@@ -1,0 +1,49 @@
+# Dedicated pgvector store for the account-level File Knowledge System.
+#
+# DELIBERATELY ISOLATED from the Convex self-hosted stack (self-hosted/):
+#   * A bad migration or a heavy HNSW build here must never touch
+#     `convex_self_hosted` — the highest-risk surface in this system. Convex's
+#     host Postgres cluster is not modified at all (no apt/extension/pg_hba).
+#   * The image PINS pgvector >= 0.8, which the account-isolation query needs:
+#     a tenant-filtered HNSW scan under-fills unless `hnsw.iterative_scan`
+#     (>=0.8) is on. `pgvector/pgvector:pg16` ships it; CI uses the same image.
+#
+# The Python inference plane (services/ai, a HOST systemd service) reaches this
+# over the LOOPBACK-published port 5433. Docker port-publishing bypasses ufw, so
+# binding to 127.0.0.1 is what keeps 5433 off the public interface — never 0.0.0.0.
+services:
+  knowledge-db:
+    # Pin by digest in production: deploy/70-knowledge-db.sh resolves the current
+    # pg16 digest and writes KNOWLEDGE_DB_IMAGE=...@sha256:... into services/ai/.env,
+    # mirroring how the Convex backend is digest-pinned in the self-hosted override.
+    image: ${KNOWLEDGE_DB_IMAGE:-pgvector/pgvector:pg16}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: myos_ai
+      POSTGRES_DB: myos_knowledge
+      POSTGRES_PASSWORD: ${KNOWLEDGE_DB_PASSWORD:?set KNOWLEDGE_DB_PASSWORD in services/ai/.env}
+    command:
+      - "postgres"
+      # HNSW index builds want memory; bounded so the container can't starve the
+      # host it shares with Convex. mem_limit below is the hard ceiling.
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "max_connections=50"
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - knowledge-data:/var/lib/postgresql/data
+    mem_limit: 1g
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myos_ai -d myos_knowledge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  knowledge-data:

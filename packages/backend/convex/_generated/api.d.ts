@@ -47,6 +47,7 @@ import type * as seed from "../seed.js";
 import type * as subscriptions from "../subscriptions.js";
 import type * as usage from "../usage.js";
 import type * as users from "../users.js";
+import type * as userFiles from "../userFiles.js";
 import type * as utils_validators from "../utils/validators.js";
 import type * as web from "../web.js";
 
@@ -103,6 +104,7 @@ declare const fullApi: ApiFromModules<{
   subscriptions: typeof subscriptions;
   usage: typeof usage;
   users: typeof users;
+  userFiles: typeof userFiles;
   "utils/validators": typeof utils_validators;
   web: typeof web;
 }>;

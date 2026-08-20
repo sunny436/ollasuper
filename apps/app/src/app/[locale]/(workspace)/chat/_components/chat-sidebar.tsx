@@ -1,5 +1,6 @@
 "use client";
 
+import { FilesSection } from "./files-section";
 import { IntelligenceCore } from "./intelligence-core";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
@@ -386,6 +387,8 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           </button>
         )}
       </div>
+
+      <FilesSection />
 
       <ProfileFooter onNavigate={onNavigate} />
     </div>

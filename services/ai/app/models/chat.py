@@ -92,6 +92,9 @@ class GenerateRequest(BaseModel):
     summaryThroughSeq: int = 0
     history: list[HistoryMessage] = Field(default_factory=list, max_length=200)
     titleNeeded: bool = False
+    # >0 when the user has ready knowledge-base files; gates RAG retrieval so
+    # users with no files pay no extra latency. Computed in Convex dispatchPayload.
+    ragFileCount: int = 0
 
 
 class GenerateAccepted(BaseModel):
@@ -117,3 +120,21 @@ class TitleRequest(BaseModel):
 class TitleResponse(BaseModel):
     # Empty string signals "no usable title" — Convex keeps the existing title.
     title: str
+
+
+class IngestRequest(BaseModel):
+    """A file to ingest into the knowledge base. ids are opaque Convex strings;
+    ingestId is the capability used to fetch bytes + report status."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ingestId: str = Field(min_length=1, max_length=200)
+    userId: str = Field(min_length=1, max_length=200)
+    workspaceId: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=500)
+    contentType: str = Field(default="application/octet-stream", max_length=300)
+    size: int = Field(ge=0)
+
+
+class IngestAccepted(BaseModel):
+    ingestId: str

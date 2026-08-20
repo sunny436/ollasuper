@@ -104,6 +104,50 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_workspace", ["workspaceId"]),
 
+  // Per-user file knowledge base (RAG). SEPARATE from `files` for the same
+  // reason chatAttachments is: files.list returns every workspace row to any
+  // member — right for a shared page, wrong for PRIVATE knowledge. This row is
+  // the reactive METADATA MIRROR; the bytes/chunks/embeddings live in the
+  // Python-owned pgvector DB. `ingestId` is a capability (like
+  // chatStreams.streamId): the ingress file-fetch and the status callback are
+  // scoped by it, so a leaked ingress secret cannot target a file by its id.
+  userFiles: defineTable({
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    name: v.string(),
+    // Convex STAGING blob. Deleted once Python confirms durable persistence;
+    // the durable original is Postgres BYTEA, not this.
+    storageId: v.optional(v.id("_storage")),
+    size: v.number(),
+    contentType: v.string(),
+    ingestId: v.string(),
+    status: v.union(
+      v.literal("processing"),
+      v.literal("ready"),
+      v.literal("failed"),
+    ),
+    attempts: v.number(),
+    contentHash: v.optional(v.string()),
+    chunkCount: v.optional(v.number()),
+    pageCount: v.optional(v.number()),
+    parserUsed: v.optional(v.string()),
+    detectedType: v.optional(v.string()),
+    error: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user_ws_created", ["userId", "workspaceId", "createdAt"])
+    .index("by_ingestId", ["ingestId"])
+    .index("by_status_updated", ["status", "updatedAt"])
+    // Dedup an identical re-upload for the same user (never global — a global
+    // content_hash would be a cross-user existence oracle).
+    .index("by_user_hash", ["userId", "contentHash"])
+    // Cheap "does this user have any ready files?" for the RAG retrieval gate.
+    .index("by_user_status", ["userId", "status"])
+    // Anti-claim-squat: a storageId registers exactly once (mirrors
+    // chatAttachments.by_storage).
+    .index("by_storage", ["storageId"]),
+
   workspaces: defineTable({
     name: v.string(),
     ownerId: v.id("users"),
