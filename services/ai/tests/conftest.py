@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import sys
+
 import pytest
 
 from app.clients.convex import ConvexClient
 from app.config import Settings
 from tests.fakes.convex_server import FakeConvexServer
+
+# psycopg's async mode cannot run on Windows' default ProactorEventLoop; pick the
+# Selector loop so the DB-backed tests (test_knowledge_db / test_retrieve_db) run
+# on Windows dev machines too. No-op on Linux/CI.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 @pytest.fixture

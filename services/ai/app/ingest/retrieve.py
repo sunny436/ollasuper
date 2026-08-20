@@ -60,6 +60,7 @@ async def retrieve_context(
         query_embedding=qvec,
         fetch_k=settings.ai_rag_fetch_k,
         embedding_dimensions=settings.embedding_dimensions,
+        embedding_model=settings.openrouter_embedding_model,
     )
     cutoff = 1.0 - settings.ai_rag_min_similarity
     kept = [
@@ -67,16 +68,18 @@ async def retrieve_context(
         for r in rows
         if r.get("distance") is None or r["distance"] <= cutoff
     ]
-    # Recall safety net: `store.retrieve` returns rows ordered by ascending
-    # distance, so rows[0] is the single best match. If a meta-phrased query left
-    # nothing above the floor but the best chunk is still reasonably close, keep
-    # it — the user's own document should surface rather than the model claiming
-    # it "can't see" a file the user just uploaded.
+    # Recall safety net. `store.retrieve` returns rows ordered by ascending
+    # distance. If a meta-phrased query left nothing above the floor, keep the
+    # closest few chunks that are still reasonably close — NOT just rank-1: the
+    # eval measured the correct chunk at rank-2 (0.787) with junk at rank-1, so a
+    # rank-1-only fallback kept the junk and dropped the answer.
     if not kept and rows:
-        best = rows[0]
-        d = best.get("distance")
-        if d is None or d <= settings.ai_rag_fallback_max_distance:
-            kept = [best]
+        ceil = settings.ai_rag_fallback_max_distance
+        kept = [
+            r
+            for r in rows[: settings.ai_rag_fallback_top_n]
+            if r.get("distance") is None or r["distance"] <= ceil
+        ]
     return kept[: settings.ai_rag_top_k]
 
 

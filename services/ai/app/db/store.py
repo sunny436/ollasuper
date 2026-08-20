@@ -144,15 +144,30 @@ async def retrieve(
     query_embedding: Sequence[float],
     fetch_k: int,
     embedding_dimensions: int,
+    embedding_model: str | None = None,
     ef_search: int = 100,
     iterative_scan: str = "relaxed_order",
 ) -> list[dict[str, Any]]:
     """Account-scoped top-fetch_k by cosine distance. The ORDER BY expression is
-    byte-identical to the index expression, or the planner drops to a seq-scan."""
+    byte-identical to the index expression, or the planner drops to a seq-scan.
+
+    When ``embedding_model`` is given, only vectors from that model are compared —
+    cosine distance across DIFFERENT embedding models is meaningless, so a model
+    swap must not silently return stale vectors (dimension is already pinned by
+    the column type; model is the only thing not enforced by the schema)."""
     dim = int(embedding_dimensions)
     ef = int(ef_search)
     _valid = {"relaxed_order", "strict_order", "off"}
     scan = iterative_scan if iterative_scan in _valid else "relaxed_order"
+    # Fixed literal, never user input (like `dim`); every value stays a bind.
+    model_clause = "AND embedding_model = :model" if embedding_model else ""
+    params: dict[str, Any] = {
+        "uid": user_id,
+        "qvec": _vec_literal(query_embedding),
+        "k": int(fetch_k),
+    }
+    if embedding_model:
+        params["model"] = embedding_model
     async with engine.begin() as conn:
         await conn.execute(text(f"SET LOCAL hnsw.ef_search = {ef}"))
         await conn.execute(text(f"SET LOCAL hnsw.iterative_scan = {scan}"))
@@ -163,16 +178,12 @@ async def retrieve(
                         embedding::halfvec({dim}) <=> CAST(:qvec AS halfvec({dim}))
                         AS distance
                     FROM file_chunks
-                    WHERE user_id = :uid
+                    WHERE user_id = :uid {model_clause}
                     ORDER BY embedding::halfvec({dim})
                         <=> CAST(:qvec AS halfvec({dim}))
                     LIMIT :k
                 """),
-                {
-                    "uid": user_id,
-                    "qvec": _vec_literal(query_embedding),
-                    "k": int(fetch_k),
-                },
+                params,
             )
         ).mappings().all()
     return [dict(r) for r in rows]
