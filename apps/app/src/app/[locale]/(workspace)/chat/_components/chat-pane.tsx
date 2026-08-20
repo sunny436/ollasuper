@@ -2,7 +2,8 @@
 
 import { api } from "@v1/backend/convex/_generated/api";
 import { useQuery } from "convex/react";
-import { Share2, SlidersHorizontal } from "lucide-react";
+import { ChevronRight, PanelLeft, Share2 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useChatSession } from "../_hooks/use-chat-session";
 import { MessageList } from "./message-list";
@@ -59,28 +60,34 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
         would collide with the prompt library's `Close` button and throw on
         strict mode. Hence `Hide`.
       */}
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/50 px-4 backdrop-blur-xl">
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-card/50 px-4 backdrop-blur-xl">
         <button
           type="button"
           onClick={openSidebar}
           aria-label="Open conversations"
-          className="rounded-lg border border-border p-2 text-primary/60 transition hover:bg-primary/5 hover:text-primary md:hidden"
+          className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-primary md:hidden"
         >
-          <SlidersHorizontal className="h-4 w-4" />
+          <PanelLeft className="h-4 w-4" />
         </button>
         <button
           type="button"
           onClick={toggleCollapsed}
           aria-label={collapsed ? "Open conversations" : "Hide conversations"}
-          className="hidden rounded-lg border border-border p-2 text-primary/60 transition hover:bg-primary/5 hover:text-primary md:block"
+          className="hidden rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-primary md:block"
         >
-          <SlidersHorizontal className="h-4 w-4" />
+          <PanelLeft className="h-4 w-4" />
         </button>
 
-        <div className="flex min-w-0 items-center gap-2 text-xs">
-          <span className="hidden text-primary/45 sm:inline">Ollasuper</span>
-          <span className="hidden text-primary/25 sm:inline">/</span>
-          <span className="truncate font-medium text-primary/85">
+        {/* Breadcrumb — Ollasuper › current conversation. */}
+        <div className="flex min-w-0 items-center gap-1 text-sm">
+          <Link
+            href="/chat"
+            className="hidden shrink-0 rounded-md px-2 py-1 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-primary sm:inline-block"
+          >
+            Ollasuper
+          </Link>
+          <ChevronRight className="hidden h-3.5 w-3.5 shrink-0 text-muted-foreground sm:block" />
+          <span className="truncate px-1 font-semibold text-primary">
             {thread?.title ?? "AI Workspace"}
           </span>
         </div>
@@ -93,7 +100,7 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
               onClick={() => setShareOpen(true)}
               disabled={thread.isStreaming}
               aria-label="Share conversation"
-              className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-primary/70 transition hover:bg-primary/5 hover:text-primary disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground shadow-sm transition-all hover:bg-accent hover:text-primary active:scale-95 disabled:opacity-40"
             >
               <Share2 className="h-3.5 w-3.5" /> Share
             </button>

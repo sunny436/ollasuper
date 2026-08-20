@@ -45,31 +45,31 @@ export function FilesSection() {
   );
 
   return (
-    <div className="border-t border-border">
+    <div>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-primary/35 transition hover:text-primary/60"
+        className="group flex w-full items-center justify-between rounded-lg px-2 py-1.5 transition-colors hover:bg-accent"
       >
-        <span className="flex items-center gap-1.5">
+        <span className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
           Files
           {results.length > 0 && (
-            <span className="rounded bg-primary/10 px-1 py-px text-[9px] font-semibold tabular-nums text-primary/50">
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none tabular-nums text-muted-foreground">
               {results.length}
             </span>
           )}
         </span>
         {open ? (
-          <ChevronDown className="h-3 w-3" />
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-colors group-hover:text-primary" />
         ) : (
-          <ChevronRight className="h-3 w-3" />
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-colors group-hover:text-primary" />
         )}
       </button>
 
       {/* ~6 rows visible, then scroll — the account knowledge base as a compact
           dropdown directly under New chat. */}
       {open && (
-        <div className="max-h-64 overflow-y-auto px-2 pb-2">
+        <div className="mt-1 max-h-64 overflow-y-auto pb-1">
           {results.map((f) => (
             <FileItem
               key={f._id}
@@ -111,13 +111,13 @@ function FileItem({
   onDelete: () => Promise<void>;
 }) {
   return (
-    <div className="group flex items-center gap-2 rounded-md px-2 py-1.5 transition hover:bg-primary/5">
-      <FileText className="h-3.5 w-3.5 shrink-0 text-primary/40" />
+    <div className="group flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-accent">
+      <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-xs text-primary" title={file.name}>
           {file.name}
         </p>
-        <p className="text-[10px] text-primary/35">
+        <p className="text-[10px] text-muted-foreground">
           {fmtSize(file.size)}
           {file.detectedType ? ` · ${file.detectedType}` : ""}
         </p>
