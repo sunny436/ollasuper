@@ -188,6 +188,29 @@ class Settings(BaseSettings):
     # case added latency only when the embed is genuinely slow.
     ai_rag_deadline_ms: int = 2500
 
+    # --- retrieval quality layers (all additive + reversible; ship dark) -------
+    # Each flag falls back to today's exact vector path when off or on failure.
+    # Hybrid: fuse pgvector with Postgres FTS + pg_trgm keyword hits (exact IDs,
+    # numbers, codes, filenames — vector's weak spot) via Reciprocal Rank Fusion.
+    ai_rag_hybrid_enabled: bool = False
+    ai_rag_rrf_k: int = 60
+    # Rerank: LLM listwise over a small candidate set of truncated snippets,
+    # reusing the OpenRouter key. Bounded by its own deadline; on any failure the
+    # fused ranking is used unchanged.
+    ai_rag_rerank_enabled: bool = False
+    ai_rag_rerank_model: str = "google/gemini-2.5-flash-lite"
+    ai_rag_rerank_candidates: int = 12
+    ai_rag_rerank_snippet_tokens: int = 200
+    ai_rag_rerank_deadline_ms: int = 1200
+    # Outer retrieval deadline when rerank is on (embed + hybrid + rerank need
+    # more headroom than the vector-only 2500ms).
+    ai_rag_deadline_rerank_ms: int = 4000
+    # Parent-context: expand the top reranked children to their neighbours /
+    # section so split answers, detached headings and table explanations survive.
+    ai_rag_parent_expand_enabled: bool = False
+    ai_rag_expand_window: int = 1
+    ai_rag_expand_max_children: int = 3
+
     @property
     def ingress_url(self) -> str:
         return f"{self.convex_internal_url.rstrip('/')}/ai/ingress"

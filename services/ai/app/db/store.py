@@ -175,6 +175,7 @@ async def retrieve(
             await conn.execute(
                 text(f"""
                     SELECT file_id, content, source_metadata, page, section,
+                        chunk_index,
                         embedding::halfvec({dim}) <=> CAST(:qvec AS halfvec({dim}))
                         AS distance
                     FROM file_chunks
@@ -184,6 +185,103 @@ async def retrieve(
                     LIMIT :k
                 """),
                 params,
+            )
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def retrieve_keyword(
+    engine: AsyncEngine,
+    *,
+    user_id: str,
+    query: str,
+    exact_tokens: Sequence[str],
+    fetch_k: int,
+) -> list[dict[str, Any]]:
+    """Account-scoped keyword retrieval: Postgres FTS (natural-language words) +
+    pg_trgm ILIKE over exact-looking query tokens (IDs, numbers, codes,
+    filenames). Exact-token hits rank FIRST (an exact match is high-confidence),
+    then FTS by rank; deduped by (file_id, chunk_index). No embedding involved, so
+    it surfaces chunks the vector path missed. Same row shape as retrieve(), with
+    distance=None and a kw_rank position."""
+    cols = "file_id, content, source_metadata, page, section, chunk_index"
+    ordered: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+
+    def _add(rows: Any) -> None:
+        for r in rows:
+            d = dict(r)
+            key = (d["file_id"], d["chunk_index"])
+            if key in seen:
+                continue
+            seen.add(key)
+            d["distance"] = None
+            ordered.append(d)
+
+    async with engine.begin() as conn:
+        # Exact tokens first (trigram-accelerated ILIKE), each token OR'd.
+        toks = [t for t in exact_tokens if t]
+        if toks:
+            clause = " OR ".join(f"content ILIKE :t{i}" for i in range(len(toks)))
+            params: dict[str, Any] = {"uid": user_id, "k": int(fetch_k)}
+            for i, t in enumerate(toks):
+                params[f"t{i}"] = f"%{t}%"
+            exact = (
+                await conn.execute(
+                    text(f"""
+                        SELECT {cols} FROM file_chunks
+                        WHERE user_id = :uid AND ({clause})
+                        LIMIT :k
+                    """),
+                    params,
+                )
+            ).mappings().all()
+            _add(exact)
+        # Full-text search (uses the 2-arg to_tsvector functional GIN index).
+        if len(ordered) < fetch_k:
+            fts = (
+                await conn.execute(
+                    text(f"""
+                        SELECT {cols} FROM file_chunks
+                        WHERE user_id = :uid
+                          AND to_tsvector('english', content)
+                              @@ websearch_to_tsquery('english', :q)
+                        ORDER BY ts_rank_cd(
+                            to_tsvector('english', content),
+                            websearch_to_tsquery('english', :q)) DESC
+                        LIMIT :k
+                    """),
+                    {"uid": user_id, "q": query, "k": int(fetch_k)},
+                )
+            ).mappings().all()
+            _add(fts)
+    return ordered[: int(fetch_k)]
+
+
+async def expand(
+    engine: AsyncEngine,
+    *,
+    user_id: str,
+    file_id: str,
+    chunk_index: int,
+    window: int,
+) -> list[dict[str, Any]]:
+    """Parent/neighbour context: the same file's chunks in
+    [chunk_index-window, chunk_index+window], ordered. Account-scoped."""
+    lo = int(chunk_index) - int(window)
+    hi = int(chunk_index) + int(window)
+    async with engine.begin() as conn:
+        rows = (
+            await conn.execute(
+                text("""
+                    SELECT file_id, content, source_metadata, page, section,
+                        chunk_index
+                    FROM file_chunks
+                    WHERE user_id = :uid AND file_id = :fid
+                        AND chunk_index BETWEEN :lo AND :hi
+                    ORDER BY chunk_index
+                """),
+                {"uid": user_id, "fid": file_id, "lo": lo, "hi": hi},
             )
         ).mappings().all()
     return [dict(r) for r in rows]

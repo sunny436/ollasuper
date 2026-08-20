@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import text
@@ -77,6 +78,17 @@ CORPUS = [
     ("price_new.txt", "text",
      "Updated Q3 pricing bulletin: the unit price is now 250 USD, superseding earlier figures.",
      [("What is the CURRENT unit price?", ["250"], "conflict", False)]),
+    # Vector-FAILURE cases: exact IDs / numbers / currency embed poorly, so these
+    # are the honest test of hybrid's marginal value.
+    ("invoice.txt", "text",
+     "Invoice record. Invoice number INV-928374 was issued to Acme Corporation for consulting.",
+     [("What is invoice INV-928374 for?", ["acme"], "exactid", True)]),
+    ("payment.txt", "text",
+     "Payment ledger: a transaction of Rs 12,48,392 was recorded against account 55021 on 3 March.",
+     [("What account is the 12,48,392 transaction recorded against?", ["55021"], "currency", True)]),
+    ("codename.txt", "text",
+     "Project registry. Project XJ-204 is codenamed Bluefin and led by the platform team.",
+     [("What is project XJ-204 codenamed?", ["bluefin"], "exactid", False)]),
 ]
 DISPLAY = {"reportA.txt": "report.txt", "reportB.txt": "report.txt"}
 
@@ -182,6 +194,31 @@ async def main():
         a = (ans.content if isinstance(ans.content, str) else str(ans.content)).lower()
         ok = all(s in a for s in r["subs"])
         print(f"  {'PASS' if ok else 'FAIL'}  [{r['cat']}] {r['q'][:46]} -> {a[:55].strip()}")
+
+    print("\n==== ABLATION (recall = expected chunk in retrieve_context result) ====")
+    configs = [
+        ("baseline", {}),
+        ("+hybrid", {"ai_rag_hybrid_enabled": True}),
+        ("+hybrid+rerank", {"ai_rag_hybrid_enabled": True, "ai_rag_rerank_enabled": True}),
+        ("+all", {"ai_rag_hybrid_enabled": True, "ai_rag_rerank_enabled": True,
+                  "ai_rag_parent_expand_enabled": True}),
+    ]
+    print(f"{'config':<16}{'recall':>8}{'MRR':>7}{'ctx_chunks':>12}{'mean_ms':>9}")
+    for cname, upd in configs:
+        cfg = S.model_copy(update=upd)
+        rec = tot = 0
+        mrr = 0.0
+        ksize = 0
+        t0 = time.perf_counter()
+        for _qn, q, subs, _cat, _u in queries:
+            kept = await retrieve.retrieve_context(cfg, eng, user_id=USER, query=q)
+            rank = hit(kept, subs)[0]
+            rec += rank is not None
+            mrr += (1.0 / rank) if rank else 0.0
+            ksize += len(kept)
+            tot += 1
+        ms = (time.perf_counter() - t0) * 1000 / max(tot, 1)
+        print(f"{cname:<16}{rec / tot:>8.2f}{mrr / tot:>7.2f}{ksize / tot:>12.1f}{ms:>9.0f}")
 
     await eng.dispose()
 

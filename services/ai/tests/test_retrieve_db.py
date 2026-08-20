@@ -124,3 +124,52 @@ async def test_stale_reingest_after_delete_resurrects(engine):
     back = await store.retrieve(engine, user_id="uA", query_embedding=_vec(0),
                                 fetch_k=10, embedding_dimensions=DIM)
     assert [r["content"] for r in back] == ["zombie"]  # resurrected
+
+
+async def _seed_multi(eng, *, file_id, user_id, n):
+    chunks = [
+        {"chunk_index": i, "content": f"chunk number {i} sentinel-{i}",
+         "token_count": None, "page": None, "section": "S",
+         "source_metadata": {}, "embedding": _vec(i)}
+        for i in range(n)
+    ]
+    await store.persist_ingest(
+        eng, file_id=file_id, user_id=user_id, workspace_id="ws", filename="m.txt",
+        mime_type="text/plain", detected_type="text", file_size=1,
+        content_hash=f"{file_id}-h", parser_used="text", page_count=None,
+        raw_bytes=b"x", chunks=chunks, embedding_model="text-embedding-3-large",
+        embedding_dimensions=DIM,
+    )
+
+
+async def test_keyword_finds_exact_token_and_word(engine):
+    await _seed(engine, file_id="inv", user_id="u", hot=0,
+                content="Invoice INV-928374 was issued to Acme Corporation")
+    exact = await store.retrieve_keyword(
+        engine, user_id="u", query="what is INV-928374",
+        exact_tokens=["INV-928374"], fetch_k=10)
+    assert any("INV-928374" in x["content"] for x in exact)  # trigram/ILIKE
+    fts = await store.retrieve_keyword(
+        engine, user_id="u", query="acme corporation invoice",
+        exact_tokens=[], fetch_k=10)
+    assert any("Acme" in x["content"] for x in fts)  # FTS word match
+
+
+async def test_keyword_is_account_isolated(engine):
+    await _seed(engine, file_id="a", user_id="uA", hot=0,
+                content="record ALPHA-111 belongs to A")
+    await _seed(engine, file_id="b", user_id="uB", hot=1,
+                content="record ALPHA-111 belongs to B", content_hash="bh")
+    r = await store.retrieve_keyword(
+        engine, user_id="uA", query="ALPHA-111",
+        exact_tokens=["ALPHA-111"], fetch_k=10)
+    assert all(x["file_id"] != "b" for x in r)  # B never leaks to A
+
+
+async def test_expand_returns_neighbour_window(engine):
+    await _seed_multi(engine, file_id="doc", user_id="u", n=5)
+    nb = await store.expand(engine, user_id="u", file_id="doc", chunk_index=2, window=1)
+    assert [x["chunk_index"] for x in nb] == [1, 2, 3]
+    edge = await store.expand(
+        engine, user_id="u", file_id="doc", chunk_index=0, window=1)
+    assert [x["chunk_index"] for x in edge] == [0, 1]  # clamps at the start
