@@ -109,6 +109,54 @@ class Settings(BaseSettings):
     # Off by default. Enabling it puts user message content in journalctl.
     ai_log_content: bool = False
 
+    # --- File Knowledge System (RAG) --------------------------------------
+    # Dedicated pgvector database (separate container, compose.knowledge.yml).
+    # libpq URL, e.g.
+    #   postgresql://myos_ai:...@127.0.0.1:5433/myos_knowledge?sslmode=disable
+    # Empty disables RAG entirely (chat still works); the ingest/retrieve paths
+    # no-op when unset, so a box without the container degrades gracefully.
+    knowledge_database_url: str = ""
+
+    # Embedding model + its native dimension. ONE source of truth — the dimension
+    # is also baked into the Alembic migration (vector(N)); changing the model or
+    # dimension requires a new migration + reindex + re-embed. Stored per-chunk
+    # (embedding_model/embedding_dimensions) so old vectors stay distinguishable.
+    openrouter_embedding_model: str = "openai/text-embedding-3-large"
+    embedding_dimensions: int = 3072
+    # OCR for images goes through an OpenRouter VISION model (no system binary).
+    ai_ocr_model: str = "google/gemini-2.0-flash-001"
+    ai_ocr_long_edge: int = 2048
+
+    # Ingestion limits (app/ingest/). One shared char budget per file, mirroring
+    # ai_max_turn_chars for attachments.
+    ai_ingest_chunk_tokens: int = 800
+    ai_ingest_chunk_overlap: int = 120
+    ai_ingest_max_chars: int = 500_000
+    ai_ingest_max_chunks: int = 2_000
+    ai_ingest_parse_timeout_s: float = 20.0
+    ai_ingest_embed_batch: int = 64
+    ai_max_ingests_per_hour: int = 60
+    # Ingestion runs on its OWN concurrency pool so a burst of uploads cannot
+    # starve chat generations (which use ai_max_concurrent_*).
+    ai_ingest_max_concurrent_per_user: int = 1
+    ai_ingest_max_concurrent_global: int = 4
+    # OOXML (docx/xlsx are zip archives) decompression-bomb guards.
+    ai_zip_max_entries: int = 2_000
+    ai_zip_max_uncompressed_bytes: int = 200 * 1024 * 1024
+    ai_zip_max_ratio: int = 120
+
+    # --- retrieval (RAG at chat time) -------------------------------------
+    # Fetch a wider candidate set, filter by a cosine-distance floor, keep top_k.
+    # RAG context DISPLACES history against ai_context_budget_tokens (it does not
+    # add on top), so the per-turn cost ceiling is unchanged.
+    ai_rag_fetch_k: int = 20
+    ai_rag_top_k: int = 6
+    ai_rag_min_similarity: float = 0.35  # keep chunk iff distance <= 1 - this
+    ai_rag_context_tokens: int = 4_000
+    ai_rag_max_chunk_tokens: int = 700
+    ai_rag_min_query_chars: int = 16  # skip retrieval for trivial queries
+    ai_rag_deadline_ms: int = 800  # proceed with NO rag if retrieval exceeds this
+
     @property
     def ingress_url(self) -> str:
         return f"{self.convex_internal_url.rstrip('/')}/ai/ingress"
@@ -116,6 +164,26 @@ class Settings(BaseSettings):
     @property
     def file_url(self) -> str:
         return f"{self.convex_internal_url.rstrip('/')}/ai/file"
+
+    @property
+    def ingest_file_url(self) -> str:
+        # Sibling of /ai/file, scoped by an ingestId capability (not streamId).
+        return f"{self.convex_internal_url.rstrip('/')}/ai/ingest-file"
+
+    @property
+    def rag_enabled(self) -> bool:
+        return bool(self.knowledge_database_url)
+
+    @property
+    def knowledge_engine_url(self) -> str:
+        """SQLAlchemy async URL. psycopg3 takes libpq params (incl. sslmode)
+        directly, so — unlike asyncpg — no query-param translation is needed;
+        only the driver scheme changes."""
+        url = self.knowledge_database_url
+        prefix = "postgresql://"
+        if url.startswith(prefix):
+            url = "postgresql+psycopg://" + url[len(prefix) :]
+        return url
 
     def secrets(self) -> tuple[str, ...]:
         """Values the log redaction filter must never emit."""
@@ -125,6 +193,8 @@ class Settings(BaseSettings):
                 self.openrouter_api_key,
                 self.ai_service_key,
                 self.ai_ingress_secret,
+                # Carries the DB password — must never reach journalctl.
+                self.knowledge_database_url,
             )
             if s
         )

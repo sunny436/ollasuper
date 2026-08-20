@@ -208,6 +208,33 @@ http.route({
           }),
         );
       }
+      case "file": {
+        // File-ingestion status callback. Scoped by the ingestId capability
+        // (body.fileId), not streamId — the streamId parsed above is unused here.
+        const fileId = typeof body.fileId === "string" ? body.fileId : null;
+        const status =
+          body.status === "ready"
+            ? "ready"
+            : body.status === "failed"
+              ? "failed"
+              : null;
+        if (!fileId || !status) return aiJson({ error: "bad request" }, 400);
+        const num = (x: unknown) => (typeof x === "number" ? x : undefined);
+        const str = (x: unknown) => (typeof x === "string" ? x : undefined);
+        const r = await ctx.runMutation(internal.userFiles.setStatus, {
+          fileId,
+          status,
+          chunkCount: num(body.chunkCount),
+          parserUsed: str(body.parserUsed),
+          pageCount: num(body.pageCount),
+          detectedType: str(body.detectedType),
+          contentHash: str(body.contentHash),
+          error: str(body.error),
+        });
+        if ("unknown" in r && r.unknown)
+          return aiJson({ error: "unknown file" }, 404);
+        return aiJson(r);
+      }
       default:
         return aiJson({ error: `unknown op: ${body.op}` }, 400);
     }
@@ -249,6 +276,32 @@ http.route({
     // Same response for "no such blob" and "not yours" — no existence oracle.
     if (!allowed) return new Response("not found", { status: 404 });
 
+    const blob = await ctx.storage.get(allowed.storageId);
+    if (!blob) return new Response("not found", { status: 404 });
+    return new Response(blob);
+  }),
+});
+
+// Staging-blob bytes for the File Knowledge System ingestion.
+//
+// A SEPARATE route from /ai/file, not a branch on it: each keeps a single
+// capability contract. Here the capability is the ingestId (an unguessable UUID
+// minted in userFiles.saveFile); the storageId is resolved server-side and never
+// crosses to Python. Same x-ai-key gate + no-existence-oracle 404 as /ai/file.
+http.route({
+  path: "/ai/ingest-file",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!authorizeIngress(req))
+      return new Response("unauthorized", { status: 401 });
+    const body = (await req.json().catch(() => null)) as {
+      fileId?: string;
+    } | null;
+    if (!body?.fileId) return aiJson({ error: "bad request" }, 400);
+    const allowed = await ctx.runQuery(internal.userFiles.stagingBlobForFile, {
+      fileId: body.fileId,
+    });
+    if (!allowed) return new Response("not found", { status: 404 });
     const blob = await ctx.storage.get(allowed.storageId);
     if (!blob) return new Response("not found", { status: 404 });
     return new Response(blob);

@@ -21,3 +21,40 @@ jobs:
         run: bun run lint
       - name: Test
         run: bun run test
+
+  # Python inference plane: hermetic unit tests PLUS the pgvector-backed DB tests
+  # (gated on TEST_DATABASE_URL, so `uv run pytest` locally stays no-network).
+  # The pgvector/pgvector:pg16 service matches production + ships pgvector >=0.8.
+  ai-tests:
+    runs-on: ubuntu-latest
+    services:
+      knowledge-db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: myos_ai
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: myos_knowledge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U myos_ai -d myos_knowledge_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      KNOWLEDGE_DATABASE_URL: postgresql://myos_ai:postgres@127.0.0.1:5432/myos_knowledge_test?sslmode=disable
+      TEST_DATABASE_URL: postgresql://myos_ai:postgres@127.0.0.1:5432/myos_knowledge_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Sync (frozen)
+        working-directory: services/ai
+        run: uv sync --frozen
+      - name: Migrate (covers the migration for real)
+        working-directory: services/ai
+        run: uv run alembic upgrade head
+      - name: Ruff
+        working-directory: services/ai
+        run: uv run ruff check .
+      - name: Pytest (unit + db)
+        working-directory: services/ai
+        run: uv run pytest

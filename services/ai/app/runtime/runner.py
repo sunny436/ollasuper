@@ -7,6 +7,7 @@ import time
 from contextlib import aclosing
 
 from langchain_core.messages import HumanMessage
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.agent.context import (
     build_system_prompt,
@@ -18,6 +19,7 @@ from app.agent.llm import build_llm
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
 from app.config import Settings
+from app.ingest.retrieve import render_rag_block, retrieve_context
 from app.logging import get_logger
 from app.models.chat import GenerateRequest
 from app.runtime.writer import DeltaWriter
@@ -36,6 +38,7 @@ async def run_generation(
     req: GenerateRequest,
     settings: Settings,
     convex: ConvexClient,
+    engine: AsyncEngine | None = None,
 ) -> None:
     """Run one turn to completion.
 
@@ -67,6 +70,17 @@ async def run_generation(
                 update={"content": latest.content[: settings.ai_max_turn_chars]}
             )
 
+        # Account-knowledge retrieval, launched concurrently so its embedding +
+        # DB round-trip mostly hides behind the attachment work below. Gated by
+        # ragFileCount (computed in Convex) so users with no files pay nothing.
+        rag_task = None
+        if engine is not None and req.ragFileCount > 0:
+            rag_task = asyncio.create_task(
+                retrieve_context(
+                    settings, engine, user_id=req.userId, query=latest.content
+                )
+            )
+
         try:
             content, n_images = await build_user_content(
                 latest, convex, settings, model=req.model, stream_id=req.streamId
@@ -75,12 +89,27 @@ async def run_generation(
             error = {"code": ERR_ATTACHMENT, "message": str(e), "retryable": False}
             raise
 
+        # Bounded wait; RAG must never delay or break chat. On timeout/any error
+        # we proceed with no retrieved context.
+        rag_text, rag_tokens = "", 0
+        if rag_task is not None:
+            try:
+                chunks = await asyncio.wait_for(
+                    rag_task, settings.ai_rag_deadline_ms / 1000
+                )
+                rag_text, rag_tokens = render_rag_block(chunks, settings)
+            except Exception:  # noqa: BLE001 - retrieval is non-critical
+                log.warning("rag_skipped", extra={"stream": req.streamId})
+
+        # RAG DISPLACES history 1:1 against the budget (it does not add on top),
+        # so the per-turn cost ceiling and the rolling summary both hold.
+        rag_reserve = int(rag_tokens * settings.ai_token_safety_factor)
         prior = trim(
             to_lc_messages(history),
             model=req.model,
             n_images=n_images,
             max_output=settings.ai_max_output_tokens,
-            base_budget=settings.ai_context_budget_tokens,
+            base_budget=settings.ai_context_budget_tokens - rag_reserve,
             safety_factor=settings.ai_token_safety_factor,
             context_window=req.contextWindow,
         )
@@ -91,6 +120,7 @@ async def run_generation(
             style=req.customInstructionsStyle,
             summary=req.summary,
             summary_through_seq=req.summaryThroughSeq,
+            rag=rag_text,
         )
 
         llm = build_llm(settings, model=req.model, context_window=req.contextWindow)

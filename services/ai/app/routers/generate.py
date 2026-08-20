@@ -47,7 +47,9 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateAccepted:
 
     async def _run() -> None:
         try:
-            await run_generation(req, app.settings, app.convex)
+            await run_generation(
+                req, app.settings, app.convex, engine=getattr(app, "db", None)
+            )
         finally:
             app.registry.release(req.messageId)
 

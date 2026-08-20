@@ -8,6 +8,7 @@ import {
   mutation,
   query,
 } from "../_generated/server";
+import { userHasReadyFiles } from "../userFiles";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
 import { buildHistory } from "./messages";
 import { contextWindowFor } from "./models";
@@ -153,6 +154,9 @@ export const dispatchPayload = internalQuery({
       .unique();
 
     const history = await buildHistory(ctx, stream.threadId, message.seq);
+    // Cheap existence check so the inference plane only pays the RAG embedding +
+    // pgvector round-trip for users who actually have knowledge-base files.
+    const ragFileCount = (await userHasReadyFiles(ctx, stream.userId)) ? 1 : 0;
 
     return {
       streamId,
@@ -168,6 +172,7 @@ export const dispatchPayload = internalQuery({
       summaryThroughSeq: thread.summaryThroughSeq ?? 0,
       history,
       titleNeeded: thread.titleSource === "auto",
+      ragFileCount,
     };
   },
 });

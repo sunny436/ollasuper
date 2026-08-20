@@ -1,0 +1,178 @@
+"""Query layer for the pgvector knowledge database.
+
+Embeddings are bound as pgvector text literals ("[1,2,...]") with an explicit
+``::vector`` / ``::halfvec`` cast, so no per-connection adapter is needed. The
+vector DIMENSION is part of the SQL type, not a value, so it is interpolated as a
+trusted int from config (``embedding_dimensions``), never a bind parameter.
+
+Account isolation lives in the SQL itself: every retrieve/delete is
+``WHERE user_id = :uid``. Idempotency: a per-file advisory lock serializes a
+reaper re-dispatch racing an in-flight run, and chunks are delete-then-reinserted
+under ``UNIQUE (file_id, chunk_index)``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Sequence
+from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+
+def _vec_literal(vec: Sequence[float]) -> str:
+    return "[" + ",".join(format(float(x), ".8g") for x in vec) + "]"
+
+
+def _advisory_key(file_id: str) -> int:
+    # Stable signed 63-bit int for pg_advisory_xact_lock.
+    h = hashlib.blake2b(file_id.encode(), digest_size=8).digest()
+    return int.from_bytes(h, "big", signed=True)
+
+
+async def persist_ingest(
+    engine: AsyncEngine,
+    *,
+    file_id: str,
+    user_id: str,
+    workspace_id: str,
+    filename: str | None,
+    mime_type: str | None,
+    detected_type: str | None,
+    file_size: int | None,
+    content_hash: str,
+    parser_used: str | None,
+    page_count: int | None,
+    raw_bytes: bytes,
+    chunks: list[dict[str, Any]],
+    embedding_model: str,
+    embedding_dimensions: int,
+) -> int:
+    """One transaction: files row + blob (BYTEA) + chunks. Returns chunk count."""
+    dim = int(embedding_dimensions)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(file_id)}
+        )
+        await conn.execute(
+            text("""
+                INSERT INTO files (id, user_id, workspace_id, original_filename,
+                    mime_type, detected_type, file_size, content_hash, parser_used,
+                    page_count, status, metadata, created_at, updated_at, completed_at)
+                VALUES (:id, :uid, :wid, :fn, :mime, :dt, :sz, :ch, :pu, :pc,
+                    'ready', '{}'::jsonb, now(), now(), now())
+                ON CONFLICT (id) DO UPDATE SET
+                    detected_type = EXCLUDED.detected_type,
+                    parser_used = EXCLUDED.parser_used,
+                    page_count = EXCLUDED.page_count,
+                    content_hash = EXCLUDED.content_hash,
+                    file_size = EXCLUDED.file_size,
+                    status = 'ready', error = NULL,
+                    updated_at = now(), completed_at = now()
+            """),
+            {
+                "id": file_id, "uid": user_id, "wid": workspace_id, "fn": filename,
+                "mime": mime_type, "dt": detected_type, "sz": file_size,
+                "ch": content_hash, "pu": parser_used, "pc": page_count,
+            },
+        )
+        await conn.execute(
+            text("""
+                INSERT INTO file_blobs (file_id, content_hash, bytes)
+                VALUES (:id, :ch, :bytes)
+                ON CONFLICT (file_id) DO UPDATE SET
+                    content_hash = EXCLUDED.content_hash, bytes = EXCLUDED.bytes
+            """),
+            {"id": file_id, "ch": content_hash, "bytes": raw_bytes},
+        )
+        await conn.execute(
+            text("DELETE FROM file_chunks WHERE file_id = :id"), {"id": file_id}
+        )
+        if chunks:
+            params = [
+                {
+                    "fid": file_id, "uid": user_id, "ci": c["chunk_index"],
+                    "content": c["content"], "tc": c.get("token_count"),
+                    "page": c.get("page"), "section": c.get("section"),
+                    "meta": json.dumps(c.get("source_metadata") or {}),
+                    "emb": _vec_literal(c["embedding"]),
+                    "em": embedding_model, "ed": dim,
+                }
+                for c in chunks
+            ]
+            # dim is a trusted int from config; it is the SQL TYPE size, which
+            # cannot be a bind parameter — hence the f-string, never user input.
+            await conn.execute(
+                text(f"""
+                    INSERT INTO file_chunks (file_id, user_id, chunk_index, content,
+                        token_count, page, section, source_metadata, embedding,
+                        embedding_model, embedding_dimensions)
+                    VALUES (:fid, :uid, :ci, :content, :tc, :page, :section,
+                        CAST(:meta AS jsonb), CAST(:emb AS vector({dim})), :em, :ed)
+                """),
+                params,
+            )
+    return len(chunks)
+
+
+async def delete_file(engine: AsyncEngine, *, file_id: str, user_id: str) -> bool:
+    """Cascade delete (file_blobs + file_chunks via FK). Account-scoped."""
+    async with engine.begin() as conn:
+        res = await conn.execute(
+            text("DELETE FROM files WHERE id = :id AND user_id = :uid"),
+            {"id": file_id, "uid": user_id},
+        )
+    return (res.rowcount or 0) > 0
+
+
+async def delete_by_id(engine: AsyncEngine, *, file_id: str) -> bool:
+    """Cascade delete by id only. For the Convex purge path, which is
+    service-key-authenticated and already capability-scoped by the ingestId."""
+    async with engine.begin() as conn:
+        res = await conn.execute(
+            text("DELETE FROM files WHERE id = :id"), {"id": file_id}
+        )
+    return (res.rowcount or 0) > 0
+
+
+async def retrieve(
+    engine: AsyncEngine,
+    *,
+    user_id: str,
+    query_embedding: Sequence[float],
+    fetch_k: int,
+    embedding_dimensions: int,
+    ef_search: int = 100,
+    iterative_scan: str = "relaxed_order",
+) -> list[dict[str, Any]]:
+    """Account-scoped top-fetch_k by cosine distance. The ORDER BY expression is
+    byte-identical to the index expression, or the planner drops to a seq-scan."""
+    dim = int(embedding_dimensions)
+    ef = int(ef_search)
+    _valid = {"relaxed_order", "strict_order", "off"}
+    scan = iterative_scan if iterative_scan in _valid else "relaxed_order"
+    async with engine.begin() as conn:
+        await conn.execute(text(f"SET LOCAL hnsw.ef_search = {ef}"))
+        await conn.execute(text(f"SET LOCAL hnsw.iterative_scan = {scan}"))
+        rows = (
+            await conn.execute(
+                text(f"""
+                    SELECT file_id, content, source_metadata, page, section,
+                        embedding::halfvec({dim}) <=> CAST(:qvec AS halfvec({dim}))
+                        AS distance
+                    FROM file_chunks
+                    WHERE user_id = :uid
+                    ORDER BY embedding::halfvec({dim})
+                        <=> CAST(:qvec AS halfvec({dim}))
+                    LIMIT :k
+                """),
+                {
+                    "uid": user_id,
+                    "qvec": _vec_literal(query_embedding),
+                    "k": int(fetch_k),
+                },
+            )
+        ).mappings().all()
+    return [dict(r) for r in rows]

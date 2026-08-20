@@ -18,6 +18,13 @@ crons.interval(
   {},
 );
 
+crons.interval(
+  "reap stalled file ingestions",
+  { seconds: 60 },
+  internal.userFiles.reapStalled,
+  {},
+);
+
 /** Hard-delete conversations that have sat in the trash past the retention TTL. */
 crons.interval(
   "purge trashed chat threads",
