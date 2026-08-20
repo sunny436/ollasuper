@@ -15,6 +15,7 @@ import {
   Plus,
   Search,
   Settings,
+  Share2,
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
@@ -120,6 +121,12 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
               href="/settings"
               icon={Settings}
               label="Settings"
+              onNavigate={onNavigate}
+            />
+            <ProfileMenuItem
+              href="/settings/shared"
+              icon={Share2}
+              label="Shared Chats"
               onNavigate={onNavigate}
             />
             <div className="my-1.5 border-t border-border" />

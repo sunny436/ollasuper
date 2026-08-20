@@ -378,4 +378,34 @@ export default defineSchema({
     // Anti-claim-squat: a storageId may be registered exactly once, so user B
     // cannot claim a storageId belonging to user A. See chat/attachments.ts.
     .index("by_storage", ["storageId"]),
+
+  // Public share links for a whole conversation or a single turn.
+  //
+  // SNAPSHOT-BASED: the shared content is frozen into `snapshot` at creation, so
+  // later edits/deletes to the original never change an already-shared page, and
+  // the public read never has to touch (or leak) live chat rows.
+  //
+  // The `token` is stored PLAINTEXT + indexed (unlike apiKeys, which store only a
+  // hash) because the management "Copy link" and the public URL both need it
+  // retrievable. A share token's blast radius is low — read-only, 7-day expiry,
+  // revocable, no account access — so plaintext-at-rest is an acceptable trade.
+  // Security rests on the 192-bit unguessable token + server-side expiry/revoke.
+  chatShares: defineTable({
+    token: v.string(),
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    chatId: v.id("chatThreads"),
+    messageId: v.optional(v.id("chatMessages")), // single_turn only
+    shareType: v.union(v.literal("full_chat"), v.literal("single_turn")),
+    title: v.string(),
+    // Frozen, sanitized JSON. storageIds live here (server-only) and are stripped
+    // by the public read; the /share/file proxy resolves them. See chat/shares.ts.
+    snapshot: v.string(),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    revokedAt: v.optional(v.number()),
+  })
+    .index("by_token", ["token"])
+    .index("by_user_ws_created", ["userId", "workspaceId", "createdAt"])
+    .index("by_chat", ["chatId"]),
 });

@@ -21,6 +21,7 @@ export default {
     sidebar: {
       general: "Général",
       billing: "Facturation",
+      shared: "Shared",
     },
   },
 } as const;

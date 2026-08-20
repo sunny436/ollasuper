@@ -279,4 +279,41 @@ http.route({
   }),
 });
 
+// --- Public shared-attachment proxy (revocable) ---
+//
+// Serves an attachment that belongs to a share's frozen snapshot, but ONLY while
+// the share is live: chat/shares.resolveAttachment returns null once the share is
+// revoked or expired, so this 404s (same response for missing/expired/revoked —
+// no existence oracle). Public (no ingress secret): access is gated entirely by
+// the unguessable token + the snapshot membership check. storageId never leaves
+// the server; only this share's own attachments are ever reachable — never the
+// user's file library.
+http.route({
+  path: "/share/file",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const token = url.searchParams.get("t");
+    const m = Number(url.searchParams.get("m"));
+    const a = Number(url.searchParams.get("a"));
+    if (!token || !Number.isInteger(m) || !Number.isInteger(a)) {
+      return new Response("not found", { status: 404 });
+    }
+    const allowed = await ctx.runQuery(internal.chat.shares.resolveAttachment, {
+      token,
+      m,
+      a,
+    });
+    if (!allowed) return new Response("not found", { status: 404 });
+    const blob = await ctx.storage.get(allowed.storageId);
+    if (!blob) return new Response("not found", { status: 404 });
+    return new Response(blob, {
+      headers: {
+        "content-type": allowed.contentType,
+        "cache-control": "private, max-age=300",
+      },
+    });
+  }),
+});
+
 export default http;

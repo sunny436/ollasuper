@@ -2,16 +2,18 @@
 
 import { api } from "@v1/backend/convex/_generated/api";
 import { useQuery } from "convex/react";
-import { SlidersHorizontal } from "lucide-react";
-import { useEffect } from "react";
+import { Share2, SlidersHorizontal } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useChatSession } from "../_hooks/use-chat-session";
 import { MessageList } from "./message-list";
 import { useChatSidebar } from "./chat-shell";
 import { AmbienceSlider } from "./ambience-slider";
+import { ShareDialog } from "./share-dialog";
 
 export function ChatPane({ threadId }: { threadId: string | null }) {
   const { openSidebar, collapsed, toggleCollapsed } = useChatSidebar();
   const { setThreadStatus, setModel } = useChatSession();
+  const [shareOpen, setShareOpen] = useState(false);
 
   // threadId is a raw URL string, so this query takes v.string() and
   // normalizeId's it server-side. Returns null for a bad or foreign id.
@@ -83,11 +85,30 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
           </span>
         </div>
 
-        {/* Ambience control — top-right of the chat header. */}
-        <div className="ml-auto shrink-0">
+        {/* Share + Ambience — top-right of the chat header. */}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {thread && (
+            <button
+              type="button"
+              onClick={() => setShareOpen(true)}
+              disabled={thread.isStreaming}
+              aria-label="Share conversation"
+              className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-primary/70 transition hover:bg-primary/5 hover:text-primary disabled:opacity-40"
+            >
+              <Share2 className="h-3.5 w-3.5" /> Share
+            </button>
+          )}
           <AmbienceSlider />
         </div>
       </header>
+
+      {threadId && (
+        <ShareDialog
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+          params={{ shareType: "full_chat", threadId }}
+        />
+      )}
 
       {notFound ? (
         <div className="flex min-h-0 flex-1 items-center justify-center p-8">
