@@ -5,9 +5,17 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.agent.llm import build_llm
 from app.logging import get_logger
-from app.models.chat import CancelResult, GenerateAccepted, GenerateRequest
+from app.models.chat import (
+    CancelResult,
+    GenerateAccepted,
+    GenerateRequest,
+    TitleRequest,
+    TitleResponse,
+)
 from app.runtime.registry import Conflict, TooMany
 from app.runtime.runner import run_generation
 from app.security import require_service_key
@@ -79,3 +87,43 @@ async def status(message_id: str, request: Request) -> dict:
         "running": request.app.state.registry.has(message_id),
         "active": request.app.state.registry.active,
     }
+
+
+# Concise title from (first user message + first assistant output). Tiny, fast,
+# a different (cheap) model than the chat model, and completely independent of
+# /v1/generate: any failure returns an empty title and Convex keeps the existing
+# one. Never streams; never touches the generation path.
+TITLE_SYSTEM = (
+    "Generate a concise 2-5 word title for this conversation from the first user "
+    "message and first assistant response. Preserve product, technology, and entity "
+    "names, and follow the conversation's language. No quotes, no markdown, no "
+    "emojis, no explanation. Return ONLY the title."
+)
+
+
+@router.post("/title", response_model=TitleResponse)
+async def title(req: TitleRequest, request: Request) -> TitleResponse:
+    settings = request.app.state.settings
+    try:
+        llm = build_llm(
+            settings,
+            model=settings.ai_title_model,
+            streaming=False,
+            max_tokens=24,
+        )
+        msg = await llm.ainvoke(
+            [
+                SystemMessage(content=TITLE_SYSTEM),
+                HumanMessage(
+                    content=(
+                        f"First user message:\n{req.firstUser}\n\n"
+                        f"First assistant response:\n{req.firstAssistant}"
+                    )
+                ),
+            ]
+        )
+        text = msg.content if isinstance(msg.content, str) else str(msg.content)
+        return TitleResponse(title=text.strip())
+    except Exception:
+        log.exception("title generation failed")
+        return TitleResponse(title="")
