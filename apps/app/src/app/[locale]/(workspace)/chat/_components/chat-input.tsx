@@ -238,7 +238,10 @@ export function ChatInput() {
         <div
           className={
             centred
-              ? "flex flex-nowrap items-center gap-1.5 rounded-[32px] border border-white/60 bg-card/70 px-3.5 py-3 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10"
+              ? // nowrap keeps the empty pill a single row, but an attachment
+                // chip is `basis-full` and would otherwise collapse the textarea
+                // to ~0 width on this one line — wrap once a chip is present.
+                `flex ${attachments.items.length > 0 ? "flex-wrap" : "flex-nowrap"} items-center gap-1.5 rounded-[32px] border border-white/60 bg-card/70 px-3.5 py-3 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10`
               : "flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-3xl border border-border bg-card/70 px-3 py-2.5 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25"
           }
         >
@@ -263,7 +266,7 @@ export function ChatInput() {
               type="file"
               multiple
               hidden
-              accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,application/json"
+              accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               onChange={(e) => {
                 attachments.add(Array.from(e.target.files ?? []));
                 e.target.value = "";

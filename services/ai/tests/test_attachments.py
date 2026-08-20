@@ -16,6 +16,8 @@ import pytest
 from PIL import Image
 
 from app.clients.attachments import (
+    EMPTY_TURN_FALLBACK,
+    EMPTY_TURN_PLACEHOLDER,
     AttachmentError,
     _safe_name,
     build_user_content,
@@ -122,3 +124,136 @@ def test_filename_cannot_restructure_the_document_tag():
     assert '"' not in safe
     assert "<" not in safe and ">" not in safe
     assert len(_safe_name("a" * 500)) == 120
+
+
+# --- empty-text / captionless attachment (the prod 400 fix) ------------------
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _docx(text: str) -> bytes:
+    from docx import Document
+
+    d = Document()
+    d.add_paragraph(text)
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+def _xlsx(cell: str) -> bytes:
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Header"])
+    ws.append([cell])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+async def test_image_with_empty_text_gets_placeholder(convex_client, fake_convex):
+    convex, settings = convex_client
+    fake_convex.files[(STREAM, "st_img")] = _png(64, 48)
+    parts, n = await build_user_content(
+        _msg([_att("st_img", "image", "image/png")], content=""),
+        convex,
+        settings,
+        model=ModelId.OPUS,
+        stream_id=STREAM,
+    )
+    assert n == 1
+    assert parts[0]["type"] == "image_url"
+    assert parts[-1]["type"] == "text"
+    assert parts[-1]["text"] == EMPTY_TURN_PLACEHOLDER  # never an empty block
+
+
+async def test_whitespace_only_text_gets_placeholder(convex_client, fake_convex):
+    convex, settings = convex_client
+    fake_convex.files[(STREAM, "st_img2")] = _png(32, 32)
+    parts, _ = await build_user_content(
+        _msg([_att("st_img2", "image", "image/png")], content="   \n\t"),
+        convex,
+        settings,
+        model=ModelId.OPUS,
+        stream_id=STREAM,
+    )
+    assert parts[-1]["text"] == EMPTY_TURN_PLACEHOLDER  # proves .strip(), not == ""
+
+
+async def test_empty_document_empty_text_gets_placeholder(convex_client, fake_convex):
+    convex, settings = convex_client
+    fake_convex.files[(STREAM, "st_empty")] = b""  # decodes to "" -> block skipped
+    parts, n = await build_user_content(
+        _msg([_att("st_empty", "text", "text/plain", name="empty.txt")], content=""),
+        convex,
+        settings,
+        model=ModelId.OPUS,
+        stream_id=STREAM,
+    )
+    assert n == 0
+    assert len(parts) == 1
+    assert parts[0]["text"] == EMPTY_TURN_PLACEHOLDER
+
+
+async def test_text_document_wraps_and_survives_empty_message(
+    convex_client, fake_convex
+):
+    convex, settings = convex_client
+    fake_convex.files[(STREAM, "st_txt")] = b"hello world"
+    parts, _ = await build_user_content(
+        _msg([_att("st_txt", "text", "text/plain", name="a.txt")], content=""),
+        convex,
+        settings,
+        model=ModelId.OPUS,
+        stream_id=STREAM,
+    )
+    body = parts[-1]["text"]
+    assert '<document name="a.txt">' in body
+    assert "hello world" in body  # doc present -> no placeholder
+
+
+async def test_docx_is_parsed_inline_not_garbled(convex_client, fake_convex):
+    convex, settings = convex_client
+    fake_convex.files[(STREAM, "st_docx")] = _docx("secret docx phrase alpha")
+    parts, _ = await build_user_content(
+        _msg(
+            [_att("st_docx", "document", DOCX_MIME, name="d.docx")],
+            content="summarize",
+        ),
+        convex,
+        settings,
+        model=ModelId.OPUS,
+        stream_id=STREAM,
+    )
+    body = parts[-1]["text"]
+    assert "secret docx phrase alpha" in body
+    assert "<document" in body
+
+
+async def test_xlsx_is_parsed_inline_not_garbled(convex_client, fake_convex):
+    convex, settings = convex_client
+    fake_convex.files[(STREAM, "st_xlsx")] = _xlsx("secret xlsx phrase beta")
+    parts, _ = await build_user_content(
+        _msg([_att("st_xlsx", "document", XLSX_MIME, name="s.xlsx")], content="read"),
+        convex,
+        settings,
+        model=ModelId.OPUS,
+        stream_id=STREAM,
+    )
+    assert "secret xlsx phrase beta" in parts[-1]["text"]
+
+
+async def test_text_only_empty_message_is_never_empty(convex_client, fake_convex):
+    convex, settings = convex_client
+    content, n = await build_user_content(
+        _msg([], content=""),
+        convex,
+        settings,
+        model=ModelId.OPUS,
+        stream_id=STREAM,
+    )
+    assert n == 0
+    assert isinstance(content, str) and content == EMPTY_TURN_FALLBACK

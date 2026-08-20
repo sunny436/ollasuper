@@ -12,20 +12,10 @@ import {
   FileText,
   Loader2,
   Trash2,
-  Upload,
 } from "lucide-react";
-import { type ChangeEvent, useRef, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { fmtSize } from "../_lib/format";
-
-const MAX_BYTES = 20 * 1024 * 1024;
-
-async function sha256Hex(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  return Array.from(new Uint8Array(digest), (b) =>
-    b.toString(16).padStart(2, "0"),
-  ).join("");
-}
 
 type FileRow = {
   _id: Id<"userFiles">;
@@ -38,18 +28,14 @@ type FileRow = {
 
 /**
  * Account-level Files: the per-user knowledge base surfaced in the chat rail.
- * Uploads become retrievable across EVERY conversation (not just this one).
- * Reactive via usePaginatedQuery — status flips Processing -> Ready with no
- * reload. Sub-components are module-scope (never nested) per the focus/IME rule.
+ * List + status + delete ONLY — uploads happen exclusively through the chat
+ * composer paperclip (see use-attachments.ts), never here. Reactive via
+ * usePaginatedQuery: status flips Processing -> Ready with no reload.
+ * Sub-components are module-scope (never nested) per the focus/IME rule.
  */
 export function FilesSection() {
   const { current } = useWorkspace();
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const generateUploadUrl = useMutation(api.userFiles.generateUploadUrl);
-  const saveFile = useMutation(api.userFiles.saveFile);
   const removeFile = useMutation(api.userFiles.remove);
 
   const { results, status, loadMore } = usePaginatedQuery(
@@ -57,42 +43,6 @@ export function FilesSection() {
     current ? { workspaceId: current } : "skip",
     { initialNumItems: 20 },
   );
-
-  const onUpload = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !current) return;
-    if (file.size > MAX_BYTES) {
-      toast.error("File is larger than 20MB");
-      return;
-    }
-    setBusy(true);
-    try {
-      const contentType = file.type || "application/octet-stream";
-      const contentHash = await sha256Hex(file);
-      const url = await generateUploadUrl({ workspaceId: current });
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": contentType },
-        body: file,
-      });
-      const { storageId } = await res.json();
-      await saveFile({
-        workspaceId: current,
-        storageId,
-        name: file.name,
-        size: file.size,
-        contentType,
-        contentHash,
-      });
-      if (inputRef.current) inputRef.current.value = "";
-      toast.success(`Added ${file.name}`);
-      setOpen(true);
-    } catch {
-      toast.error("Upload failed");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div className="border-t border-border">
@@ -111,22 +61,6 @@ export function FilesSection() {
 
       {open && (
         <div className="max-h-56 overflow-y-auto px-2 pb-2">
-          <label className="mb-1 flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-border px-2 py-1.5 text-xs text-primary/70 transition hover:bg-primary/5">
-            {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Upload className="h-3.5 w-3.5 text-brand-ink" />
-            )}
-            {busy ? "Uploading…" : "Upload a file"}
-            <input
-              ref={inputRef}
-              type="file"
-              className="hidden"
-              onChange={onUpload}
-              disabled={busy || !current}
-            />
-          </label>
-
           {results.map((f) => (
             <FileItem
               key={f._id}
@@ -150,8 +84,8 @@ export function FilesSection() {
 
           {results.length === 0 && status !== "LoadingFirstPage" && (
             <p className="px-2 py-2 text-[11px] leading-relaxed text-primary/35">
-              No files yet. Upload one to give the assistant knowledge across
-              every chat.
+              No files yet. Attach a file in chat and it becomes knowledge the
+              assistant can use across every conversation.
             </p>
           )}
         </div>
