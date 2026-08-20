@@ -124,14 +124,21 @@ async function openPublic(browser, url) {
 
   await step("revoke → public link stops working", async () => {
     await page.goto(BASE + "/settings/shared", { waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "Revoke" }).first().click();
+    // This run's full-chat share is newest → first. Wait for the list to load.
+    const revokeBtn = page
+      .getByRole("button", { name: "Revoke", exact: true })
+      .first();
+    await revokeBtn.waitFor({ state: "visible", timeout: 25000 });
+    await revokeBtn.click();
+    // The confirm dialog portals to <body> (appended last) → its Revoke is last.
+    await page.waitForTimeout(700);
     await page
-      .locator('[role="dialog"]')
-      .getByRole("button", { name: "Revoke" })
+      .getByRole("button", { name: "Revoke", exact: true })
+      .last()
       .click();
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(2000);
     const { text } = await openPublic(b, fullLink);
-    if (MARK && text.includes(MARK)) throw new Error("revoked link still shows content");
+    if (text.includes(MARK)) throw new Error("revoked link still shows content");
     if (!/no longer available|revoked|expired|not found/i.test(text)) {
       throw new Error("revoked state not shown: " + text.slice(0, 80));
     }
