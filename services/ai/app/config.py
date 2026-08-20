@@ -173,7 +173,14 @@ class Settings(BaseSettings):
     ai_rag_context_tokens: int = 4_000
     ai_rag_max_chunk_tokens: int = 700
     ai_rag_min_query_chars: int = 16  # skip retrieval for trivial queries
-    ai_rag_deadline_ms: int = 800  # proceed with NO rag if retrieval exceeds this
+    # Proceed with NO rag if retrieval exceeds this. Measured warm embedding
+    # round-trip is ~300ms, but a COLD httpx connection to OpenRouter (first
+    # query after idle: TLS handshake + DNS) plus the pgvector query can spike
+    # past 800ms — which silently dropped recall on no-attachment questions (the
+    # embedding there is on the critical path, with no attachment work to hide
+    # behind). 2500ms comfortably covers a cold start; the cost is bounded worst-
+    # case added latency only when the embed is genuinely slow.
+    ai_rag_deadline_ms: int = 2500
 
     @property
     def ingress_url(self) -> str:
