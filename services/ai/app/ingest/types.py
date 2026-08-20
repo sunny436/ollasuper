@@ -17,6 +17,7 @@ from typing import Any, Literal, Protocol
 FileType = Literal[
     "pdf",
     "docx",
+    "pptx",
     "xlsx",
     "csv",
     "json",

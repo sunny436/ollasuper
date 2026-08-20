@@ -29,10 +29,22 @@ dependencies = [
     "pgvector>=0.3,<1",
     "alembic>=1.13,<2",
     # Document parsing + chunking. langchain-text-splitters tracks the pinned
-    # langchain line; the rest are mature, single-purpose parsers.
+    # langchain line; the rest are mature, single-purpose parsers — one
+    # best-in-class extractor per format, ALL permissively licensed and shipping
+    # self-contained wheels (no poppler/tesseract/libreoffice system binaries).
     "langchain-text-splitters>=1,<2",
     "python-docx>=1.1,<2",
     "openpyxl>=3.1,<4",
+    "python-pptx>=1,<2",
+    # PDF: pdfplumber (MIT, best pure-python text+tables) for digital PDFs;
+    # pypdfium2 (BSD/Apache, PDFium wheels) renders image-only pages so the
+    # vision-OCR fallback can read scanned PDFs. Deliberately NOT PyMuPDF: it is
+    # faster but AGPL-3.0 (commercial-license or copyleft) — see ingest/pdf.py.
+    "pdfplumber>=0.11,<1",
+    "pypdfium2>=4,<5",
+    # HTML: trafilatura (Apache-2.0 since >=1.8) is the benchmark leader for
+    # main-content extraction — far better than bs4 get_text() on real pages.
+    "trafilatura>=2,<3",
     "beautifulsoup4>=4.12,<5",
     "lxml>=5,<6",
     "filetype>=1.2,<2",
