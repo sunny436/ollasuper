@@ -8,6 +8,11 @@
 # (hnsw.iterative_scan). Idempotent: safe to re-run.
 set -euo pipefail
 
+# uv lives in ~/.local/bin and is not on a non-login shell's PATH (same reason
+# deploy/54 exports it). Without this, `uv sync`/`uv run alembic` below fail.
+export PATH="$HOME/.local/bin:$PATH"
+export UV_PYTHON_INSTALL_DIR=${UV_PYTHON_INSTALL_DIR:-/opt/uv-python}
+
 REPO=${REPO:-/opt/myos}
 AI="$REPO/services/ai"
 COMPOSE="$AI/compose.knowledge.yml"
@@ -54,10 +59,13 @@ echo "[3/6] start the container (loopback-published :5433)"
 docker compose -f "$COMPOSE" --env-file "$ENVF" up -d
 
 echo "[4/6] wait for healthy"
-for i in $(seq 1 30); do
-  state=$(docker compose -f "$COMPOSE" --env-file "$ENVF" ps --format '{{.Health}}' knowledge-db 2>/dev/null || true)
-  [ "$state" = "healthy" ] && { echo "  healthy"; break; }
-  [ "$i" = 30 ] && { echo "FATAL: knowledge-db never became healthy" >&2; exit 1; }
+for i in $(seq 1 45); do
+  CID=$(docker compose -f "$COMPOSE" --env-file "$ENVF" ps -q knowledge-db 2>/dev/null || true)
+  if [ -n "$CID" ]; then
+    state=$(docker inspect -f '{{.State.Health.Status}}' "$CID" 2>/dev/null || true)
+    [ "$state" = "healthy" ] && { echo "  healthy"; break; }
+  fi
+  [ "$i" = 45 ] && { echo "FATAL: knowledge-db never became healthy" >&2; exit 1; }
   sleep 2
 done
 
