@@ -20,11 +20,21 @@ const config = {
     extend: {
       fontFamily: {
         departure: ["var(--font-departure-mono)"],
-        // Opt-in ONLY, deliberately not mapped onto sans/mono. The Geist vars
-        // are set on <body> but nothing consumes them, so the app currently
-        // renders in the default stacks; mapping them would silently restyle
-        // every live page and change every e2e screenshot. Used only in code
-        // blocks.
+        // Inter is the app-wide UI face. `--font-inter` is defined on <html>
+        // (apps/app layout) so Tailwind preflight's html font-family resolves
+        // it. Safe to remap sans globally here: the e2e suite has no screenshot
+        // comparisons (only debug page.screenshot saves), so nothing regresses.
+        sans: [
+          "var(--font-inter)",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "sans-serif",
+        ],
+        // Opt-in ONLY. The Geist vars are set on <body>; used only in code
+        // blocks via font-geist-mono.
         "geist-mono": [
           "var(--font-geist-mono)",
           "ui-monospace",

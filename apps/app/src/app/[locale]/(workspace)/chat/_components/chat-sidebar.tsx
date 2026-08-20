@@ -9,6 +9,7 @@ import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { useCachedUser } from "../_hooks/use-cached-user";
 import {
   LogOut,
+  MessageSquare,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -47,18 +48,20 @@ interface ThreadItem {
  */
 function BrandHeader() {
   return (
-    <div className="flex items-center gap-3 border-b border-border px-3 py-3.5">
+    <div className="group flex cursor-pointer items-center gap-3 px-4 py-4">
       <IntelligenceCore />
       <div className="min-w-0">
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <span className="text-sm font-semibold tracking-tight text-primary">
             Ollasuper
           </span>
-          <span className="rounded border border-brand/25 bg-brand/10 px-1.5 py-px text-[9px] font-semibold text-brand-ink">
+          <span className="rounded-md bg-brand/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-brand-ink">
             v4.0
           </span>
         </div>
-        <p className="truncate text-[11px] text-primary/50">AI Workspace</p>
+        <p className="truncate text-[11px] font-medium text-muted-foreground">
+          AI Workspace
+        </p>
       </div>
     </div>
   );
@@ -147,19 +150,20 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-label="Account menu"
-        className="flex w-full items-center gap-2.5 rounded-xl border border-border bg-card/60 p-2 text-left transition hover:bg-primary/5"
+        className="group flex w-full items-center gap-2.5 rounded-xl border border-border bg-card/60 p-2 text-left transition-colors duration-200 hover:bg-accent"
       >
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-sky-400 to-indigo-600 text-xs font-semibold text-white">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand text-xs font-semibold text-brand-foreground shadow-sm">
           {(user?.name || user?.email || "?").charAt(0).toUpperCase()}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-medium text-primary/85">
+          <span className="block truncate text-sm font-semibold text-primary">
             {user?.name || "Account"}
           </span>
-          <span className="block truncate text-[10px] text-primary/45">
+          <span className="block truncate text-[11px] text-muted-foreground">
             {user?.email}
           </span>
         </span>
+        <Settings className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
       </button>
     </div>
   );
@@ -259,30 +263,30 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex h-full flex-col">
       <BrandHeader />
 
-      <div className="p-3">
+      {/* Grouped header block — New chat, Files, Search — with no internal
+          dividers, matching the reference's grouping. */}
+      <div className="flex flex-col gap-3 px-3 py-3">
         <button
           type="button"
           onClick={() => void onNewChat()}
-          className="group flex w-full items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm font-medium text-primary shadow-sm transition hover:bg-primary/5"
+          className="group flex w-full items-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-medium text-primary shadow-sm transition-all duration-200 hover:border-brand/30 hover:shadow-md active:scale-[0.98]"
         >
-          <span className="flex items-center gap-2">
-            <Plus className="h-4 w-4 text-brand-ink transition-transform duration-300 group-hover:rotate-90 motion-reduce:transition-none" />
-            New chat
+          <span className="rounded-lg bg-brand/10 p-1 text-brand-ink transition-colors group-hover:bg-brand group-hover:text-brand-foreground">
+            <Plus className="h-4 w-4 transition-transform duration-300 group-hover:rotate-90 motion-reduce:transition-none" />
           </span>
+          New chat
         </button>
-      </div>
 
-      <FilesSection />
+        <FilesSection />
 
-      <div className="border-b border-border p-3">
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5">
-          <Search className="h-3.5 w-3.5 shrink-0 text-primary/35" />
+        <div className="group flex items-center gap-2 rounded-xl border border-transparent bg-muted/60 px-2.5 py-2 transition-all focus-within:border-brand/30 focus-within:bg-card focus-within:ring-2 focus-within:ring-brand/15">
+          <Search className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-focus-within:text-brand-ink" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search conversations"
+            placeholder="Search conversations..."
             aria-label="Search conversations"
-            className="w-full bg-transparent text-xs text-primary outline-none placeholder:text-primary/35"
+            className="w-full bg-transparent text-sm text-primary outline-none placeholder:text-muted-foreground"
           />
         </div>
       </div>
@@ -319,8 +323,8 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         )}
 
         {groups.map((group) => (
-          <div key={group.label} className="mb-3">
-            <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-primary/35">
+          <div key={group.label} className="mb-4">
+            <p className="mb-1 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               {group.label}
             </p>
             {group.items.map((t) => {
@@ -328,19 +332,26 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
               return (
                 <div
                   key={t._id}
-                  className={`group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm transition ${
+                  className={`group flex items-center gap-1 rounded-lg px-2 py-2 text-sm transition-colors duration-200 ${
                     active
-                      ? "bg-primary/10 text-primary"
-                      : "text-primary/70 hover:bg-primary/5"
+                      ? "bg-brand/10 font-medium text-brand-ink"
+                      : "text-muted-foreground hover:bg-accent hover:text-primary"
                   }`}
                 >
                   <Link
                     href={`/chat/${t._id}`}
                     prefetch={false}
                     onClick={onNavigate}
-                    className="min-w-0 flex-1 truncate"
+                    className="flex min-w-0 flex-1 items-center gap-2.5 truncate"
                   >
-                    {t.title}
+                    <MessageSquare
+                      className={`h-3.5 w-3.5 shrink-0 ${
+                        active
+                          ? "text-brand-ink"
+                          : "text-muted-foreground group-hover:text-primary"
+                      }`}
+                    />
+                    <span className="truncate">{t.title}</span>
                   </Link>
                   {t.isStreaming && (
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand animate-pulse motion-reduce:animate-none" />
