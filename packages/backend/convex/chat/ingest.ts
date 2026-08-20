@@ -251,9 +251,15 @@ export const finishStream = internalMutation({
     // assistant turn's success only. seq === 1 is the exactly-once key —
     // regenerate allocates a new seq, and error/abort go through failStream, not
     // here. Skip if the user already renamed the thread. This scheduled action
-    // never blocks or affects the response the user just received.
+    // never blocks or affects the response the user just received. Gated on
+    // AI_BASE_URL so we do not schedule a task the plane could never service
+    // when the inference plane is unconfigured (generate would no-op anyway).
     const finishedMsg = await ctx.db.get(stream.messageId);
-    if (finishedMsg?.seq === 1 && thread?.titleSource === "auto") {
+    if (
+      finishedMsg?.seq === 1 &&
+      thread?.titleSource === "auto" &&
+      process.env.AI_BASE_URL
+    ) {
       await ctx.scheduler.runAfter(0, internal.chat.title.generate, {
         streamId: args.streamId,
       });
