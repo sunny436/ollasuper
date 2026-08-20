@@ -17,6 +17,12 @@ ACCEPTED_IMAGE = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 MAX_IMAGE_BYTES = 3_500_000  # -> ~4.7MB base64, under the 5MB per-image limit
 MAX_PDF_CHARS = 60_000
 
+# Anthropic rejects empty text content blocks ("text content blocks must be
+# non-empty"). A captionless attachment (or a document that extracts to nothing)
+# would otherwise emit one and 400 the whole turn.
+EMPTY_TURN_PLACEHOLDER = "Please analyze the attached file(s)."
+EMPTY_TURN_FALLBACK = "(no message)"
+
 
 class AttachmentError(RuntimeError):
     pass
@@ -140,6 +146,28 @@ async def _document_text(
     mime = att.contentType.split(";")[0].strip().lower()
     if mime == "application/pdf":
         return await asyncio.to_thread(_extract_pdf_text, raw)
+    # DOCX/XLSX are zip archives — UTF-8 decoding yields mojibake. Reuse the
+    # ingestion parsers (structure-preserving) for the inline current turn too.
+    # Lazy import: don't pay the docx/openpyxl import cost on every chat turn;
+    # no import cycle (app.ingest.parsers/guards never import app.clients).
+    docx_mime = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if mime in (docx_mime, xlsx_mime):
+        from app.ingest.guards import guard_ooxml
+        from app.ingest.parsers import parse_docx, parse_xlsx
+
+        parser = parse_docx if mime == docx_mime else parse_xlsx
+        try:
+            guard_ooxml(raw, settings)  # zip-bomb guard on the untrusted archive
+            docs = await asyncio.wait_for(
+                asyncio.to_thread(parser, raw, name=att.name),
+                timeout=settings.ai_ingest_parse_timeout_s,
+            )
+        except Exception as e:  # noqa: BLE001 - untrusted file; surface a safe error
+            raise AttachmentError(f"could not read {att.name}") from e
+        return "\n\n".join(d.text for d in docs if d.text.strip())[:MAX_PDF_CHARS]
     try:
         return raw.decode("utf-8", errors="replace")[:MAX_PDF_CHARS]
     except Exception as e:  # noqa: BLE001
@@ -160,7 +188,10 @@ async def build_user_content(
     stays simple.
     """
     if not message.attachments:
-        return message.content, 0
+        # Never emit an empty text-only turn. The composer blocks it, but the
+        # service trusts pushed history / non-UI callers (defense-in-depth).
+        text = message.content if message.content.strip() else EMPTY_TURN_FALLBACK
+        return text, 0
 
     images = [a for a in message.attachments if a.kind == "image"]
     others = [a for a in message.attachments if a.kind != "image"]
@@ -199,5 +230,9 @@ async def build_user_content(
     text_body = message.content
     if doc_blocks:
         text_body = "\n\n".join([*doc_blocks, message.content]).strip()
+    # Captionless attachment (or a document that extracted to nothing) → never
+    # ship an empty text block. `.strip()` also catches whitespace-only input.
+    if not text_body.strip():
+        text_body = EMPTY_TURN_PLACEHOLDER
     parts.append({"type": "text", "text": text_body})
     return parts, len(images)

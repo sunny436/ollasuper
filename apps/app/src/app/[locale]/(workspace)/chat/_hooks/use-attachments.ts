@@ -17,6 +17,9 @@ export interface PendingAttachment {
   progress: number;
   status: "uploading" | "ready" | "error";
   attachmentId: Id<"chatAttachments"> | null;
+  // The persistent account-knowledge file this attachment also became (Option B:
+  // a separate upload). Lets chip removal drop the knowledge file too.
+  userFileId: Id<"userFiles"> | null;
 }
 
 const MAX_FILES = 6;
@@ -35,6 +38,7 @@ const ACCEPTED = new Set([
   "text/csv",
   "application/json",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ]);
 
 function accepted(type: string): boolean {
@@ -42,11 +46,22 @@ function accepted(type: string): boolean {
   return ACCEPTED.has(t) || t.startsWith("text/");
 }
 
+/** SHA-256 hex for per-user dedup of the persistent knowledge file. */
+async function sha256Hex(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return Array.from(new Uint8Array(digest), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
 export function useAttachments(threadId: string | null) {
   const { current } = useWorkspace();
   const generateUploadUrl = useMutation(api.chat.attachments.generateUploadUrl);
   const register = useMutation(api.chat.attachments.register);
   const removeAttachment = useMutation(api.chat.attachments.remove);
+  // Persistent account-knowledge (reused as-is; see Option B in use-attachments).
+  const saveKnowledgeFile = useMutation(api.userFiles.saveFile);
+  const removeKnowledgeFile = useMutation(api.userFiles.remove);
   const [items, setItems] = useState<PendingAttachment[]>([]);
   const counter = useRef(0);
 
@@ -103,12 +118,41 @@ export function useAttachments(threadId: string | null) {
         });
 
         patch(localId, { status: "ready", progress: 100, attachmentId });
+
+        // Option B: ALSO persist this file as account-level knowledge via a
+        // SEPARATE upload (independent blob, so the RAG backend stays untouched
+        // and there is no lifecycle coupling to the chat attachment). Runs in
+        // the background — a failure here must never break the attachment/send.
+        void (async () => {
+          try {
+            const contentType = file.type || "application/octet-stream";
+            const contentHash = await sha256Hex(file);
+            const kUrl = await generateUploadUrl({ workspaceId: current });
+            const kRes = await fetch(kUrl, {
+              method: "POST",
+              headers: { "content-type": contentType },
+              body: file,
+            });
+            const { storageId: kStorageId } = await kRes.json();
+            const userFileId = await saveKnowledgeFile({
+              workspaceId: current,
+              storageId: kStorageId as Id<"_storage">,
+              name: file.name,
+              size: file.size,
+              contentType,
+              contentHash,
+            });
+            patch(localId, { userFileId });
+          } catch {
+            // Best-effort — the chat attachment already works without this.
+          }
+        })();
       } catch {
         patch(localId, { status: "error" });
         toast.error(`Couldn't upload ${file.name}`);
       }
     },
-    [current, generateUploadUrl, register, threadId, patch],
+    [current, generateUploadUrl, register, saveKnowledgeFile, threadId, patch],
   );
 
   const add = useCallback(
@@ -143,6 +187,7 @@ export function useAttachments(threadId: string | null) {
             progress: 0,
             status: "uploading",
             attachmentId: null,
+            userFileId: null,
           },
         ]);
         void upload(file, localId);
@@ -164,8 +209,17 @@ export function useAttachments(threadId: string | null) {
           // and the thread purge will collect it.
         }
       }
+      // Removing a chip before send also drops the knowledge file it created,
+      // so a discarded attachment doesn't linger permanently in the sidebar.
+      if (item?.userFileId) {
+        try {
+          await removeKnowledgeFile({ fileId: item.userFileId });
+        } catch {
+          // Best-effort; a stray processing row is harmless.
+        }
+      }
     },
-    [items, removeAttachment],
+    [items, removeAttachment, removeKnowledgeFile],
   );
 
   const clear = useCallback(() => {
