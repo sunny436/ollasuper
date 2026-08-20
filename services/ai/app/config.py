@@ -162,10 +162,25 @@ class Settings(BaseSettings):
     ai_rag_fetch_k: int = 20
     ai_rag_top_k: int = 6
     ai_rag_min_similarity: float = 0.35  # keep chunk iff distance <= 1 - this
+    # Recall safety net. Meta-phrased questions ("in the file I uploaded, what is
+    # the owner field?") dilute similarity against terse chunks and push the RIGHT
+    # (rank-1) chunk just over the strict floor — measured 0.75 while genuinely
+    # irrelevant chunks sit at 0.82+. When nothing clears the floor, keep the
+    # single closest chunk if it is at least this close, so a user's own document
+    # is still recalled. The <retrieved_context> block already tells the model to
+    # ignore an irrelevant excerpt, so a marginal keep is cheap.
+    ai_rag_fallback_max_distance: float = 0.80
     ai_rag_context_tokens: int = 4_000
     ai_rag_max_chunk_tokens: int = 700
     ai_rag_min_query_chars: int = 16  # skip retrieval for trivial queries
-    ai_rag_deadline_ms: int = 800  # proceed with NO rag if retrieval exceeds this
+    # Proceed with NO rag if retrieval exceeds this. Measured warm embedding
+    # round-trip is ~300ms, but a COLD httpx connection to OpenRouter (first
+    # query after idle: TLS handshake + DNS) plus the pgvector query can spike
+    # past 800ms — which silently dropped recall on no-attachment questions (the
+    # embedding there is on the critical path, with no attachment work to hide
+    # behind). 2500ms comfortably covers a cold start; the cost is bounded worst-
+    # case added latency only when the embed is genuinely slow.
+    ai_rag_deadline_ms: int = 2500
 
     @property
     def ingress_url(self) -> str:
