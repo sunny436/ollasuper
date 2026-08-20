@@ -127,7 +127,7 @@ async def main():
                for _n, _t, _b, qs in CORPUS for (q, subs, cat, used) in qs]
 
     rows = []
-    for name, q, subs, cat, used in queries:
+    for _name, q, subs, cat, used in queries:
         qv = await embed.embed_query(S, q)
         cands = await store.retrieve(eng, user_id=USER, query_embedding=qv,
                                      fetch_k=20, embedding_dimensions=S.embedding_dimensions)
