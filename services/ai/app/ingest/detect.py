@@ -17,6 +17,7 @@ from app.ingest.types import FileType, IngestError
 _EXT: dict[str, FileType] = {
     "pdf": "pdf",
     "docx": "docx",
+    "pptx": "pptx",
     "xlsx": "xlsx",
     "csv": "csv",
     "json": "json",
@@ -39,6 +40,7 @@ _EXT: dict[str, FileType] = {
 _MAGIC: dict[str, FileType] = {
     "application/pdf": "pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "image/png": "image",
     "image/jpeg": "image",

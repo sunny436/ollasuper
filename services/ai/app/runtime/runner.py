@@ -98,6 +98,24 @@ async def run_generation(
                     rag_task, settings.ai_rag_deadline_ms / 1000
                 )
                 rag_text, rag_tokens = render_rag_block(chunks, settings)
+                # Observability: the ONLY signal that retrieval fired and what it
+                # found. No chunk content is logged (safe for journalctl); this is
+                # how "why didn't it remember my file" becomes diagnosable and how
+                # ai_rag_min_similarity gets tuned from real distances.
+                if chunks:
+                    dists = [
+                        c["distance"] for c in chunks if c.get("distance") is not None
+                    ]
+                    log.info(
+                        "rag_used",
+                        extra={
+                            "stream_id": req.streamId,
+                            "n_chunks": len(chunks),
+                            "min_distance": round(min(dists), 4) if dists else None,
+                        },
+                    )
+                else:
+                    log.info("rag_empty", extra={"stream_id": req.streamId})
             except Exception:  # noqa: BLE001 - retrieval is non-critical
                 log.warning("rag_skipped", extra={"stream": req.streamId})
 

@@ -51,7 +51,14 @@ export function FilesSection() {
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center justify-between px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-primary/35 transition hover:text-primary/60"
       >
-        <span>Files</span>
+        <span className="flex items-center gap-1.5">
+          Files
+          {results.length > 0 && (
+            <span className="rounded bg-primary/10 px-1 py-px text-[9px] font-semibold tabular-nums text-primary/50">
+              {results.length}
+            </span>
+          )}
+        </span>
         {open ? (
           <ChevronDown className="h-3 w-3" />
         ) : (
@@ -59,8 +66,10 @@ export function FilesSection() {
         )}
       </button>
 
+      {/* ~6 rows visible, then scroll — the account knowledge base as a compact
+          dropdown directly under New chat. */}
       {open && (
-        <div className="max-h-56 overflow-y-auto px-2 pb-2">
+        <div className="max-h-64 overflow-y-auto px-2 pb-2">
           {results.map((f) => (
             <FileItem
               key={f._id}

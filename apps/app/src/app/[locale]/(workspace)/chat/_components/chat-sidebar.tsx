@@ -272,6 +272,8 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         </button>
       </div>
 
+      <FilesSection />
+
       <div className="border-b border-border p-3">
         <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5">
           <Search className="h-3.5 w-3.5 shrink-0 text-primary/35" />
@@ -387,8 +389,6 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           </button>
         )}
       </div>
-
-      <FilesSection />
 
       <ProfileFooter onNavigate={onNavigate} />
     </div>

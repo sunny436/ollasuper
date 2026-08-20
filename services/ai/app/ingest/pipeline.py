@@ -22,18 +22,20 @@ from app.ingest.detect import detect_type
 from app.ingest.guards import guard_ooxml, safe_name
 from app.ingest.ocr import ocr_image
 from app.ingest.parsers import REGISTRY
+from app.ingest.pdf import parse_pdf
 from app.ingest.types import FileType, IngestError, NormalizedDoc
 from app.logging import get_logger
 
 log = get_logger(__name__)
 
 _PARSER_NAMES: dict[str, str] = {
-    "pdf": "pypdf",
+    "pdf": "pdfplumber",
     "docx": "python-docx",
+    "pptx": "python-pptx",
     "xlsx": "openpyxl",
     "csv": "csv",
     "json": "json",
-    "html": "beautifulsoup4",
+    "html": "trafilatura",
     "markdown": "text",
     "text": "text",
     "image": "ocr",
@@ -45,7 +47,10 @@ async def _parse(
 ) -> list[NormalizedDoc]:
     if file_type == "image":
         return await ocr_image(raw, "image/png", name=name, settings=settings)
-    if file_type in ("docx", "xlsx"):
+    if file_type == "pdf":
+        # Digital text/tables (pdfplumber) + scanned-page vision OCR (pypdfium2).
+        return await parse_pdf(raw, name=name, settings=settings)
+    if file_type in ("docx", "xlsx", "pptx"):
         guard_ooxml(raw, settings)
     parser = REGISTRY.get(file_type)
     if parser is None:

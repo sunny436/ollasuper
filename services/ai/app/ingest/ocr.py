@@ -74,5 +74,8 @@ async def ocr_image(
             )
         ]
     except Exception:  # noqa: BLE001 - OCR is best-effort; never fail the file
-        log.exception("ocr_failed", extra={"name": name})
+        # Both `name` AND `filename` are RESERVED LogRecord attributes — putting
+        # either in `extra` makes logging raise KeyError inside this handler,
+        # which is what turned a swallowed OCR miss into a hard file FAILURE.
+        log.exception("ocr_failed", extra={"source": name})
         return []

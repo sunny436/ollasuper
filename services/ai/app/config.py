@@ -53,7 +53,11 @@ class Settings(BaseSettings):
 
     ai_default_model: str = "anthropic/claude-opus-5"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
-    ai_title_model: str = "google/gemini-2.0-flash-001"
+    # NOTE: gemini-2.0-flash-001 was RETIRED by OpenRouter (404 "No endpoints
+    # found"); the live successor is gemini-2.5-flash-lite (multimodal, cheap).
+    # The VM also sets AI_TITLE_MODEL, but this default must not be a landmine
+    # on a fresh box.
+    ai_title_model: str = "google/gemini-2.5-flash-lite"
     ai_max_output_tokens: int = 8192
 
     # --- context -----------------------------------------------------------
@@ -124,8 +128,14 @@ class Settings(BaseSettings):
     openrouter_embedding_model: str = "openai/text-embedding-3-large"
     embedding_dimensions: int = 3072
     # OCR for images goes through an OpenRouter VISION model (no system binary).
-    ai_ocr_model: str = "google/gemini-2.0-flash-001"
+    # Same retirement as the title model above — 2.0-flash-001 now 404s, which is
+    # exactly why every image upload was failing. 2.5-flash-lite is live + vision.
+    ai_ocr_model: str = "google/gemini-2.5-flash-lite"
     ai_ocr_long_edge: int = 2048
+    # Scanned/image-only PDF pages are rendered (pypdfium2) and OCR'd via the
+    # vision model. Cap how many such pages per file so a 500-page scan cannot
+    # blow the --workers 1 budget with hundreds of vision calls.
+    ai_ocr_max_pdf_pages: int = 10
 
     # Ingestion limits (app/ingest/). One shared char budget per file, mirroring
     # ai_max_turn_chars for attachments.
