@@ -5,6 +5,30 @@ Deferred work, captured so it isn't lost. Ordered roughly by priority.
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
 
+## 0d. Chat sharing (2026-08-20) — snapshot-based public links
+Two share actions — **Share Chat** (header) and **Share Response** (per assistant turn) — mint
+unique public links: 7-day server-enforced expiry, **snapshot-based** (content frozen at share
+time, so later edits never change a live share), revocable, read-only. Engine in
+`convex/chat/shares.ts` + the `chatShares` table.
+
+- Token is 192-bit `crypto.getRandomValues` hex (apiKeys idiom), **stored plaintext + indexed**
+  (the manager "Copy link" needs it retrievable; blast radius is low — read-only/7-day/revocable).
+- `getByToken` is a PUBLIC query (never calls auth) returning a sanitized payload — no
+  userId/email/storageId/internal-ids/reasoning/systemPrompt. Owner-only create/revoke via
+  `requireThreadAccess`/`requireMessageAccess`. Snapshot excludes in-flight rows and inactive
+  variants; single-turn exposes ONLY the user+assistant pair.
+- Public page `(public)/share/[token]` is a Server Component + `generateMetadata` (OG title = the
+  conversation title, never message bodies; noindex; static `/logo.png` card). Reuses `<Markdown>`
+  (XSS-safe, no rehype-raw), fixed-UTC timestamps (no hydration mismatch), clean
+  expired/revoked/invalid states. `middleware.ts` bypasses auth for `/share/*` (still
+  locale-rewritten) + a best-effort in-memory per-IP throttle.
+- Attachments serve through a **revocable** `/share/file` httpAction proxy (mirrors `/ai/file`):
+  404 no-oracle, `storageId` server-only, scoped to the snapshot — never the file library. A
+  stored `getUrl()` was rejected because it is a permanent bearer link.
+- `Shared Chats` account-menu item → `/settings/shared` manager (filter/search/copy/open/revoke).
+- Tests: 8 convex-test cases (snapshot fidelity, turn + cross-user isolation, expiry, revocation,
+  dedup, rate-limit) + `e2e/p-share.js` (create → open unauthenticated → revoke → invalid).
+
 ## 0c. Ambience theme (2026-08-19) — continuous slider replaces Light/Dark/System
 The discrete next-themes control was replaced by a continuous **Ambience slider (0–100)**
 that themes the whole app through **Daylight → warm Amber → Midnight**, plus a Gemini-style
