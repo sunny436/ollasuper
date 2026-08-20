@@ -164,15 +164,21 @@ class Settings(BaseSettings):
     ai_rag_min_similarity: float = 0.35  # keep chunk iff distance <= 1 - this
     # Recall safety net. Meta-phrased questions ("in the file I uploaded, what is
     # the owner field?") dilute similarity against terse chunks and push the RIGHT
-    # (rank-1) chunk just over the strict floor — measured 0.75 while genuinely
-    # irrelevant chunks sit at 0.82+. When nothing clears the floor, keep the
-    # single closest chunk if it is at least this close, so a user's own document
-    # is still recalled. The <retrieved_context> block already tells the model to
-    # ignore an irrelevant excerpt, so a marginal keep is cheap.
+    # chunk over the strict floor — and NOT always to rank-1: the RAG eval measured
+    # the correct chunk at rank-2 / distance 0.787 with junk at rank-1. So when
+    # nothing clears the floor, keep the closest ai_rag_fallback_top_n chunks that
+    # are at least this close (not just rank-1). The <retrieved_context> block
+    # tells the model to ignore an irrelevant excerpt, so a few marginal keeps are
+    # cheap; genuinely irrelevant chunks sit at 0.82+ and are still dropped.
     ai_rag_fallback_max_distance: float = 0.80
+    ai_rag_fallback_top_n: int = 3
     ai_rag_context_tokens: int = 4_000
     ai_rag_max_chunk_tokens: int = 700
-    ai_rag_min_query_chars: int = 16  # skip retrieval for trivial queries
+    # Skip retrieval only for TRULY trivial turns ("hi", "ok"). The RAG eval showed
+    # 16 silently killed real short questions ("Owner?", "Budget?" — chunk at 0.55,
+    # well under the floor): recall 0.69 -> 0.92, short-query recall 0.00 -> 1.00
+    # when lowered. 4 still skips 1-3 char acknowledgements.
+    ai_rag_min_query_chars: int = 4
     # Proceed with NO rag if retrieval exceeds this. Measured warm embedding
     # round-trip is ~300ms, but a COLD httpx connection to OpenRouter (first
     # query after idle: TLS handshake + DNS) plus the pgvector query can spike
