@@ -10,6 +10,7 @@ const LayoutContainer = ({ children }: { children: React.ReactNode }) => {
   const pathname = usePathname();
   const isSettingsPath = pathname === "/settings";
   const isBillingPath = pathname === "/settings/billing";
+  const isSharedPath = pathname === "/settings/shared";
   return (
     <div className="flex h-full w-full px-6 py-8">
       <div className="mx-auto flex h-full w-full max-w-screen-xl gap-12">
@@ -41,6 +42,20 @@ const LayoutContainer = ({ children }: { children: React.ReactNode }) => {
               )}
             >
               {t("billing")}
+            </span>
+          </Link>
+          <Link
+            href="/settings/shared"
+            className={cn(
+              `${buttonVariants({ variant: "ghost" })} ${isSharedPath && "bg-primary/5"} justify-start rounded-md`,
+            )}
+          >
+            <span
+              className={cn(
+                `text-sm text-primary/80 ${isSharedPath && "font-medium text-primary"}`,
+              )}
+            >
+              {t("shared")}
             </span>
           </Link>
         </div>

@@ -26,6 +26,7 @@ import type * as chat_messages from "../chat/messages.js";
 import type * as chat_models from "../chat/models.js";
 import type * as chat_search from "../chat/search.js";
 import type * as chat_settings from "../chat/settings.js";
+import type * as chat_shares from "../chat/shares.js";
 import type * as chat_stream from "../chat/stream.js";
 import type * as chat_threads from "../chat/threads.js";
 import type * as crons from "../crons.js";
@@ -80,6 +81,7 @@ declare const fullApi: ApiFromModules<{
   "chat/models": typeof chat_models;
   "chat/search": typeof chat_search;
   "chat/settings": typeof chat_settings;
+  "chat/shares": typeof chat_shares;
   "chat/stream": typeof chat_stream;
   "chat/threads": typeof chat_threads;
   crons: typeof crons;

@@ -20,6 +20,7 @@ export default {
     sidebar: {
       general: "General",
       billing: "Billing",
+      shared: "Shared",
     },
   },
 } as const;

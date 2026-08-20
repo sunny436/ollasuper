@@ -14,6 +14,26 @@ const I18nMiddleware = createI18nMiddleware({
 });
 
 const isSignInPage = createRouteMatcher(["/login"]);
+// Public shared-conversation pages — read-only, token-gated, no auth.
+const isPublicShare = createRouteMatcher(["/share", "/share/(.*)"]);
+
+// Best-effort per-IP throttle for public share access. Defense-in-depth only —
+// the 192-bit unguessable token is the real guard. Module-level state is
+// per-server-instance and resets on redeploy, which is fine for anti-hammering.
+const SHARE_WINDOW_MS = 60_000;
+const SHARE_MAX = 120;
+const shareHits = new Map<string, { start: number; count: number }>();
+function shareRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const e = shareHits.get(ip);
+  if (!e || now - e.start >= SHARE_WINDOW_MS) {
+    if (shareHits.size > 5000) shareHits.clear();
+    shareHits.set(ip, { start: now, count: 1 });
+    return false;
+  }
+  e.count += 1;
+  return e.count > SHARE_MAX;
+}
 
 /**
  * Where SERVER-side Convex calls go.
@@ -60,6 +80,17 @@ async function isAuthenticated(token: string | undefined): Promise<boolean> {
 
 export default convexAuthNextjsMiddleware(
   async (request, { convexAuth }) => {
+    // Public share pages bypass the auth gate entirely (still get the locale
+    // rewrite). Access is authorized server-side by the token + expiry/revocation.
+    if (isPublicShare(request)) {
+      const ip =
+        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anon";
+      if (shareRateLimited(ip)) {
+        return new Response("Too many requests", { status: 429 });
+      }
+      return I18nMiddleware(request);
+    }
+
     const authed = await isAuthenticated(await convexAuth.getToken());
     const isSignIn = isSignInPage(request);
 

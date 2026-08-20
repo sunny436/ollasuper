@@ -10,6 +10,7 @@ import { useReveal } from "../_hooks/use-reveal";
 import { useStickToBottom } from "../_hooks/use-stick-to-bottom";
 import { useThrottledValue } from "../_hooks/use-throttled-value";
 import { ChatMessage, type ChatMessageDoc } from "./chat-message";
+import { ShareDialog } from "./share-dialog";
 import { preloadMarkdown } from "./lazy-markdown";
 import { MessageSkeleton } from "./message-skeleton";
 import { ScrollToBottom } from "./scroll-to-bottom";
@@ -19,6 +20,7 @@ const PAGE = 30;
 export function MessageList({ threadId }: { threadId: string | null }) {
   const { setStreamingId } = useChatSession();
   const [editing, setEditing] = useState<ChatMessageDoc | null>(null);
+  const [shareMsgId, setShareMsgId] = useState<Id<"chatMessages"> | null>(null);
   const editMessage = useMutation(api.chat.messages.editUserMessage);
 
   const {
@@ -151,6 +153,7 @@ export function MessageList({ threadId }: { threadId: string | null }) {
               message={m}
               isStreaming={false}
               onEdit={m.role === "user" && !editing ? onEdit : undefined}
+              onShare={setShareMsgId}
             />
           ))}
 
@@ -188,6 +191,16 @@ export function MessageList({ threadId }: { threadId: string | null }) {
           onClick={scrollToBottom}
         />
       </div>
+
+      <ShareDialog
+        open={shareMsgId !== null}
+        onOpenChange={(o) => {
+          if (!o) setShareMsgId(null);
+        }}
+        params={
+          shareMsgId ? { shareType: "single_turn", messageId: shareMsgId } : null
+        }
+      />
     </div>
   );
 }

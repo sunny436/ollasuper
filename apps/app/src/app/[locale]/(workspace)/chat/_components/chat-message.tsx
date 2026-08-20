@@ -3,7 +3,7 @@
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
-import { Check, Copy, Pencil, RefreshCw, RotateCcw, Sparkles } from "lucide-react";
+import { Check, Copy, Pencil, RefreshCw, RotateCcw, Share2, Sparkles } from "lucide-react";
 import { memo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { modelLabel } from "../_lib/models";
@@ -89,12 +89,14 @@ function ChatMessageImpl({
   liveText,
   showOrb,
   onEdit,
+  onShare,
 }: {
   message: ChatMessageDoc;
   isStreaming: boolean;
   liveText?: string;
   showOrb?: boolean;
   onEdit?: (m: ChatMessageDoc) => void;
+  onShare?: (id: Id<"chatMessages">) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -230,6 +232,14 @@ function ChatMessageImpl({
           >
             <RefreshCw className="h-3.5 w-3.5" />
           </IconButton>
+          {onShare && message.role === "assistant" && (
+            <IconButton
+              label="Share response"
+              onClick={() => onShare(message._id)}
+            >
+              <Share2 className="h-3.5 w-3.5" />
+            </IconButton>
+          )}
         </div>
       )}
     </div>
