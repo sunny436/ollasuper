@@ -110,19 +110,24 @@ def _extract(
 
 def _render_page(raw: bytes, idx: int) -> bytes | None:
     """Render one page to PNG in a short-lived pdfium doc (own handle, thread
-    safe; freed on return, so memory stays bounded). scale 2.0 is ~144 dpi."""
+    safe; freed on return, so memory stays bounded). scale 2.0 is ~144 dpi.
+
+    The whole thing is guarded: pdfium can reject a PDF pdfplumber accepted
+    (`Data format error`), and that must skip the page — never crash the ingest."""
     import pypdfium2 as pdfium
 
-    doc = pdfium.PdfDocument(raw)
+    doc = None
     try:
+        doc = pdfium.PdfDocument(raw)
         bitmap = doc[idx].render(scale=2.0)
         buf = io.BytesIO()
         bitmap.to_pil().save(buf, format="PNG")
         return buf.getvalue()
-    except Exception:  # noqa: BLE001,S112 - unrenderable page: skip, do not fail
+    except Exception:  # noqa: BLE001,S112 - unrenderable page/doc: skip, do not fail
         return None
     finally:
-        doc.close()
+        if doc is not None:
+            doc.close()
 
 
 async def parse_pdf(
