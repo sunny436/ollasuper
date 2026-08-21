@@ -177,6 +177,34 @@ export const remove = mutation({
   },
 });
 
+/** Re-run ingestion for a FAILED file without re-uploading. Ownership-checked
+ *  (same "Not found" for missing/not-yours). Only acts on a failed row whose
+ *  staging blob still exists (a reaper-exhausted file dropped its blob and must
+ *  be re-uploaded). Resets the live-progress fields and re-dispatches. */
+export const retry = mutation({
+  args: { fileId: v.id("userFiles") },
+  handler: async (ctx, { fileId }) => {
+    const userId = await requireUserId(ctx);
+    const file = await ctx.db.get(fileId);
+    if (!file || file.userId !== userId) throw new ConvexError("Not found");
+    if (file.status !== "failed") return { ok: false, reason: "not_failed" };
+    if (!file.storageId) return { ok: false, reason: "needs_reupload" };
+    await ctx.db.patch(fileId, {
+      status: "processing",
+      error: undefined,
+      attempts: 0,
+      stage: undefined,
+      progress: undefined,
+      processedUnits: undefined,
+      totalUnits: undefined,
+      stageMessage: undefined,
+      updatedAt: Date.now(),
+    });
+    await ctx.scheduler.runAfter(0, internal.userFiles.dispatch, { fileId });
+    return { ok: true };
+  },
+});
+
 // --- orchestration (internal) --------------------------------------------
 
 export const dispatchPayload = internalQuery({

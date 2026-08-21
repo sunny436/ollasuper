@@ -46,11 +46,31 @@ const TEXT_TYPES = new Set([
   "application/json",
 ]);
 
-function classify(contentType: string): "image" | "document" | "text" {
+// Code/text files whose browser MIME is often empty or application/octet-stream
+// (e.g. .py). They ingest as plain text (the Python detector reads them), so
+// accept them by EXTENSION when the MIME does not classify.
+const CODE_EXT = new Set([
+  "py", "js", "ts", "tsx", "jsx", "go", "java", "rb", "rs", "c", "cc", "cpp",
+  "h", "hpp", "cs", "php", "swift", "kt", "scala", "sh", "bash", "sql", "yaml",
+  "yml", "toml", "ini", "cfg", "conf", "xml", "css", "scss", "less", "log",
+  "txt", "md", "markdown", "json", "csv", "tsv", "html", "htm",
+]);
+
+function extOf(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
+}
+
+function classify(
+  contentType: string,
+  name = "",
+): "image" | "document" | "text" {
   const ct = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
   if (IMAGE_TYPES.has(ct)) return "image";
   if (DOCUMENT_TYPES.has(ct)) return "document";
   if (TEXT_TYPES.has(ct) || ct.startsWith("text/")) return "text";
+  // Unknown/empty MIME (common for source files): fall back to the extension.
+  if (CODE_EXT.has(extOf(name))) return "text";
   throw new ConvexError(`Unsupported file type: ${ct || "unknown"}`);
 }
 
@@ -109,7 +129,7 @@ export const register = mutation({
     if (realSize <= 0 || realSize > MAX_BYTES) {
       throw new ConvexError("File too large (max 20MB)");
     }
-    const kind = classify(args.contentType);
+    const kind = classify(args.contentType, args.name);
 
     const clash = await ctx.db
       .query("chatAttachments")

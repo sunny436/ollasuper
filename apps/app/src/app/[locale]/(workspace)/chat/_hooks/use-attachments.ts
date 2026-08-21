@@ -42,9 +42,21 @@ const ACCEPTED = new Set([
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ]);
 
-function accepted(type: string): boolean {
-  const t = type.split(";")[0]?.trim().toLowerCase() ?? "";
-  return ACCEPTED.has(t) || t.startsWith("text/");
+// Code/text files often arrive with an empty or application/octet-stream MIME
+// (e.g. .py). They ingest as plain text, so accept them by EXTENSION too.
+const CODE_EXT = new Set([
+  "py", "js", "ts", "tsx", "jsx", "go", "java", "rb", "rs", "c", "cc", "cpp",
+  "h", "hpp", "cs", "php", "swift", "kt", "scala", "sh", "bash", "sql", "yaml",
+  "yml", "toml", "ini", "cfg", "conf", "xml", "css", "scss", "less", "log",
+  "txt", "md", "markdown", "json", "csv", "tsv", "html", "htm",
+]);
+
+function accepted(file: File): boolean {
+  const t = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (ACCEPTED.has(t) || t.startsWith("text/")) return true;
+  const dot = file.name.lastIndexOf(".");
+  const ext = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : "";
+  return CODE_EXT.has(ext);
 }
 
 /** SHA-256 hex for per-user dedup of the persistent knowledge file. */
@@ -169,7 +181,7 @@ export function useAttachments(threadId: string | null) {
           toast.error(`${file.name} is larger than 20MB`);
           continue;
         }
-        if (!accepted(file.type)) {
+        if (!accepted(file)) {
           toast.error(`${file.name}: unsupported file type`);
           continue;
         }
