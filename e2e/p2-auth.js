@@ -87,7 +87,7 @@ async function getCode(label, email) {
   });
 
   await step("Sign up (password policy + verify required)", async () => {
-    await page.click('button:has-text("Sign up")');
+    await page.click('button:has-text("Create an account")');
     await page.fill('input[name="name"]', "Auth Test");
     await page.fill('input[type="email"]', EMAIL);
     await page.fill('input[type="password"]', PW);

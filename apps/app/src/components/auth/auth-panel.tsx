@@ -17,6 +17,8 @@ import {
   ShieldCheck,
   Sparkles,
   User,
+  Users,
+  Zap,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
@@ -52,12 +54,17 @@ type Mode = "signIn" | "signUp" | "verify" | "forgot" | "reset" | "otp";
 
 const LABEL = "mb-2 block font-semibold text-[11px] text-white/60 uppercase tracking-[0.12em]";
 const FIELD_ROW =
-  "flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 transition-colors focus-within:border-[#06B6D4]/60 focus-within:bg-white/[0.06]";
+  "flex min-h-[62px] items-center gap-3.5 rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-4 transition-colors focus-within:border-[#06B6D4]/60 focus-within:bg-white/[0.06]";
 const FIELD_INPUT =
-  "w-full bg-transparent font-medium text-sm text-white placeholder-white/25 focus:outline-none";
+  "w-full bg-transparent font-medium text-[15px] text-white placeholder-white/25 focus:outline-none";
 const SUBMIT =
-  "group flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#22C1E8] to-[#7C3AED] px-8 py-3.5 font-bold text-[13px] text-white uppercase tracking-[0.14em] shadow-[0_8px_30px_rgba(6,182,212,0.35)] transition-all hover:shadow-[0_10px_38px_rgba(124,58,237,0.45)] disabled:opacity-60";
-const LINK = "font-semibold text-[#22C1E8] text-xs transition-colors hover:text-[#5AD8FA]";
+  "group flex min-h-[64px] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#22C1E8] via-[#4F8BF0] to-[#7C3AED] px-8 py-4 font-bold text-sm text-white uppercase tracking-[0.14em] shadow-[0_10px_40px_rgba(6,182,212,0.4)] transition-all hover:shadow-[0_14px_48px_rgba(124,58,237,0.5)] disabled:opacity-60";
+const LINK = "font-semibold text-[#22C1E8] text-[13px] transition-colors hover:text-[#5AD8FA]";
+// The one gradient-TEXT in the app (no bg-clip-text existed before). Needs BOTH
+// bg-clip-text and text-transparent or it renders as solid text. Four colour
+// stops → arbitrary linear-gradient, since from/via/to only expresses three.
+const WORDMARK =
+  "bg-[linear-gradient(90deg,#22D3EE_0%,#4F8BF0_34%,#7C3AED_66%,#EC4899_100%)] bg-clip-text font-black text-3xl italic uppercase tracking-tight text-transparent";
 
 // ---------------------------------------------------------------------------
 // Every sub-component below lives at MODULE SCOPE. Defining one inside the panel
@@ -92,37 +99,25 @@ function SubmitButton({ pending, label }: { pending: boolean; label: string }) {
   );
 }
 
-function TabButton({
-  label,
+/** One cell of the left-column 2×2 feature grid. Module scope like the rest. */
+function FeatureCard({
   icon: Icon,
-  active,
-  onClick,
+  title,
+  desc,
+  accent,
 }: {
-  label: string;
-  icon: typeof User;
-  active: boolean;
-  onClick: () => void;
+  icon: typeof Sparkles;
+  title: string;
+  desc: string;
+  accent: string;
 }) {
   return (
-    <div className="relative w-full">
-      <button
-        type="button"
-        onClick={onClick}
-        className={`flex w-full items-center gap-3 rounded-xl px-5 py-4 text-left font-bold text-sm uppercase tracking-[0.14em] transition-colors duration-300 ${
-          active ? "text-white" : "text-white/45 hover:text-white/80"
-        }`}
-      >
-        <Icon className="relative z-10 h-4 w-4" />
-        <span className="relative z-10 flex-1">{label}</span>
-        {active && <ArrowRight className="relative z-10 h-4 w-4" />}
-      </button>
-      {active && (
-        <m.div
-          layoutId="activeTabNotch"
-          className="absolute inset-0 rounded-xl border border-white/15 bg-white/10 shadow-lg backdrop-blur-sm"
-          transition={{ type: "spring", stiffness: 380, damping: 30 }}
-        />
-      )}
+    <div className="flex flex-col gap-2 rounded-2xl border border-[#7C3AED]/15 bg-white/[0.03] p-4 backdrop-blur-sm transition-colors hover:border-[#7C3AED]/30">
+      <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04]">
+        <Icon className={`h-4 w-4 ${accent}`} />
+      </span>
+      <p className="font-semibold text-[13px] text-white">{title}</p>
+      <p className="text-[11px] leading-snug text-white/45">{desc}</p>
     </div>
   );
 }
@@ -366,7 +361,10 @@ export function AuthPanel() {
 
   const copy: Record<Mode, { title: string; sub: string }> = {
     signIn: { title: "Welcome back", sub: "Enter your credentials to access your workspace" },
-    signUp: { title: "Create account", sub: "Set up your Ollasuper workspace in seconds" },
+    signUp: {
+      title: "Your Intelligence Starts Here",
+      sub: "Create your workspace and bring your ideas to life.",
+    },
     verify: { title: "Verify email", sub: "We sent a one-time code to confirm it is you" },
     forgot: { title: "Reset password", sub: "We will email you a code to set a new password" },
     reset: { title: "New password", sub: "Enter the code and choose a new password" },
@@ -378,47 +376,78 @@ export function AuthPanel() {
     <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#07080E] p-4 font-sans selection:bg-[#7C3AED]/40 selection:text-white md:p-8">
       <AmbientBackdrop />
 
-      {/* Neon halo sits behind the card, hence -inset and -z-10. */}
-      <div className="relative">
-        <div className="pointer-events-none absolute -inset-8 -z-10 rounded-[40px] bg-gradient-to-r from-cyan-500/20 via-purple-600/20 to-pink-500/20 blur-[70px]" />
-        <div className="relative flex min-h-[620px] w-full max-w-[980px] flex-col overflow-hidden rounded-[28px] border border-white/10 bg-white/[0.03] shadow-[0_30px_90px_rgba(0,0,0,0.65)] backdrop-blur-2xl md:flex-row">
-        {/* Left brand panel */}
-        <div className="relative flex w-full select-none flex-col justify-between overflow-hidden border-white/10 bg-gradient-to-br from-[#12203F] via-[#1B1B44] to-[#3B1B5E] p-8 md:w-[340px] md:border-r md:p-10">
-          <div className="pointer-events-none absolute -inset-[40%] opacity-20 mix-blend-overlay">
-            <div className="absolute -left-[20%] top-[18%] h-[110px] w-[200%] rotate-[-35deg] bg-white/70" />
-            <div className="absolute -left-[20%] top-[48%] h-[150px] w-[200%] rotate-[-35deg] bg-cyan-300/60" />
-            <div className="absolute -left-[20%] top-[76%] h-[95px] w-[200%] rotate-[-35deg] bg-fuchsia-400/60" />
-          </div>
+      {/* Near-full-page auth shell; the neon halo sits behind it (-inset, -z-10). */}
+      <div className="relative h-auto w-[92vw] max-w-[1360px] md:h-[86vh] md:max-h-[860px]">
+        <div className="pointer-events-none absolute -inset-8 -z-10 rounded-[44px] bg-gradient-to-r from-cyan-500/20 via-purple-600/20 to-pink-500/20 blur-[70px]" />
+        <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[32px] border border-white/10 bg-white/[0.03] shadow-[0_30px_90px_rgba(0,0,0,0.65)] backdrop-blur-2xl md:flex-row">
 
-          <div className="relative z-10">
-            <div className="flex items-center gap-3">
-              <span className="font-black text-2xl text-[#5AD8FA] tracking-[0.06em]">OLLASUPER</span>
-              <span className="flex items-center gap-1 rounded-full border border-[#22C1E8]/40 bg-[#22C1E8]/10 px-2.5 py-1 font-bold text-[10px] text-[#5AD8FA] uppercase tracking-widest">
-                <Sparkles className="h-2.5 w-2.5" />
-                AI V2.0
-              </span>
+        {/* ===== LEFT: constant branding for every mode (no tab nav, no AI pill) ===== */}
+        <div className="relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-[#4F8BF0]/10 p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
+          {/* Subtle orbital / radial art — behind content, never overlapping. */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 -z-0 bg-[radial-gradient(circle_at_50%_28%,rgba(124,58,237,0.14),transparent_60%)]"
+          />
+
+          {/* Top: reused orb housing (VERBATIM) + wordmark + divider + taglines. */}
+          <div className="relative z-10 flex flex-col items-center gap-5">
+            <div className="relative flex h-28 w-28 items-center justify-center rounded-full bg-gradient-to-tr from-[#06B6D4] via-[#7C3AED] to-[#EC4899] p-[3px] shadow-[0_0_50px_rgba(6,182,212,0.55)]">
+              <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-full border border-white/20 bg-[#0D0E15]">
+                <IntelligenceCore />
+              </div>
             </div>
-            <p className="mt-2 font-medium text-white/50 text-xs">
-              All-In-One Super Intelligence Workspace
-            </p>
+
+            <span className={WORDMARK}>OLLASUPER</span>
+
+            {/* ──── ✦ ──── */}
+            <div className="flex items-center gap-3">
+              <span className="h-px w-12 bg-gradient-to-r from-transparent to-white/25" />
+              <span className="text-[11px] text-[#5AD8FA] drop-shadow-[0_0_6px_rgba(90,216,250,0.7)]">
+                ✦
+              </span>
+              <span className="h-px w-12 bg-gradient-to-l from-transparent to-white/25" />
+            </div>
+
+            <div className="text-center">
+              <p className="font-semibold text-[20px] text-white">
+                All-in-One Super Intelligence Workspace
+              </p>
+              <p className="mt-2 text-[15px] text-white/45">
+                AI tools for creators, builders &amp; dreamers.
+              </p>
+            </div>
           </div>
 
-          <div className="relative z-20 my-10 flex flex-col gap-3 md:my-0">
-            <TabButton
-              label="Login"
-              icon={User}
-              active={mode === "signIn"}
-              onClick={() => setMode("signIn")}
+          {/* Middle: 2×2 feature cards (desktop only). */}
+          <div className="relative z-10 my-8 hidden w-full max-w-sm grid-cols-2 gap-3 md:grid">
+            <FeatureCard
+              icon={Zap}
+              title="Super Fast"
+              desc="AI that works as fast as you think"
+              accent="text-[#5AD8FA]"
             />
-            <TabButton
-              label="Sign up"
+            <FeatureCard
               icon={Sparkles}
-              active={mode === "signUp"}
-              onClick={() => setMode("signUp")}
+              title="All-in-One"
+              desc="Everything you need, in one workspace"
+              accent="text-[#4F8BF0]"
+            />
+            <FeatureCard
+              icon={ShieldCheck}
+              title="Privacy First"
+              desc="Your data, your control, always secure"
+              accent="text-[#7C3AED]"
+            />
+            <FeatureCard
+              icon={Users}
+              title="Built for Teams"
+              desc="Create, collaborate and achieve more"
+              accent="text-[#EC4899]"
             />
           </div>
 
-          <div className="relative z-10 flex items-center justify-between border-white/10 border-t pt-5 text-[11px] text-white/40">
+          {/* Footer (desktop only). */}
+          <div className="relative z-10 hidden w-full items-center justify-between border-white/10 border-t pt-5 text-[11px] text-white/40 md:flex">
             <span>&copy; {COPYRIGHT_YEAR} Ollasuper Workspaces</span>
             <span className="flex items-center gap-1.5 text-[#5AD8FA]/80">
               <ShieldCheck className="h-3 w-3" /> Convex Auth
@@ -426,21 +455,19 @@ export function AuthPanel() {
           </div>
         </div>
 
-        {/* Right form panel */}
-        <div className="relative z-10 flex flex-1 flex-col justify-between p-8 md:p-12">
-          <div className="mb-8 flex flex-col items-center text-center">
-            <div className="relative flex h-28 w-28 items-center justify-center rounded-full bg-gradient-to-tr from-[#06B6D4] via-[#7C3AED] to-[#EC4899] p-[3px] shadow-[0_0_50px_rgba(6,182,212,0.55)]">
-              <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-full border border-white/20 bg-[#0D0E15]">
-                <IntelligenceCore />
-              </div>
+        {/* ===== RIGHT: mode-specific form ===== */}
+        {/* m-auto (not justify-center) centres the block but lets a tall mode
+            scroll from the top instead of clipping it under overflow-y-auto. */}
+        <div className="relative z-10 flex flex-1 flex-col overflow-y-auto p-8 md:p-12">
+          <div className="m-auto w-full max-w-md">
+            <div className="mb-8 text-center">
+              {/* No text-transform: renders copy verbatim ("Welcome back"). */}
+              <h1 className="font-bold text-[40px] leading-tight text-white">
+                {copy[mode].title}
+              </h1>
+              <p className="mt-2 text-[15px] text-white/45">{copy[mode].sub}</p>
             </div>
-            <h1 className="mt-6 font-black text-3xl text-white uppercase tracking-[0.08em]">
-              {copy[mode].title}
-            </h1>
-            <p className="mt-2 text-sm text-white/45">{copy[mode].sub}</p>
-          </div>
 
-          <div className="mx-auto w-full max-w-md">
             {/* mode="wait" is load-bearing, not decorative: e2e/p2-auth.js fills
                 input[type="email"] without .first(), so two mounted forms would
                 be a Playwright strict-mode violation. */}
@@ -802,9 +829,37 @@ export function AuthPanel() {
                 </PanelFrame>
               )}
             </AnimatePresence>
-          </div>
 
-          <OAuthRow onGoogle={() => void signIn("google")} disabled={pending} />
+            {/* OR divider above the social row. */}
+            <div className="my-6 flex items-center gap-4">
+              <span className="h-px flex-1 bg-white/10" />
+              <span className="font-semibold text-[11px] text-white/30 uppercase tracking-widest">
+                or
+              </span>
+              <span className="h-px flex-1 bg-white/10" />
+            </div>
+
+            <OAuthRow onGoogle={() => void signIn("google")} disabled={pending} />
+
+            {/* Mode-aware bottom link — replaces the removed Login/Sign-up tabs.
+                Only calls setMode; lives outside AnimatePresence. */}
+            {mode === "signIn" && (
+              <p className="mt-6 text-center text-[13px] text-white/45">
+                New to OllaSuper?{" "}
+                <button type="button" className={LINK} onClick={() => setMode("signUp")}>
+                  Create an account →
+                </button>
+              </p>
+            )}
+            {mode === "signUp" && (
+              <p className="mt-6 text-center text-[13px] text-white/45">
+                Already have an account?{" "}
+                <button type="button" className={LINK} onClick={() => setMode("signIn")}>
+                  Sign in
+                </button>
+              </p>
+            )}
+          </div>
         </div>
         </div>
       </div>
