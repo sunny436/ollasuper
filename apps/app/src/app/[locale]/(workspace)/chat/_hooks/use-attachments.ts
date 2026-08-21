@@ -98,7 +98,13 @@ export function useAttachments(threadId: string | null) {
         const storageId = await new Promise<string>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("POST", url);
-          xhr.setRequestHeader("Content-Type", file.type);
+          // Code files (.py, …) can have an EMPTY browser MIME, which Convex
+          // storage rejects with a 400. Fall back so the upload always has a
+          // valid content-type (register/classify handle the real kind).
+          xhr.setRequestHeader(
+            "Content-Type",
+            file.type || "application/octet-stream",
+          );
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
               patch(localId, {
