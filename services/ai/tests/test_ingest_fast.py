@@ -10,6 +10,7 @@ import asyncio
 import time
 
 from app.ingest import embed as embedmod
+from app.ingest import ocr as ocrmod
 from app.ingest import pdf as pdfmod
 from app.ingest.chunk import chunk_docs_bounded
 from app.ingest.pdf import parse_pdf
@@ -120,3 +121,37 @@ def test_chunk_docs_bounded_reports_truncation():
     small = NormalizedDoc(text="just a little text", metadata={"source": "s"})
     chunks2, truncated2 = chunk_docs_bounded([small], "text", s)
     assert truncated2 is False
+
+
+# --- local OCR (RapidOCR) routing ------------------------------------------
+
+
+
+async def test_ocr_rapidocr_high_confidence_used(monkeypatch):
+    monkeypatch.setattr(
+        ocrmod, "_rapidocr_sync", lambda raw: ("BLUEFIN7742 report", 0.92)
+    )
+    docs = await ocrmod.ocr_image(b"x", "image/png", name="s.png", settings=SETTINGS)
+    assert docs[0].text == "BLUEFIN7742 report"
+    assert docs[0].metadata["ocr"] == "rapidocr"  # local, no OpenRouter call
+
+
+async def test_ocr_lowconf_falls_back_to_vision(monkeypatch):
+    monkeypatch.setattr(ocrmod, "_rapidocr_sync", lambda raw: ("grbld", 0.10))
+
+    async def fake_vision(raw, mime, *, name, settings):
+        return [
+            NormalizedDoc(text="VISIONTEXT", metadata={"source": name, "ocr": "vision"})
+        ]
+
+    monkeypatch.setattr(ocrmod, "_vision_ocr", fake_vision)
+    docs = await ocrmod.ocr_image(b"x", "image/png", name="s.png", settings=SETTINGS)
+    assert docs[0].text == "VISIONTEXT"
+    assert docs[0].metadata["ocr"] == "vision"
+
+
+async def test_ocr_empty_no_fallback_returns_empty(monkeypatch):
+    monkeypatch.setattr(ocrmod, "_rapidocr_sync", lambda raw: ("", 0.0))
+    s = SETTINGS.model_copy(update={"ai_ocr_vision_fallback": False})
+    docs = await ocrmod.ocr_image(b"x", "image/png", name="s.png", settings=s)
+    assert docs == []

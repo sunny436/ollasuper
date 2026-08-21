@@ -200,7 +200,10 @@ async def test_ocr_failure_returns_empty_not_raise(monkeypatch):
     monkeypatch.setattr(ocrmod, "build_llm", boom)
     buf = io.BytesIO()
     Image.new("RGB", (12, 12), "white").save(buf, format="PNG")
+    # Pin the vision engine so this exercises the vision-provider failure path
+    # directly (hermetic + fast; no local model load).
+    s = SETTINGS.model_copy(update={"ai_ocr_engine": "vision"})
     docs = await ocrmod.ocr_image(
-        buf.getvalue(), "image/png", name="shot.png", settings=SETTINGS
+        buf.getvalue(), "image/png", name="shot.png", settings=s
     )
     assert docs == []

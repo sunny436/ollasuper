@@ -266,7 +266,7 @@ export function ChatInput() {
               type="file"
               multiple
               hidden
-              accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.py,.js,.ts,.tsx,.jsx,.go,.java,.rb,.rs,.c,.cc,.cpp,.h,.hpp,.cs,.php,.swift,.kt,.scala,.sh,.sql,.yaml,.yml,.toml,.ini,.xml,.css,.scss,.log,.md,.csv,.html"
               onChange={(e) => {
                 attachments.add(Array.from(e.target.files ?? []));
                 e.target.value = "";

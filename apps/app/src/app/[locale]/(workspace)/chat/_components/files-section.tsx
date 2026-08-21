@@ -11,6 +11,7 @@ import {
   ChevronRight,
   FileText,
   Loader2,
+  RotateCcw,
   Trash2,
 } from "lucide-react";
 import { useState } from "react";
@@ -117,6 +118,7 @@ function FileItem({
   onDelete: () => Promise<void>;
 }) {
   const processing = file.status === "processing";
+  const retryFile = useMutation(api.userFiles.retry);
   return (
     <div className="group flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-accent">
       <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -155,6 +157,30 @@ function FileItem({
         error={file.error}
         stageMessage={file.stageMessage}
       />
+      {file.status === "failed" && (
+        <button
+          type="button"
+          title="Retry ingestion"
+          aria-label="Retry ingestion"
+          onClick={async () => {
+            try {
+              const r = await retryFile({ fileId: file._id });
+              if (r?.ok) toast.success("Retrying…");
+              else
+                toast.error(
+                  r?.reason === "needs_reupload"
+                    ? "Please re-upload this file"
+                    : "Couldn't retry",
+                );
+            } catch {
+              toast.error("Couldn't retry");
+            }
+          }}
+          className="shrink-0 rounded p-0.5 text-primary/40 transition hover:bg-primary/10 hover:text-primary/70"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+        </button>
+      )}
       <ConfirmButton
         label={<Trash2 className="h-3.5 w-3.5" />}
         title="Delete file?"
