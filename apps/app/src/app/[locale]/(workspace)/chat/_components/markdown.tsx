@@ -155,7 +155,7 @@ const components: Components = {
     return <CodeBlock code={text} lang={lang} complete />;
   },
   p: ({ children, ...props }) => (
-    <p {...props} className="my-2 break-words leading-[1.7] first:mt-0 last:mb-0">
+    <p {...props} className="my-3 break-words leading-[1.7] first:mt-0 last:mb-0">
       {children}
     </p>
   ),
@@ -166,8 +166,8 @@ const components: Components = {
         {...props}
         className={
           task
-            ? "my-2 space-y-1 pl-1"
-            : "my-2 list-disc space-y-1 pl-5"
+            ? "my-2 space-y-1.5 pl-1"
+            : "my-2 list-disc space-y-1.5 pl-5"
         }
       >
         {children}
@@ -175,7 +175,7 @@ const components: Components = {
     );
   },
   ol: ({ children, ...props }) => (
-    <ol {...props} className="my-2 list-decimal space-y-1 pl-5">
+    <ol {...props} className="my-2 list-decimal space-y-1.5 pl-5">
       {children}
     </ol>
   ),
@@ -203,17 +203,17 @@ const components: Components = {
       />
     ) : null,
   h1: ({ children, ...props }) => (
-    <h1 {...props} className="mb-2 mt-4 text-lg font-medium first:mt-0">
+    <h1 {...props} className="mb-3 mt-4 text-lg font-semibold first:mt-0">
       {children}
     </h1>
   ),
   h2: ({ children, ...props }) => (
-    <h2 {...props} className="mb-2 mt-4 text-base font-medium first:mt-0">
+    <h2 {...props} className="mb-3 mt-4 text-base font-semibold first:mt-0">
       {children}
     </h2>
   ),
   h3: ({ children, ...props }) => (
-    <h3 {...props} className="mb-1.5 mt-3 text-sm font-medium first:mt-0">
+    <h3 {...props} className="mb-1.5 mt-3 text-sm font-semibold first:mt-0">
       {children}
     </h3>
   ),
@@ -241,7 +241,7 @@ const components: Components = {
   blockquote: ({ children, ...props }) => (
     <blockquote
       {...props}
-      className="my-3 border-l-2 border-brand/40 pl-3 text-primary/70"
+      className="my-3 rounded-md border-l-2 border-brand/40 bg-primary/[0.03] py-2 pl-3 pr-3 text-primary/70"
     >
       {children}
     </blockquote>
@@ -358,7 +358,7 @@ function MarkdownImpl({
   const wholeDoc = !streaming && FOOTNOTE_DEF.test(content);
 
   return (
-    <div className="text-[15px] text-primary/90">
+    <div className="text-[15.5px] text-primary/90">
       {wholeDoc ? (
         <ReactMarkdown
           remarkPlugins={REMARK_PLUGINS}
