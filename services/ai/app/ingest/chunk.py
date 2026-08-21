@@ -45,9 +45,12 @@ def _markdown_sectioned(docs: list[NormalizedDoc]) -> list[NormalizedDoc]:
     return out or docs
 
 
-def chunk_docs(
+def chunk_docs_bounded(
     docs: list[NormalizedDoc], file_type: FileType, settings: Settings
-) -> list[Chunk]:
+) -> tuple[list[Chunk], bool]:
+    """Like chunk_docs, but also reports whether the char/chunk cap truncated the
+    document. `truncated` lets the pipeline tell the user the truth ("processed
+    the first N chunks") instead of silently dropping the tail."""
     if file_type == "markdown":
         docs = _markdown_sectioned(docs)
 
@@ -63,7 +66,7 @@ def chunk_docs(
                 total_chars >= settings.ai_ingest_max_chars
                 or len(chunks) >= settings.ai_ingest_max_chunks
             ):
-                return chunks
+                return chunks, True
             total_chars += len(piece)
             meta = dict(doc.metadata)
             meta["page"] = doc.page
@@ -79,4 +82,10 @@ def chunk_docs(
                 )
             )
             idx += 1
-    return chunks
+    return chunks, False
+
+
+def chunk_docs(
+    docs: list[NormalizedDoc], file_type: FileType, settings: Settings
+) -> list[Chunk]:
+    return chunk_docs_bounded(docs, file_type, settings)[0]

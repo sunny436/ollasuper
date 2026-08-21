@@ -230,9 +230,29 @@ http.route({
           detectedType: str(body.detectedType),
           contentHash: str(body.contentHash),
           error: str(body.error),
+          note: str(body.note),
         });
         if ("unknown" in r && r.unknown)
           return aiJson({ error: "unknown file" }, 404);
+        return aiJson(r);
+      }
+      case "file-progress": {
+        // Intermediate ingestion progress (status stays `processing`). Same
+        // ingestId capability as "file"; best-effort, so an unknown file is a
+        // benign no-op rather than an error.
+        const fileId = typeof body.fileId === "string" ? body.fileId : null;
+        const stage = typeof body.stage === "string" ? body.stage : null;
+        if (!fileId || !stage) return aiJson({ error: "bad request" }, 400);
+        const num = (x: unknown) => (typeof x === "number" ? x : undefined);
+        const str = (x: unknown) => (typeof x === "string" ? x : undefined);
+        const r = await ctx.runMutation(internal.userFiles.setProgress, {
+          fileId,
+          stage,
+          progress: num(body.progress),
+          processedUnits: num(body.processedUnits),
+          totalUnits: num(body.totalUnits),
+          stageMessage: str(body.stageMessage),
+        });
         return aiJson(r);
       }
       default:

@@ -156,12 +156,15 @@ class ConvexClient:
         detected_type: str | None = None,
         content_hash: str | None = None,
         error: str | None = None,
+        note: str | None = None,
     ) -> dict:
         """Report terminal ingestion status back to Convex (op:"file").
 
         Goes through the retrying ingress() so a transient Convex blip doesn't
         strand the file in `processing` (the stall reaper is the backstop). A 404
         (file deleted mid-ingest) surfaces as {unknown: True} and is not an error.
+        `note` is a truthful partial-success message (e.g. a content-limit
+        truncation), stored alongside a `ready` status.
         """
         body: dict = {"op": "file", "fileId": ingest_id, "status": status}
         if chunk_count is not None:
@@ -176,6 +179,34 @@ class ConvexClient:
             body["contentHash"] = content_hash
         if error is not None:
             body["error"] = error[:500]
+        if note is not None:
+            body["note"] = note[:300]
+        return await self.ingress(body)
+
+    async def set_file_progress(
+        self,
+        ingest_id: str,
+        *,
+        stage: str,
+        progress: int | None = None,
+        processed_units: int | None = None,
+        total_units: int | None = None,
+        message: str | None = None,
+    ) -> dict:
+        """Report intermediate ingestion progress (op:"file-progress"), status
+        stays `processing`. Best-effort and coarse/throttled by the caller: the
+        userFiles row it patches is behind a usePaginatedQuery, so each write
+        re-sends the whole list to every subscriber (mirrors the chat two-write
+        discipline). The terminal set_file_status is the authority."""
+        body: dict = {"op": "file-progress", "fileId": ingest_id, "stage": stage}
+        if progress is not None:
+            body["progress"] = max(0, min(100, int(progress)))
+        if processed_units is not None:
+            body["processedUnits"] = processed_units
+        if total_units is not None:
+            body["totalUnits"] = total_units
+        if message is not None:
+            body["stageMessage"] = message[:120]
         return await self.ingress(body)
 
     async def healthy(self) -> bool:

@@ -133,6 +133,17 @@ export default defineSchema({
     parserUsed: v.optional(v.string()),
     detectedType: v.optional(v.string()),
     error: v.optional(v.string()),
+    // Truthful real-time ingestion progress (all optional -> additive, safe on
+    // the live deployment). Written coarsely/throttled by Python's file-progress
+    // callback while status === "processing"; cleared on a terminal status.
+    // `note` is a partial-success message that survives onto a `ready` row
+    // (e.g. a content-limit truncation).
+    stage: v.optional(v.string()),
+    progress: v.optional(v.number()),
+    processedUnits: v.optional(v.number()),
+    totalUnits: v.optional(v.number()),
+    stageMessage: v.optional(v.string()),
+    note: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

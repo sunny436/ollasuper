@@ -34,6 +34,16 @@ export default function FilesPage() {
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !current) return;
+    // Server is authoritative (pipeline rejects > ai_max_attachment_bytes), but
+    // refuse oversize here too so the user gets an instant, clear notification
+    // instead of a full upload that then fails. Mirrors use-attachments.ts.
+    const MAX_BYTES = 20 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      const mb = (file.size / (1024 * 1024)).toFixed(1);
+      toast.error(`File too large: ${mb} MB (maximum 20 MB)`);
+      if (inputRef.current) inputRef.current.value = "";
+      return;
+    }
     setBusy(true);
     try {
       const url = await generateUploadUrl({ workspaceId: current });

@@ -145,6 +145,28 @@ class Settings(BaseSettings):
     ai_ingest_max_chunks: int = 2_000
     ai_ingest_parse_timeout_s: float = 20.0
     ai_ingest_embed_batch: int = 64
+    # Embedding is the primary throughput lever: langchain's aembed_documents
+    # awaits its 64-text batches SEQUENTIALLY (base.py:778, our
+    # check_embedding_ctx_length=False path), so a large file waits one round
+    # trip per batch. We run up to this many batches concurrently instead,
+    # order-preserving, bounded so the provider's TPM/RPM (429s) is respected.
+    # Tuned empirically by bench_ingest.py.
+    ai_ingest_embedding_concurrency: int = 4
+    # Scanned-PDF pages are OCR'd through a vision model — bounded-parallel, not
+    # globally sequential. Bound respects the provider rate limit and memory
+    # (each rendered page PNG is held only for its OCR call, then discarded).
+    ai_ingest_ocr_concurrency: int = 6
+    # Per-page OCR deadline. The shared LLM client allows 180s x 2 retries (~9
+    # min for ONE page); an ingest cannot afford that, so cap each OCR call.
+    ai_ingest_ocr_timeout_s: float = 45.0
+    # Whole-file wall-clock ceiling, comfortably under the Convex stall reaper
+    # (INGEST_STALL_MS = 10 min). On hit: persist what was processed + a truthful
+    # "processed first N" note. Bounds cost and kills any runaway.
+    ai_ingest_overall_deadline_s: float = 300.0
+    # Progress writes hit a userFiles row that a usePaginatedQuery subscribes to,
+    # so every write re-sends the whole list. Coalesce: emit at most one update
+    # per this interval (stage transitions always flush).
+    ai_ingest_progress_min_interval_ms: int = 750
     ai_max_ingests_per_hour: int = 60
     # Ingestion runs on its OWN concurrency pool so a burst of uploads cannot
     # starve chat generations (which use ai_max_concurrent_*).
