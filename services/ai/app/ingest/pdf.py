@@ -152,17 +152,26 @@ async def _render(raw: bytes, idx: int, settings: Settings) -> bytes | None:
     if settings.ai_ocr_render_workers <= 0:
         return await asyncio.to_thread(_render_page, raw, idx)
     loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(
-            _get_render_pool(settings.ai_ocr_render_workers), render_page, raw, idx
-        )
-    except BrokenProcessPool:
-        log.warning("pdf_render_worker_crashed", extra={"page": idx + 1})
-        shutdown_render_pool()  # recreate on next page
-        return None
-    except Exception:  # noqa: BLE001 - a render failure must never fail the file
-        log.warning("pdf_render_failed", extra={"page": idx + 1})
-        return None
+    # A worker segfault fails every in-flight future with BrokenProcessPool.
+    # The crash is often non-deterministic (memory corruption), so recreate the
+    # pool and retry ONCE in a fresh worker before giving up on the page.
+    for attempt in (1, 2):
+        try:
+            return await loop.run_in_executor(
+                _get_render_pool(settings.ai_ocr_render_workers), render_page, raw, idx
+            )
+        except BrokenProcessPool:
+            log.warning(
+                "pdf_render_worker_crashed",
+                extra={"page": idx + 1, "attempt": attempt},
+            )
+            shutdown_render_pool()
+            if attempt == 2:
+                return None
+        except Exception:  # noqa: BLE001 - a render failure must never fail the file
+            log.warning("pdf_render_failed", extra={"page": idx + 1})
+            return None
+    return None
 
 
 async def parse_pdf(
