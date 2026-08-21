@@ -2,11 +2,19 @@
 
 import { FilesSection } from "./files-section";
 import { IntelligenceCore } from "./intelligence-core";
+import { clearDisplayCaches } from "@/lib/display-cache";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
-import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import {
+  useConvex,
+  useMutation,
+  usePaginatedQuery,
+  useQuery,
+} from "convex/react";
+import { useCachedThreads, type CachedThread } from "../_hooks/use-cached-threads";
 import { useCachedUser } from "../_hooks/use-cached-user";
+import { prefetchThread, releasePrefetch } from "../_lib/prefetch";
 import {
   LogOut,
   MessageSquare,
@@ -136,7 +144,10 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
             <div className="my-1.5 border-t border-border" />
             <button
               type="button"
-              onClick={() => void signOut()}
+              onClick={() => {
+                clearDisplayCaches();
+                void signOut();
+              }}
               className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs text-primary/75 transition hover:bg-primary/5 hover:text-primary"
             >
               <LogOut className="h-3.5 w-3.5 text-primary/45" /> Log out
@@ -170,6 +181,7 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
 }
 export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
+  const convex = useConvex();
   const params = useParams<{ threadId?: string }>();
   const activeId = params?.threadId ?? null;
   const { current } = useWorkspace();
@@ -181,6 +193,13 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
     const id = setTimeout(() => setDebounced(query.trim()), 220);
     return () => clearTimeout(id);
   }, [query]);
+
+  // Once a thread is the active route, its own components subscribe to the same
+  // queries the hover-prefetch warmed — release the held warm subs so they do
+  // not linger past their usefulness (the TTL is only a backstop).
+  useEffect(() => {
+    if (activeId) releasePrefetch(activeId);
+  }, [activeId]);
 
   const createThread = useMutation(api.chat.threads.create);
   const renameThread = useMutation(api.chat.threads.rename);
@@ -194,7 +213,15 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
     { initialNumItems: PAGE },
   );
 
-  const threads = (results ?? []) as unknown as ThreadItem[];
+  // Instant on reload: paint the last thread list from localStorage while the
+  // live paginated query reconnects, then hand off to live. showSkeleton is only
+  // true when there is no cache to paint.
+  const loadingFirst = status === "LoadingFirstPage";
+  const { threads: cachedThreads, showSkeleton } = useCachedThreads(
+    (results ?? []) as unknown as CachedThread[],
+    loadingFirst,
+  );
+  const threads = cachedThreads as unknown as ThreadItem[];
 
   // Real server-side full-text search. Client-side filtering would only ever
   // match the ~30 titles already loaded, silently missing everything older and
@@ -292,7 +319,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-        {status === "LoadingFirstPage" && (
+        {showSkeleton && (
           <div className="space-y-1.5 px-1">
             {[0, 1, 2, 3, 4, 5].map((i) => (
               <div
@@ -303,7 +330,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         )}
 
-        {status !== "LoadingFirstPage" && filtered.length === 0 && (
+        {!showSkeleton && filtered.length === 0 && (
           <div className="px-2 py-6 text-center">
             <p className="text-xs text-primary/50">
               {query
@@ -342,6 +369,8 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                     href={`/chat/${t._id}`}
                     prefetch={false}
                     onClick={onNavigate}
+                    onPointerEnter={() => prefetchThread(convex, t._id)}
+                    onFocus={() => prefetchThread(convex, t._id)}
                     className="flex min-w-0 flex-1 items-center gap-2.5 truncate"
                   >
                     <MessageSquare
