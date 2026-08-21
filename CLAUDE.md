@@ -271,3 +271,32 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## HARD ENGINEERING GUARDRAILS — NON-NEGOTIABLE
+
+- Never claim DONE without actual verification evidence.
+- For user-facing production changes, headed Chrome + real-user testing on the deployed production app is the final acceptance gate.
+- Unit tests, API tests, mocks, and DB checks are supporting evidence only.
+- If production verification fails, the task is NOT DONE. Fix → redeploy → retest.
+- Never fake success, progress, Ready, test results, or suppress failures.
+- Always write a minimum-safe code plan before implementation.
+- The plan must contain only changes necessary to satisfy the requirement. No unnecessary refactoring, abstraction, dependency, infrastructure, or architecture changes.
+- Do not spend tokens/time explaining obvious things or generating unnecessary plans. First inspect the existing code, identify the real root cause, then propose the smallest safe solution.
+- Do not implement speculative fixes. Measure/investigate first when the bottleneck or root cause is uncertain.
+- Never modify working code just for "cleanup" during an unrelated task.
+- Never introduce Redis/Kafka/Celery/new services/databases/etc. unless evidence proves they are required.
+- For performance work: measure → identify bottleneck → minimum change → measure again.
+- For bugs: reproduce → diagnose root cause → minimum-safe fix → regression test → production verification.
+- Test the complete requirement, not only the happy path or easiest scenario.
+- Use realistic user behavior and realistic/large inputs when applicable.
+- For security/multi-tenant features, test both authorized and unauthorized access with real accounts where applicable.
+- If something is not verified, explicitly say Verification pending. Never imply it works.
+- Before declaring DONE, provide concrete evidence of what was implemented and what was actually verified.
+
+### STRICT COMPLETION RULE
+
+Implementation complete ≠ Task complete.
+
+A task becomes DONE only after the required verification passes.
+
+Do not optimize for producing more code or more explanation. Optimize for the smallest correct change and the strongest proof that it works.
