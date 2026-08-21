@@ -49,7 +49,7 @@ export function LazyMarkdown({ content, streaming }: MarkdownProps) {
 
   if (Comp) return <Comp content={content} streaming={streaming} />;
   return (
-    <div className="whitespace-pre-wrap break-words text-[15px] leading-[1.7] text-primary/90">
+    <div className="whitespace-pre-wrap break-words text-[15.5px] leading-[1.7] text-primary/90">
       {content}
     </div>
   );

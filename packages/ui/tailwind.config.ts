@@ -20,12 +20,12 @@ const config = {
     extend: {
       fontFamily: {
         departure: ["var(--font-departure-mono)"],
-        // Inter is the app-wide UI face. `--font-inter` is defined on <html>
-        // (apps/app layout) so Tailwind preflight's html font-family resolves
-        // it. Safe to remap sans globally here: the e2e suite has no screenshot
-        // comparisons (only debug page.screenshot saves), so nothing regresses.
+        // Plus Jakarta Sans is the app-wide UI face. `--font-plus-jakarta-sans` is
+        // defined on <html> (apps/app layout) so Tailwind preflight's html
+        // font-family resolves it. Remapping sans globally here is safe: the e2e
+        // suite has no screenshot comparisons, so nothing regresses.
         sans: [
-          "var(--font-inter)",
+          "var(--font-plus-jakarta-sans)",
           "ui-sans-serif",
           "system-ui",
           "-apple-system",
