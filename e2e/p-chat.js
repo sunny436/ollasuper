@@ -156,6 +156,28 @@ const step = async (n, f) => {
     );
   });
 
+  await step("the user's own message renders instantly (optimistic)", async () => {
+    // No generation may be in flight, or the send is rejected as a duplicate.
+    await settle(page);
+    const msg = `OPTIMISTIC-${Date.now()}`;
+    await page.locator("#chat-composer").fill(msg);
+    const t0 = Date.now();
+    await page.keyboard.press("Enter");
+    // The user's bubble must appear WITHOUT waiting for the backend. A prod
+    // mutation + reactive query round-trip is hundreds of ms; the optimistic
+    // row is local React state, so it paints in tens of ms.
+    await page.waitForFunction(
+      (m) => document.body.innerText.includes(m),
+      msg,
+      { timeout: 2000 },
+    );
+    const dt = Date.now() - t0;
+    console.log(`      ↳ user message visible in ${dt}ms`);
+    if (dt > 800)
+      throw new Error(`user message took ${dt}ms — not rendering optimistically`);
+    await settle(page, 90000);
+  });
+
   await step("the thread is listed in the conversation sidebar", async () => {
     const nav = page.locator('nav[aria-label="Conversations"]').first();
     await nav.waitFor({ timeout: 5000 });
@@ -163,13 +185,16 @@ const step = async (n, f) => {
     if (count === 0) throw new Error("no conversations listed");
   });
 
-  await step("search finds the conversation", async () => {
-    await page.getByLabel("Search conversations").fill("PONG");
-    await page.waitForTimeout(1200); // debounce + round trip
+  await step("the conversation search bar is gone", async () => {
+    // The "Search conversations…" bar was removed. Assert it no longer exists,
+    // by label or placeholder, and that the thread list still renders.
+    if ((await page.getByLabel("Search conversations").count()) !== 0)
+      throw new Error("search input still present");
+    if ((await page.getByPlaceholder("Search conversations...").count()) !== 0)
+      throw new Error("search placeholder still present");
     const nav = page.locator('nav[aria-label="Conversations"]').first();
-    const count = await nav.locator("a[href*='/chat/']").count();
-    if (count === 0) throw new Error("search returned nothing");
-    await page.getByLabel("Search conversations").fill("");
+    if ((await nav.locator("a[href*='/chat/']").count()) === 0)
+      throw new Error("thread list disappeared with the search bar");
   });
 
   await step("scroll-to-bottom pill appears when scrolled away", async () => {
@@ -245,6 +270,10 @@ const step = async (n, f) => {
     await pill.click();
     await page.waitForTimeout(600);
   });
+
+  // The "scroll up during streaming is not yanked back" behaviour is covered
+  // robustly (overflow guaranteed by accumulating turns) in p-scroll-verify.js,
+  // which does not depend on a single reply being long enough to overflow.
 
   await step("stop generation works", async () => {
     await settle(page); // the pill step's reply must not still be streaming
