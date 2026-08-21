@@ -20,8 +20,8 @@ import schema from "./schema";
  */
 const modules = import.meta.glob(["./**/*.*s", "!./**/*.test.*"]);
 
-const PASSWORD = "Str0ngPass1";
-const NEW_PASSWORD = "N3wStr0ngPass";
+const PASSWORD = "Str0ngPass1!";
+const NEW_PASSWORD = "N3wStr0ngPass!";
 
 beforeAll(async () => {
   const keys = await generateKeyPair("RS256", { extractable: true });
@@ -85,7 +85,7 @@ describe("email verification codes", () => {
   test("sign-up does NOT authenticate until the code is verified", async () => {
     const t = convexTest(schema, modules);
     const result = await signIn(t, {
-      email: "a@example.com",
+      email: "a@gmail.com",
       password: PASSWORD,
       flow: "signUp",
     });
@@ -96,7 +96,7 @@ describe("email verification codes", () => {
 
   test("a correct code verifies exactly once — replay is refused", async () => {
     const t = convexTest(schema, modules);
-    const email = "replay@example.com";
+    const email = "replay@gmail.com";
     const code = await captureCode(() =>
       signIn(t, { email, password: PASSWORD, flow: "signUp" }),
     );
@@ -112,7 +112,7 @@ describe("email verification codes", () => {
 
   test("an expired code is refused", async () => {
     const t = convexTest(schema, modules);
-    const email = "expired@example.com";
+    const email = "expired@gmail.com";
     const code = await captureCode(() =>
       signIn(t, { email, password: PASSWORD, flow: "signUp" }),
     );
@@ -129,7 +129,7 @@ describe("email verification codes", () => {
 
   test("resending invalidates the previous code", async () => {
     const t = convexTest(schema, modules);
-    const email = "resend@example.com";
+    const email = "resend@gmail.com";
     const first = await captureCode(() =>
       signIn(t, { email, password: PASSWORD, flow: "signUp" }),
     );
@@ -148,7 +148,7 @@ describe("email verification codes", () => {
 
   test("wrong codes are rate-limited before they can be brute-forced", async () => {
     const t = convexTest(schema, modules);
-    const email = "brute@example.com";
+    const email = "brute@gmail.com";
     await captureCode(() => signIn(t, { email, password: PASSWORD, flow: "signUp" }));
 
     let rejected = 0;
@@ -172,7 +172,7 @@ describe("password policy", () => {
     const t = convexTest(schema, modules);
     for (const weak of ["short1A", "alllowercase1", "ALLUPPERCASE1", "NoDigitsHere"]) {
       await expect(
-        signIn(t, { email: `w${weak}@example.com`, password: weak, flow: "signUp" }),
+        signIn(t, { email: `w${weak}@gmail.com`, password: weak, flow: "signUp" }),
       ).rejects.toThrow();
     }
   });
@@ -181,7 +181,7 @@ describe("password policy", () => {
     const t = convexTest(schema, modules);
     await expect(
       captureCode(() =>
-        signIn(t, { email: "good@example.com", password: PASSWORD, flow: "signUp" }),
+        signIn(t, { email: "good@gmail.com", password: PASSWORD, flow: "signUp" }),
       ),
     ).resolves.toMatch(/^\d{8}$/);
   });
@@ -199,7 +199,7 @@ describe("password policy", () => {
 describe("password reset", () => {
   test("reset code is single-use, and the new password replaces the old", async () => {
     const t = convexTest(schema, modules);
-    const email = "reset@example.com";
+    const email = "reset@gmail.com";
     await createVerifiedUser(t, email);
 
     const code = await captureCode(() => signIn(t, { email, flow: "reset" }));
@@ -213,7 +213,7 @@ describe("password reset", () => {
 
     // Replay of the reset code must fail.
     await expect(
-      signIn(t, { email, code, newPassword: "An0therPass", flow: "reset-verification" }),
+      signIn(t, { email, code, newPassword: "An0therPass!", flow: "reset-verification" }),
     ).rejects.toThrow();
 
     // Old credential is dead; new one works.
@@ -226,7 +226,7 @@ describe("password reset", () => {
 
   test("an expired reset code is refused", async () => {
     const t = convexTest(schema, modules);
-    const email = "resetexp@example.com";
+    const email = "resetexp@gmail.com";
     await createVerifiedUser(t, email);
     const code = await captureCode(() => signIn(t, { email, flow: "reset" }));
     await t.run(async (ctx) => {
@@ -241,7 +241,7 @@ describe("password reset", () => {
 
   test("reset leaves exactly one session — every other device is evicted", async () => {
     const t = convexTest(schema, modules);
-    const email = "resetsessions@example.com";
+    const email = "resetsessions@gmail.com";
     const userId = await createVerifiedUser(t, email);
 
     // Stand in for other logged-in devices.
@@ -269,7 +269,7 @@ describe("password reset", () => {
 
   test("requesting a reset for an unknown address does not reveal that it is unknown", async () => {
     const t = convexTest(schema, modules);
-    await createVerifiedUser(t, "known@example.com");
+    await createVerifiedUser(t, "known@gmail.com");
 
     // Via the hardened endpoint. Calling signIn(flow:"reset") directly resolves
     // for a known address and throws InvalidAccountId for an unknown one — the
@@ -279,10 +279,45 @@ describe("password reset", () => {
         (r) => `resolved:${JSON.stringify(r)}`,
         (e) => `rejected:${(e as Error).message.slice(0, 40)}`,
       );
-    const known = await call("known@example.com");
-    const unknown = await call("nobody@example.com");
+    const known = await call("known@gmail.com");
+    const unknown = await call("nobody@gmail.com");
     // Whatever the outcome, the two must be indistinguishable to a caller.
     expect(unknown).toBe(known);
+  });
+});
+
+// ------------------------------------------------------------- send throttle
+
+describe("emailed-code send throttle", () => {
+  test("caps codes per address, then skips silently (anti-bombing)", async () => {
+    const t = convexTest(schema, modules);
+    const email = "bomb@gmail.com";
+    // The first 6 (re)sends within the hour each deliver a code.
+    for (let i = 0; i < 6; i++) {
+      const code = await captureCode(() =>
+        signIn(t, { email, password: PASSWORD, flow: "signUp" }),
+      );
+      expect(code).toMatch(/^\d{8}$/);
+    }
+    // The 7th is skipped: no code is emitted, yet sign-in still "starts" (the
+    // throttle never throws), so the flow — and any constant response — is intact.
+    await expect(
+      captureCode(() => signIn(t, { email, password: PASSWORD, flow: "signUp" })),
+    ).rejects.toThrow(/no code emitted/);
+  });
+
+  test("a different address has its own budget", async () => {
+    const t = convexTest(schema, modules);
+    for (let i = 0; i < 6; i++) {
+      await captureCode(() =>
+        signIn(t, { email: "filler@gmail.com", password: PASSWORD, flow: "signUp" }),
+      );
+    }
+    // Not throttled: distinct normalized email → fresh bucket.
+    const code = await captureCode(() =>
+      signIn(t, { email: "other@gmail.com", password: PASSWORD, flow: "signUp" }),
+    );
+    expect(code).toMatch(/^\d{8}$/);
   });
 });
 
@@ -291,7 +326,7 @@ describe("password reset", () => {
 describe("session lifetime and single device", () => {
   test("session lifetime is the 30-day ceiling, not an unbounded login", async () => {
     const t = convexTest(schema, modules);
-    const userId = await createVerifiedUser(t, "life@example.com");
+    const userId = await createVerifiedUser(t, "life@gmail.com");
     const [session] = await sessionsFor(t, userId);
     const days = ((session?.expirationTime ?? 0) - Date.now()) / (1000 * 60 * 60 * 24);
     expect(days).toBeGreaterThan(29);
@@ -300,7 +335,7 @@ describe("session lifetime and single device", () => {
 
   test("refresh tokens carry the 2-day inactivity budget, which is what expires an idle session", async () => {
     const t = convexTest(schema, modules);
-    await createVerifiedUser(t, "idle@example.com");
+    await createVerifiedUser(t, "idle@gmail.com");
     const [token] = await t.run(async (ctx) =>
       ctx.db.query("authRefreshTokens").collect(),
     );
@@ -313,7 +348,7 @@ describe("session lifetime and single device", () => {
 
   test("a second sign-in leaves the account with one usable session", async () => {
     const t = convexTest(schema, modules);
-    const email = "twodevices@example.com";
+    const email = "twodevices@gmail.com";
     const userId = await createVerifiedUser(t, email);
     await signIn(t, { email, password: PASSWORD, flow: "signIn" });
     await signIn(t, { email, password: PASSWORD, flow: "signIn" });
@@ -340,7 +375,7 @@ describe("session lifetime and single device", () => {
 describe("auth events are written by real flows", () => {
   test("signup + verification produce login history", async () => {
     const t = convexTest(schema, modules);
-    const userId = await createVerifiedUser(t, "events@example.com");
+    const userId = await createVerifiedUser(t, "events@gmail.com");
     const events = await t.run(async (ctx) =>
       (await ctx.db.query("authEvents").collect()).filter((e) => e.userId === userId),
     );
@@ -350,7 +385,7 @@ describe("auth events are written by real flows", () => {
 
   test("lastLoginAt and accountStatus are stamped on the user", async () => {
     const t = convexTest(schema, modules);
-    const userId = await createVerifiedUser(t, "stamp@example.com");
+    const userId = await createVerifiedUser(t, "stamp@gmail.com");
     const user = await t.run(async (ctx) => ctx.db.get(userId));
     const u = user as { lastLoginAt?: number; accountStatus?: string } | null;
     expect(typeof u?.lastLoginAt).toBe("number");

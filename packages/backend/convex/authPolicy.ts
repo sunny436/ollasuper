@@ -82,22 +82,117 @@ export function isValidEmailShape(email: string): boolean {
 }
 
 /**
- * Single message for every rejection reason.
+ * Positive allow-list of consumer email providers permitted to sign up.
  *
- * Distinguishing "invalid format" from "disposable provider" from "already
- * registered" would turn sign-up into an account/provider oracle, so all three
- * fail identically. See requirement 4: do not leak whether an account exists.
+ * A domain the user typed reveals nothing about whether an ACCOUNT exists, so —
+ * unlike the login/existence path — a specific, user-friendly message here is
+ * safe and is what the product wants. The allow-list also supersedes the
+ * disposable block-list above: a throwaway domain simply isn't on it. Keep it as
+ * a Set of already-normalised (lowercased) domains.
  */
-export const GENERIC_EMAIL_REJECTION =
-  "That email address can't be used. Please use a different one.";
+const ALLOWED_SIGNUP_DOMAINS = new Set([
+  "gmail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com",
+  "icloud.com", "proton.me", "protonmail.com", "zoho.com", "aol.com",
+  "gmx.com", "mail.com",
+]);
 
-/** Throws ConvexError with the generic message when the address is unusable. */
+/**
+ * Test/CI-only extension, so fixtures that use throwaway domains (Mailpit) can
+ * sign up without loosening production. Empty in prod. Comma-separated.
+ */
+function extraAllowedDomains(): Set<string> {
+  return new Set(
+    (process.env.AUTH_EXTRA_ALLOWED_DOMAINS ?? "")
+      .split(",")
+      .map((d) => d.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+/** True when the address's domain is on the sign-up allow-list. */
+export function isAllowedSignupDomain(email: string): boolean {
+  const d = domainOf(normalizeEmail(email));
+  return d !== "" && (ALLOWED_SIGNUP_DOMAINS.has(d) || extraAllowedDomains().has(d));
+}
+
+export const INVALID_EMAIL_MESSAGE = "Enter a valid email address.";
+export const UNSUPPORTED_DOMAIN_MESSAGE =
+  "That email domain isn't supported. Use Gmail, Outlook, Yahoo, iCloud, Proton, Zoho, AOL, GMX or Mail.com.";
+
+/**
+ * Validate a sign-up address and return its normalized form.
+ *
+ * Domain policy is NOT an account-existence oracle, so the two failure reasons
+ * carry specific, actionable messages (malformed vs. unsupported domain). What
+ * must stay generic is anything that reveals whether an *account* exists — that
+ * lives on the login/existence path, not here.
+ */
 export function assertUsableEmail(email: string): string {
   const normalized = normalizeEmail(email);
-  if (!isValidEmailShape(normalized) || isDisposableEmail(normalized)) {
-    throw new ConvexError(GENERIC_EMAIL_REJECTION);
+  if (!isValidEmailShape(normalized)) {
+    throw new ConvexError(INVALID_EMAIL_MESSAGE);
+  }
+  if (!isAllowedSignupDomain(normalized)) {
+    throw new ConvexError(UNSUPPORTED_DOMAIN_MESSAGE);
   }
   return normalized;
+}
+
+/**
+ * Extremely-common / trivially-guessable passwords, curated in-repo (no network,
+ * no runtime dep). Not exhaustive — it raises the floor against the passwords a
+ * spraying attack tries first. Compared case-insensitively.
+ */
+// Built lowercased so membership tests (which lowercase their input) are
+// case-insensitive regardless of how an entry is written below.
+const COMMON_PASSWORDS = new Set([
+  "password", "password1", "password123", "passw0rd", "p@ssw0rd", "p@ssword",
+  "123456", "1234567", "12345678", "123456789", "1234567890", "12345", "111111",
+  "000000", "121212", "112233", "654321", "123123", "666666", "qwerty",
+  "qwerty123", "qwertyuiop", "1q2w3e4r", "1qaz2wsx", "zaq12wsx", "asdfghjkl",
+  "abc123", "a1b2c3", "iloveyou", "admin", "admin123", "root", "letmein",
+  "welcome", "welcome1", "monkey", "dragon", "sunshine", "princess", "football",
+  "baseball", "superman", "batman", "master", "hello", "hello123", "freedom",
+  "whatever", "trustno1", "starwars", "michael", "shadow", "ashley", "test",
+  "test123", "changeme", "secret", "login", "google", "facebook", "samsung",
+  "photoshop", "ginger", "computer", "michelle", "jennifer", "jordan", "harley",
+  "ranger", "hunter", "buster", "thomas", "robert", "matthew", "daniel",
+  "andrew", "charlie", "summer", "winter", "spring", "autumn", "flower",
+  "cheese", "cookie", "pepper", "chocolate", "soccer", "hockey", "killer",
+  "george", "asdf", "asdfgh", "zxcvbnm", "qazwsx", "q1w2e3r4", "aaaaaa",
+  "abcabc", "abcdef", "abcd1234", "passwordless", "password!", "P@ssw0rd!",
+  "Password1", "Password1!", "Password123", "Password123!", "Qwerty123!",
+  "Admin123!", "Welcome1!", "Welcome123", "Letmein1", "iloveyou1", "trustno1!",
+].map((p) => p.toLowerCase()));
+
+export function isCommonPassword(password: string): boolean {
+  return COMMON_PASSWORDS.has(password.toLowerCase());
+}
+
+/**
+ * Reject a password that embeds the user's own identity (name / email parts).
+ * Throws a specific ConvexError; used by the sign-up `profile`, where name +
+ * email are both available. Guards on length >= 3 so a one/two-char local part
+ * or initial cannot flag every password.
+ */
+export function assertPasswordNotIdentity(
+  password: string,
+  email: string,
+  name: string,
+): void {
+  const pw = password.toLowerCase();
+  const contains = (part: string) =>
+    part.length >= 3 && pw.includes(part.toLowerCase());
+
+  if (name && contains(name.trim())) {
+    throw new ConvexError("Password must not contain your name.");
+  }
+  const normalized = normalizeEmail(email);
+  const local = normalized.split("@")[0] ?? "";
+  const domainLabel = domainOf(normalized).split(".")[0] ?? "";
+  if (contains(local) || contains(domainLabel)) {
+    throw new ConvexError("Password must not contain part of your email.");
+  }
 }
 
 /**

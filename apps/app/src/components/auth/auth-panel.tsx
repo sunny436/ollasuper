@@ -240,24 +240,62 @@ export function AuthPanel() {
   const signInForm = useForm({
     validatorAdapter: zodValidator(),
     defaultValues: { email: "", password: "" },
+    // NOT the shared go(): login must NEVER reveal whether the email exists or
+    // which field was wrong. The server already collapses unknown-email and
+    // wrong-password into one error; this collapses everything else too, showing
+    // a single generic message (only the rate-limit case is surfaced distinctly).
     onSubmit: ({ value }) =>
-      go(async () => {
-        await signIn("password", { ...value, flow: "signIn" });
-        enter();
+      (async () => {
+        setPending(true);
+        try {
+          await signIn("password", { ...value, flow: "signIn" });
+          enter();
+        } catch (err) {
+          const t = String(
+            (err as { data?: unknown })?.data ?? (err as Error)?.message ?? "",
+          ).toLowerCase();
+          toast.error(
+            /too many|attempt|rate.?limit/.test(t)
+              ? "Too many attempts. Please wait and try again."
+              : "Invalid email or password.",
+          );
+        } finally {
+          setPending(false);
+        }
       })(),
   });
 
   const signUpForm = useForm({
     validatorAdapter: zodValidator(),
     defaultValues: { name: "", email: "", password: "" },
+    // Not the shared go(): a specific validation error (domain / password policy)
+    // is a ConvexError with `.data` and SHOULD be shown; anything else — in
+    // particular "account already exists" — must present the IDENTICAL
+    // "check your email" outcome as a fresh sign-up, so sign-up never reveals
+    // whether the address is registered.
     onSubmit: ({ value }) =>
-      go(async () => {
-        // `name` reaches users.name only because convex/auth.ts defines a
-        // `profile` function; the provider's default drops everything but email.
-        await signIn("password", { ...value, flow: "signUp" });
-        setEmail(value.email);
-        toast.success("Account created. Enter the code we emailed you.");
-        setMode("verify");
+      (async () => {
+        setPending(true);
+        const toVerify = () => {
+          setEmail(value.email);
+          toast.success("Account created. Enter the code we emailed you.");
+          setMode("verify");
+        };
+        try {
+          // `name` reaches users.name only because convex/auth.ts defines a
+          // `profile` function; the provider's default drops all but email.
+          await signIn("password", { ...value, flow: "signUp" });
+          toVerify();
+        } catch (err) {
+          const data = (err as { data?: unknown })?.data;
+          if (typeof data === "string") {
+            toast.error(data); // specific, user-friendly validation message
+          } else {
+            toVerify(); // non-revealing: same as a new sign-up
+          }
+        } finally {
+          setPending(false);
+        }
       })(),
   });
 
