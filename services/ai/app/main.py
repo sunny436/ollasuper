@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
     if settings.rag_enabled and settings.ai_ocr_engine == "rapidocr":
         from app.ingest.ocr import warm_ocr
 
-        asyncio.create_task(asyncio.to_thread(warm_ocr))
+        asyncio.create_task(warm_ocr(settings))
     try:
         yield
     finally:
@@ -76,9 +76,9 @@ async def lifespan(app: FastAPI):
         # until the Convex reaper fires 90s later.
         await app.state.registry.shutdown()
         await app.state.ingest_registry.shutdown()
-        from app.ingest.pdf import shutdown_render_pool
+        from app.ingest.pool import shutdown_pool
 
-        shutdown_render_pool()
+        shutdown_pool()
         if app.state.db is not None:
             await app.state.db.dispose()
         await http.aclose()

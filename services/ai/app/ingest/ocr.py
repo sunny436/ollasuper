@@ -8,6 +8,12 @@ system binary, PaddleOCR-quality models) — it never touches OpenRouter, so it
 cannot starve chat, and it is faster + free. Quality was validated on scanned
 text (IDs, numbers, currency read accurately).
 
+RapidOCR is ONNX Runtime under the hood — native code that can SEGFAULT/abort on
+an edge-case image. So the local inference runs in the shared render PROCESS
+POOL (see pool.py / render.ocr_png_bytes), NOT a main-process thread: a crash
+then kills only a worker, never the --workers 1 service. The in-thread path is
+kept only for tests (render_workers=0).
+
 The vision model stays only as a PER-PAGE FALLBACK for pages RapidOCR returns
 empty / low-confidence on, so it never floods the account. `ocr_image` keeps its
 signature, so pdf.py and pipeline dispatch are unchanged. One bad image must
@@ -19,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
-import threading
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -39,23 +44,10 @@ OCR_PROMPT = (
     "that line — no preamble, no commentary."
 )
 
-# Lazily-built RapidOCR engine (heavy import + ONNX model load ~ one-time). A
-# semaphore bounds concurrent local inference so it never monopolises the box;
-# ONNX releases the GIL during inference, so a small thread bound is enough.
-_engine = None
-_engine_lock = threading.Lock()
+# A semaphore bounds concurrent local-OCR submissions so a burst of image pages
+# never queues unbounded work; the pool itself caps real parallelism at
+# render_workers.
 _local_sem: asyncio.Semaphore | None = None
-
-
-def _get_engine():
-    global _engine
-    if _engine is None:
-        with _engine_lock:
-            if _engine is None:
-                from rapidocr_onnxruntime import RapidOCR
-
-                _engine = RapidOCR()
-    return _engine
 
 
 def _sem(settings: Settings) -> asyncio.Semaphore:
@@ -65,33 +57,62 @@ def _sem(settings: Settings) -> asyncio.Semaphore:
     return _local_sem
 
 
-def warm_ocr() -> None:
-    """Build + warm the engine once (call at startup so the first ingest is fast)."""
-    try:
-        import numpy as np
-        from PIL import Image
+def _tiny_png() -> bytes:
+    from PIL import Image
 
-        img = Image.new("RGB", (32, 32), "white")
-        _get_engine()(np.array(img))
-        log.info("ocr_local_warmed")
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), "white").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+async def warm_ocr(settings: Settings) -> None:
+    """Warm the OCR engine once so the first scanned page doesn't pay the ONNX
+    model load. In prod (render_workers>0) warm the POOL workers; in-thread (0)
+    warm the current process. Best-effort — a warm failure never blocks startup."""
+    try:
+        png = _tiny_png()
+        if settings.ai_ocr_render_workers <= 0:
+            await asyncio.to_thread(_rapidocr_sync, png)
+            log.info("ocr_local_warmed")
+            return
+        from app.ingest.pool import run_in_pool
+        from app.ingest.render import ocr_png_bytes
+
+        n = max(1, settings.ai_ocr_render_workers)
+        # One warm task per worker: an idle n-worker pool hands each task to a
+        # distinct worker, so every worker loads ONNX before the first ingest.
+        await asyncio.gather(
+            *(
+                run_in_pool(ocr_png_bytes, png, workers=n, label="warm")
+                for _ in range(n)
+            )
+        )
+        log.info("ocr_pool_warmed", extra={"workers": n})
     except Exception:  # noqa: BLE001 - warmup is best-effort
         log.warning("ocr_local_warm_failed")
 
 
 def _rapidocr_sync(raw: bytes) -> tuple[str, float]:
-    """Returns (text, mean_confidence). Runs in a thread."""
-    import numpy as np
-    from PIL import Image
+    """In-thread local OCR (tests monkeypatch this). The single implementation
+    lives in render.ocr_png_bytes so the pool and in-thread paths never diverge."""
+    from app.ingest.render import ocr_png_bytes
 
-    img = Image.open(io.BytesIO(raw)).convert("RGB")
-    result, _ = _get_engine()(np.array(img))
-    if not result:
-        return "", 0.0
-    texts = [r[1] for r in result if len(r) > 1 and r[1]]
-    confs = [float(r[2]) for r in result if len(r) > 2]
-    text = "\n".join(texts).strip()
-    conf = sum(confs) / len(confs) if confs else 0.0
-    return text, conf
+    return ocr_png_bytes(raw)
+
+
+async def _local_ocr(raw: bytes, settings: Settings) -> tuple[str, float]:
+    """RapidOCR on `raw`. In prod (render_workers>0) runs in the shared process
+    pool so an ONNX Runtime segfault kills only a worker; in-thread (0) is used
+    by tests that monkeypatch _rapidocr_sync."""
+    if settings.ai_ocr_render_workers <= 0:
+        return await asyncio.to_thread(_rapidocr_sync, raw)
+    from app.ingest.pool import run_in_pool
+    from app.ingest.render import ocr_png_bytes
+
+    res = await run_in_pool(
+        ocr_png_bytes, raw, workers=settings.ai_ocr_render_workers, label="ocr"
+    )
+    return res if res is not None else ("", 0.0)
 
 
 async def _vision_ocr(
@@ -158,7 +179,7 @@ async def ocr_image(
     text, conf = "", 0.0
     try:
         async with _sem(settings):
-            text, conf = await asyncio.to_thread(_rapidocr_sync, raw)
+            text, conf = await _local_ocr(raw, settings)
     except Exception:  # noqa: BLE001 - local OCR is best-effort
         log.exception("ocr_local_failed", extra={"source": name})
 

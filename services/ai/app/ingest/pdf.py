@@ -26,17 +26,15 @@ Execution model (why this file is async + bounded):
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import io
-import multiprocessing
 import threading
 import time
 from collections.abc import Awaitable, Callable
-from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 
 from app.config import Settings
 from app.ingest.ocr import ocr_image
+from app.ingest.pool import run_in_pool
 from app.ingest.render import render_page
 from app.ingest.types import NormalizedDoc
 from app.logging import get_logger
@@ -117,61 +115,20 @@ def _extract(
 _render_page = render_page
 
 
-# libpdfium can SEGFAULT on an edge-case page (a native crash Python cannot
-# catch). Render in a bounded PROCESS pool so a crash kills only a worker
-# (BrokenProcessPool), not the whole --workers 1 service. `spawn` (not fork):
-# forking a threaded async service risks deadlocks, and the light render module
-# keeps spawn startup fast.
-_render_pool: concurrent.futures.ProcessPoolExecutor | None = None
-_render_pool_lock = threading.Lock()
-
-
-def _get_render_pool(workers: int) -> concurrent.futures.ProcessPoolExecutor:
-    global _render_pool
-    if _render_pool is None:
-        with _render_pool_lock:
-            if _render_pool is None:
-                _render_pool = concurrent.futures.ProcessPoolExecutor(
-                    max_workers=max(1, workers),
-                    mp_context=multiprocessing.get_context("spawn"),
-                )
-    return _render_pool
-
-
-def shutdown_render_pool() -> None:
-    global _render_pool
-    pool, _render_pool = _render_pool, None
-    if pool is not None:
-        pool.shutdown(wait=False, cancel_futures=True)
-
-
 async def _render(raw: bytes, idx: int, settings: Settings) -> bytes | None:
-    """Render page idx to PNG. In prod (ai_ocr_render_workers>0) this runs in a
-    process pool so a libpdfium segfault is isolated to a worker and the page is
-    skipped; in-thread (0) is used only by tests that monkeypatch _render_page."""
+    """Render page idx to PNG. In prod (ai_ocr_render_workers>0) this runs in the
+    shared process pool so a libpdfium segfault is isolated to a worker and the
+    page is skipped (pool.run_in_pool recreates the pool + retries once);
+    in-thread (0) is used only by tests that monkeypatch _render_page."""
     if settings.ai_ocr_render_workers <= 0:
         return await asyncio.to_thread(_render_page, raw, idx)
-    loop = asyncio.get_running_loop()
-    # A worker segfault fails every in-flight future with BrokenProcessPool.
-    # The crash is often non-deterministic (memory corruption), so recreate the
-    # pool and retry ONCE in a fresh worker before giving up on the page.
-    for attempt in (1, 2):
-        try:
-            return await loop.run_in_executor(
-                _get_render_pool(settings.ai_ocr_render_workers), render_page, raw, idx
-            )
-        except BrokenProcessPool:
-            log.warning(
-                "pdf_render_worker_crashed",
-                extra={"page": idx + 1, "attempt": attempt},
-            )
-            shutdown_render_pool()
-            if attempt == 2:
-                return None
-        except Exception:  # noqa: BLE001 - a render failure must never fail the file
-            log.warning("pdf_render_failed", extra={"page": idx + 1})
-            return None
-    return None
+    return await run_in_pool(
+        render_page,
+        raw,
+        idx,
+        workers=settings.ai_ocr_render_workers,
+        label=f"render:p{idx + 1}",
+    )
 
 
 async def parse_pdf(

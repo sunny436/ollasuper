@@ -1,14 +1,24 @@
-"""Isolated PDF page rendering (pypdfium2 only).
+"""Native ingest work that runs in a POOL WORKER (never the main process).
 
-Kept in its OWN light module — no langchain/ocr/config imports — so the render
-process pool (spawn context) starts workers fast and clean. libpdfium can
-SEGFAULT on an edge-case page; running this in a separate process means such a
-crash kills only a pool worker, not the --workers 1 service.
+Two crash-prone native libraries execute here — libpdfium (page render) and
+ONNX Runtime (RapidOCR local OCR). Kept in ONE small module with no
+langchain/config imports so the spawn pool starts workers fast; the heavy
+RapidOCR/ONNX import is lazy, so a worker only pays it the first time it OCRs.
+
+Both `render_page` and `ocr_png_bytes` are the callables submitted to
+`pool.run_in_pool`, so an edge-case SEGV in either kills only the worker, not
+the `--workers 1` service (see pool.py).
 """
 
 from __future__ import annotations
 
 import io
+import threading
+
+# Per-worker RapidOCR singleton. A ProcessPoolExecutor reuses its workers, so
+# the ONNX model load is paid once per worker, not once per page.
+_ocr_engine = None
+_ocr_lock = threading.Lock()
 
 
 def render_page(raw: bytes, idx: int) -> bytes | None:
@@ -29,3 +39,35 @@ def render_page(raw: bytes, idx: int) -> bytes | None:
     finally:
         if doc is not None:
             doc.close()
+
+
+def _get_ocr_engine():
+    global _ocr_engine
+    if _ocr_engine is None:
+        with _ocr_lock:
+            if _ocr_engine is None:
+                from rapidocr_onnxruntime import RapidOCR
+
+                _ocr_engine = RapidOCR()
+    return _ocr_engine
+
+
+def ocr_png_bytes(raw: bytes) -> tuple[str, float]:
+    """Run RapidOCR on an encoded image (PNG/JPG/…). Returns (text, mean_conf).
+
+    Runs in a pool worker so an ONNX Runtime crash is isolated. Both the Pillow
+    decode and the ONNX inference — the native, per-image work — happen here,
+    off the main process.
+    """
+    import numpy as np
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    result, _ = _get_ocr_engine()(np.array(img))
+    if not result:
+        return "", 0.0
+    texts = [r[1] for r in result if len(r) > 1 and r[1]]
+    confs = [float(r[2]) for r in result if len(r) > 2]
+    text = "\n".join(texts).strip()
+    conf = sum(confs) / len(confs) if confs else 0.0
+    return text, conf
