@@ -147,6 +147,12 @@ class Settings(BaseSettings):
     # Bounded CPU pool for local OCR inference (ONNX releases the GIL during
     # inference; a small bound keeps it from monopolising the box).
     ai_ocr_local_concurrency: int = 4
+    # pypdfium2 (libpdfium) can SEGFAULT on a malformed/edge-case page — a native
+    # crash Python cannot catch, which would take down the whole --workers 1
+    # service (chat included). So render pages in a bounded PROCESS pool: a
+    # segfault kills only a worker (surfaced as BrokenProcessPool), the page is
+    # skipped, and the pool is recreated. 0 = render in-thread (tests only).
+    ai_ocr_render_workers: int = 2
 
     # Ingestion limits (app/ingest/). One shared char budget per file, mirroring
     # ai_max_turn_chars for attachments.
