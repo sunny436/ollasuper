@@ -7,6 +7,7 @@ import { useMutation } from "convex/react";
 import { useRouter } from "next/navigation";
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useChatSession } from "./use-chat-session";
 
 /**
  * The single send path — used by the composer, the prompt cards and the empty
@@ -16,6 +17,7 @@ import { toast } from "sonner";
 export function useSendMessage(threadId: string | null) {
   const router = useRouter();
   const { current } = useWorkspace();
+  const { setPendingUsers } = useChatSession();
   const createThread = useMutation(api.chat.threads.create);
   const sendMessage = useMutation(api.chat.messages.send);
   const [sending, setSending] = useState(false);
@@ -36,29 +38,46 @@ export function useSendMessage(threadId: string | null) {
 
       inFlight.current = true;
       setSending(true);
+      // Survives network retries and React StrictMode's double-invoke; the
+      // backend upserts on it AND the optimistic row dedupes against it.
+      const clientId = crypto.randomUUID();
+      // Optimistic echo: render the user's message immediately, before the
+      // mutation commits and listPaged re-pushes it. Scoped to its target
+      // thread so it never flashes into another. Text-only sends — an
+      // attachment-only send would otherwise flash an empty bubble.
+      const echo = (tid: string) => {
+        if (content) {
+          setPendingUsers((prev) => [
+            ...prev,
+            { clientId, text: content, createdAt: Date.now(), threadId: tid },
+          ]);
+        }
+      };
       try {
         let tid = threadId;
-        if (!tid) {
+        if (tid) {
+          // Existing thread: echo instantly, before any round-trip.
+          echo(tid);
+        } else {
           tid = await createThread({ workspaceId: current });
+          // New thread: echo the moment it exists, then navigate BEFORE the send
+          // resolves — the optimistic row is only VISIBLE once the docked
+          // transcript replaces the centred hero (which overlays an empty list).
+          // replace, not push: Back from the first message leaves chat.
+          echo(tid);
+          router.replace(`/chat/${tid}`);
         }
         await sendMessage({
           threadId: tid as Id<"chatThreads">,
           content,
-          // Survives network retries and React StrictMode's double-invoke; the
-          // backend upserts on it.
-          clientId: crypto.randomUUID(),
+          clientId,
           ...(attachmentIds.length ? { attachmentIds } : {}),
           ...(opts?.model ? { model: opts.model } : {}),
         });
-
-        if (!threadId && tid) {
-          // replace, not push: Back from the first message should leave chat,
-          // not land on an empty /chat. Navigating after the mutation resolves
-          // means the destination's query already has data — no empty flash.
-          router.replace(`/chat/${tid}`);
-        }
         return true;
       } catch (e) {
+        // The optimistic row can never settle — drop it so it doesn't linger.
+        setPendingUsers((prev) => prev.filter((p) => p.clientId !== clientId));
         // Never console.error: the Convex client already logs rejections and
         // every e2e script asserts zero console errors.
         const message =
@@ -70,7 +89,7 @@ export function useSendMessage(threadId: string | null) {
         setSending(false);
       }
     },
-    [threadId, current, createThread, sendMessage, router],
+    [threadId, current, createThread, sendMessage, router, setPendingUsers],
   );
 
   return { send, sending, canSend: Boolean(current) };

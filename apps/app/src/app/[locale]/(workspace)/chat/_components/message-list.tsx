@@ -3,7 +3,14 @@
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { useCachedTranscript } from "../_hooks/use-cached-transcript";
 import { useChatSession } from "../_hooks/use-chat-session";
@@ -19,7 +26,7 @@ import { ScrollToBottom } from "./scroll-to-bottom";
 const PAGE = 30;
 
 export function MessageList({ threadId }: { threadId: string | null }) {
-  const { setStreamingId } = useChatSession();
+  const { setStreamingId, pendingUsers, setPendingUsers } = useChatSession();
   const [editing, setEditing] = useState<ChatMessageDoc | null>(null);
   const [shareMsgId, setShareMsgId] = useState<Id<"chatMessages"> | null>(null);
   const editMessage = useMutation(api.chat.messages.editUserMessage);
@@ -65,6 +72,36 @@ export function MessageList({ threadId }: { threadId: string | null }) {
   const loadingFirst = threadId !== null && status === "LoadingFirstPage";
   const settled = useCachedTranscript(threadId, settledLive, loadingFirst);
 
+  // Optimistic user rows: shown the instant a message is sent, dropped the
+  // moment their settled twin (same clientId) lands in listPaged. The
+  // render-time filter — not just the prune effect below — is what prevents a
+  // one-frame duplicate bubble during the handoff.
+  const settledClientIds = useMemo(
+    () =>
+      new Set(
+        settled.map((m) => m.clientId).filter(Boolean) as string[],
+      ),
+    [settled],
+  );
+  const pendingToShow = useMemo(
+    () =>
+      pendingUsers.filter(
+        (p) => p.threadId === threadId && !settledClientIds.has(p.clientId),
+      ),
+    [pendingUsers, settledClientIds, threadId],
+  );
+
+  // Drop this thread's settled twins from the shared pending list. Only ever
+  // removes rows for THIS thread (another thread's MessageList prunes its own),
+  // and is guarded so it writes only when something actually settled.
+  useEffect(() => {
+    if (pendingUsers.length === 0) return;
+    const next = pendingUsers.filter(
+      (p) => p.threadId !== threadId || !settledClientIds.has(p.clientId),
+    );
+    if (next.length !== pendingUsers.length) setPendingUsers(next);
+  }, [pendingUsers, settledClientIds, threadId, setPendingUsers]);
+
   // The markdown renderer is a lazy chunk (kept out of /chat's first-load so the
   // empty landing hydrates faster). Preload it off the critical path: as soon as a
   // transcript has messages, and otherwise on idle — so it is ready before any
@@ -100,8 +137,32 @@ export function MessageList({ threadId }: { threadId: string | null }) {
 
   // Keyed on the REVEALED text, not liveText: the scroller has to follow what
   // is actually painted, or it pins to a height the reader cannot see yet.
-  const { scrollerRef, sentinelRef, atBottom, hasNew, scrollToBottom } =
+  const { scrollerRef, atBottom, hasNew, scrollToBottom, anchorForPrepend } =
     useStickToBottom([revealed, settled.length, threadId]);
+
+  // Sending is an explicit "bring me to my message" intent: re-engage the pin
+  // and reveal the optimistic row the instant it appears.
+  const pendingShownCount = pendingToShow.length;
+  useEffect(() => {
+    if (pendingShownCount > 0) scrollToBottom();
+  }, [pendingShownCount, scrollToBottom]);
+
+  // Preserve the reader's position across a "Load earlier" prepend. anchor is
+  // captured on click (before the fetch); the closure runs once the older page
+  // has rendered — detected by the OLDEST message (settled[0]) changing, which
+  // only a prepend does, so an append at the bottom never triggers it.
+  const prependRestore = useRef<(() => void) | null>(null);
+  const onLoadEarlier = useCallback(() => {
+    prependRestore.current = anchorForPrepend();
+    loadMore(PAGE);
+  }, [anchorForPrepend, loadMore]);
+  const oldestId = settled[0]?._id ?? null;
+  useLayoutEffect(() => {
+    if (prependRestore.current) {
+      prependRestore.current();
+      prependRestore.current = null;
+    }
+  }, [oldestId]);
 
   const onEdit = useCallback(
     async (m: ChatMessageDoc) => {
@@ -133,7 +194,7 @@ export function MessageList({ threadId }: { threadId: string | null }) {
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
       >
         <div className="mx-auto w-full max-w-3xl px-4 py-6 md:px-6">
-          {loadingFirst && settled.length === 0 && (
+          {loadingFirst && settled.length === 0 && pendingToShow.length === 0 && (
             <>
               <MessageSkeleton align="right" />
               <MessageSkeleton />
@@ -145,7 +206,7 @@ export function MessageList({ threadId }: { threadId: string | null }) {
             <div className="mb-4 flex justify-center">
               <button
                 type="button"
-                onClick={() => loadMore(PAGE)}
+                onClick={onLoadEarlier}
                 className="rounded-full border border-border px-3 py-1 text-xs text-primary/60 transition hover:bg-primary/5"
               >
                 Load earlier messages
@@ -160,6 +221,25 @@ export function MessageList({ threadId }: { threadId: string | null }) {
               isStreaming={false}
               onEdit={m.role === "user" && !editing ? onEdit : undefined}
               onShare={setShareMsgId}
+            />
+          ))}
+
+          {pendingToShow.map((p) => (
+            <ChatMessage
+              key={`pending-${p.clientId}`}
+              message={
+                {
+                  _id: `pending-${p.clientId}` as Id<"chatMessages">,
+                  role: "user",
+                  // After every settled row so it always sorts to the bottom.
+                  seq: Number.MAX_SAFE_INTEGER,
+                  content: p.text,
+                  status: "complete",
+                  clientId: p.clientId,
+                  createdAt: p.createdAt,
+                } as ChatMessageDoc
+              }
+              isStreaming={false}
             />
           ))}
 
@@ -185,8 +265,6 @@ export function MessageList({ threadId }: { threadId: string | null }) {
               showOrb
             />
           )}
-
-          <div ref={sentinelRef} className="h-px w-full" />
         </div>
       </div>
 

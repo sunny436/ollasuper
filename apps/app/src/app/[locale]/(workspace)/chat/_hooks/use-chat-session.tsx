@@ -2,13 +2,33 @@
 
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import {
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
   createContext,
   useCallback,
   useContext,
   useMemo,
   useState,
 } from "react";
+
+/**
+ * A user message shown OPTIMISTICALLY the instant it is sent, before the
+ * mutation commits and listPaged re-pushes it. Keyed by the same clientId the
+ * send mutation upserts on, so MessageList can drop it the moment its settled
+ * twin arrives (no flicker, no double bubble). An array so rapid-fire sends
+ * each echo immediately.
+ */
+export interface PendingUser {
+  clientId: string;
+  text: string;
+  createdAt: number;
+  // The thread this optimistic row belongs to. pendingUsers is shared across
+  // the whole chat shell, so MessageList must only render (and prune) the rows
+  // for its OWN thread — otherwise a send in thread A would flash into thread B
+  // if the user switched before it settled.
+  threadId: string;
+}
 
 /**
  * State shared between the transcript and the composer, which are no longer in
@@ -52,6 +72,8 @@ interface ChatSessionApi {
   setStreamingId: (id: Id<"chatMessages"> | null) => void;
   model: string;
   setModel: (m: string) => void;
+  pendingUsers: PendingUser[];
+  setPendingUsers: Dispatch<SetStateAction<PendingUser[]>>;
 }
 
 const ChatSessionCtx = createContext<ChatSessionApi | null>(null);
@@ -71,6 +93,7 @@ export function ChatSessionProvider({
   const [streamingId, setStreamingIdState] =
     useState<Id<"chatMessages"> | null>(null);
   const [model, setModel] = useState(defaultModel);
+  const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
 
   const setStreamingId = useCallback(
     (id: Id<"chatMessages"> | null) => setStreamingIdState(id),
@@ -86,8 +109,10 @@ export function ChatSessionProvider({
       setStreamingId,
       model,
       setModel,
+      pendingUsers,
+      setPendingUsers,
     }),
-    [threadId, threadStatus, streamingId, setStreamingId, model],
+    [threadId, threadStatus, streamingId, setStreamingId, model, pendingUsers],
   );
 
   return (
