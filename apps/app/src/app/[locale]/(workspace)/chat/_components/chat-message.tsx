@@ -18,6 +18,10 @@ export interface ChatMessageDoc {
   status: "pending" | "streaming" | "complete" | "error" | "aborted";
   model?: string | null;
   error?: string | null;
+  // The browser-minted idempotency key, echoed back by listPaged so an
+  // optimistic user row can be deduped against its settled twin. Absent on the
+  // in-flight assistant row (which never carries one).
+  clientId?: string | null;
   attachments?: {
     _id: string;
     name: string;

@@ -71,6 +71,10 @@ async function toPublic(ctx: QueryCtx, m: Doc<"chatMessages">) {
     tokensIn: m.tokensIn ?? null,
     tokensOut: m.tokensOut ?? null,
     createdAt: m.createdAt,
+    // Exposed so the client can dedupe its optimistic user row against the
+    // settled one (the browser minted this id; returning it to its own author
+    // is not a capability leak). storageId, by contrast, is never exposed.
+    clientId: m.clientId ?? null,
     attachments: attachments.filter(Boolean),
   };
 }

@@ -10,7 +10,6 @@ import {
   useConvex,
   useMutation,
   usePaginatedQuery,
-  useQuery,
 } from "convex/react";
 import { useCachedThreads, type CachedThread } from "../_hooks/use-cached-threads";
 import { useCachedUser } from "../_hooks/use-cached-user";
@@ -23,7 +22,6 @@ import {
   Pin,
   PinOff,
   Plus,
-  Search,
   Settings,
   Share2,
   Trash2,
@@ -185,14 +183,6 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const params = useParams<{ threadId?: string }>();
   const activeId = params?.threadId ?? null;
   const { current } = useWorkspace();
-  const [query, setQuery] = useState("");
-  const [debounced, setDebounced] = useState("");
-
-  // Debounced so each keystroke does not fire a new search subscription.
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(query.trim()), 220);
-    return () => clearTimeout(id);
-  }, [query]);
 
   // Once a thread is the active route, its own components subscribe to the same
   // queries the hover-prefetch warmed — release the held warm subs so they do
@@ -223,34 +213,8 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   );
   const threads = cachedThreads as unknown as ThreadItem[];
 
-  // Real server-side full-text search. Client-side filtering would only ever
-  // match the ~30 titles already loaded, silently missing everything older and
-  // every message body.
-  const searchResults = useQuery(
-    api.chat.search.combined,
-    current && debounced.length >= 2
-      ? { workspaceId: current, query: debounced }
-      : "skip",
-  );
-  const searching = debounced.length >= 2;
-
-  const filtered = useMemo(() => {
-    if (!searching) return threads;
-    if (!searchResults) return [];
-    // Reuse the loaded row when we have it (so pin/stream state is right),
-    // otherwise synthesise from the search hit.
-    const byId = new Map(threads.map((t) => [t._id as string, t]));
-    return searchResults.map(
-      (r) =>
-        byId.get(r.threadId as string) ?? {
-          _id: r.threadId,
-          title: r.title,
-          pinned: false,
-          updatedAt: r.updatedAt,
-          isStreaming: false,
-        },
-    ) as ThreadItem[];
-  }, [threads, searchResults, searching]);
+  // The full thread list. (The conversation search bar was removed.)
+  const filtered = threads;
 
   // Pinned first, then bucketed by recency the way ChatGPT does it.
   const groups = useMemo(() => {
@@ -290,7 +254,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex h-full flex-col">
       <BrandHeader />
 
-      {/* Grouped header block — New chat, Files, Search — with no internal
+      {/* Grouped header block — New chat, Files — with no internal
           dividers, matching the reference's grouping. */}
       <div className="flex flex-col gap-3 px-3 py-3">
         <button
@@ -305,17 +269,6 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         </button>
 
         <FilesSection />
-
-        <div className="group flex items-center gap-2 rounded-xl border border-transparent bg-muted/60 px-2.5 py-2 transition-all focus-within:border-brand/30 focus-within:bg-card focus-within:ring-2 focus-within:ring-brand/15">
-          <Search className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-focus-within:text-brand-ink" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search conversations..."
-            aria-label="Search conversations"
-            className="w-full bg-transparent text-sm text-primary outline-none placeholder:text-muted-foreground"
-          />
-        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
@@ -332,20 +285,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
         {!showSkeleton && filtered.length === 0 && (
           <div className="px-2 py-6 text-center">
-            <p className="text-xs text-primary/50">
-              {query
-                ? `No conversations match “${query}”`
-                : "No conversations yet"}
-            </p>
-            {query && (
-              <button
-                type="button"
-                onClick={() => setQuery("")}
-                className="mt-1 text-xs text-brand-ink hover:underline"
-              >
-                Clear
-              </button>
-            )}
+            <p className="text-xs text-primary/50">No conversations yet</p>
           </div>
         )}
 
@@ -419,7 +359,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         ))}
 
-        {status === "CanLoadMore" && !searching && (
+        {status === "CanLoadMore" && (
           <button
             type="button"
             onClick={() => loadMore(PAGE)}

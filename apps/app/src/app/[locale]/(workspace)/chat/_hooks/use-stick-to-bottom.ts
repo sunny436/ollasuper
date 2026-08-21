@@ -1,59 +1,63 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 /**
- * Bottom-pinning that does not fight the user.
+ * Keep the transcript pinned to the bottom while content grows, UNLESS the user
+ * has scrolled up — then leave them exactly where they are and resume only when
+ * they come back to the bottom themselves.
  *
- * Three mechanisms, each for a specific failure mode:
- *
- *  1. An IntersectionObserver sentinel decides "am I at the bottom".
- *     Not `scrollHeight - scrollTop - clientHeight < N`: that reads three
- *     layout properties on every scroll event, forcing a synchronous reflow at
- *     60fps while the transcript is simultaneously growing, and it is
- *     unreliable under browser zoom and fractional device pixel ratios (the
- *     sum is off by sub-pixels and "at bottom" never becomes true). IO is
- *     batched by the browser and rootMargin gives free hysteresis.
- *
- *  2. Pinning happens in useLayoutEffect, before paint, so growth and scroll
- *     land in the same frame with no visible tear. Direct `scrollTop =`
- *     rather than scrollIntoView({behavior:"smooth"}) — smooth scrolls are
- *     animations, and firing one every 60ms queues overlapping animations that
- *     visibly fight each other and never converge.
- *
- *  3. A SYNCHRONOUS user-intent latch on wheel/touch/keys. The IO callback is
- *     asynchronous and can be a frame late; in that frame the layout effect
- *     would yank the user back down. That is exactly the "it fights me" bug.
+ * The truth of "is the user at the bottom" comes from ONE authoritative scroll
+ * listener that reads the scroll position directly. An earlier version used an
+ * IntersectionObserver with a 140px rootMargin whose callback overwrote the
+ * at-bottom flag unconditionally: any scroll-up smaller than 140px flipped it
+ * back on and the next streamed frame yanked the reader back down. Reading the
+ * position covers every modality uniformly — wheel, touch, scrollbar-drag,
+ * momentum fling, keyboard — which an intent latch on wheel/touch alone missed.
  */
+
+/**
+ * Within this many px of the bottom counts as "following". Small enough that a
+ * deliberate scroll-up unsticks at once; comfortably larger than the ~1-3px
+ * jitter a programmatic pin leaves during streaming, so it never false-unsticks.
+ */
+const BOTTOM_THRESHOLD = 64;
+
 export function useStickToBottom(deps: unknown[]) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const [hasNew, setHasNew] = useState(false);
 
-  // --- IO sentinel: state only -------------------------------------------
+  // --- authoritative scroll-position truth --------------------------------
+  // Updates the ref SYNCHRONOUSLY (not rAF-throttled): a deferred write would
+  // let a reveal-frame pin fire a one-frame yank mid scrollbar-drag. State is
+  // mirrored only on transition, so a scroll costs ~2 renders, not hundreds.
   useEffect(() => {
-    const root = scrollerRef.current;
-    const sentinel = sentinelRef.current;
-    if (!root || !sentinel) return;
-
-    const io = new IntersectionObserver(
-      (entries) => {
-        const visible = entries.some((e) => e.isIntersecting);
-        atBottomRef.current = visible;
-        // Mirror into state only on transition, so a user scroll costs ~2
-        // renders rather than 200.
-        setAtBottom((prev) => (prev === visible ? prev : visible));
-        if (visible) setHasNew(false);
-      },
-      { root, rootMargin: "0px 0px 140px 0px", threshold: 0 },
-    );
-    io.observe(sentinel);
-    return () => io.disconnect();
+    const el = scrollerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const bottom = dist <= BOTTOM_THRESHOLD;
+      atBottomRef.current = bottom;
+      setAtBottom((prev) => (prev === bottom ? prev : bottom));
+      if (bottom) setHasNew(false);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
   // --- synchronous user-intent latch --------------------------------------
+  // Releases the pin the instant a gesture starts, before its scroll event is
+  // dispatched — belt-and-suspenders against a pin landing in that gap. The
+  // scroll listener above then reconciles to the real position (a wheel DOWN
+  // toward the bottom re-sticks; a wheel UP stays released).
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -108,7 +112,11 @@ export function useStickToBottom(deps: unknown[]) {
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
-  /** Preserve position when older messages are prepended. */
+  /**
+   * Preserve the reader's position when older messages are prepended. Call it
+   * BEFORE loadMore to snapshot the height, then invoke the returned closure in
+   * a layout effect once the new page has rendered.
+   */
   const anchorForPrepend = useCallback(() => {
     const el = scrollerRef.current;
     const before = el?.scrollHeight ?? 0;
@@ -118,12 +126,5 @@ export function useStickToBottom(deps: unknown[]) {
     };
   }, []);
 
-  return {
-    scrollerRef,
-    sentinelRef,
-    atBottom,
-    hasNew,
-    scrollToBottom,
-    anchorForPrepend,
-  };
+  return { scrollerRef, atBottom, hasNew, scrollToBottom, anchorForPrepend };
 }
