@@ -24,6 +24,12 @@ type FileRow = {
   status: "processing" | "ready" | "failed";
   error: string | null;
   detectedType: string | null;
+  // Live ingestion progress (truthful; written while processing, cleared on a
+  // terminal status). `note` is a partial-success message that survives on ready.
+  stage: string | null;
+  progress: number | null;
+  stageMessage: string | null;
+  note: string | null;
 };
 
 /**
@@ -110,6 +116,7 @@ function FileItem({
   file: FileRow;
   onDelete: () => Promise<void>;
 }) {
+  const processing = file.status === "processing";
   return (
     <div className="group flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-accent">
       <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -117,12 +124,37 @@ function FileItem({
         <p className="truncate text-xs text-primary" title={file.name}>
           {file.name}
         </p>
-        <p className="text-[10px] text-muted-foreground">
-          {fmtSize(file.size)}
-          {file.detectedType ? ` · ${file.detectedType}` : ""}
-        </p>
+        {processing ? (
+          // Truthful live stage. Each stage really happened; the percentage is
+          // real embedding progress (backend-throttled). No fake countdown.
+          <>
+            <p className="truncate text-[10px] text-muted-foreground">
+              {file.stageMessage ?? "Processing"}
+              {file.progress != null ? ` · ${file.progress}%` : ""}
+            </p>
+            <div className="mt-0.5 h-0.5 w-full overflow-hidden rounded-full bg-primary/10">
+              <div
+                className="h-full rounded-full bg-brand transition-[width] duration-500 ease-out"
+                style={{ width: `${file.progress ?? 8}%` }}
+              />
+            </div>
+          </>
+        ) : (
+          <p
+            className="truncate text-[10px] text-muted-foreground"
+            title={file.note ?? undefined}
+          >
+            {fmtSize(file.size)}
+            {file.detectedType ? ` · ${file.detectedType}` : ""}
+            {file.note ? " · ⚠ partial" : ""}
+          </p>
+        )}
       </div>
-      <StatusBadge status={file.status} error={file.error} />
+      <StatusBadge
+        status={file.status}
+        error={file.error}
+        stageMessage={file.stageMessage}
+      />
       <ConfirmButton
         label={<Trash2 className="h-3.5 w-3.5" />}
         title="Delete file?"
@@ -138,9 +170,11 @@ function FileItem({
 function StatusBadge({
   status,
   error,
+  stageMessage,
 }: {
   status: FileRow["status"];
   error: string | null;
+  stageMessage: string | null;
 }) {
   if (status === "ready") {
     return (
@@ -161,9 +195,12 @@ function StatusBadge({
     );
   }
   return (
-    <span className="inline-flex items-center gap-0.5 rounded border border-border bg-primary/5 px-1.5 py-px text-[9px] font-medium text-primary/50">
+    <span
+      title={stageMessage ?? undefined}
+      className="inline-flex shrink-0 items-center gap-0.5 rounded border border-border bg-primary/5 px-1.5 py-px text-[9px] font-medium text-primary/50"
+    >
       <Loader2 className="h-2.5 w-2.5 animate-spin" />
-      Processing
+      Working
     </span>
   );
 }

@@ -55,12 +55,14 @@ async def test_parse_pdf_digital_text():
     async def no_ocr(*_a, **_k):
         return []
 
-    docs = await parse_pdf(
+    result = await parse_pdf(
         _make_pdf("Hello RAG world"), name="d.pdf", settings=SETTINGS, ocr=no_ocr
     )
+    docs = result.docs
     assert docs
     assert docs[0].page == 1
     assert "Hello RAG world" in docs[0].text
+    assert result.truncated is False
 
 
 async def test_parse_pdf_scanned_page_ocr_fallback(monkeypatch):
@@ -70,18 +72,26 @@ async def test_parse_pdf_scanned_page_ocr_fallback(monkeypatch):
         text_docs=[
             NormalizedDoc(text="page one text", page=1, metadata={"source": "s"})
         ],
-        ocr_pages=[(2, b"FAKE_PNG_BYTES")],
+        image_pages=[1],  # 0-based index -> page 2 needs OCR
+        total_pages=2,
     )
-    monkeypatch.setattr(pdfmod, "_extract", lambda raw, name, settings: ext)
+    monkeypatch.setattr(
+        pdfmod, "_extract", lambda raw, name, settings, cancel: ext
+    )
+    # Fake the render so no real pdfium/PDF bytes are needed.
+    monkeypatch.setattr(pdfmod, "_render_page", lambda raw, idx: b"FAKE_PNG_BYTES")
 
     async def fake_ocr(raw, mime, *, name, settings):
         assert raw == b"FAKE_PNG_BYTES"
         assert mime == "image/png"
         return [NormalizedDoc(text="scanned page two", metadata={"source": name})]
 
-    docs = await parse_pdf(b"ignored", name="s.pdf", settings=SETTINGS, ocr=fake_ocr)
+    result = await parse_pdf(b"ignored", name="s.pdf", settings=SETTINGS, ocr=fake_ocr)
+    docs = result.docs
     assert [d.page for d in docs] == [1, 2]
     assert docs[1].text == "scanned page two"
+    assert result.ocr_done == 1
+    assert result.truncated is False
 
 
 def test_pdf_tables_to_md():

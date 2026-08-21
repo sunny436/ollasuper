@@ -143,6 +143,12 @@ export const list = query({
         chunkCount: f.chunkCount ?? null,
         pageCount: f.pageCount ?? null,
         detectedType: f.detectedType ?? null,
+        stage: f.stage ?? null,
+        progress: f.progress ?? null,
+        processedUnits: f.processedUnits ?? null,
+        totalUnits: f.totalUnits ?? null,
+        stageMessage: f.stageMessage ?? null,
+        note: f.note ?? null,
         createdAt: f.createdAt,
         updatedAt: f.updatedAt,
       })),
@@ -240,6 +246,7 @@ export const setStatus = internalMutation({
     detectedType: v.optional(v.string()),
     contentHash: v.optional(v.string()),
     error: v.optional(v.string()),
+    note: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
     const file = await ctx.db
@@ -263,6 +270,15 @@ export const setStatus = internalMutation({
         a.status === "failed"
           ? (a.error ?? "Ingestion failed").slice(0, 500)
           : undefined,
+      // A partial-success note (e.g. content-limit truncation) rides onto a
+      // `ready` row so the UI can tell the user what was processed.
+      note: a.status === "ready" ? (a.note ?? undefined) : undefined,
+      // Progress is transient: clear the live fields on any terminal status.
+      stage: undefined,
+      progress: undefined,
+      processedUnits: undefined,
+      totalUnits: undefined,
+      stageMessage: undefined,
       updatedAt: now,
     });
     // Staging blob is transient: drop it only on durable success, then null the
@@ -271,6 +287,38 @@ export const setStatus = internalMutation({
       await ctx.storage.delete(file.storageId);
       await ctx.db.patch(file._id, { storageId: undefined });
     }
+    return { ok: true };
+  },
+});
+
+/** Intermediate progress from Python's file-progress callback. Capability-scoped
+ *  by ingestId. Only ever touches a `processing` row (never a terminal one), and
+ *  writes only the transient live fields, so it cannot corrupt the result. The
+ *  Python side coalesces these, so this stays cheap despite the reactive list. */
+export const setProgress = internalMutation({
+  args: {
+    fileId: v.string(), // ingestId capability
+    stage: v.string(),
+    progress: v.optional(v.number()),
+    processedUnits: v.optional(v.number()),
+    totalUnits: v.optional(v.number()),
+    stageMessage: v.optional(v.string()),
+  },
+  handler: async (ctx, a) => {
+    const file = await ctx.db
+      .query("userFiles")
+      .withIndex("by_ingestId", (q) => q.eq("ingestId", a.fileId))
+      .unique();
+    if (!file) return { ok: false, unknown: true };
+    if (file.status !== "processing") return { ok: true, alreadyFinal: true };
+    await ctx.db.patch(file._id, {
+      stage: a.stage,
+      progress: a.progress,
+      processedUnits: a.processedUnits,
+      totalUnits: a.totalUnits,
+      stageMessage: a.stageMessage,
+      updatedAt: Date.now(),
+    });
     return { ok: true };
   },
 });
