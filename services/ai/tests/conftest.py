@@ -30,6 +30,9 @@ def make_settings(url: str, **overrides) -> Settings:
         "openrouter_api_key": "sk-or-v1-test",
         "convex_internal_url": url,
         "convex_site_url": url,
+        # Render in-thread in tests so _render_page monkeypatches apply (the
+        # process pool would not see them). Prod uses the pool for crash safety.
+        "ai_ocr_render_workers": 0,
         # Deliberately NOT overriding the flush timings. An earlier version of
         # this fixture pinned the interval to 100ms "so tests are fast", which
         # silently re-introduced the exact policy bug the writer tests exist to

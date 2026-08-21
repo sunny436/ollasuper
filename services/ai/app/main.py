@@ -76,6 +76,9 @@ async def lifespan(app: FastAPI):
         # until the Convex reaper fires 90s later.
         await app.state.registry.shutdown()
         await app.state.ingest_registry.shutdown()
+        from app.ingest.pdf import shutdown_render_pool
+
+        shutdown_render_pool()
         if app.state.db is not None:
             await app.state.db.dispose()
         await http.aclose()
