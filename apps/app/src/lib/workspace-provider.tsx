@@ -4,6 +4,7 @@ import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useMutation, useQuery } from "convex/react";
+import { clearDisplayCaches } from "./display-cache";
 import { DISPLACED_KEY } from "./displaced-session";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
@@ -55,6 +56,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
           try {
             window.sessionStorage.setItem(DISPLACED_KEY, "1");
           } catch {}
+          clearDisplayCaches();
           void signOut();
         }
       })

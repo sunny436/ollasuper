@@ -5,6 +5,7 @@ import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useCachedTranscript } from "../_hooks/use-cached-transcript";
 import { useChatSession } from "../_hooks/use-chat-session";
 import { useReveal } from "../_hooks/use-reveal";
 import { useStickToBottom } from "../_hooks/use-stick-to-bottom";
@@ -52,10 +53,17 @@ export function MessageList({ threadId }: { threadId: string | null }) {
   // 3-5x fewer renders than the raw delta rate.
   const liveText = useThrottledValue(liveTextRaw, 60);
 
-  const settled = useMemo(() => {
+  const settledLive = useMemo(() => {
     // listPaged is newest-first for backwards pagination; display oldest-first.
     return [...(results ?? [])].reverse() as unknown as ChatMessageDoc[];
   }, [results]);
+
+  // Instant on reload: seed the transcript from localStorage while the first
+  // page reconnects (~2-3s cold), then hand off to live the moment it lands.
+  // Seeds only when the cache is for THIS thread and the first page is still
+  // loading; never caches or touches the in-flight row.
+  const loadingFirst = threadId !== null && status === "LoadingFirstPage";
+  const settled = useCachedTranscript(threadId, settledLive, loadingFirst);
 
   // The markdown renderer is a lazy chunk (kept out of /chat's first-load so the
   // empty landing hydrates faster). Preload it off the critical path: as soon as a
@@ -115,8 +123,6 @@ export function MessageList({ threadId }: { threadId: string | null }) {
     [editMessage],
   );
 
-  const loadingFirst = threadId !== null && status === "LoadingFirstPage";
-
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -127,7 +133,7 @@ export function MessageList({ threadId }: { threadId: string | null }) {
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
       >
         <div className="mx-auto w-full max-w-3xl px-4 py-6 md:px-6">
-          {loadingFirst && (
+          {loadingFirst && settled.length === 0 && (
             <>
               <MessageSkeleton align="right" />
               <MessageSkeleton />

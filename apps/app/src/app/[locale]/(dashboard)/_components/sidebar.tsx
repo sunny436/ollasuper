@@ -1,5 +1,6 @@
 "use client";
 
+import { clearDisplayCaches } from "@/lib/display-cache";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@v1/backend/convex/_generated/api";
@@ -104,7 +105,10 @@ export function Sidebar() {
           <ThemeSwitcher />
           <button
             type="button"
-            onClick={() => signOut()}
+            onClick={() => {
+              clearDisplayCaches();
+              signOut();
+            }}
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-primary/60 hover:bg-primary/5 hover:text-primary"
           >
             <LogOut className="h-4 w-4" /> Log out

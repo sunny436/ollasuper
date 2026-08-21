@@ -1,10 +1,11 @@
 "use client";
 
+import { CACHE_KEYS } from "@/lib/display-cache";
 import { api } from "@v1/backend/convex/_generated/api";
 import { useQuery } from "convex/react";
 import { useEffect, useState } from "react";
 
-const KEY = "user";
+const KEY = CACHE_KEYS.user;
 
 /** The slice of api.users.getUser the greeting + account footer actually read. */
 type CachedUser = {

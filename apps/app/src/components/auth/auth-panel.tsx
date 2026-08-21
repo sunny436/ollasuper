@@ -5,7 +5,7 @@ import { api } from "@v1/backend/convex/_generated/api";
 import { useAction } from "convex/react";
 import { useForm } from "@tanstack/react-form";
 import { zodValidator } from "@tanstack/zod-form-adapter";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, LazyMotion, m } from "framer-motion";
 import {
   ArrowRight,
   Eye,
@@ -66,6 +66,11 @@ const LINK = "font-semibold text-[#22C1E8] text-xs transition-colors hover:text-
 // bug documented in chat's composer.tsx.
 // ---------------------------------------------------------------------------
 
+// Loader (not the object) so LazyMotion code-splits the feature bundle out of
+// the login route's first-load JS. See ./motion-features.
+const loadMotionFeatures = () =>
+  import("./motion-features").then((mod) => mod.default);
+
 function FieldError({ errors }: { errors: unknown[] }) {
   const first = errors.find((e): e is string => typeof e === "string" && e.length > 0);
   if (!first) return null;
@@ -112,7 +117,7 @@ function TabButton({
         {active && <ArrowRight className="relative z-10 h-4 w-4" />}
       </button>
       {active && (
-        <motion.div
+        <m.div
           layoutId="activeTabNotch"
           className="absolute inset-0 rounded-xl border border-white/15 bg-white/10 shadow-lg backdrop-blur-sm"
           transition={{ type: "spring", stiffness: 380, damping: 30 }}
@@ -132,7 +137,7 @@ function PanelFrame({
   children: React.ReactNode;
 }) {
   return (
-    <motion.form
+    <m.form
       key={formKey}
       initial={{ opacity: 0, x: 18 }}
       animate={{ opacity: 1, x: 0 }}
@@ -142,7 +147,7 @@ function PanelFrame({
       className="space-y-5"
     >
       {children}
-    </motion.form>
+    </m.form>
   );
 }
 
@@ -331,6 +336,7 @@ export function AuthPanel() {
   };
 
   return (
+    <LazyMotion features={loadMotionFeatures}>
     <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#07080E] p-4 font-sans selection:bg-[#7C3AED]/40 selection:text-white md:p-8">
       <AmbientBackdrop />
 
@@ -765,5 +771,6 @@ export function AuthPanel() {
         </div>
       </div>
     </div>
+    </LazyMotion>
   );
 }

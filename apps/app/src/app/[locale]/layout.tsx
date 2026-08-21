@@ -3,7 +3,6 @@ import { ConvexAuthNextjsServerProvider } from "@convex-dev/auth/nextjs/server";
 import { TooltipProvider } from "@v1/ui/tooltip";
 import { cn } from "@v1/ui/utils";
 import { GeistMono } from "geist/font/mono";
-import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 
@@ -21,8 +20,8 @@ import { AmbienceScript } from "@/lib/ambience/ambience-script";
 import { ConvexClientProvider } from "../convex-client-provider";
 
 export const metadata: Metadata = {
-  title: "Create v1",
-  description: "Production ready Next.js app",
+  title: "Ollasuper",
+  description: "Your private AI workspace.",
 };
 
 export const viewport = {
@@ -41,10 +40,7 @@ export default function RootLayout({
     <ConvexAuthNextjsServerProvider>
       <html lang="en" className={inter.variable} suppressHydrationWarning>
         <body
-          className={cn(
-            `${GeistSans.variable} ${GeistMono.variable}`,
-            "antialiased",
-          )}
+          className={cn(`${GeistMono.variable}`, "antialiased")}
         >
           {/* Stamps ambience vars + .dark on <html> before first paint (no
               flash). Must be the first thing in <body> so it runs before the

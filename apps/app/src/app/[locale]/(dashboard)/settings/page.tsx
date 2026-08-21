@@ -1,5 +1,6 @@
 "use client";
 
+import { clearDisplayCaches } from "@/lib/display-cache";
 import { useScopedI18n } from "@/locales/client";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useForm } from "@tanstack/react-form";
@@ -38,6 +39,7 @@ export default function DashboardSettings() {
 
   const handleDeleteAccount = async () => {
     await deleteCurrentUserAccount();
+    clearDisplayCaches();
     signOut();
   };
 
