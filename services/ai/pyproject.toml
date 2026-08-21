@@ -51,6 +51,7 @@ dependencies = [
     # defusedxml hardens the XML parsing that openpyxl/python-docx do under the
     # hood (XXE / billion-laughs) for untrusted uploads.
     "defusedxml>=0.7,<1",
+    "rapidocr-onnxruntime>=1.4.4",
 ]
 
 # Deliberately NOT langchain-anthropic: it speaks the native Anthropic Messages

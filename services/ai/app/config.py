@@ -132,10 +132,21 @@ class Settings(BaseSettings):
     # exactly why every image upload was failing. 2.5-flash-lite is live + vision.
     ai_ocr_model: str = "google/gemini-2.5-flash-lite"
     ai_ocr_long_edge: int = 2048
-    # Scanned/image-only PDF pages are rendered (pypdfium2) and OCR'd via the
-    # vision model. Cap how many such pages per file so a 500-page scan cannot
-    # blow the --workers 1 budget with hundreds of vision calls.
-    ai_ocr_max_pdf_pages: int = 10
+    # Scanned/image-only PDF pages are rendered (pypdfium2) then OCR'd. No hard
+    # page cap (bounded instead by the 20MB file limit + overall deadline).
+    ai_ocr_max_pdf_pages: int = 10  # legacy; unused by the no-page-limit path
+    # LOCAL OCR is the PRIMARY engine: RapidOCR (Apache-2.0, ONNX-CPU, NO system
+    # binary) keeps the scanned-PDF OCR flood OFF the shared OpenRouter account —
+    # a sustained 55-page vision-OCR flood once queued an interactive chat's LLM
+    # request for 179s (measured). Quality validated on scanned text (IDs, numbers,
+    # currency read accurately). The vision model stays only as a per-page fallback
+    # for empty/low-confidence pages, so it never floods the account.
+    ai_ocr_engine: str = Field(default="rapidocr", pattern="^(rapidocr|vision)$")
+    ai_ocr_min_confidence: float = 0.5
+    ai_ocr_vision_fallback: bool = True
+    # Bounded CPU pool for local OCR inference (ONNX releases the GIL during
+    # inference; a small bound keeps it from monopolising the box).
+    ai_ocr_local_concurrency: int = 4
 
     # Ingestion limits (app/ingest/). One shared char budget per file, mirroring
     # ai_max_turn_chars for attachments.
@@ -152,6 +163,14 @@ class Settings(BaseSettings):
     # order-preserving, bounded so the provider's TPM/RPM (429s) is respected.
     # Tuned empirically by bench_ingest.py.
     ai_ingest_embedding_concurrency: int = 4
+    # Interactive-priority provider governor. Interactive chat gets highest
+    # priority + RESERVED provider capacity; background ingestion (embeddings +
+    # any vision-OCR fallback) uses only the LEFTOVER (max - reserve), so it can
+    # never exhaust the shared OpenRouter account and queue a chat request (the
+    # measured 179s starvation). OCR is now local, so this mainly guards the rare
+    # vision-fallback path. Sized to the provider's measured hard concurrency.
+    ai_provider_max_concurrency: int = 8
+    ai_provider_chat_reserve: int = 3
     # Scanned-PDF pages are OCR'd through a vision model — bounded-parallel, not
     # globally sequential. Bound respects the provider rate limit and memory
     # (each rendered page PNG is held only for its OCR call, then discarded).

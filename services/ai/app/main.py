@@ -10,6 +10,7 @@ so no CORS middleware is mounted at all.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -60,6 +61,12 @@ async def lifespan(app: FastAPI):
             "rag": settings.rag_enabled,
         },
     )
+    # Warm the local OCR engine off the event loop so the first scanned-PDF
+    # ingest does not pay the one-time model load. Best-effort, non-blocking.
+    if settings.rag_enabled and settings.ai_ocr_engine == "rapidocr":
+        from app.ingest.ocr import warm_ocr
+
+        asyncio.create_task(asyncio.to_thread(warm_ocr))
     try:
         yield
     finally:

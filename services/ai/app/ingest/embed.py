@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable
 from langchain_openai import OpenAIEmbeddings
 
 from app.config import Settings
+from app.ingest.governor import ingest_provider_gate
 from app.logging import get_logger
 
 log = get_logger(__name__)
@@ -79,7 +80,9 @@ async def embed_documents(
 
     async def _one(sub: list[str]) -> list[list[float]]:
         nonlocal done
-        async with sem:
+        # Own batch-concurrency bound AND the shared interactive-priority gate,
+        # so background embedding never eats the chat's reserved provider slots.
+        async with sem, ingest_provider_gate(settings):
             vecs = await client.aembed_documents(sub)
         if progress_cb is not None:
             async with done_lock:
