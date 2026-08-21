@@ -286,6 +286,29 @@ describe("password reset", () => {
   });
 });
 
+// ----------------------------------------------------- allow-list is signup-only
+
+describe("domain allow-list scope", () => {
+  test("an existing user whose domain is NOT allow-listed can still log in", async () => {
+    const t = convexTest(schema, modules);
+    const email = "legacy@company.io"; // not on the sign-up allow-list
+    // Allow the domain just long enough to CREATE the account (as if it had been
+    // created before the allow-list existed), then remove it.
+    process.env.AUTH_EXTRA_ALLOWED_DOMAINS = "company.io";
+    try {
+      await createVerifiedUser(t, email);
+    } finally {
+      // biome-ignore lint/performance/noDelete: the var must be ABSENT, not ""
+      delete process.env.AUTH_EXTRA_ALLOWED_DOMAINS;
+    }
+    // The allow-list is sign-up only. Login must still succeed — otherwise every
+    // pre-existing user on an unlisted domain (admin@myos.test included) is
+    // locked out. Regression guard for exactly that bug.
+    const r = await signIn(t, { email, password: PASSWORD, flow: "signIn" });
+    expect((r as { tokens: unknown } | null)?.tokens).toBeTruthy();
+  });
+});
+
 // ------------------------------------------------------------- send throttle
 
 describe("emailed-code send throttle", () => {

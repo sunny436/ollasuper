@@ -33,16 +33,21 @@ const PasswordWithFlows = Password({
   // real string or absent from the object entirely — never explicitly undefined,
   // which is what a ternary or `x: string | undefined` would produce.
   profile: (params) => {
-    // Email shape + domain allow-list (specific, user-friendly messages — a
-    // typed domain is not an account-existence oracle). Existence itself is
-    // never revealed here; that is handled generically on the login path.
-    const email = assertUsableEmail(params.email as string);
     const name = typeof params.name === "string" ? params.name.trim() : "";
-    // Sign-up is the one flow with name + email + password together, so the
-    // "password must not contain your name/email" rules live here. (Char-class
-    // and common-password rules run for BOTH sign-up and reset in
+    // profile() runs on EVERY flow (sign-in included — the library calls it to
+    // derive the account id). The domain allow-list and the "password must not
+    // contain your name/email" rules are SIGN-UP only. Gating on flow is
+    // load-bearing: without it, every existing user whose domain is not on the
+    // allow-list — admin@myos.test included — is locked OUT of login.
+    // (Char-class + common-password rules DO run on sign-up AND reset, in
     // validatePasswordRequirements below.)
-    if (typeof params.password === "string") {
+    const isSignUp = params.flow === "signUp";
+    const email = isSignUp
+      ? // Specific, user-friendly messages; a typed domain is not an
+        // account-existence oracle.
+        assertUsableEmail(params.email as string)
+      : normalizeEmail(params.email as string);
+    if (isSignUp && typeof params.password === "string") {
       assertPasswordNotIdentity(params.password, email, name);
     }
     const doc: Record<string, string> & { email: string } = {
