@@ -3,7 +3,13 @@ import { Password } from "@convex-dev/auth/providers/Password";
 import { convexAuth, getAuthSessionId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import { ResendOTP } from "./ResendOTP";
-import { assertUsableEmail, googleProfile, normalizeEmail } from "./authPolicy";
+import {
+  assertPasswordNotIdentity,
+  assertUsableEmail,
+  googleProfile,
+  isCommonPassword,
+  normalizeEmail,
+} from "./authPolicy";
 import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
 import { ResendOTPReset, ResendOTPVerify } from "./passwordProviders";
 
@@ -27,29 +33,42 @@ const PasswordWithFlows = Password({
   // real string or absent from the object entirely — never explicitly undefined,
   // which is what a ternary or `x: string | undefined` would produce.
   profile: (params) => {
-    // Single gate for shape and disposable-provider policy. Throws the same
-    // generic message for every rejection reason so sign-up cannot be used as an
-    // account or provider oracle.
+    // Email shape + domain allow-list (specific, user-friendly messages — a
+    // typed domain is not an account-existence oracle). Existence itself is
+    // never revealed here; that is handled generically on the login path.
     const email = assertUsableEmail(params.email as string);
+    const name = typeof params.name === "string" ? params.name.trim() : "";
+    // Sign-up is the one flow with name + email + password together, so the
+    // "password must not contain your name/email" rules live here. (Char-class
+    // and common-password rules run for BOTH sign-up and reset in
+    // validatePasswordRequirements below.)
+    if (typeof params.password === "string") {
+      assertPasswordNotIdentity(params.password, email, name);
+    }
     const doc: Record<string, string> & { email: string } = {
       email,
       emailNormalized: normalizeEmail(email),
     };
-    const name = typeof params.name === "string" ? params.name.trim() : "";
     if (name) doc.name = name;
     return doc;
   },
+  // Runs on BOTH sign-up and password-reset. One specific message per failing
+  // rule so the user knows exactly what to fix.
   validatePasswordRequirements: (password: string) => {
-    if (
-      password.length < 8 ||
-      !/[a-z]/.test(password) ||
-      !/[A-Z]/.test(password) ||
-      !/\d/.test(password)
-    ) {
+    if (password.length < 8)
+      throw new ConvexError("Password must be at least 8 characters.");
+    if (!/[a-z]/.test(password))
+      throw new ConvexError("Password must include a lowercase letter.");
+    if (!/[A-Z]/.test(password))
+      throw new ConvexError("Password must include an uppercase letter.");
+    if (!/\d/.test(password))
+      throw new ConvexError("Password must include a number.");
+    if (!/[^A-Za-z0-9]/.test(password))
+      throw new ConvexError("Password must include a special character.");
+    if (isCommonPassword(password))
       throw new ConvexError(
-        "Password must be at least 8 characters and include upper, lower, and a number.",
+        "This password is too common — choose something less predictable.",
       );
-    }
   },
 });
 

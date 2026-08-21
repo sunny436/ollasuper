@@ -35,6 +35,26 @@ function shareRateLimited(ip: string): boolean {
   return e.count > SHARE_MAX;
 }
 
+// Best-effort per-IP throttle for the auth surface (the /login route). The real
+// credential/attempt limiting is server-side on Convex (per-account 5/hr +
+// per-email send throttle); the raw signIn action goes straight to Convex and
+// never reaches this middleware, so this layer bounds automated hammering of the
+// login page from a single IP. In-memory + per-instance, like shareRateLimited.
+const AUTH_WINDOW_MS = 60_000;
+const AUTH_MAX = 40;
+const authHits = new Map<string, { start: number; count: number }>();
+function authRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const e = authHits.get(ip);
+  if (!e || now - e.start >= AUTH_WINDOW_MS) {
+    if (authHits.size > 5000) authHits.clear();
+    authHits.set(ip, { start: now, count: 1 });
+    return false;
+  }
+  e.count += 1;
+  return e.count > AUTH_MAX;
+}
+
 /**
  * Where SERVER-side Convex calls go.
  *
@@ -91,8 +111,16 @@ export default convexAuthNextjsMiddleware(
       return I18nMiddleware(request);
     }
 
-    const authed = await isAuthenticated(await convexAuth.getToken());
     const isSignIn = isSignInPage(request);
+    if (isSignIn) {
+      const ip =
+        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anon";
+      if (authRateLimited(ip)) {
+        return new Response("Too many requests", { status: 429 });
+      }
+    }
+
+    const authed = await isAuthenticated(await convexAuth.getToken());
 
     // Redirect targets are deliberately unchanged.
     //

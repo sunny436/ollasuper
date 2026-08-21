@@ -12,6 +12,10 @@ env:
     DASHBOARD_PORT=6791
     CONVEX_CLOUD_ORIGIN=http://127.0.0.1:3210
     CONVEX_SITE_ORIGIN=http://127.0.0.1:3211
+  # Ephemeral-CI admin password. Compliant with the sign-up policy (upper/lower/
+  # digit/special, not common, and — unlike the old MyosAdmin#2026 — does NOT
+  # contain the admin@myos.test local-part "admin" or domain label "myos").
+  ADMIN_PASSWORD: "Sentry9#Vault"
 
 jobs:
   contract:
@@ -43,6 +47,7 @@ jobs:
           $CVX env set -- JWKS "$(cat /tmp/jwks)"
           $CVX env set -- JWT_PRIVATE_KEY "$(cat /tmp/jwt_private_key)"
           $CVX env set SITE_URL http://localhost:3000
+          $CVX env set AUTH_EXTRA_ALLOWED_DOMAINS myos.test
           $CVX deploy -y
       - name: Adversarial IDOR / RBAC suite
         run: CONVEX_URL=http://127.0.0.1:3210 node e2e/p2-idor.js
@@ -79,6 +84,7 @@ jobs:
           $CVX env set -- JWKS "$(cat /tmp/jwks)"
           $CVX env set -- JWT_PRIVATE_KEY "$(cat /tmp/jwt_private_key)"
           $CVX env set SITE_URL http://localhost:3000
+          $CVX env set AUTH_EXTRA_ALLOWED_DOMAINS myos.test
           $CVX deploy -y
       - name: Bootstrap admin account
         run: CONVEX_URL=http://127.0.0.1:3210 node e2e/ci-bootstrap.js

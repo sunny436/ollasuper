@@ -18,6 +18,7 @@ import type * as authPolicy from "../authPolicy.js";
 import type * as authEventsPurge from "../authEventsPurge.js";
 import type * as authEvents from "../authEvents.js";
 import type * as authCodes from "../authCodes.js";
+import type * as authProbe from "../authProbe.js";
 import type * as backend from "../backend.js";
 import type * as chat_attachments from "../chat/attachments.js";
 import type * as chat_authz from "../chat/authz.js";
@@ -75,6 +76,7 @@ declare const fullApi: ApiFromModules<{
   authEventsPurge: typeof authEventsPurge;
   authEvents: typeof authEvents;
   authCodes: typeof authCodes;
+  authProbe: typeof authProbe;
   backend: typeof backend;
   "chat/attachments": typeof chat_attachments;
   "chat/authz": typeof chat_authz;

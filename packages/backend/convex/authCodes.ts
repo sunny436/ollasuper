@@ -41,7 +41,12 @@ export function hasMailTransport(): boolean {
   return Boolean(process.env.SMTP_HOST || process.env.RESEND_API_KEY);
 }
 
-type Ctx = { runAction: (ref: unknown, args: unknown) => Promise<unknown> };
+import { internal } from "./_generated/api";
+
+type Ctx = {
+  runAction: (ref: unknown, args: unknown) => Promise<unknown>;
+  runMutation?: (ref: unknown, args: unknown) => Promise<unknown>;
+};
 
 /**
  * Email a code, and log it ONLY when no transport exists.
@@ -62,6 +67,16 @@ export async function deliverCode(
   token: string,
   sendEmail: unknown,
 ): Promise<void> {
+  // Per-email send throttle (cooldown + hourly cap). SKIP silently when over
+  // the limit — never throw, so requestPasswordReset and the library's signIn
+  // keep their constant "started" response. All three code providers (verify /
+  // reset / otp) reach here, so this one gate covers every emailed code.
+  if (ctx && typeof ctx.runMutation === "function") {
+    const allowed = await ctx.runMutation(internal.authProbe.recordSend, {
+      email,
+    });
+    if (allowed === false) return;
+  }
   if (!hasMailTransport()) {
     console.warn(`[auth] ${label} code for ${email}: ${token}`);
   }

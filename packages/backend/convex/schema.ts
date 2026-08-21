@@ -50,6 +50,16 @@ export default defineSchema({
     .index("by_user_at", ["userId", "at"])
     .index("by_at", ["at"]),
 
+  // Per-normalized-email throttle for emailed one-time codes (verification /
+  // reset / OTP). Bounds resend/verification/reset email-bombing. One row per
+  // email, reused; no PII beyond the address that requested a code.
+  authProbeLimits: defineTable({
+    emailNormalized: v.string(),
+    windowStart: v.number(),
+    count: v.number(),
+    lastSentAt: v.number(),
+  }).index("by_email", ["emailNormalized"]),
+
   events: defineTable({
     workspaceId: v.optional(v.id("workspaces")),
     source: v.string(),

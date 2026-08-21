@@ -4,8 +4,12 @@ import { describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
-  GENERIC_EMAIL_REJECTION,
+  INVALID_EMAIL_MESSAGE,
+  UNSUPPORTED_DOMAIN_MESSAGE,
+  assertPasswordNotIdentity,
   assertUsableEmail,
+  isAllowedSignupDomain,
+  isCommonPassword,
   isDisposableEmail,
   isValidEmailShape,
   normalizeEmail,
@@ -75,18 +79,69 @@ describe("email policy", () => {
     expect(isDisposableEmail("a@example.com")).toBe(false);
   });
 
-  test("every rejection reason yields the SAME message (no enumeration oracle)", () => {
-    const messages = new Set<string>();
-    for (const bad of ["not-an-email", "a@mailinator.com", "a@10minutemail.com"]) {
-      try {
-        assertUsableEmail(bad);
-        throw new Error(`expected rejection for ${bad}`);
-      } catch (e) {
-        messages.add(String((e as { data?: string })?.data ?? (e as Error).message));
-      }
+  test("sign-up domain allow-list: approved consumer providers only", () => {
+    for (const ok of [
+      "a@gmail.com", "A@Outlook.COM", "b@yahoo.com", "c@icloud.com",
+      "d@proton.me", "e@protonmail.com", "f@zoho.com", "g@aol.com",
+      "h@gmx.com", "i@mail.com", "j@hotmail.com", "k@live.com",
+    ]) {
+      expect(isAllowedSignupDomain(ok)).toBe(true);
+      expect(assertUsableEmail(ok)).toBe(normalizeEmail(ok));
     }
-    expect(messages.size).toBe(1);
-    expect([...messages][0]).toBe(GENERIC_EMAIL_REJECTION);
+    for (const no of ["a@example.com", "a@company.io", "a@mailinator.com"]) {
+      expect(isAllowedSignupDomain(no)).toBe(false);
+    }
+  });
+
+  test("rejection messages are specific for domain policy, not an existence oracle", () => {
+    // Domain policy reveals nothing about ACCOUNTS, so malformed vs unsupported
+    // are allowed to differ (user-friendly). Neither reveals existence.
+    const msg = (email: string) => {
+      try {
+        assertUsableEmail(email);
+        return "OK";
+      } catch (e) {
+        return String((e as { data?: string })?.data ?? (e as Error).message);
+      }
+    };
+    expect(msg("not-an-email")).toBe(INVALID_EMAIL_MESSAGE);
+    expect(msg("a@company.io")).toBe(UNSUPPORTED_DOMAIN_MESSAGE);
+    expect(msg("a@mailinator.com")).toBe(UNSUPPORTED_DOMAIN_MESSAGE);
+    expect(msg("real@gmail.com")).toBe("OK");
+  });
+});
+
+// ------------------------------------------------------------- password policy
+
+describe("password policy", () => {
+  test("flags extremely common passwords, case-insensitively", () => {
+    for (const c of ["password", "Password", "PASSWORD1", "Qwerty123!", "letmein"]) {
+      expect(isCommonPassword(c)).toBe(true);
+    }
+    for (const ok of ["Tr0ub4dour&3xplace", "9x!Kq2mVw", "correct horse!7"]) {
+      expect(isCommonPassword(ok)).toBe(false);
+    }
+  });
+
+  test("rejects a password containing the user's name or email parts", () => {
+    const grab = (fn: () => void) => {
+      try {
+        fn();
+        return "OK";
+      } catch (e) {
+        return String((e as { data?: string })?.data ?? (e as Error).message);
+      }
+    };
+    expect(grab(() => assertPasswordNotIdentity("Alice!2024", "x@gmail.com", "Alice")))
+      .toBe("Password must not contain your name.");
+    expect(grab(() => assertPasswordNotIdentity("johnDoe!9", "johndoe@gmail.com", "")))
+      .toBe("Password must not contain part of your email.");
+    // Domain label ("gmail") is part of the email too.
+    expect(grab(() => assertPasswordNotIdentity("myGmailPw!9", "z@gmail.com", "")))
+      .toBe("Password must not contain part of your email.");
+    // A clean password with no identity overlap passes.
+    expect(grab(() => assertPasswordNotIdentity("9x!Kq2mVw", "user@gmail.com", "Bob")))
+      .toBe("OK");
   });
 });
 
