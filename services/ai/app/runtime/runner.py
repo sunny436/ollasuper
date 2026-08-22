@@ -6,6 +6,7 @@ import asyncio
 import time
 from contextlib import aclosing
 
+import httpx
 from langchain_core.messages import HumanMessage
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -14,15 +15,21 @@ from app.agent.context import (
     to_lc_messages,
     trim,
 )
+from app.agent.executor import ToolExecContext, build_tool_specs
 from app.agent.graph import build_graph
 from app.agent.llm import build_llm
+from app.agent.policy import READ_SCOPE
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
+from app.clients.ollagraph import OllagraphAdapter
 from app.config import Settings
 from app.ingest.retrieve import render_rag_block, retrieve_context
 from app.logging import get_logger
 from app.models.chat import GenerateRequest
+from app.models.tools import SideEffect, ToolFilters
 from app.runtime.writer import DeltaWriter
+from app.tools.registry import ToolRegistry
+from app.tools.selection import ToolSelector
 
 log = get_logger(__name__)
 
@@ -39,6 +46,10 @@ async def run_generation(
     settings: Settings,
     convex: ConvexClient,
     engine: AsyncEngine | None = None,
+    *,
+    tool_registry: ToolRegistry | None = None,
+    tool_selector: ToolSelector | None = None,
+    ollagraph_http: httpx.AsyncClient | None = None,
 ) -> None:
     """Run one turn to completion.
 
@@ -149,12 +160,53 @@ async def run_generation(
             base_url=settings.ollima_base_url,
             api_key=settings.ollima_api_key,
         )
-        graph = build_graph(llm)
+
+        # --- agent tools (Phase 4) ----------------------------------------
+        # Best-effort and fully gated: off unless the agent is enabled AND the
+        # registry is populated AND a shared http client exists. Any setup
+        # failure degrades to the plain no-tools graph — chat never breaks.
+        llm_tools = None
+        tools_ctx = None
+        if (
+            settings.agent_enabled
+            and tool_registry is not None
+            and tool_selector is not None
+            and ollagraph_http is not None
+            and tool_registry.count > 0
+        ):
+            try:
+                candidates = tool_selector.select(
+                    latest.content,
+                    top_k=settings.ai_agent_discovery_top_k,
+                    filters=ToolFilters(max_side_effect=SideEffect.READ_ONLY),
+                    min_score=settings.tool_discovery_min_score,
+                ).candidates
+                if candidates:
+                    specs, name_to_id = build_tool_specs(candidates, tool_registry)
+                    if specs:
+                        llm_tools = llm.bind_tools(specs)
+                        tools_ctx = ToolExecContext(
+                            registry=tool_registry,
+                            adapter=OllagraphAdapter(settings, ollagraph_http),
+                            writer=writer,
+                            scope=READ_SCOPE,
+                            name_to_tool_id=name_to_id,
+                            result_max_chars=settings.ai_agent_tool_result_max_chars,
+                            default_timeout_s=settings.ollagraph_default_tool_timeout_s,
+                        )
+            except Exception:  # noqa: BLE001 — tools are optional; never break chat
+                log.warning("agent_tools_disabled", extra={"stream_id": req.streamId})
+                llm_tools = None
+                tools_ctx = None
+
+        graph = build_graph(llm, llm_tools=llm_tools, tools_ctx=tools_ctx)
 
         state = {
             "messages": [*prior, HumanMessage(content=content)],
             "system_prompt": system,
         }
+        if tools_ctx is not None:
+            state["tool_budget"] = settings.ai_agent_max_steps
 
         # --- stream --------------------------------------------------------
         #

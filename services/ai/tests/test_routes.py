@@ -38,7 +38,7 @@ class _StubRunner:
         self.started = 0
         self.cancelled = 0
 
-    async def __call__(self, req, settings, convex, engine=None) -> None:
+    async def __call__(self, req, settings, convex, engine=None, **kwargs) -> None:
         self.started += 1
         try:
             await asyncio.sleep(self.delay)

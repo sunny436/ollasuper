@@ -48,7 +48,13 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateAccepted:
     async def _run() -> None:
         try:
             await run_generation(
-                req, app.settings, app.convex, engine=getattr(app, "db", None)
+                req,
+                app.settings,
+                app.convex,
+                engine=getattr(app, "db", None),
+                tool_registry=getattr(app, "tool_registry", None),
+                tool_selector=getattr(app, "tool_selector", None),
+                ollagraph_http=getattr(app, "ollagraph_http", None),
             )
         finally:
             app.registry.release(req.messageId)

@@ -25,6 +25,7 @@ from app.logging import configure, get_logger
 from app.routers import files, generate, health, tools
 from app.runtime.registry import Registry
 from app.tools.registry import ToolRegistry
+from app.tools.selection import ToolSelector
 
 log = get_logger(__name__)
 
@@ -88,6 +89,19 @@ async def lifespan(app: FastAPI):
     app.state.tool_registry = (
         ToolRegistry() if settings.ollagraph_enabled else None
     )
+    # Shared Ollagraph http client + a cached ToolSelector, used by the agent
+    # (Phase 4) to EXECUTE discovered tools. None when unconfigured -> the
+    # generation path binds no tools and is byte-identical to before. The
+    # selector's search index self-caches by registry.version, so the same
+    # instance is reused by the introspection route.
+    app.state.ollagraph_http = (
+        OllagraphAdapter.build_http_client() if settings.ollagraph_enabled else None
+    )
+    app.state.tool_selector = (
+        ToolSelector(app.state.tool_registry)
+        if app.state.tool_registry is not None
+        else None
+    )
 
     log.info(
         "startup",
@@ -122,6 +136,8 @@ async def lifespan(app: FastAPI):
         shutdown_pool()
         if app.state.db is not None:
             await app.state.db.dispose()
+        if app.state.ollagraph_http is not None:
+            await app.state.ollagraph_http.aclose()
         await http.aclose()
         log.info("shutdown")
 
