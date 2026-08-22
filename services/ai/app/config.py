@@ -80,6 +80,22 @@ class Settings(BaseSettings):
     # Below this normalized [0,1] relevance a query is treated as no-match.
     tool_discovery_min_score: float = 0.2
 
+    # --- Agent core (Phase 4: bounded single-agent tool loop) --------------
+    # OFF by default. Even when on, the agent only engages when the registry is
+    # populated AND an Ollagraph key is present (see `agent_enabled`); otherwise
+    # generation is byte-identical to the pre-Phase-4 prepare->model->END path.
+    # Discovery is filtered to READ_ONLY tools, policy is enforced OUTSIDE the
+    # model, and high-impact/approval tools are never silently executed.
+    ai_agent_enabled: bool = False
+    # Hard ceiling on model<->tool round-trips per turn. At the cap the model is
+    # re-invoked WITHOUT tools so it must produce a final text answer.
+    ai_agent_max_steps: int = 4
+    # Per-tool result is truncated to this many chars of serialized JSON before
+    # it re-enters the context as a ToolMessage (bounds runaway tool output).
+    ai_agent_tool_result_max_chars: int = 8000
+    # How many discovered candidates are bound to the model per turn (never 223).
+    ai_agent_discovery_top_k: int = 5
+
     ai_default_model: str = "gpt-5.6-luna"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
     # NOTE: gemini-2.0-flash-001 was RETIRED by OpenRouter (404 "No endpoints
@@ -286,6 +302,18 @@ class Settings(BaseSettings):
         """Tool discovery is possible once a base URL is set (the spec is
         public, so no key is required to discover). Mirrors `rag_enabled`."""
         return bool(self.ollagraph_base_url)
+
+    @property
+    def agent_enabled(self) -> bool:
+        """The agent EXECUTES tools, which requires a key — unlike discovery,
+        which only needs the public spec. So this is stricter than
+        `ollagraph_enabled`: the flag must be on, a base URL set, AND a key
+        present. Off on any missing piece => the current no-tools chat path."""
+        return (
+            self.ai_agent_enabled
+            and self.ollagraph_enabled
+            and bool(self.ollagraph_api_key)
+        )
 
     @property
     def ollagraph_spec_url(self) -> str:
