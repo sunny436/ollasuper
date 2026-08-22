@@ -1,7 +1,7 @@
 "use client";
 
 const BUTTON =
-  "flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 font-semibold text-[12px] text-white/90 backdrop-blur-sm transition-all hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-white/10 disabled:hover:bg-white/5";
+  "flex min-h-[58px] w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 font-semibold text-[13px] text-white/90 backdrop-blur-sm transition-all hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-white/10 disabled:hover:bg-white/5";
 
 function GoogleIcon() {
   return (
@@ -60,41 +60,35 @@ export function OAuthRow({
   onGoogle: () => void;
   disabled: boolean;
 }) {
+  // Three equal-width columns. The "Or Continue With" header + top border that
+  // used to live here were removed — auth-panel now owns the OR divider, so
+  // keeping them too would render two dividers.
   return (
-    <div className="mt-8 flex flex-col items-center justify-between gap-3 border-white/10 border-t pt-6 text-white/50 text-xs sm:flex-row sm:gap-0">
-      <span className="font-semibold tracking-wide">Or Continue With</span>
+    <div className="grid grid-cols-3 gap-3">
+      <button type="button" onClick={onGoogle} disabled={disabled} className={BUTTON}>
+        <GoogleIcon />
+        <span>Google</span>
+      </button>
 
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={onGoogle}
-          disabled={disabled}
-          className={BUTTON}
-        >
-          <GoogleIcon />
-          <span>Google</span>
-        </button>
+      <button
+        type="button"
+        disabled
+        title="Apple sign-in is not configured yet"
+        className={BUTTON}
+      >
+        <AppleIcon />
+        <span>Apple</span>
+      </button>
 
-        <button
-          type="button"
-          disabled
-          title="Apple sign-in is not configured yet"
-          className={BUTTON}
-        >
-          <AppleIcon />
-          <span>Apple</span>
-        </button>
-
-        <button
-          type="button"
-          disabled
-          title="Microsoft sign-in is not configured yet"
-          className={BUTTON}
-        >
-          <MicrosoftIcon />
-          <span>Microsoft</span>
-        </button>
-      </div>
+      <button
+        type="button"
+        disabled
+        title="Microsoft sign-in is not configured yet"
+        className={BUTTON}
+      >
+        <MicrosoftIcon />
+        <span>Microsoft</span>
+      </button>
     </div>
   );
 }
