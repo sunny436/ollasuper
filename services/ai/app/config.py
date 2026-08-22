@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     # Default per-tool timeout when a tool's request schema declares none.
     ollagraph_default_tool_timeout_s: float = 30.0
 
+    # --- Tool discovery / selection (Phase 2: metadata-only, provider-agnostic)
+    # Deterministic selection over the cached Tool Registry. No execution, no LLM.
+    tool_discovery_default_top_k: int = 5
+    tool_discovery_max_top_k: int = 25
+    # Below this normalized [0,1] relevance a query is treated as no-match.
+    tool_discovery_min_score: float = 0.2
+
     ai_default_model: str = "gpt-5.6-luna"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
     # NOTE: gemini-2.0-flash-001 was RETIRED by OpenRouter (404 "No endpoints

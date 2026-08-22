@@ -18,6 +18,13 @@ class ToolRegistry:
         self._by_category: dict[str, list[str]] = {}
         self._components: dict = {}
         self._report: dict = {}
+        # Bumped on any mutation so consumers (e.g. the discovery search index)
+        # can cache derived state and rebuild only when the catalogue changes.
+        self._version = 0
+
+    @property
+    def version(self) -> int:
+        return self._version
 
     # --- population -------------------------------------------------------
     def register(self, tool: ToolDefinition) -> None:
@@ -32,6 +39,7 @@ class ToolRegistry:
         bucket = self._by_category.setdefault(tool.category, [])
         if tool.tool_id not in bucket:
             bucket.append(tool.tool_id)
+        self._version += 1
 
     def replace_all(
         self,
@@ -54,6 +62,7 @@ class ToolRegistry:
             self._components = components
         if report is not None:
             self._report = report
+        self._version += 1
 
     # --- lookups ----------------------------------------------------------
     def get(self, tool_id: str) -> ToolDefinition | None:

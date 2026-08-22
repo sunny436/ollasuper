@@ -122,3 +122,76 @@ async def test_get_tool_detail_and_404():
         assert r404.status_code == 404
     finally:
         await c.aclose()
+
+
+# --- POST /v1/tools/discover (Phase 2, read-only metadata) -----------------
+from tests.fakes.tool_defs import sample_registry  # noqa: E402
+
+
+async def test_discover_requires_service_key():
+    app = create_app()
+    app.state.settings = make_settings("http://x")
+    app.state.tool_registry = sample_registry()
+    c = await _client(app)
+    try:
+        r = await c.post("/v1/tools/discover", json={"query": "scrape a page"})
+        assert r.status_code == 401
+    finally:
+        await c.aclose()
+
+
+async def test_discover_503_when_registry_disabled():
+    app = create_app()
+    app.state.settings = make_settings("http://x")
+    app.state.tool_registry = None
+    c = await _client(app)
+    try:
+        r = await c.post(
+            "/v1/tools/discover",
+            json={"query": "scrape a page"},
+            headers={"x-service-key": SERVICE_KEY},
+        )
+        assert r.status_code == 503
+    finally:
+        await c.aclose()
+
+
+async def test_discover_returns_relevant_candidates():
+    app = create_app()
+    app.state.settings = make_settings("http://x")
+    app.state.tool_registry = sample_registry()
+    c = await _client(app)
+    try:
+        r = await c.post(
+            "/v1/tools/discover",
+            json={"query": "find broken links on a website", "top_k": 3},
+            headers={"x-service-key": SERVICE_KEY},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["no_match"] is False
+        assert body["candidates"][0]["tool"]["tool_id"] == "broken_links"
+        assert len(body["candidates"]) <= 3
+        # metadata only — no credentials leak into the response
+        assert "authorization" not in r.text.lower()
+    finally:
+        await c.aclose()
+
+
+async def test_discover_no_match():
+    app = create_app()
+    app.state.settings = make_settings("http://x")
+    app.state.tool_registry = sample_registry()
+    c = await _client(app)
+    try:
+        r = await c.post(
+            "/v1/tools/discover",
+            json={"query": "explain gradient descent"},
+            headers={"x-service-key": SERVICE_KEY},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["no_match"] is True
+        assert body["candidates"] == []
+    finally:
+        await c.aclose()

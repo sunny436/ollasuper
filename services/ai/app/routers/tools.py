@@ -9,9 +9,13 @@ acceptance) and so Phase 2 has a concrete interface to read the catalogue.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
+from app.config import Settings
+from app.models.tools import ToolFilters
 from app.security import require_service_key
 from app.tools.registry import ToolRegistry
+from app.tools.selection import ToolSelector
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_service_key)])
 
@@ -62,3 +66,41 @@ async def get_tool(request: Request, tool_id: str) -> dict:
     if tool is None:
         raise HTTPException(status_code=404, detail="tool not found")
     return tool.model_dump()
+
+
+class DiscoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=2000)
+    top_k: int | None = Field(default=None, ge=1, le=100)
+    filters: ToolFilters | None = None
+
+
+def _get_selector(app, reg: ToolRegistry) -> ToolSelector:
+    """One cached ToolSelector per app; its search index self-caches by
+    registry.version, so nothing is recomputed per request."""
+    sel = getattr(app.state, "tool_selector", None)
+    if sel is None:
+        sel = ToolSelector(reg)
+        app.state.tool_selector = sel
+    return sel
+
+
+@router.post("/tools/discover")
+async def discover(request: Request, body: DiscoverRequest) -> dict:
+    """Deterministic tool discovery over the cached registry. METADATA ONLY —
+    it identifies relevant tools; it NEVER executes one and is not wired to the
+    model. 503 when the registry is disabled (chat is unaffected either way)."""
+    reg = _registry(request)
+    settings: Settings = request.app.state.settings
+    top_k = min(
+        body.top_k or settings.tool_discovery_default_top_k,
+        settings.tool_discovery_max_top_k,
+    )
+    result = _get_selector(request.app, reg).select(
+        body.query,
+        top_k=top_k,
+        filters=body.filters,
+        min_score=settings.tool_discovery_min_score,
+    )
+    return result.model_dump()
