@@ -26,13 +26,6 @@ export function AmbienceSlider() {
 
   return (
     <div className="flex flex-col items-center gap-1">
-      <span
-        className="hidden text-[10px] font-semibold uppercase tracking-widest sm:block"
-        style={{ color: colors.text, opacity: 0.65 }}
-      >
-        Ambience: {intensity}%
-      </span>
-
       <div
         className="relative flex h-9 w-[150px] items-center rounded-full border backdrop-blur-2xl sm:w-[240px]"
         style={{ background: colors.glassBg, borderColor: colors.glassBorder }}
