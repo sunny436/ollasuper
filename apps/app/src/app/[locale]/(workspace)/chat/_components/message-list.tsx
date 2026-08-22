@@ -254,6 +254,8 @@ export function MessageList({ threadId }: { threadId: string | null }) {
                   content: revealed,
                   status: "streaming",
                   model: live.model,
+                  // Live typed events (Phase 3) — empty for normal text turns.
+                  events: live.events,
                   createdAt: live.startedAt,
                 } as ChatMessageDoc
               }

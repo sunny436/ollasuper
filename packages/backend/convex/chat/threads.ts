@@ -322,6 +322,13 @@ export const purge = internalMutation({
         .withIndex("by_message_seq", (q) => q.eq("messageId", m._id))
         .collect();
       for (const c of chunks) await ctx.db.delete(c._id);
+      // Any live typed-event rows (Phase 3) — folded events live on the message,
+      // which is deleted below; these are only stragglers on an unfinalized turn.
+      const events = await ctx.db
+        .query("chatStreamEvents")
+        .withIndex("by_message_seq", (q) => q.eq("messageId", m._id))
+        .collect();
+      for (const e of events) await ctx.db.delete(e._id);
       const stream = await ctx.db
         .query("chatStreams")
         .withIndex("by_message", (q) => q.eq("messageId", m._id))

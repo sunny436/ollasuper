@@ -22,6 +22,8 @@ const STALL_MS = 90_000;
 
 /** Upper bound on chunk rows the tail query will read. Compaction keeps ~24. */
 const MAX_RESIDENT_CHUNKS = 64;
+// Typed events are low-volume (not per-token); a generous cap is plenty.
+const MAX_RESIDENT_EVENTS = 256;
 
 /**
  * THE hot subscription. This is the only query that re-fires while a reply is
@@ -61,12 +63,35 @@ export const active = query({
       )
       .take(MAX_RESIDENT_CHUNKS);
 
+    // Typed events (Phase 3) — read only when this generation has any, so a
+    // normal text turn pays for zero extra work. Low-volume, so return all rows
+    // (no compaction/watermark like text).
+    const events = stream.hasEvents
+      ? (
+          await ctx.db
+            .query("chatStreamEvents")
+            .withIndex("by_message_seq", (q) => q.eq("messageId", message._id))
+            .take(MAX_RESIDENT_EVENTS)
+        )
+          .sort((a, b) => a.seq - b.seq)
+          .map((e) => ({
+            eventId: e.eventId,
+            seq: e.seq,
+            type: e.type,
+            v: e.v,
+            ts: e.ts,
+            textOffset: e.textOffset,
+            payload: e.payload,
+          }))
+      : [];
+
     return {
       messageId: message._id,
       seq: message.seq,
       status: stream.status,
       cancelRequested: stream.cancelRequested,
       model: message.model ?? thread.model,
+      events,
       // Sent so the Python plane can size its context budget and clamp
       // max_tokens for small-context models -- 4095-token models exist, and a
       // fixed 8192-token output request is an immediate provider 400. 0 means
@@ -120,6 +145,12 @@ export const stop = mutation({
       endedAt: now,
     });
     for (const c of chunks) await ctx.db.delete(c._id);
+    // Purge live event rows too (aborted turns keep no folded events).
+    const events = await ctx.db
+      .query("chatStreamEvents")
+      .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+      .collect();
+    for (const e of events) await ctx.db.delete(e._id);
     await ctx.db.patch(messageId, {
       content: partial,
       status: "aborted",

@@ -70,6 +70,9 @@ async function toPublic(ctx: QueryCtx, m: Doc<"chatMessages">) {
     activeVariantIndex: m.activeVariantIndex ?? null,
     tokensIn: m.tokensIn ?? null,
     tokensOut: m.tokensOut ?? null,
+    // Typed events (Phase 3). Empty for text-only / pre-Phase-3 messages, so
+    // the client renders them exactly as before.
+    events: m.events ?? [],
     createdAt: m.createdAt,
     // Exposed so the client can dedupe its optimistic user row against the
     // settled one (the browser minted this id; returning it to its own author

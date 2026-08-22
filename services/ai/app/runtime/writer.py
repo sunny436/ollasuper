@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from app.clients.convex import ConvexClient, ConvexRejected, ConvexUnavailable
 from app.config import Settings
 from app.logging import get_logger
+from app.models.events import EventType, make_event
 
 log = get_logger(__name__)
 
@@ -79,6 +80,8 @@ class DeltaWriter:
         self._buf: list[str] = []
         self._buf_len = 0
         self._seq = 0
+        # Typed-event ordering key (Phase 3), independent of the text `_seq`.
+        self._event_seq = 0
         self._total = 0
         self._full: list[str] = []
         # Batches that failed to land ride along with the next flush; the
@@ -286,3 +289,61 @@ class DeltaWriter:
             )
         except (ConvexUnavailable, ConvexRejected):
             pass  # A missing auto-title is cosmetic; never fail a turn for it.
+
+    # -- typed event protocol (Phase 3) -------------------------------------
+    #
+    # These make the writer CAPABLE of emitting typed events. Nothing in the
+    # production generation path calls emit_event yet (runner.py still emits
+    # text + finalize only); the future Agent Core (Phase 4) will call it at the
+    # tool seam. They reuse the same ingress client + cancel propagation as
+    # deltas and never touch the text buffer, so the high-volume path is intact.
+
+    async def emit_text_delta(self, text: str) -> None:
+        """Protocol alias — text rides the existing high-volume delta channel."""
+        await self.push(text)
+
+    async def emit_event(self, type: EventType, **body: object) -> None:
+        """Emit ONE structured typed event. Best-effort like a delta: a lost
+        structured event is cosmetic (the terminal FINAL/ERROR is folded
+        server-side at finalize). `textOffset` = current text length, so a future
+        phase can interleave the event with the text deterministically."""
+        envelope = make_event(
+            type,
+            self._event_seq,
+            generation_id=self._stream_id,
+            text_offset=self._total,
+            **body,
+        )
+        self._event_seq += 1
+        async with self._lock:
+            try:
+                resp = await self._convex.ingress(
+                    {
+                        "op": "event",
+                        "streamId": self._stream_id,
+                        "events": [envelope.to_wire()],
+                    }
+                )
+            except ConvexUnavailable:
+                return  # transient; the answer text is unaffected
+            except ConvexRejected:
+                log.error("event_rejected", extra={"stream_id": self._stream_id})
+                return
+            if resp.get("cancel"):
+                self._cancel_requested = True
+
+    async def emit_final(
+        self,
+        *,
+        text: str | None = None,
+        usage: dict | None = None,
+        finish_reason: str | None = None,
+    ) -> None:
+        """Protocol alias for a successful terminal write (single shielded POST)."""
+        await self.finalize(
+            "done", text=text, usage=usage, finish_reason=finish_reason
+        )
+
+    async def emit_error(self, error: dict, *, text: str | None = None) -> None:
+        """Protocol alias for a terminal error write."""
+        await self.finalize("error", text=text, error=error)

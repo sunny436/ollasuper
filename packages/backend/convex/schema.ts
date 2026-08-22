@@ -1,6 +1,7 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { eventFields, eventObject } from "./chat/events";
 
 // Multi-tenant: resources carry workspaceId. It is `optional` on pre-existing tables only so
 // deploys don't fail validation against pre-migration rows; the function layer always sets it.
@@ -317,6 +318,10 @@ export default defineSchema({
     costUsd: v.optional(v.number()),
     firstTokenMs: v.optional(v.number()),
     latencyMs: v.optional(v.number()),
+    // Typed events (Phase 3). Written ONCE at finalize (the "second write"),
+    // and only for generations that actually emitted structured events — a
+    // pure text turn leaves this absent, so it renders exactly as before.
+    events: v.optional(v.array(eventObject)),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -357,6 +362,9 @@ export default defineSchema({
     heartbeatAt: v.number(),
     startedAt: v.number(),
     endedAt: v.optional(v.number()),
+    // Set on the first typed event. Gates the extra events read in stream.active
+    // and the finalize fold, so normal text chat pays nothing.
+    hasEvents: v.optional(v.boolean()),
   })
     .index("by_streamId", ["streamId"])
     .index("by_message", ["messageId"])
@@ -370,6 +378,17 @@ export default defineSchema({
     streamId: v.string(),
     seq: v.number(),
     text: v.string(),
+  }).index("by_message_seq", ["messageId", "seq"]),
+
+  // Append-only TYPED events (Phase 3). Low-volume structured events only
+  // (tool/citation/approval/artifact); text stays on chatStreamChunks. Mirrors
+  // that table: idempotent by the (messageId, seq) uniqueness probe, deleted
+  // inline at finalize/fail/stop/cascade (never a cron). Folded into
+  // chatMessages.events at finalize.
+  chatStreamEvents: defineTable({
+    messageId: v.id("chatMessages"),
+    streamId: v.string(),
+    ...eventFields,
   }).index("by_message_seq", ["messageId", "seq"]),
 
 
