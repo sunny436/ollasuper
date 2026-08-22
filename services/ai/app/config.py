@@ -58,6 +58,21 @@ class Settings(BaseSettings):
     ollima_api_key: str = ""
     ollima_base_url: str = "https://api.ollima.com/v1"
 
+    # --- Ollagraph tool provider (Phase 1: discovery/registry ONLY) --------
+    # Web-intelligence platform (scrape/extract/intel/actors/...). Phase 1 only
+    # DISCOVERS its capabilities into the Tool Registry from the PUBLIC OpenAPI
+    # spec — no key is needed to discover, and NOTHING here is wired to the LLM.
+    # The key is stored for a FUTURE execution phase and is never logged or sent
+    # to the browser/model. Feature is OFF unless ollagraph_base_url is set.
+    ollagraph_api_key: str = ""
+    ollagraph_base_url: str = ""
+    # Blank -> derived from base_url as `${base}/openapi.json` (see property).
+    ollagraph_openapi_url: str = ""
+    # Timeout (seconds) for the one-shot spec fetch at startup discovery.
+    ollagraph_discovery_timeout_s: float = 15.0
+    # Default per-tool timeout when a tool's request schema declares none.
+    ollagraph_default_tool_timeout_s: float = 30.0
+
     ai_default_model: str = "gpt-5.6-luna"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
     # NOTE: gemini-2.0-flash-001 was RETIRED by OpenRouter (404 "No endpoints
@@ -260,6 +275,19 @@ class Settings(BaseSettings):
         return bool(self.knowledge_database_url)
 
     @property
+    def ollagraph_enabled(self) -> bool:
+        """Tool discovery is possible once a base URL is set (the spec is
+        public, so no key is required to discover). Mirrors `rag_enabled`."""
+        return bool(self.ollagraph_base_url)
+
+    @property
+    def ollagraph_spec_url(self) -> str:
+        """Explicit override wins; otherwise derive `${base}/openapi.json`."""
+        if self.ollagraph_openapi_url:
+            return self.ollagraph_openapi_url
+        return f"{self.ollagraph_base_url.rstrip('/')}/openapi.json"
+
+    @property
     def knowledge_engine_url(self) -> str:
         """SQLAlchemy async URL. psycopg3 takes libpq params (incl. sslmode)
         directly, so — unlike asyncpg — no query-param translation is needed;
@@ -281,6 +309,9 @@ class Settings(BaseSettings):
                 self.ai_ingress_secret,
                 # Carries the DB password — must never reach journalctl.
                 self.knowledge_database_url,
+                # Ollagraph Bearer key (osk_...). Discovery is key-less, but the
+                # key must never reach logs if a future execution path uses it.
+                self.ollagraph_api_key,
             )
             if s
         )
