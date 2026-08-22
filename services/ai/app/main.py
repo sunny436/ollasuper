@@ -18,13 +18,44 @@ from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 from app.clients.convex import ConvexClient
-from app.config import get_settings
+from app.clients.ollagraph import OllagraphAdapter
+from app.config import Settings, get_settings
 from app.db.engine import create_knowledge_engine
 from app.logging import configure, get_logger
-from app.routers import files, generate, health
+from app.routers import files, generate, health, tools
 from app.runtime.registry import Registry
+from app.tools.registry import ToolRegistry
 
 log = get_logger(__name__)
+
+
+async def _discover_tools_best_effort(app: FastAPI, settings: Settings) -> None:
+    """Populate the Tool Registry from Ollagraph's PUBLIC OpenAPI spec.
+
+    Best-effort and fully isolated: any failure (unreachable spec, malformed
+    JSON, parse error) is swallowed and leaves the registry empty. Chat, RAG,
+    Ollima, uploads and streaming never depend on or await this. Nothing here
+    is connected to the LLM. Runs its own httpx client and closes it.
+    """
+    reg = getattr(app.state, "tool_registry", None)
+    if reg is None:
+        return
+    client = OllagraphAdapter.build_http_client()
+    try:
+        result = await OllagraphAdapter(settings, client).discover()
+        reg.replace_all(result.definitions, result.components, result.report)
+        log.info(
+            "tool.discovery_complete",
+            extra={
+                "registered": result.report.get("registered"),
+                "paths": result.report.get("paths"),
+                "operations": result.report.get("operations_seen"),
+            },
+        )
+    except Exception as e:  # noqa: BLE001 — never break startup/chat
+        log.warning("tool.discovery_failed", extra={"error": type(e).__name__})
+    finally:
+        await client.aclose()
 
 
 @asynccontextmanager
@@ -51,6 +82,12 @@ async def lifespan(app: FastAPI):
     app.state.db = (
         create_knowledge_engine(settings) if settings.rag_enabled else None
     )
+    # Tool Registry (Ollagraph). None when unconfigured — the introspection
+    # route then 503s, but chat is unaffected. It is a CATALOGUE only: never
+    # wired to the LLM/graph, and discovery below is best-effort.
+    app.state.tool_registry = (
+        ToolRegistry() if settings.ollagraph_enabled else None
+    )
 
     log.info(
         "startup",
@@ -68,6 +105,9 @@ async def lifespan(app: FastAPI):
         from app.ingest.ocr import warm_ocr
 
         asyncio.create_task(warm_ocr(settings))
+    # Best-effort tool discovery — fire-and-forget, gated, self-isolating.
+    if settings.ollagraph_enabled:
+        asyncio.create_task(_discover_tools_best_effort(app, settings))
     try:
         yield
     finally:
@@ -98,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(generate.router)
     app.include_router(files.router)
+    app.include_router(tools.router)
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:
