@@ -7,6 +7,7 @@ import { Check, Copy, Pencil, RefreshCw, RotateCcw, Share2, Sparkles } from "luc
 import { memo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { modelLabel } from "../_lib/models";
+import { EventList, type TypedEvent } from "./event-renderer";
 import { IntelligenceCore } from "./intelligence-core";
 import { StreamingText } from "./streaming-text";
 
@@ -30,6 +31,8 @@ export interface ChatMessageDoc {
     kind: string;
     url: string | null;
   }[];
+  // Typed events (Phase 3). Empty/absent for text-only turns → renders as before.
+  events?: TypedEvent[];
   createdAt: number;
 }
 
@@ -193,6 +196,7 @@ function ChatMessageImpl({
         at={message.createdAt}
       />
       <StreamingText text={text} isStreaming={isStreaming} />
+      <EventList events={message.events} />
 
       {message.status === "error" && (
         <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
@@ -287,5 +291,9 @@ export const ChatMessage = memo(
     a.message.status === b.message.status &&
     a.isStreaming === b.isStreaming &&
     a.liveText === b.liveText &&
-    a.showOrb === b.showOrb,
+    a.showOrb === b.showOrb &&
+    // Typed events change independently of text — without this, streamed
+    // structured events would not repaint (Convex hands back fresh identities).
+    (a.message.events?.length ?? 0) === (b.message.events?.length ?? 0) &&
+    a.message.events?.at(-1)?.eventId === b.message.events?.at(-1)?.eventId,
 );

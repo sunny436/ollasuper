@@ -1,9 +1,10 @@
-import { v } from "convex/values";
+import { type Infer, v } from "convex/values";
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { internalMutation } from "../_generated/server";
 import { recordUsage } from "../usage";
+import { eventObject } from "./events";
 
 /**
  * Server-to-server ingress mutations. Called only from http.ts, which has
@@ -30,6 +31,9 @@ const MAX_MESSAGE_CHARS = 400_000;
  */
 const MAX_DELTAS_PER_BATCH = 64;
 const MAX_DELTA_CHARS = 16_000;
+/** Server-side bounds on one typed-event batch (Phase 3). */
+const MAX_EVENTS_PER_BATCH = 64;
+const MAX_EVENT_PAYLOAD_CHARS = 100_000;
 /**
  * A single delta with seq 1e9 would trigger compaction, set committedSeq to
  * 1e9, and then silently drop every legitimate delta that followed via the
@@ -73,6 +77,73 @@ async function deleteChunks(ctx: MutationCtx, messageId: Id<"chatMessages">) {
     .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
     .collect();
   for (const c of chunks) await ctx.db.delete(c._id);
+}
+
+/** Typed event = the eventObject validator's inferred shape (the persisted
+ *  fields, minus the internal messageId/streamId/_id). */
+type StoredEvent = Infer<typeof eventObject>;
+
+async function deleteEvents(ctx: MutationCtx, messageId: Id<"chatMessages">) {
+  const rows = await ctx.db
+    .query("chatStreamEvents")
+    .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+    .collect();
+  for (const r of rows) await ctx.db.delete(r._id);
+}
+
+/** Read live event rows in seq order, stripped to the persisted shape. */
+async function collectEvents(
+  ctx: MutationCtx,
+  messageId: Id<"chatMessages">,
+): Promise<StoredEvent[]> {
+  const rows = await ctx.db
+    .query("chatStreamEvents")
+    .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+    .collect();
+  rows.sort((a, b) => a.seq - b.seq);
+  return rows.map((r) => ({
+    eventId: r.eventId,
+    seq: r.seq,
+    type: r.type,
+    v: r.v,
+    ts: r.ts,
+    textOffset: r.textOffset,
+    payload: r.payload,
+  }));
+}
+
+/** Synthesize the terminal FINAL/ERROR envelope appended at finalize. */
+function terminalEvent(
+  type: "FINAL" | "ERROR",
+  seq: number,
+  payload: Record<string, unknown>,
+): StoredEvent {
+  return {
+    eventId: crypto.randomUUID(),
+    seq,
+    type,
+    v: 1,
+    ts: Date.now(),
+    payload: JSON.stringify(payload),
+  };
+}
+
+/**
+ * Fold the live event rows for a generation into the persisted array + a
+ * terminal envelope, then delete the rows. Returns `undefined` when the stream
+ * emitted no structured events, so a pure-text turn writes no `events` field and
+ * renders exactly as before. Gate the call on `stream.hasEvents`.
+ */
+async function foldEvents(
+  ctx: MutationCtx,
+  messageId: Id<"chatMessages">,
+  terminal: StoredEvent,
+): Promise<StoredEvent[]> {
+  const events = await collectEvents(ctx, messageId);
+  const nextSeq = (events.at(-1)?.seq ?? -1) + 1;
+  events.push({ ...terminal, seq: nextSeq });
+  await deleteEvents(ctx, messageId);
+  return events;
 }
 
 /**
@@ -184,6 +255,59 @@ export const heartbeat = internalMutation({
 });
 
 /**
+ * Append typed events (Phase 3). Low-volume STRUCTURED events only — text stays
+ * on appendDeltas, so the high-volume path is untouched. Idempotent by the
+ * (messageId, seq) uniqueness probe (mirrors appendDeltas). Sets `hasEvents` so
+ * the finalize fold + the stream.active events read activate. Returns `cancel`
+ * like appendDeltas so the writer learns of a stop on a response in flight.
+ */
+export const appendEvent = internalMutation({
+  args: {
+    streamId: v.string(),
+    events: v.array(eventObject),
+  },
+  handler: async (ctx, { streamId, events }) => {
+    const stream = await loadStream(ctx, streamId);
+    if (!stream) return { ok: false, cancel: true, unknown: true };
+    if (isTerminal(stream.status)) return { ok: true, cancel: true };
+
+    const now = Date.now();
+    for (const e of events.slice(0, MAX_EVENTS_PER_BATCH)) {
+      if (e.payload.length > MAX_EVENT_PAYLOAD_CHARS) continue;
+      if (!Number.isInteger(e.seq) || e.seq < 0) continue;
+      // Indexed uniqueness probe: an HTTP retry is idempotent (like deltas).
+      const existing = await ctx.db
+        .query("chatStreamEvents")
+        .withIndex("by_message_seq", (q) =>
+          q.eq("messageId", stream.messageId).eq("seq", e.seq),
+        )
+        .unique();
+      if (existing) continue;
+      await ctx.db.insert("chatStreamEvents", {
+        messageId: stream.messageId,
+        streamId,
+        ...e,
+      });
+    }
+
+    const patch: {
+      hasEvents: true;
+      heartbeatAt: number;
+      status?: "running";
+    } = { hasEvents: true, heartbeatAt: now };
+    if (stream.status === "queued") patch.status = "running";
+    await ctx.db.patch(stream._id, patch);
+    if (stream.status === "queued") {
+      await ctx.db.patch(stream.messageId, {
+        status: "streaming",
+        updatedAt: now,
+      });
+    }
+    return { ok: true, cancel: stream.cancelRequested };
+  },
+});
+
+/**
  * Terminal success.
  *
  * `text` is authoritative and overwrites whatever the deltas accumulated, so a
@@ -210,6 +334,18 @@ export const finishStream = internalMutation({
 
     const now = Date.now();
     await deleteChunks(ctx, stream.messageId);
+    // Fold typed events into the message ONLY when the generation emitted any
+    // (the "second write"). A pure text turn writes no `events` field → renders
+    // exactly as before. The seq arg is a placeholder; foldEvents assigns it.
+    const events = stream.hasEvents
+      ? await foldEvents(
+          ctx,
+          stream.messageId,
+          terminalEvent("FINAL", 0, {
+            finishReason: args.finishReason ?? null,
+          }),
+        )
+      : undefined;
     await ctx.db.patch(stream._id, {
       status: "done",
       committedText: "",
@@ -225,6 +361,7 @@ export const finishStream = internalMutation({
       costUsd: args.costUsd,
       firstTokenMs: args.firstTokenMs,
       latencyMs: args.latencyMs,
+      ...(events ? { events } : {}),
       updatedAt: now,
     });
 
@@ -292,6 +429,16 @@ export const failStream = internalMutation({
 
     const now = Date.now();
     await deleteChunks(ctx, stream.messageId);
+    const events = stream.hasEvents
+      ? await foldEvents(
+          ctx,
+          stream.messageId,
+          terminalEvent("ERROR", 0, {
+            code: args.errorCode ?? "error",
+            message: args.error.slice(0, 500),
+          }),
+        )
+      : undefined;
     await ctx.db.patch(stream._id, {
       status: "error",
       committedText: "",
@@ -302,6 +449,7 @@ export const failStream = internalMutation({
       status: "error",
       error: args.error.slice(0, 500),
       errorCode: args.errorCode?.slice(0, 64),
+      ...(events ? { events } : {}),
       updatedAt: now,
     });
     const thread = await ctx.db.get(stream.threadId);

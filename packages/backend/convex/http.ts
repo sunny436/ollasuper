@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { auth } from "./auth";
+import { EVENT_TYPES } from "./chat/events";
 import { polar } from "./subscriptions";
 
 const http = httpRouter();
@@ -207,6 +208,47 @@ http.route({
             throughSeq: body.throughSeq,
           }),
         );
+      }
+      case "event": {
+        // Typed events (Phase 3). Defensively filter to well-formed events with
+        // a KNOWN type — malformed/unknown-type events are dropped at the edge
+        // (mirrors the delta filter) so the mutation validator never sees bad
+        // data. Scoped by the same streamId capability; nothing is executed.
+        if (!streamId || !Array.isArray(body.events)) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        const events = body.events
+          .filter(
+            (e): e is Record<string, unknown> =>
+              typeof e === "object" && e !== null,
+          )
+          .filter(
+            (e) =>
+              typeof e.eventId === "string" &&
+              typeof e.seq === "number" &&
+              typeof e.type === "string" &&
+              (EVENT_TYPES as readonly string[]).includes(e.type) &&
+              typeof e.payload === "string",
+          )
+          .map((e) => ({
+            eventId: e.eventId as string,
+            seq: e.seq as number,
+            type: e.type as (typeof EVENT_TYPES)[number],
+            v: typeof e.v === "number" ? (e.v as number) : 1,
+            ts: typeof e.ts === "number" ? (e.ts as number) : Date.now(),
+            textOffset:
+              typeof e.textOffset === "number"
+                ? (e.textOffset as number)
+                : undefined,
+            payload: e.payload as string,
+          }));
+        const r = await ctx.runMutation(internal.chat.ingest.appendEvent, {
+          streamId,
+          events,
+        });
+        if ("unknown" in r && r.unknown)
+          return aiJson({ error: "unknown stream" }, 404);
+        return aiJson(r);
       }
       case "file": {
         // File-ingestion status callback. Scoped by the ingestId capability
