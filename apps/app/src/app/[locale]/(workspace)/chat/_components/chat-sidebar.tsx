@@ -15,6 +15,7 @@ import { useCachedThreads, type CachedThread } from "../_hooks/use-cached-thread
 import { useCachedUser } from "../_hooks/use-cached-user";
 import { prefetchThread, releasePrefetch } from "../_lib/prefetch";
 import {
+  CreditCard,
   LogOut,
   MessageSquare,
   MoreHorizontal,
@@ -137,6 +138,12 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
               href="/settings/shared"
               icon={Share2}
               label="Shared Chats"
+              onNavigate={onNavigate}
+            />
+            <ProfileMenuItem
+              href="/settings/billing"
+              icon={CreditCard}
+              label="Billing"
               onNavigate={onNavigate}
             />
             <div className="my-1.5 border-t border-border" />

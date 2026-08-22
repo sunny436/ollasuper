@@ -80,15 +80,17 @@ export default function SharedChatsPage() {
   }
 
   return (
-    <div className="w-full">
-      <div className="rounded-lg border border-border bg-card">
-        <div className="border-b border-border p-5">
-          <h1 className="text-lg font-medium text-primary">Shared Chats</h1>
-          <p className="mt-1 text-sm text-primary/60">
-            Links you've created to share conversations or responses. Shared
-            content is read-only and expires after 7 days.
-          </p>
-        </div>
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight text-primary">
+          Shared Links
+        </h1>
+        <p className="mt-1 text-sm text-primary/55">
+          Links you've created to share conversations or responses. Shared
+          content is read-only and expires after 7 days.
+        </p>
+      </div>
+      <div className="overflow-hidden rounded-2xl border border-border bg-card/60 backdrop-blur-xl">
 
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-4">
           <div className="flex flex-wrap gap-1">
