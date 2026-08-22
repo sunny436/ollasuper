@@ -49,7 +49,9 @@ CONVEX_INTERNAL_URL=http://127.0.0.1:3211
 CONVEX_AUDIENCE=convex
 OPENROUTER_API_KEY=
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-AI_DEFAULT_MODEL=anthropic/claude-opus-5
+OLLIMA_API_KEY=
+OLLIMA_BASE_URL=https://api.ollima.com/v1
+AI_DEFAULT_MODEL=gpt-5.6-luna
 AI_MAX_OUTPUT_TOKENS=8192
 AI_CONTEXT_BUDGET_TOKENS=32000
 AI_FLUSH_MIN_INTERVAL_MS=300
@@ -72,9 +74,14 @@ chown root:root "$AI/.env"
 # shellcheck disable=SC1091
 set -a; . "$AI/.env"; set +a
 
-# The OpenRouter key is the one value this script must never invent.
+# The OpenRouter key this script must never invent (embeddings, title-gen, OCR).
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then
   echo "FATAL: set OPENROUTER_API_KEY in $AI/.env, then re-run." >&2
+  exit 1
+fi
+# The Ollima key (user-chat generation) — same rule, never invented.
+if [ -z "${OLLIMA_API_KEY:-}" ]; then
+  echo "FATAL: set OLLIMA_API_KEY in $AI/.env, then re-run." >&2
   exit 1
 fi
 

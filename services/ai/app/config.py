@@ -45,13 +45,20 @@ class Settings(BaseSettings):
     convex_internal_url: str = "http://127.0.0.1:3211"
     convex_audience: str = "convex"
 
-    # --- OpenRouter --------------------------------------------------------
+    # --- OpenRouter (embeddings, title-gen, OCR) ---------------------------
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_app_url: str = "https://app.ollasuper.com"
     openrouter_app_title: str = "myos"
 
-    ai_default_model: str = "anthropic/claude-opus-5"
+    # --- Ollima (user-chat generation ONLY) --------------------------------
+    # OpenAI-compatible gateway (TensorZero-backed). Chat REQUIRES a Bearer key
+    # (401 without). Operator-filled; never generated, defaulted or logged.
+    # Title-gen, OCR and embeddings deliberately stay on OpenRouter.
+    ollima_api_key: str = ""
+    ollima_base_url: str = "https://api.ollima.com/v1"
+
+    ai_default_model: str = "gpt-5.6-luna"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
     # NOTE: gemini-2.0-flash-001 was RETIRED by OpenRouter (404 "No endpoints
     # found"); the live successor is gemini-2.5-flash-lite (multimodal, cheap).
@@ -269,6 +276,7 @@ class Settings(BaseSettings):
             s
             for s in (
                 self.openrouter_api_key,
+                self.ollima_api_key,
                 self.ai_service_key,
                 self.ai_ingress_secret,
                 # Carries the DB password — must never reach journalctl.

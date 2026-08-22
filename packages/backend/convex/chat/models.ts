@@ -10,7 +10,7 @@ import {
 import { DEFAULT_MODEL } from "./authz";
 
 /**
- * The OpenRouter model catalogue.
+ * The Ollima model catalogue.
  *
  * WHY A CACHED TABLE RATHER THAN A LIVE FETCH:
  * `assertAllowedModel` runs inside mutations, and Convex mutations cannot do
@@ -20,20 +20,22 @@ import { DEFAULT_MODEL } from "./authz";
  * shape chat/stream.ts already uses for dispatch.
  *
  * WHY THE UNAUTHENTICATED ENDPOINT:
- * `/api/v1/models` needs no credentials and returns a byte-identical payload
- * with or without them — measured. The account-filtered `/models/user` would
- * be marginally more accurate (411 vs 414: it drops three free-tier models the
- * account filters out) but requires the key, which would mean OPENROUTER_API_KEY
- * living on two planes at once. It is deliberately kept in exactly one place,
- * services/ai/.env, where the inference plane actually needs it to call the
- * model. Three filtered-out free models is a cheap price for one copy of a
- * secret.
+ * Ollima's `/v1/models` needs no credentials (measured: HTTP 200 with no key)
+ * and returns the standard OpenAI list shape. Keeping the fetch credential-free
+ * is exactly what lets OLLIMA_API_KEY live in exactly one place —
+ * services/ai/.env, the inference plane that actually needs it to call the
+ * model — instead of becoming a second copy of the secret here. If this ever
+ * needs an authenticated/account-filtered list, proxy it through the Python
+ * service (which already holds the key) rather than copying the key into Convex.
  *
- * If this ever needs to be truly account-accurate, proxy it through the Python
- * service (which already holds the key) rather than copying the key here.
+ * NOTE: the payload carries only { id, object, created, owned_by } — no name,
+ * pricing, context length or modalities — so every non-id field takes a safe
+ * default in toEntry(). Ids are used VERBATIM (a plain id like `gpt-5.6-luna`
+ * works at /v1/chat/completions; Ollima is TensorZero-backed and resolves it
+ * internally, so any future `tensorzero::` id round-trips intact too).
  */
 
-const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+const OLLIMA_MODELS_URL = "https://api.ollima.com/v1/models";
 
 /**
  * Refuse to apply deletions below this many models.
@@ -46,15 +48,11 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
  */
 const MIN_PLAUSIBLE_MODELS = 50;
 
-interface OpenRouterModel {
+interface OllimaModel {
   id?: unknown;
-  name?: unknown;
-  context_length?: unknown;
-  architecture?: {
-    input_modalities?: unknown;
-    output_modalities?: unknown;
-  };
-  pricing?: { prompt?: unknown; completion?: unknown };
+  object?: unknown;
+  created?: unknown;
+  owned_by?: unknown;
 }
 
 export interface CatalogueEntry {
@@ -66,33 +64,32 @@ export interface CatalogueEntry {
   vision: boolean;
 }
 
-const asStrings = (v: unknown): string[] =>
-  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-
 /**
- * Keep only models that can actually hold a text conversation.
+ * Map one Ollima /v1/models row to a catalogue entry.
  *
- * Every entry the endpoint returns today already qualifies, so this currently
- * drops nothing — it is a guard against OpenRouter later listing image- or
- * audio-only models on the same endpoint, which would otherwise appear in the
- * picker and fail at generation instead of at selection.
+ * Ollima returns only id/object/created/owned_by — no name, pricing, context
+ * length or modality data — so every non-id field takes a safe default:
+ *   name          = id  (the UI's modelLabel() prettifies the slug)
+ *   contextLength = 0   (unknown; the Python plane substitutes a conservative
+ *                        default — see contextWindowFor + agent/context.py)
+ *   prompt/completionPrice = "" (unknown; the picker renders "variable pricing")
+ *   vision        = true (a cosmetic label only; it never gates uploads)
+ * The id is preserved VERBATIM so any future tensorzero:: id round-trips intact.
+ * NOTE: /v1/models is a superset of what Ollima actually serves — a few ids are
+ * advertised but unserved; picking one fails at generation (surfaced by the
+ * normal error UI). We do NOT filter here — the endpoint is the source of truth
+ * and a probe-based filter would be slow, rate-limit-confounded, and a de-facto
+ * manual list.
  */
-function toEntry(m: OpenRouterModel): CatalogueEntry | null {
+function toEntry(m: OllimaModel): CatalogueEntry | null {
   if (typeof m.id !== "string" || !m.id) return null;
-  const input = asStrings(m.architecture?.input_modalities);
-  const output = asStrings(m.architecture?.output_modalities);
-  if (!input.includes("text") || !output.includes("text")) return null;
-
   return {
     modelId: m.id,
-    name: typeof m.name === "string" && m.name ? m.name : m.id,
-    contextLength:
-      typeof m.context_length === "number" && m.context_length > 0
-        ? m.context_length
-        : 0,
-    promptPrice: String(m.pricing?.prompt ?? ""),
-    completionPrice: String(m.pricing?.completion ?? ""),
-    vision: input.includes("image"),
+    name: m.id,
+    contextLength: 0,
+    promptPrice: "",
+    completionPrice: "",
+    vision: true,
   };
 }
 
@@ -102,11 +99,11 @@ export const refresh = internalAction({
   handler: async (ctx): Promise<{ fetched: number; kept: number; applied: boolean }> => {
     // No credentials: this endpoint is public, and keeping it that way is what
     // lets the key stay on the inference plane only.
-    const res = await fetch(OPENROUTER_MODELS_URL);
+    const res = await fetch(OLLIMA_MODELS_URL);
     if (!res.ok) {
-      throw new Error(`OpenRouter responded ${res.status}`);
+      throw new Error(`Ollima /v1/models responded ${res.status}`);
     }
-    const body = (await res.json()) as { data?: OpenRouterModel[] };
+    const body = (await res.json()) as { data?: OllimaModel[] };
     const raw = Array.isArray(body.data) ? body.data : [];
     const entries = raw
       .map(toEntry)

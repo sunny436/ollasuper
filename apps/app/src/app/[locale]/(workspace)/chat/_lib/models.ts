@@ -7,7 +7,7 @@
  */
 
 /** Mirrors DEFAULT_MODEL in convex/chat/authz.ts. Keep the ids in sync. */
-export const DEFAULT_MODEL = "anthropic/claude-opus-5";
+export const DEFAULT_MODEL = "gpt-5.6-luna";
 
 /**
  * A readable name for a model id, derived purely from the string.

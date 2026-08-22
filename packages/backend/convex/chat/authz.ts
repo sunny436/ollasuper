@@ -138,9 +138,11 @@ export function timingSafeEqualStr(
 /**
  * The model the plane falls back to whenever no valid choice is available:
  * a fresh deployment with an unrefreshed catalogue, or a thread pinned to a
- * model OpenRouter has since delisted.
+ * model no longer in the Ollima catalogue. MUST be an id Ollima actually
+ * serves — some catalogue ids are advertised but unserved ("not found in
+ * model table"); this one is verified working.
  */
-export const DEFAULT_MODEL = "anthropic/claude-opus-5";
+export const DEFAULT_MODEL = "gpt-5.6-luna";
 
 /**
  * Validate a model against the cached OpenRouter catalogue.

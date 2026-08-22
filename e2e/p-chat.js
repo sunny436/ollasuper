@@ -302,7 +302,7 @@ const step = async (n, f) => {
   });
 
 
-  await step("model picker lists the OpenRouter catalogue and selects", async () => {
+  await step("model picker lists the Ollima catalogue and selects", async () => {
     // The rename step above leaves a Radix menu open, and Radix aria-hides the
     // rest of the page while one is open -- so getByRole cannot see the
     // composer at all until it is dismissed.
@@ -320,16 +320,18 @@ const step = async (n, f) => {
     const before = (await trigger.innerText()).trim();
     await trigger.click();
 
-    // The catalogue is ~400 models, so the picker filters rather than listing
-    // everything. "haiku" is stable across providers and always matches.
+    // The picker filters rather than listing everything. Target a verified-working
+    // NON-default Ollima model (the default is gpt-5.6-luna; deepseek-v4-flash IS
+    // served, so the send below actually generates). NOTE: some catalogue ids
+    // (e.g. claude-*) are advertised but not served — do not target those.
     const search = page.getByLabel("Search models");
     await search.waitFor({ timeout: 8000 });
-    await search.fill("haiku");
+    await search.fill("deepseek-v4-flash");
     await page.waitForTimeout(600);
 
     // Pick the first match that is not already selected.
-    const option = page.locator('[role="menu"] button').filter({ hasText: /haiku/i }).first();
-    if (!(await option.count())) throw new Error("no catalogue models matched 'haiku'");
+    const option = page.locator('[role="menu"] button').filter({ hasText: /deepseek-v4-flash/i }).first();
+    if (!(await option.count())) throw new Error("no catalogue models matched 'deepseek-v4-flash'");
     const picked = (await option.innerText()).split("\n")[0].trim();
     await option.click();
     await page.waitForTimeout(800);
