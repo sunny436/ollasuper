@@ -28,6 +28,7 @@ def make_settings(url: str, **overrides) -> Settings:
         "ai_service_key": "test-service-key-aaaaaaaaaaaaaaaaaaaa",
         "ai_ingress_secret": "test-ingress-secret-bbbbbbbbbbbbbbbb",
         "openrouter_api_key": "sk-or-v1-test",
+        "ollima_api_key": "sk-ollima-test",
         "convex_internal_url": url,
         "convex_site_url": url,
         # Render in-thread in tests so _render_page monkeypatches apply (the

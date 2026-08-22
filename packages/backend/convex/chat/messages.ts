@@ -356,7 +356,11 @@ export const send = mutation({
     );
 
     const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
-      explicit: args.model !== undefined,
+      // A re-sent, UNCHANGED stored model (e.g. a legacy OpenRouter id on a
+      // pre-migration thread) is treated as non-explicit, so it re-homes to
+      // DEFAULT_MODEL instead of throwing "Unsupported model". A genuine new
+      // pick (args.model !== thread.model) stays strict.
+      explicit: args.model !== undefined && args.model !== thread.model,
     });
     const now = Date.now();
     const userSeq = thread.nextSeq;
@@ -435,7 +439,11 @@ export const regenerate = mutation({
     await assertCanGenerate(ctx, userId, thread);
 
     const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
-      explicit: args.model !== undefined,
+      // A re-sent, UNCHANGED stored model (e.g. a legacy OpenRouter id on a
+      // pre-migration thread) is treated as non-explicit, so it re-homes to
+      // DEFAULT_MODEL instead of throwing "Unsupported model". A genuine new
+      // pick (args.model !== thread.model) stays strict.
+      explicit: args.model !== undefined && args.model !== thread.model,
     });
     const parentId = message.parentId;
     let variantIndex = 0;
@@ -476,7 +484,11 @@ export const retry = mutation({
     }
     await assertCanGenerate(ctx, userId, thread);
     const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
-      explicit: args.model !== undefined,
+      // A re-sent, UNCHANGED stored model (e.g. a legacy OpenRouter id on a
+      // pre-migration thread) is treated as non-explicit, so it re-homes to
+      // DEFAULT_MODEL instead of throwing "Unsupported model". A genuine new
+      // pick (args.model !== thread.model) stays strict.
+      explicit: args.model !== undefined && args.model !== thread.model,
     });
     const { streamId } = await startAssistantTurn(ctx, thread, userId, {
       seq: message.seq,

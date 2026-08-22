@@ -1096,7 +1096,7 @@ describe("dispatch contract (Convex -> Python)", () => {
     const body = call?.body as Record<string, unknown>;
     expect(body.streamId).toBe(streamId);
     expect(body.threadId).toBe(threadId);
-    expect(body.model).toBe("anthropic/claude-opus-5");
+    expect(body.model).toBe("gpt-5.6-luna");
     // History excludes the in-flight assistant row and includes the user turn.
     const history = body.history as Array<{ role: string; content: string }>;
     expect(history.map((h) => h.role)).toEqual(["user"]);

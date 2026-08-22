@@ -57,7 +57,8 @@ async def lifespan(app: FastAPI):
         extra={
             "bind": f"{settings.ai_bind_host}:{settings.ai_port}",
             "model": settings.ai_default_model,
-            "configured": bool(settings.openrouter_api_key),
+            "configured": bool(settings.ollima_api_key)
+            and bool(settings.openrouter_api_key),
             "rag": settings.rag_enabled,
         },
     )

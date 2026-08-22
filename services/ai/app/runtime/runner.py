@@ -141,7 +141,14 @@ async def run_generation(
             rag=rag_text,
         )
 
-        llm = build_llm(settings, model=req.model, context_window=req.contextWindow)
+        # User chat -> Ollima (title-gen + OCR keep build_llm's OpenRouter default).
+        llm = build_llm(
+            settings,
+            model=req.model,
+            context_window=req.contextWindow,
+            base_url=settings.ollima_base_url,
+            api_key=settings.ollima_api_key,
+        )
         graph = build_graph(llm)
 
         state = {

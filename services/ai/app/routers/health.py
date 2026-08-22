@@ -22,8 +22,11 @@ async def healthz() -> dict:
 async def readyz(request: Request, response: Response) -> dict:
     global _last_check
     state = request.app.state
-    configured = bool(state.settings.openrouter_api_key) and bool(
-        state.settings.ai_service_key
+    configured = (
+        # chat -> Ollima; title/OCR/embeddings -> OpenRouter; both required.
+        bool(state.settings.ollima_api_key)
+        and bool(state.settings.openrouter_api_key)
+        and bool(state.settings.ai_service_key)
     )
 
     now = time.monotonic()
