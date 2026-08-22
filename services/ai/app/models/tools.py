@@ -76,3 +76,41 @@ class ToolDefinition(BaseModel):
     method: str = "post"
     path: str = ""
     required_auth: str = "BearerAuth"
+
+
+class ToolFilters(BaseModel):
+    """Optional metadata filters applied BEFORE ranking (Phase 1 metadata).
+    Defaults keep only available + enabled tools; disabled/high-impact are
+    surfaced only when explicitly opted into, and always carry their status."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    categories: list[str] | None = None
+    providers: list[str] | None = None
+    include_disabled: bool = False
+    include_unavailable: bool = False
+    # Ceiling on blast radius. None = no ceiling (any side_effect allowed).
+    max_side_effect: SideEffect | None = None
+
+
+class ToolCandidate(BaseModel):
+    """A ranked tool plus WHY it matched. `reason`/`matched_signals` are for
+    debugging + observability, not end-user display."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: ToolDefinition
+    score: float
+    matched_signals: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class ToolSelectionResult(BaseModel):
+    """The output of discovery: metadata only. No execution, no LLM binding."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    candidates: list[ToolCandidate] = Field(default_factory=list)
+    no_match: bool = False
+    stats: dict = Field(default_factory=dict)
