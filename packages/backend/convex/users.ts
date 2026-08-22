@@ -21,12 +21,34 @@ export const getUser = query({
     });
     return {
       ...user,
+      // `name` stays `username || name` — the chat account footer + dashboard
+      // sidebar render it as the account's display name and would blank out for
+      // users with no display name if this changed. `displayName` exposes the
+      // raw `users.name` column so the Settings profile editor can edit it.
       name: user.username || user.name,
+      displayName: user.name ?? null,
       subscription,
       avatarUrl: user.imageId
         ? await ctx.storage.getUrl(user.imageId)
         : undefined,
     };
+  },
+});
+
+export const updateName = mutation({
+  args: {
+    name: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) {
+      return;
+    }
+    // Display name allows spaces/unicode (unlike `username`), so there is no
+    // format regex — just trim and bound the length. An empty value clears it
+    // (the UI then falls back to `username`).
+    const trimmed = args.name.trim().slice(0, 50);
+    await ctx.db.patch(userId, { name: trimmed || undefined });
   },
 });
 
