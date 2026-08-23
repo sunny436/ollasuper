@@ -26,9 +26,11 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from langchain_core.messages import ToolMessage
 
+from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, retrieve_knowledge
 from app.agent.policy import PolicyScope, check_tool_policy
 from app.clients.ollagraph import OllagraphAdapter
 from app.logging import get_logger
@@ -38,6 +40,11 @@ from app.runtime.writer import DeltaWriter
 from app.tools.errors import ToolError
 from app.tools.registry import ToolRegistry
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    from app.config import Settings
+
 log = get_logger(__name__)
 
 # OpenAI function names must match this; sanitize tool_ids into it.
@@ -45,12 +52,27 @@ _NAME_OK = re.compile(r"[^a-zA-Z0-9_-]")
 
 
 @dataclass(slots=True)
+class RagContext:
+    """Phase 5: the authenticated scope + engine for the `search_knowledge` tool.
+    `user_id` is the HARD retrieval boundary and comes from the authenticated
+    request, never the model. No `workspace_id`: `file_chunks` has no such column,
+    so it would be inert (workspace scoping is deferred)."""
+
+    engine: AsyncEngine
+    user_id: str
+    settings: Settings
+    file_ids: list[str] | None = None
+
+
+@dataclass(slots=True)
 class ToolExecContext:
     """Everything the executor node needs, captured per generation. Built in the
     runner only when the agent is enabled and candidates exist."""
 
-    registry: ToolRegistry
-    adapter: OllagraphAdapter
+    # Optional so a RAG-only turn (no Ollagraph configured) still works: the
+    # Ollagraph path is guarded on `registry is None`.
+    registry: ToolRegistry | None
+    adapter: OllagraphAdapter | None
     writer: DeltaWriter
     scope: PolicyScope
     # OpenAI-legal bound name -> real tool_id (the model calls by bound name).
@@ -59,6 +81,8 @@ class ToolExecContext:
     default_timeout_s: float
     # Per-generation duplicate guard: (tool_id, canonical-args) already executed.
     seen_calls: dict[str, str] = field(default_factory=dict)
+    # Phase 5: set when the `search_knowledge` RAG tool is bound this turn.
+    rag: RagContext | None = None
 
 
 # --- OpenAI function-spec construction (runner-side) ----------------------
@@ -103,14 +127,19 @@ def _deref_schema(
 
 
 def build_tool_specs(
-    candidates: list[ToolCandidate], registry: ToolRegistry
+    candidates: list[ToolCandidate],
+    registry: ToolRegistry,
+    *,
+    reserved: set[str] | None = None,
 ) -> tuple[list[dict], dict[str, str]]:
     """Turn discovered candidates into OpenAI function specs + a name->tool_id
     map. Never raises: a tool whose schema will not dereference degrades to an
-    empty object schema rather than dropping the tool."""
+    empty object schema rather than dropping the tool. `reserved` seeds the used
+    names so a discovered tool can never claim a reserved name (e.g. the Phase-5
+    `search_knowledge` RAG tool) — a collider is renamed instead."""
     specs: list[dict] = []
     name_to_tool_id: dict[str, str] = {}
-    used: set[str] = set()
+    used: set[str] = set(reserved or ())
     components = registry.components or {}
     for cand in candidates:
         tool = cand.tool
@@ -164,6 +193,24 @@ async def _run_one(tc: dict, ctx: ToolExecContext, index: int) -> ToolMessage:
     call_id = tc.get("id") or f"call_{index}"
     bound_name = tc.get("name") or ""
     args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+
+    # Phase 5: the reserved knowledge tool is not a registry tool — route it
+    # BEFORE registry.get (which would report it as "unknown").
+    if ctx.rag is not None and bound_name == KNOWLEDGE_TOOL_NAME:
+        return await _run_knowledge(ctx, call_id, args)
+
+    # RAG-only turn (no Ollagraph): any non-knowledge tool is unknown.
+    if ctx.registry is None:
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="error",
+            result={"error": "unknown tool"},
+        )
+        return _tool_message(
+            call_id, {"error": f"unknown tool: {bound_name}"}, status="error"
+        )
+
     tool_id = ctx.name_to_tool_id.get(bound_name, bound_name)
 
     tool = ctx.registry.get(tool_id)
@@ -251,6 +298,122 @@ async def _run_one(tc: dict, ctx: ToolExecContext, index: int) -> ToolMessage:
             extra={"tool_id": tool_id, "cap": ctx.result_max_chars},
         )
     return _tool_message(call_id, body, status="success")
+
+
+async def _run_knowledge(ctx: ToolExecContext, call_id: str, args: dict) -> ToolMessage:
+    """The Phase-5 RAG branch: reuse the EXISTING retrieval as an agent-decided
+    capability. Security: `user_id` comes from `ctx.rag` (authenticated), never
+    from `args`, so a model-supplied user_id/workspace cannot change scope."""
+    rag = ctx.rag
+    assert rag is not None  # guarded by the caller
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return _tool_message(
+            call_id, {"status": "error", "message": "query is required"}, status="error"
+        )
+
+    # Duplicate guard on the shared seen_calls, keyed on the reserved name.
+    dedup_key = json.dumps({"query": query}, sort_keys=True, default=str)
+    if ctx.seen_calls.get(KNOWLEDGE_TOOL_NAME) == dedup_key:
+        return _tool_message(
+            call_id,
+            {"note": "duplicate call skipped; see the previous result"},
+            status="error",
+        )
+    ctx.seen_calls[KNOWLEDGE_TOOL_NAME] = dedup_key
+
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=KNOWLEDGE_TOOL_NAME,
+        call_id=call_id,
+        arguments={"query": query},
+        status="running",
+    )
+    try:
+        result = await asyncio.wait_for(
+            retrieve_knowledge(
+                rag.settings,
+                rag.engine,
+                user_id=rag.user_id,
+                query=query,
+                file_ids=rag.file_ids,
+            ),
+            timeout=rag.settings.ai_rag_deadline_ms / 1000,
+        )
+    except TimeoutError:
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="error",
+            result={"error": "timeout"},
+        )
+        return _tool_message(
+            call_id,
+            {"status": "timeout", "message": "Knowledge search timed out."},
+            status="error",
+        )
+    except Exception:  # noqa: BLE001 — never surface raw DB/provider text
+        log.exception("agent.knowledge_failed")
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="error",
+            result={"error": "unavailable"},
+        )
+        return _tool_message(
+            call_id,
+            {
+                "status": "error",
+                "message": "Knowledge search is temporarily unavailable.",
+            },
+            status="error",
+        )
+
+    if result.status == "no_results":
+        # Authoritative "not in your files" (success, NOT error) so the model does
+        # not retry and does not fabricate a source. No CITATION on empty.
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="success",
+            result={"n_results": 0},
+        )
+        return _tool_message(
+            call_id,
+            {
+                "status": "no_results",
+                "message": "No matching passages were found in your documents.",
+            },
+            status="success",
+        )
+
+    # One CITATION per DISTINCT retrieved file (honesty: only retrieved sources).
+    seen_files: set[str] = set()
+    files_summary: list[dict] = []
+    for ch in result.chunks:
+        if ch.file_id in seen_files:
+            continue
+        seen_files.add(ch.file_id)
+        title = f"{ch.filename} p.{ch.page}" if ch.page else ch.filename
+        await ctx.writer.emit_event(
+            EventType.CITATION,
+            source_id=ch.file_id,
+            title=title,
+            metadata={"page": ch.page, "distance": ch.distance},
+        )
+        files_summary.append(
+            {"file_id": ch.file_id, "filename": ch.filename, "page": ch.page}
+        )
+
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="success",
+        result={"n_results": len(result.chunks), "files": files_summary},
+    )
+    # Block VERBATIM: already token-bounded + injection-framed by render_rag_block.
+    # Must NOT pass through _bounded (would sever the closing </retrieved_context>).
+    return ToolMessage(content=result.block, tool_call_id=call_id, status="success")
 
 
 async def execute_tool_calls(

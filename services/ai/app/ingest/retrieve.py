@@ -48,9 +48,12 @@ async def retrieve_context(
     *,
     user_id: str,
     query: str,
+    file_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Top chunks above the similarity floor, or [] (unconfigured / trivial query
-    / nothing relevant). Caller bounds this with a deadline."""
+    / nothing relevant). Caller bounds this with a deadline. `file_ids` optionally
+    narrows to specific files WITHIN the caller's own corpus (the user_id scope in
+    store.retrieve is unconditional and unchanged)."""
     if engine is None or len(query.strip()) < settings.ai_rag_min_query_chars:
         return []
     qvec = await embed.embed_query(settings, query)
@@ -61,6 +64,7 @@ async def retrieve_context(
         fetch_k=settings.ai_rag_fetch_k,
         embedding_dimensions=settings.embedding_dimensions,
         embedding_model=settings.openrouter_embedding_model,
+        file_ids=file_ids,
     )
     cutoff = 1.0 - settings.ai_rag_min_similarity
     kept = [

@@ -199,3 +199,58 @@ async def test_no_tools_graph_is_unchanged():
         {"messages": [HumanMessage(content="hi")], "system_prompt": "s"}
     )
     assert out["messages"][-1].content == "plain path"
+
+
+# ---- Phase 5: multi-source (RAG + web tool) in one bounded loop --------------
+async def test_rag_and_web_tool_in_one_loop(monkeypatch):
+    from app.agent.executor import RagContext
+    from app.ingest import retrieve
+
+    async def fake_embed(settings, q):
+        return [0.0] * settings.embedding_dimensions
+
+    async def fake_retrieve(engine, **kw):
+        return [
+            {
+                "file_id": "f1",
+                "content": "Our internal price is $9.",
+                "source_metadata": {"source": "pricing.pdf"},
+                "page": 1,
+                "section": None,
+                "distance": 0.2,
+            }
+        ]
+
+    monkeypatch.setattr(retrieve.embed, "embed_query", fake_embed)
+    monkeypatch.setattr(retrieve.store, "retrieve", fake_retrieve)
+
+    ctx, adapter, convex, _ = _setup([_read_tool()])
+    # Attach a RAG context so the same ctx serves both tool families.
+    ctx.rag = RagContext(
+        engine=object(),
+        user_id="u",
+        settings=Settings(
+            ollagraph_base_url="https://x.test", ollagraph_api_key="osk_x"
+        ),
+    )
+    tools_llm = ScriptedLLM(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_knowledge",
+                        "args": {"query": "our price"},
+                        "id": "c1",
+                    },
+                    _tc("c2"),  # the Ollagraph web tool
+                ],
+            ),
+            AIMessage(content="compared"),
+        ]
+    )
+    plain = ScriptedLLM([AIMessage(content="unused")])
+    out = await _invoke(plain, tools_llm, ctx, budget=4)
+    assert adapter.calls == 1  # web tool ran
+    assert "CITATION" in _event_types(convex)  # RAG ran
+    assert out["messages"][-1].content == "compared"

@@ -124,3 +124,42 @@ async def test_stale_reingest_after_delete_resurrects(engine):
     back = await store.retrieve(engine, user_id="uA", query_embedding=_vec(0),
                                 fetch_k=10, embedding_dimensions=DIM)
     assert [r["content"] for r in back] == ["zombie"]  # resurrected
+
+
+# ---- Phase 5: file_ids scoping (selected files) ------------------------------
+async def test_file_ids_narrows_to_selected(engine):
+    await _seed(engine, file_id="fX", user_id="uA", hot=0, content="docX")
+    await _seed(engine, file_id="fY", user_id="uA", hot=1, content="docY")
+    # Unfiltered: both of the user's files are candidates.
+    both = await store.retrieve(
+        engine, user_id="uA", query_embedding=_vec(0), fetch_k=10,
+        embedding_dimensions=DIM,
+    )
+    assert {r["file_id"] for r in both} == {"fX", "fY"}
+    # Narrowed to fY only.
+    only_y = await store.retrieve(
+        engine, user_id="uA", query_embedding=_vec(0), fetch_k=10,
+        embedding_dimensions=DIM, file_ids=["fY"],
+    )
+    assert [r["file_id"] for r in only_y] == ["fY"]
+
+
+async def test_file_ids_cannot_cross_user(engine):
+    # fB belongs to uB. uA asking for file_ids=["fB"] gets nothing — the user_id
+    # clause is unconditional, so a foreign/selected file id can never leak.
+    await _seed(engine, file_id="fA", user_id="uA", hot=0, content="mine")
+    await _seed(engine, file_id="fB", user_id="uB", hot=0, content="theirs")
+    got = await store.retrieve(
+        engine, user_id="uA", query_embedding=_vec(0), fetch_k=10,
+        embedding_dimensions=DIM, file_ids=["fB"],
+    )
+    assert got == []
+
+
+async def test_file_ids_none_is_unfiltered(engine):
+    await _seed(engine, file_id="fX", user_id="uA", hot=0, content="docX")
+    a = await store.retrieve(
+        engine, user_id="uA", query_embedding=_vec(0), fetch_k=10,
+        embedding_dimensions=DIM, file_ids=None,
+    )
+    assert [r["file_id"] for r in a] == ["fX"]
