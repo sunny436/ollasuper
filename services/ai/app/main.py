@@ -142,7 +142,41 @@ async def lifespan(app: FastAPI):
         log.info("shutdown")
 
 
+def _init_sentry(settings: Settings) -> None:
+    """Phase 8: report unhandled inference-plane errors to GlitchTip/Sentry.
+
+    Guarded on the DSN AND an optional import, so nothing is required unless an
+    operator installs sentry-sdk and sets AI_SENTRY_DSN — CI, tests, and a
+    default deployment are all unaffected. Events are scrubbed through the same
+    redactor as the logs before they leave the box (no keys / data-URIs / bearer
+    tokens in a DSN-bound event)."""
+    dsn = settings.ai_sentry_dsn
+    if not dsn:
+        return
+    try:
+        import sentry_sdk
+    except ImportError:
+        log.warning("sentry_dsn_set_but_sdk_missing")
+        return
+    from app.logging import redact_text
+
+    def _before_send(event: dict, _hint: object) -> dict:
+        try:
+            if event.get("message"):
+                event["message"] = redact_text(str(event["message"]))
+            for exc in (event.get("exception") or {}).get("values", []) or []:
+                if exc.get("value"):
+                    exc["value"] = redact_text(str(exc["value"]))
+        except Exception:  # noqa: BLE001, S110 — redaction must never drop the report
+            pass
+        return event
+
+    sentry_sdk.init(dsn=dsn, traces_sample_rate=0.0, before_send=_before_send)
+    log.info("sentry_initialized")
+
+
 def create_app() -> FastAPI:
+    _init_sentry(get_settings())
     app = FastAPI(
         title="myos AI inference plane",
         version="0.1.0",

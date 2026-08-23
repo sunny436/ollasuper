@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     # shipping a real high-impact tool; it is empty in production.
     ai_agent_approval_ttl_s: float = 900.0
     ai_agent_approval_test_tool_ids: frozenset[str] = frozenset()
+    # Phase 8: observability. When set, the inference plane reports unhandled
+    # errors to GlitchTip/Sentry (events scrubbed through the log redactor first).
+    # Empty by default and in CI; the SDK is an optional import, so nothing is
+    # required unless an operator both installs sentry-sdk and sets this DSN.
+    ai_sentry_dsn: str = ""
 
     ai_default_model: str = "gpt-5.6-luna"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).

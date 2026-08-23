@@ -28,17 +28,25 @@ _RESERVED = frozenset(
 ) | {"message", "asctime", "taskName"}
 
 
+def redact_text(text: str, secrets: tuple[str, ...] = ()) -> str:
+    """Scrub configured secrets + data-URIs + bearer/sk- tokens from a string.
+    Shared by RedactFilter (logs) and the Sentry before_send hook (main.py), so
+    both the log stream and any DSN-bound error events get the same redaction."""
+    for s in secrets:
+        if s and len(s) >= 8:
+            text = text.replace(s, "***")
+    text = _DATA_URI.sub("data:***", text)
+    text = _BEARER.sub(r"\1***", text)
+    return _SK.sub("sk-***", text)
+
+
 class RedactFilter(logging.Filter):
     def __init__(self, secrets: tuple[str, ...] = ()) -> None:
         super().__init__()
         self._secrets = tuple(s for s in secrets if s and len(s) >= 8)
 
     def _scrub(self, text: str) -> str:
-        for s in self._secrets:
-            text = text.replace(s, "***")
-        text = _DATA_URI.sub("data:***", text)
-        text = _BEARER.sub(r"\1***", text)
-        return _SK.sub("sk-***", text)
+        return redact_text(text, self._secrets)
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
