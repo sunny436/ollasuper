@@ -57,6 +57,16 @@ class PolicyScope:
 # The default scope for an ordinary authenticated chat turn.
 READ_SCOPE = PolicyScope()
 
+# Elevated scope used only when ai_agent_side_effect_enabled is on: grants the
+# write capability and an EXTERNAL_SIDE_EFFECT ceiling, so a scrape/analyze tool
+# resolves to NEEDS_APPROVAL (its approval_required is honoured) rather than DENY.
+# HIGH_IMPACT tools still fail — they need ollagraph:admin, which is never
+# granted, and are disabled at classify time.
+WRITE_SCOPE = PolicyScope(
+    granted_permissions=frozenset({"ollagraph:read", "ollagraph:write"}),
+    max_side_effect=SideEffect.EXTERNAL_SIDE_EFFECT,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PolicyResult:

@@ -31,7 +31,7 @@ from app.agent.memory import (
     REMEMBER_TOOL_NAME,
     REMEMBER_TOOL_SPEC,
 )
-from app.agent.policy import READ_SCOPE
+from app.agent.policy import READ_SCOPE, WRITE_SCOPE
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
 from app.clients.ollagraph import OllagraphAdapter
@@ -255,10 +255,19 @@ async def run_generation(
         )
         if web_active:
             try:
+                # Read-only tools only, unless side-effect tools are enabled — in
+                # which case scrape/analyze tools are surfaced too and gated by
+                # the approval round-trip (never auto-run). HIGH_IMPACT is always
+                # above the ceiling and never surfaced.
+                se_ceiling = (
+                    SideEffect.EXTERNAL_SIDE_EFFECT
+                    if settings.ai_agent_side_effect_enabled
+                    else SideEffect.READ_ONLY
+                )
                 candidates = tool_selector.select(
                     latest.content,
                     top_k=settings.ai_agent_discovery_top_k,
-                    filters=ToolFilters(max_side_effect=SideEffect.READ_ONLY),
+                    filters=ToolFilters(max_side_effect=se_ceiling),
                     min_score=settings.tool_discovery_min_score,
                 ).candidates
                 if candidates:
@@ -320,7 +329,11 @@ async def run_generation(
                     registry=tool_registry,
                     adapter=adapter,
                     writer=writer,
-                    scope=READ_SCOPE,
+                    scope=(
+                        WRITE_SCOPE
+                        if settings.ai_agent_side_effect_enabled
+                        else READ_SCOPE
+                    ),
                     name_to_tool_id=name_to_id,
                     result_max_chars=settings.ai_agent_tool_result_max_chars,
                     default_timeout_s=settings.ollagraph_default_tool_timeout_s,

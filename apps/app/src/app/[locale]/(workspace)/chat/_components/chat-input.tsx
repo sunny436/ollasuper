@@ -121,6 +121,13 @@ export function ChatInput() {
     const text = value;
     const ids = attachments.readyIds;
     if (!text.trim() && ids.length === 0) return;
+    // A reply is still generating — Enter is a no-op here (the composer shows
+    // Stop, not Send). Without this, an Enter while streaming reaches
+    // messages.send, which rejects with "already generating" (a deliberate
+    // cost-control guard); the Convex client then logs that rejection to the
+    // console and the user's just-typed message is silently dropped. Keep the
+    // text in the box so the user can send it once the reply finishes.
+    if (streamingId) return;
     if (attachments.uploading) {
       toast.error("Wait for the upload to finish");
       return;
@@ -136,7 +143,7 @@ export function ChatInput() {
       setValue(text);
       requestAnimationFrame(autosize);
     }
-  }, [value, send, model, setDraft, autosize, attachments]);
+  }, [value, send, model, setDraft, autosize, attachments, streamingId]);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key !== "Enter") return;

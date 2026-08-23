@@ -56,7 +56,12 @@ def classify(
             workspace_scope=True,
             approval_required=True,
         )
-        enabled = False
+        # Registered as ENABLED so the approval round-trip can surface it — it is
+        # still never auto-run: the default READ scope denies it (missing the
+        # write grant + read-only ceiling), so it is only reachable when
+        # ai_agent_side_effect_enabled raises the runner's scope, and even then
+        # only via NEEDS_APPROVAL. HIGH_IMPACT below stays disabled outright.
+        enabled = True
     else:  # HIGH_IMPACT
         perms = ToolPermissions(
             required_permissions=["ollagraph:admin"],

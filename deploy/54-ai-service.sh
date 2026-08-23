@@ -40,7 +40,11 @@ esac
 echo "[3/5] secrets (idempotent — never clobbers an existing .env)"
 if [ ! -f "$AI/.env" ]; then
   cat > "$AI/.env" <<EOF
-AI_BIND_HOST=127.0.0.1
+# 0.0.0.0, not loopback: the self-hosted Convex backend runs on the bridge
+# network and reaches the AI plane over the bridge gateway, which requires the
+# AI plane to listen on a non-loopback interface. ufw (deploy/62) restricts
+# :8770 to the 172.18.0.0/16 bridge subnet, so this is not a public exposure.
+AI_BIND_HOST=0.0.0.0
 AI_PORT=8770
 AI_SERVICE_KEY=$(openssl rand -hex 24)
 AI_INGRESS_SECRET=$(openssl rand -hex 24)
@@ -87,7 +91,14 @@ fi
 
 echo "[4/5] Convex deployment env"
 cd "$REPO/packages/backend"
-"$NODE" "$CVX" env set -- AI_BASE_URL       "http://127.0.0.1:8770" >/dev/null
+# The Convex backend dispatches to the AI plane FROM INSIDE its bridge-network
+# container, where 127.0.0.1 is the container itself — so it must target the
+# bridge gateway (the host, from the container's view), not loopback. Derive it
+# from the self-hosted network; fall back to the pinned subnet gateway.
+AI_GW=$(docker network inspect self-hosted_default \
+  --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)
+[ -n "$AI_GW" ] || AI_GW=172.18.0.1
+"$NODE" "$CVX" env set -- AI_BASE_URL       "http://${AI_GW}:8770" >/dev/null
 "$NODE" "$CVX" env set -- AI_SERVICE_KEY    "$AI_SERVICE_KEY"       >/dev/null
 "$NODE" "$CVX" env set -- AI_INGRESS_SECRET "$AI_INGRESS_SECRET"    >/dev/null
 "$NODE" "$CVX" deploy -y
