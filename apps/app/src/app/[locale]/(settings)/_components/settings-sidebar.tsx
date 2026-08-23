@@ -1,6 +1,14 @@
 "use client";
 
-import { Archive, FolderClosed, Link2, Sparkles, User, X } from "lucide-react";
+import {
+  Archive,
+  Brain,
+  FolderClosed,
+  Link2,
+  Sparkles,
+  User,
+  X,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
@@ -14,6 +22,7 @@ import { SettingsOrb } from "./settings-orb";
 const NAV = [
   { href: "/settings", label: "Profile", icon: User },
   { href: "/settings/personalization", label: "Personalization", icon: Sparkles },
+  { href: "/settings/memories", label: "Memories", icon: Brain },
   { href: "/settings/shared", label: "Shared Links", icon: Link2 },
   { href: "/settings/archived", label: "Archived Chats", icon: Archive },
   { href: "/settings/files", label: "Files", icon: FolderClosed },

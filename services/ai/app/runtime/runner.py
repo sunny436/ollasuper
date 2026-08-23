@@ -15,10 +15,21 @@ from app.agent.context import (
     to_lc_messages,
     trim,
 )
-from app.agent.executor import RagContext, ToolExecContext, build_tool_specs
+from app.agent.executor import (
+    MemoryContext,
+    RagContext,
+    ToolExecContext,
+    build_tool_specs,
+)
 from app.agent.graph import build_graph
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
 from app.agent.llm import build_llm
+from app.agent.memory import (
+    MEMORY_SEARCH_TOOL_NAME,
+    MEMORY_SEARCH_TOOL_SPEC,
+    REMEMBER_TOOL_NAME,
+    REMEMBER_TOOL_SPEC,
+)
 from app.agent.policy import READ_SCOPE
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
@@ -91,6 +102,10 @@ async def run_generation(
             and engine is not None
             and req.ragFileCount > 0
         )
+        # Phase 6: bind the memory tools when enabled globally AND for this user.
+        # `remember` is bound whenever memory is on (to create the first memory);
+        # `search_memory` only when the user actually has memories to recall.
+        memory_as_tool = settings.ai_agent_memory_tool_enabled and req.memoryEnabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -182,6 +197,7 @@ async def run_generation(
         name_to_id: dict[str, str] = {}
         adapter = None
         rag_ctx = None
+        mem_ctx = None
         web_active = (
             settings.agent_enabled
             and tool_registry is not None
@@ -199,7 +215,13 @@ async def run_generation(
                 ).candidates
                 if candidates:
                     web_specs, name_to_id = build_tool_specs(
-                        candidates, tool_registry, reserved={KNOWLEDGE_TOOL_NAME}
+                        candidates,
+                        tool_registry,
+                        reserved={
+                            KNOWLEDGE_TOOL_NAME,
+                            MEMORY_SEARCH_TOOL_NAME,
+                            REMEMBER_TOOL_NAME,
+                        },
                     )
                     specs += web_specs
                     adapter = OllagraphAdapter(settings, ollagraph_http)
@@ -213,20 +235,35 @@ async def run_generation(
             rag_ctx = RagContext(
                 engine=engine, user_id=req.userId, settings=settings
             )
+        if memory_as_tool:
+            specs.append(REMEMBER_TOOL_SPEC)
+            if req.memories:  # only bind recall when there is something to recall
+                specs.append(MEMORY_SEARCH_TOOL_SPEC)
+            mem_ctx = MemoryContext(memories=req.memories, settings=settings)
+
+        # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
+        # bad web spec breaks the combined bind.
+        reserved_specs: list[dict] = []
+        if rag_as_tool:
+            reserved_specs.append(KNOWLEDGE_TOOL_SPEC)
+        if memory_as_tool:
+            reserved_specs.append(REMEMBER_TOOL_SPEC)
+            if req.memories:
+                reserved_specs.append(MEMORY_SEARCH_TOOL_SPEC)
 
         llm_tools = None
         tools_ctx = None
         if specs:
             try:
                 llm_tools = llm.bind_tools(specs)
-            except Exception:  # noqa: BLE001 — a bad web spec must not kill RAG
+            except Exception:  # noqa: BLE001 — a bad web spec must not kill RAG/memory
                 log.warning(
                     "agent_tools_bind_failed", extra={"stream_id": req.streamId}
                 )
                 llm_tools = None
-                if rag_as_tool:
+                if reserved_specs:
                     try:
-                        llm_tools = llm.bind_tools([KNOWLEDGE_TOOL_SPEC])
+                        llm_tools = llm.bind_tools(reserved_specs)
                         name_to_id, adapter = {}, None
                     except Exception:  # noqa: BLE001
                         llm_tools = None
@@ -240,6 +277,7 @@ async def run_generation(
                     result_max_chars=settings.ai_agent_tool_result_max_chars,
                     default_timeout_s=settings.ollagraph_default_tool_timeout_s,
                     rag=rag_ctx,
+                    memory=mem_ctx,
                 )
 
         graph = build_graph(llm, llm_tools=llm_tools, tools_ctx=tools_ctx)

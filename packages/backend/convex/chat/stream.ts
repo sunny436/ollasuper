@@ -8,6 +8,7 @@ import {
   mutation,
   query,
 } from "../_generated/server";
+import { loadMemoriesForDispatch } from "../memories";
 import { userHasReadyFiles } from "../userFiles";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
 import { buildHistory } from "./messages";
@@ -189,6 +190,14 @@ export const dispatchPayload = internalQuery({
     // pgvector round-trip for users who actually have knowledge-base files.
     const ragFileCount = (await userHasReadyFiles(ctx, stream.userId)) ? 1 : 0;
 
+    // Phase 6: memory is on unless the user explicitly turned it off. When on,
+    // pre-load the bounded, scope-correct active set so the agent's search_memory
+    // tool can rank it in-Python (no mid-generation round-trip).
+    const memoryEnabled = settings?.memoryEnabled !== false;
+    const memories = memoryEnabled
+      ? await loadMemoriesForDispatch(ctx, stream.userId, stream.workspaceId)
+      : [];
+
     return {
       streamId,
       threadId: stream.threadId,
@@ -204,6 +213,8 @@ export const dispatchPayload = internalQuery({
       history,
       titleNeeded: thread.titleSource === "auto",
       ragFileCount,
+      memoryEnabled,
+      memories,
     };
   },
 });

@@ -297,6 +297,46 @@ http.route({
         });
         return aiJson(r);
       }
+      case "remember": {
+        // Phase 6: a memory candidate from the agent. Coerce kind/source/scope
+        // to valid literals AT THE EDGE (the event-case discipline) so the
+        // mutation arg-validator never sees bad data (which would 4xx). Scoped
+        // by the streamId capability — Convex derives ownership from the stream.
+        const content =
+          typeof body.content === "string" ? body.content : null;
+        if (!streamId || !content) return aiJson({ error: "bad request" }, 400);
+        const KINDS = [
+          "preference",
+          "instruction",
+          "fact",
+          "project_context",
+        ] as const;
+        const kind = (
+          typeof body.kind === "string" &&
+          (KINDS as readonly string[]).includes(body.kind)
+            ? body.kind
+            : "fact"
+        ) as (typeof KINDS)[number];
+        const source =
+          body.source === "explicit" || body.source === "inferred"
+            ? body.source
+            : undefined;
+        const scope =
+          body.scope === "user" || body.scope === "workspace"
+            ? body.scope
+            : undefined;
+        const reason =
+          typeof body.reason === "string"
+            ? body.reason.slice(0, 500)
+            : undefined;
+        const r = await ctx.runMutation(
+          internal.memories.rememberFromIngress,
+          { streamId, content, kind, source, scope, reason },
+        );
+        if ("unknown" in r && r.unknown)
+          return aiJson({ error: "unknown stream" }, 404);
+        return aiJson(r);
+      }
       default:
         return aiJson({ error: `unknown op: ${body.op}` }, 400);
     }

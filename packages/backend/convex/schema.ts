@@ -410,8 +410,58 @@ export default defineSchema({
     // costs one read that was happening anyway.
     rateWindowStart: v.optional(v.number()),
     rateWindowCount: v.optional(v.number()),
+    // Phase 6: long-term memory master switch (per-user-per-workspace). Optional
+    // + additive so pre-migration rows validate; absent is treated as ENABLED at
+    // read time (dispatchPayload). A user can turn memory off entirely here.
+    memoryEnabled: v.optional(v.boolean()),
     updatedAt: v.number(),
   }).index("by_user_workspace", ["userId", "workspaceId"]),
+
+  // Phase 6 — long-term agent memory. Private-per-user (chat trust model), a
+  // small flat set the agent RECALLS via search_memory and WRITES via remember
+  // (validated server-side). NO vector index here — retrieval is a plain-index
+  // pre-load + in-Python ranking. Every index is pinned to userId first, so no
+  // query can enumerate a tenant's memories without an owner.
+  userMemories: defineTable({
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    kind: v.union(
+      v.literal("preference"),
+      v.literal("instruction"),
+      v.literal("fact"),
+      v.literal("project_context"),
+    ),
+    content: v.string(),
+    source: v.union(v.literal("explicit"), v.literal("inferred")),
+    // `user` = applies in all the user's workspaces; `workspace` = this ws only
+    // (tenant-bound, so a fact learned in one workspace can't leak to another).
+    scope: v.union(v.literal("user"), v.literal("workspace")),
+    status: v.union(
+      v.literal("active"),
+      v.literal("disabled"),
+      v.literal("superseded"),
+    ),
+    // Normalized content (lowercased/whitespace-collapsed) for idempotent dedup.
+    // Per-user index only, so it is never a cross-user existence oracle. INTERNAL
+    // — stripped from list() responses.
+    normalizedKey: v.string(),
+    subject: v.optional(v.string()),
+    supersededBy: v.optional(v.id("userMemories")),
+    sourceThreadId: v.optional(v.id("chatThreads")),
+    sourceMessageId: v.optional(v.id("chatMessages")),
+    reason: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user_status", ["userId", "status"])
+    .index("by_user_scope_status", ["userId", "scope", "status"])
+    .index("by_user_ws_scope_status", [
+      "userId",
+      "workspaceId",
+      "scope",
+      "status",
+    ])
+    .index("by_user_scope_key", ["userId", "scope", "normalizedKey"]),
 
   // The OpenRouter catalogue, refreshed by chat/models.ts:refresh.
   //

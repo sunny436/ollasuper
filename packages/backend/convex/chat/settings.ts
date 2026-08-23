@@ -23,6 +23,8 @@ const DEFAULTS = {
   customInstructionsStyle: null as string | null,
   sendOnEnter: true,
   ambience: null as number | null,
+  // Memory is on unless explicitly turned off (null = default-on at read time).
+  memoryEnabled: null as boolean | null,
   updatedAt: 0,
 };
 
@@ -52,6 +54,7 @@ export const get = query({
       customInstructionsStyle: row.customInstructionsStyle ?? null,
       sendOnEnter: row.sendOnEnter,
       ambience: row.ambience ?? null,
+      memoryEnabled: row.memoryEnabled ?? null,
       updatedAt: row.updatedAt,
     };
   },
@@ -66,6 +69,7 @@ export const upsert = mutation({
     customInstructionsStyle: v.optional(v.union(v.string(), v.null())),
     sendOnEnter: v.optional(v.boolean()),
     ambience: v.optional(v.union(v.number(), v.null())),
+    memoryEnabled: v.optional(v.union(v.boolean(), v.null())),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
@@ -99,6 +103,10 @@ export const upsert = mutation({
           ? args.customInstructionsStyle?.slice(0, MAX_INSTRUCTION) ?? undefined
           : existing?.customInstructionsStyle,
       sendOnEnter: args.sendOnEnter ?? existing?.sendOnEnter ?? true,
+      memoryEnabled:
+        args.memoryEnabled !== undefined
+          ? (args.memoryEnabled ?? undefined)
+          : existing?.memoryEnabled,
       ambience:
         args.ambience !== undefined
           ? args.ambience === null

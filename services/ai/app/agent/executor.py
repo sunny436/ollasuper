@@ -31,6 +31,12 @@ from typing import TYPE_CHECKING
 from langchain_core.messages import ToolMessage
 
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, retrieve_knowledge
+from app.agent.memory import (
+    MEMORY_SEARCH_TOOL_NAME,
+    REMEMBER_TOOL_NAME,
+    clean_remember_args,
+    select_memories,
+)
 from app.agent.policy import PolicyScope, check_tool_policy
 from app.clients.ollagraph import OllagraphAdapter
 from app.logging import get_logger
@@ -65,6 +71,18 @@ class RagContext:
 
 
 @dataclass(slots=True)
+class MemoryContext:
+    """Phase 6: the pre-loaded, scope-authorized memory pool + settings for the
+    `search_memory`/`remember` tools. `memories` was derived server-side from the
+    stream's userId (dispatchPayload), so the tools never read identity from the
+    model — search only ranks this pool; the write's ownership is enforced by
+    Convex from the streamId capability."""
+
+    memories: list  # list[MemoryItem]
+    settings: Settings
+
+
+@dataclass(slots=True)
 class ToolExecContext:
     """Everything the executor node needs, captured per generation. Built in the
     runner only when the agent is enabled and candidates exist."""
@@ -83,6 +101,8 @@ class ToolExecContext:
     seen_calls: dict[str, str] = field(default_factory=dict)
     # Phase 5: set when the `search_knowledge` RAG tool is bound this turn.
     rag: RagContext | None = None
+    # Phase 6: set when the memory tools (search_memory/remember) are bound.
+    memory: MemoryContext | None = None
 
 
 # --- OpenAI function-spec construction (runner-side) ----------------------
@@ -199,7 +219,13 @@ async def _run_one(tc: dict, ctx: ToolExecContext, index: int) -> ToolMessage:
     if ctx.rag is not None and bound_name == KNOWLEDGE_TOOL_NAME:
         return await _run_knowledge(ctx, call_id, args)
 
-    # RAG-only turn (no Ollagraph): any non-knowledge tool is unknown.
+    # Phase 6: the reserved memory tools, likewise routed before registry.get.
+    if ctx.memory is not None and bound_name == MEMORY_SEARCH_TOOL_NAME:
+        return await _run_memory_search(ctx, call_id, args)
+    if ctx.memory is not None and bound_name == REMEMBER_TOOL_NAME:
+        return await _run_remember(ctx, call_id, args)
+
+    # Tools-only turn (no registry/Ollagraph): any unmatched tool is unknown.
     if ctx.registry is None:
         await ctx.writer.emit_event(
             EventType.TOOL_RESULT,
@@ -414,6 +440,125 @@ async def _run_knowledge(ctx: ToolExecContext, call_id: str, args: dict) -> Tool
     # Block VERBATIM: already token-bounded + injection-framed by render_rag_block.
     # Must NOT pass through _bounded (would sever the closing </retrieved_context>).
     return ToolMessage(content=result.block, tool_call_id=call_id, status="success")
+
+
+async def _run_memory_search(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """Phase 6: rank the pre-loaded memory pool in-Python (no DB, no identity
+    from args) and return a bounded, injection-framed block verbatim."""
+    mem = ctx.memory
+    assert mem is not None  # guarded by the caller
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return _tool_message(
+            call_id, {"status": "error", "message": "query is required"}, status="error"
+        )
+
+    dedup_key = json.dumps({"q": query}, sort_keys=True, default=str)
+    if ctx.seen_calls.get(MEMORY_SEARCH_TOOL_NAME) == dedup_key:
+        return _tool_message(
+            call_id,
+            {"note": "duplicate call skipped; see the previous result"},
+            status="error",
+        )
+    ctx.seen_calls[MEMORY_SEARCH_TOOL_NAME] = dedup_key
+
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=MEMORY_SEARCH_TOOL_NAME,
+        call_id=call_id,
+        arguments={"query": query},
+        status="running",
+    )
+    selection = select_memories(
+        mem.memories, query, max_chars=mem.settings.ai_agent_tool_result_max_chars
+    )
+    if selection.status == "no_results":
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="success",
+            result={"n_results": 0},
+        )
+        return _tool_message(
+            call_id,
+            {"status": "no_results", "message": "No relevant saved memories found."},
+            status="success",
+        )
+
+    for m in selection.selected:
+        await ctx.writer.emit_event(
+            EventType.CITATION,
+            source_id=f"memory:{m.id}",
+            title=f"memory · {m.kind}",
+            metadata={"kind": m.kind, "source": m.source},
+        )
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="success",
+        result={"n_results": len(selection.selected)},
+    )
+    return ToolMessage(content=selection.block, tool_call_id=call_id, status="success")
+
+
+async def _run_remember(ctx: ToolExecContext, call_id: str, args: dict) -> ToolMessage:
+    """Phase 6: propose a memory candidate. Convex validates + persists it (the
+    LLM never writes a record); this only sanitizes args, dedups, and reports the
+    server's verdict. A failed/rejected write surfaces as an error TOOL_RESULT so
+    the agent does not claim it saved."""
+    cleaned = clean_remember_args(args.get("content"), args.get("kind"))
+    if cleaned is None:
+        return _tool_message(
+            call_id,
+            {"status": "error", "message": "content is required"},
+            status="error",
+        )
+    content, kind = cleaned
+
+    dedup_key = json.dumps({"c": content, "k": kind}, sort_keys=True, default=str)
+    if ctx.seen_calls.get(REMEMBER_TOOL_NAME) == dedup_key:
+        return _tool_message(
+            call_id, {"note": "duplicate call skipped"}, status="error"
+        )
+    ctx.seen_calls[REMEMBER_TOOL_NAME] = dedup_key
+
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=REMEMBER_TOOL_NAME,
+        call_id=call_id,
+        arguments={"kind": kind},  # content persists as the memory; not duplicated here
+        status="running",
+    )
+    result = await ctx.writer.remember(content=content, kind=kind)
+    if result.get("saved"):
+        await ctx.writer.emit_event(
+            EventType.ARTIFACT,
+            artifact_id=str(result.get("id") or call_id),
+            artifact_type="memory",
+            metadata={"kind": kind},
+        )
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="success",
+            result={"saved": True, "kind": kind},
+        )
+        return _tool_message(
+            call_id, {"status": "saved", "kind": kind}, status="success"
+        )
+
+    reason = result.get("reason") or "not_saved"
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="error",
+        result={"saved": False, "reason": reason},
+    )
+    return _tool_message(
+        call_id, {"status": "not_saved", "reason": reason}, status="error"
+    )
 
 
 async def execute_tool_calls(

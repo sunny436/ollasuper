@@ -41,6 +41,8 @@ import type * as env from "../env.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as init from "../init.js";
+import type * as memories from "../memories.js";
+import type * as memoryUtil from "../memoryUtil.js";
 import type * as notifications from "../notifications.js";
 import type * as orgs from "../orgs.js";
 import type * as passwordProviders from "../passwordProviders.js";
@@ -99,6 +101,8 @@ declare const fullApi: ApiFromModules<{
   files: typeof files;
   http: typeof http;
   init: typeof init;
+  memories: typeof memories;
+  memoryUtil: typeof memoryUtil;
   notifications: typeof notifications;
   orgs: typeof orgs;
   passwordProviders: typeof passwordProviders;

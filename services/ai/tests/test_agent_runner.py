@@ -18,7 +18,7 @@ import httpx
 from langchain_core.messages import AIMessage
 
 from app.ingest import retrieve
-from app.models.chat import GenerateRequest, HistoryMessage
+from app.models.chat import GenerateRequest, HistoryMessage, MemoryItem
 from app.models.tools import (
     Availability,
     SideEffect,
@@ -63,7 +63,13 @@ class FakeLLM:
         return self._plain
 
 
-def _req(content: str, *, rag_file_count: int = 0) -> GenerateRequest:
+def _req(
+    content: str,
+    *,
+    rag_file_count: int = 0,
+    memory_enabled: bool = False,
+    memories: list | None = None,
+) -> GenerateRequest:
     return GenerateRequest(
         streamId="s1",
         threadId="t1",
@@ -73,6 +79,8 @@ def _req(content: str, *, rag_file_count: int = 0) -> GenerateRequest:
         model="gpt-5.6-luna",
         history=[HistoryMessage(role="user", content=content, seq=1)],
         ragFileCount=rag_file_count,
+        memoryEnabled=memory_enabled,
+        memories=memories or [],
     )
 
 
@@ -316,3 +324,74 @@ async def test_rag_tool_off_runs_prerun_no_events(monkeypatch):
     assert len(finals) == 1 and finals[0]["status"] == "done"
     # Pre-run DID run: it embedded latest.content.
     assert queries == ["what does my file say about leave"]
+
+
+# ---- Phase 6: memory tools ----------------------------------------------------
+async def test_memory_tool_on_remember_writes(monkeypatch):
+    _patch_retrieve(monkeypatch, [])  # RAG untouched
+    tc = {
+        "name": "remember",
+        "args": {"content": "I use Rust", "kind": "fact"},
+        "id": "c1",
+    }
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain"),
+            [AIMessage(content="", tool_calls=[tc]), AIMessage(content="done")],
+        ),
+    )
+    settings = make_settings("http://x", ai_agent_memory_tool_enabled=True)
+    convex = RecordingConvex({"ok": True, "id": "mem1"})
+    await run_generation(
+        _req("please remember I use Rust", memory_enabled=True), settings, convex
+    )
+    assert [c for c in convex.calls if c.get("op") == "remember"]  # write fired
+    assert "ARTIFACT" in _event_types(convex)
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"
+
+
+async def test_memory_search_bound_only_with_memories(monkeypatch):
+    _patch_retrieve(monkeypatch, [])
+    tc = {"name": "search_memory", "args": {"query": "my language"}, "id": "c1"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain"),
+            [AIMessage(content="", tool_calls=[tc]), AIMessage(content="answer")],
+        ),
+    )
+    settings = make_settings("http://x", ai_agent_memory_tool_enabled=True)
+    convex = RecordingConvex()
+    await run_generation(
+        _req(
+            "what language do I use",
+            memory_enabled=True,
+            memories=[MemoryItem(id="1", kind="fact", content="Uses Python")],
+        ),
+        settings,
+        convex,
+    )
+    assert "CITATION" in _event_types(convex)  # search_memory recalled + cited
+
+
+async def test_memory_off_binds_nothing(monkeypatch):
+    _patch_retrieve(monkeypatch, [])
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(AIMessage(content="plain"), []),
+    )
+    settings = make_settings("http://x")  # ai_agent_memory_tool_enabled defaults False
+    convex = RecordingConvex()
+    await run_generation(
+        _req(
+            "hi",
+            memory_enabled=True,
+            memories=[MemoryItem(id="1", kind="fact", content="x")],
+        ),
+        settings,
+        convex,
+    )
+    assert [c for c in convex.calls if c.get("op") == "remember"] == []
+    assert _ops(convex, "event") == []
