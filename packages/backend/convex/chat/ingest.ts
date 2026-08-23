@@ -3,6 +3,7 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { internalMutation } from "../_generated/server";
+import { audit } from "../auditLog";
 import { recordUsage } from "../usage";
 import { eventObject } from "./events";
 
@@ -410,6 +411,18 @@ export const finishStream = internalMutation({
       });
     }
 
+    // Phase 8: audit an AGENT execution (only turns that emitted typed events —
+    // pure text chat leaves hasEvents unset). Ids/counts only, never payloads or
+    // content, so no secret/CoT leaks into the trail.
+    if (stream.hasEvents) {
+      await audit(ctx, stream.workspaceId, stream.userId, "agent.execution", {
+        model: finishedMsg?.model ?? null,
+        tokensOut: args.tokensOut ?? null,
+        latencyMs: args.latencyMs ?? null,
+        toolCount: events?.filter((e) => e.type === "TOOL_CALL").length ?? 0,
+      });
+    }
+
     return { ok: true };
   },
 });
@@ -463,6 +476,17 @@ export async function finalizeError(
       streamingMessageId: undefined,
       updatedAt: now,
     });
+  }
+
+  // Phase 8: audit a failed AGENT execution (agent turns only). errorCode only.
+  if (stream.hasEvents) {
+    await audit(
+      ctx,
+      stream.workspaceId,
+      stream.userId,
+      "agent.execution_failed",
+      { errorCode: args.errorCode ?? null },
+    );
   }
 }
 

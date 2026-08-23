@@ -5,6 +5,89 @@ Deferred work, captured so it isn't lost. Ordered roughly by priority.
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
 
+## Phase 8 (2026-08-23) — Agentic UX + Production Hardening
+
+Shipped as three reviewable PRs (8a agentic UX · 8b durable approval · 8c hardening + docs).
+The typed event protocol (Phase 3) was already emitted + persisted end-to-end, so Phase 8 was
+overwhelmingly EXPOSE + SECURE + OBSERVE, not new architecture.
+
+### A. UX before → after
+Before: `User → text response`. After: `User → agent activity (tool panels, progress) → sources /
+citations / RAG provenance → artifacts → final answer`, with a durable approval dialog for any
+approval-gated tool and friendly, retry-gated errors. A pure-text turn renders exactly as before
+(the activity UI returns null), so ordinary chat is visually unchanged.
+
+### B. Event → UI mapping (`apps/app/.../chat/_lib/agent-events.ts` + `_components/`)
+`TEXT_DELTA`→StreamingText (chunk stream) · `TOOL_CALL`/`TOOL_RESULT`/`TOOL_PROGRESS`→AgentActivity
+`ToolRun` panels (paired by call_id; safe `ResultPreview`) · `CITATION`→SourceList/CitationCard ·
+`ARTIFACT`→ArtifactCard · `APPROVAL_REQUEST`→ApprovalCard · `FINAL`/`ERROR`→terminal marker /
+ErrorNotice. `TOOL_RESULT.content` (the verbatim context/near-CoT block) is dropped at parse time so
+no component can render it; unknown event/shape types fail gracefully.
+
+### C. Approval flow (durable, Phase-7-substrate)
+`tool needs approval → op:"approval" parks a chatApprovals row + stream→waiting_approval (invisible
+to the reaper) → user Approve/Reject (or expiry) → resolve mints the execute token + requeues +
+redispatch → Python executes the approved tool exactly once / injects a rejection`. Survives refresh,
+reconnect, worker restart, backend restart. A late finalize from a crashed/duplicate run NO-OPS on
+`waiting_approval` (cannot destroy the parked approval); the token is the only execute capability and
+never reaches the browser.
+
+### D. Security
+Auth/authz unchanged (user-boundary chat, "Not found" not "Forbidden", ids from session). Approval
+`resolve` is owner-only. RAG/memory retrieval scope is the authenticated id, never model args
+(`test_user_id_comes_from_ctx_not_args`). Retrieved/tool content is framed as DATA and closing
+sentinels neutralized (`test_prompt_injection.py` — 4 tests pin it). No `rehype-raw`; exactly one
+`dangerouslySetInnerHTML` (mermaid, strict). Approval token is server→Python only.
+
+### E. Production hardening
+- **Audit**: `agent.execution` / `agent.execution_failed` (ingest.ts, gated on hasEvents) +
+  `agent.approval_requested/approved/rejected` (approvals.ts) — ids/counts only, never payloads/CoT.
+- **Observability**: `main.py` reports unhandled inference-plane errors to GlitchTip/Sentry when
+  `AI_SENTRY_DSN` is set, scrubbed through the shared log redactor (`redact_text`). Guarded on an
+  optional import — **deploy step**: `uv add sentry-sdk[fastapi]` + set `AI_SENTRY_DSN` (mirror
+  `deploy/48`). streamId + attempt already correlate logs end-to-end.
+- **Errors**: centralized `errorCode → {message, retryable}` map on the frontend (`agent-events.ts`),
+  hides Retry for non-retryable codes; backend `retry` remains the real idempotency gate.
+- **Retries / recovery / rate limits / cost**: unchanged from Phase 7 (see deferrals).
+
+### F. Files changed — see PRs #63 (8a), #64 (8b), and this PR (8c).
+
+### G. Tests (before → after)
+8a: +19 bun-test units (parse/timeline/label/error) + Scenario-A e2e assertion. 8b: +11 convex
+approval tests, +6 pytest approval tests, 2 Phase-4 approval tests updated to the suspend contract.
+8c: +4 injection tests + 2 agent-audit assertions. Full suites: pytest **247 passed** / ruff clean;
+Convex **171 passed** (the 2 `/ai/file` timeouts are the known full-suite flake, pass in isolation);
+typecheck/biome/build all green.
+
+### H. Regression — chat, Ollima, RAG, memory, tools, streaming, auth, file upload, cancellation all
+green (full Phase 0–7 suites pass).
+
+### I. Remaining gaps (NOT claimed done)
+- **Presentation-only** (built against the verified payload contracts, not yet emitted by any tool):
+  `TOOL_PROGRESS` line, `ArtifactCard` download (needs a capability url; only `artifact_type:"memory"`
+  emitted today), `ResultPreview` chart branch. They fail gracefully and light up when the backend emits.
+- **Approval** is verified hermetically + via the staging force-flag; **no real high-impact tool ships
+  enabled**, so the production headed-Chrome round-trip is the final gate, pending a deploy.
+- **Cost (USD)** deliberately NOT computed — Ollima `/v1/models` prices are empty, so `costUsd` would
+  persist fake zeros. Ollagraph `x-credits-cost` is captured + logged; aggregate it via `recordUsage`
+  when Ollagraph tools go live. `costUsd` stays intentionally null until a priced catalogue exists.
+- **Provider capability columns** NOT added — no data source (Ollima returns only the id); the
+  family-keyed quirk map (`llm.py`) + the `contextWindow 0 = unknown` contract are the honest
+  representation; the UI degrades gracefully.
+- **Rate limits**: per-user hourly + concurrency + step-budget + deadline suffice for one provider. A
+  workspace-aggregate window is the designed extension point (build with a spend requirement); no
+  per-tool limiter (redundant with the step budget).
+- **Backup / recovery gaps** (documented, code deferred):
+  1. All backups land on the same VM (`/opt/backups`) — no offsite copy. Highest-severity gap;
+     recommend an `rclone`/`scp` step after `backup.sh` to object storage.
+  2. The logical `convex export` is not a full restore image — self-hosted rollback needs the
+     module blobs / search indexes re-deployed in the load-bearing import-before-deploy order
+     (CLAUDE.md), and the Polar `customers` join is component state the export does not cover.
+  3. In-flight execution state (running/queued streams, scheduler rows) is not point-in-time
+     recoverable; the reaper recovers a live deployment, not a restore.
+  4. Restore is never tested — recommend a monthly restore into the dev-Cloud harness
+     (`deploy/60-convex-cloud-dev.sh`).
+
 ## 0d. Chat sharing (2026-08-20) — snapshot-based public links
 Two share actions — **Share Chat** (header) and **Share Response** (per assistant turn) — mint
 unique public links: 7-day server-enforced expiry, **snapshot-based** (content frozen at share
