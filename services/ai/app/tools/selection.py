@@ -101,7 +101,15 @@ class ToolSearchIndex:
 
 
 def _overlap(q: set[str], field: set[str]) -> float:
-    return len(q & field) / len(q) if q and field else 0.0
+    # Overlap coefficient (÷ the SMALLER set), not recall (÷|q|). Tool name/path/
+    # category fields are short; dividing by the verbose query length structurally
+    # capped every score below min_score for real multi-word requests — "scrape
+    # this url and extract the page content" scored the scrape tool ~0.12 on
+    # name+path, under the 0.2 floor, so a 111-tool pool yielded n_scored:0 and the
+    # agent saw no tools at all. Normalizing by the smaller set scores a tool by how
+    # well its own fields are covered, independent of how many extra words the user
+    # typed, so a fully-matched short field (path {scrape}) reads as a strong signal.
+    return len(q & field) / min(len(q), len(field)) if q and field else 0.0
 
 
 def _score_entry(q: set[str], e: _Entry) -> tuple[float, list[str], str]:
