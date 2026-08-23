@@ -18,7 +18,7 @@ EnvironmentFile=/opt/myos/services/ai/.env
 # --no-access-log because the access log adds nothing here and is one more
 # place request URLs can land in journalctl.
 ExecStart=/opt/myos/services/ai/.venv/bin/python -m uvicorn app.main:app \
-  --host 127.0.0.1 --port 8770 --workers 1 --no-access-log \
+  --host ${AI_BIND_HOST} --port ${AI_PORT} --workers 1 --no-access-log \
   --timeout-graceful-shutdown 25
 
 Restart=always
