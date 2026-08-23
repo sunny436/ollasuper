@@ -1,0 +1,540 @@
+/**
+ * Phase 8 — the typed-event → view-model layer.
+ *
+ * The backend (convex/chat/events.ts + services/ai/app/models/events.py) is the
+ * SINGLE source of truth for the event protocol; this module only PARSES and
+ * GROUPS what already arrives on `stream.active.events` / `chatMessages.events`.
+ * It is deliberately pure (no React, no Convex) so it unit-tests under `bun test`
+ * and memoises cheaply inside the render tree.
+ *
+ * Two hard safety rules, both enforced here rather than in a component:
+ *  1. `TOOL_RESULT.content` is the verbatim model-context block (near
+ *     chain-of-thought / injection-framed RAG). It is dropped at parse time so
+ *     NO downstream component can render it. Only the compact `result` survives.
+ *  2. Any malformed payload or unknown event type degrades to `{kind:"unknown"}`
+ *     and is skipped by the timeline — it never throws.
+ */
+
+/** The wire shape returned by stream.active / listPaged (payload is a JSON string). */
+export interface TypedEvent {
+  eventId: string;
+  seq: number;
+  type: string;
+  v: number;
+  ts: number;
+  textOffset?: number;
+  payload: string;
+}
+
+export type ToolStatus = "running" | "success" | "error";
+
+export type ParsedEvent =
+  | {
+      kind: "tool_call";
+      eventId: string;
+      seq: number;
+      ts: number;
+      callId: string;
+      toolName: string;
+      toolId?: string;
+      status: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      kind: "tool_result";
+      eventId: string;
+      seq: number;
+      ts: number;
+      callId: string;
+      status: string;
+      // `content` is intentionally NOT captured (see file header).
+      result?: unknown;
+    }
+  | {
+      kind: "tool_progress";
+      eventId: string;
+      seq: number;
+      ts: number;
+      callId: string;
+      progress: number;
+      message?: string;
+    }
+  | {
+      kind: "citation";
+      eventId: string;
+      seq: number;
+      ts: number;
+      sourceId: string;
+      title?: string;
+      url?: string;
+      metadata: Record<string, unknown>;
+    }
+  | {
+      kind: "approval";
+      eventId: string;
+      seq: number;
+      ts: number;
+      approvalId: string;
+      toolName: string;
+      reason: string;
+      status: string;
+    }
+  | {
+      kind: "artifact";
+      eventId: string;
+      seq: number;
+      ts: number;
+      artifactId: string;
+      artifactType: string;
+      metadata: Record<string, unknown>;
+    }
+  | {
+      kind: "final";
+      eventId: string;
+      seq: number;
+      ts: number;
+      finishReason?: string;
+    }
+  | {
+      kind: "error";
+      eventId: string;
+      seq: number;
+      ts: number;
+      code: string;
+      message: string;
+      retryable?: boolean;
+    }
+  | { kind: "unknown"; eventId: string; seq: number; ts: number };
+
+function body(payload: string): Record<string, unknown> {
+  try {
+    const b: unknown = JSON.parse(payload);
+    return b && typeof b === "object" ? (b as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+const str = (b: Record<string, unknown>, k: string): string | undefined =>
+  typeof b[k] === "string" ? (b[k] as string) : undefined;
+
+const obj = (v: unknown): Record<string, unknown> =>
+  v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+
+/** Defensive parse of one wire event into the discriminated union. */
+export function parseEvent(e: TypedEvent): ParsedEvent {
+  const b = body(e.payload);
+  const base = { eventId: e.eventId, seq: e.seq, ts: e.ts };
+  switch (e.type) {
+    case "TOOL_CALL": {
+      const callId = str(b, "call_id");
+      if (!callId) return { kind: "unknown", ...base };
+      return {
+        kind: "tool_call",
+        ...base,
+        callId,
+        toolName: str(b, "tool_name") ?? "tool",
+        toolId: str(b, "tool_id"),
+        status: str(b, "status") ?? "running",
+        args: obj(b.arguments),
+      };
+    }
+    case "TOOL_RESULT": {
+      const callId = str(b, "call_id");
+      if (!callId) return { kind: "unknown", ...base };
+      return {
+        kind: "tool_result",
+        ...base,
+        callId,
+        status: str(b, "status") ?? "success",
+        result: b.result,
+      };
+    }
+    case "TOOL_PROGRESS": {
+      const callId = str(b, "call_id");
+      if (!callId) return { kind: "unknown", ...base };
+      const p = typeof b.progress === "number" ? b.progress : 0;
+      return {
+        kind: "tool_progress",
+        ...base,
+        callId,
+        progress: Math.max(0, Math.min(1, p)),
+        message: str(b, "message"),
+      };
+    }
+    case "CITATION": {
+      const sourceId = str(b, "source_id");
+      if (!sourceId) return { kind: "unknown", ...base };
+      return {
+        kind: "citation",
+        ...base,
+        sourceId,
+        title: str(b, "title"),
+        url: str(b, "url"),
+        metadata: obj(b.metadata),
+      };
+    }
+    case "APPROVAL_REQUEST": {
+      const approvalId = str(b, "approval_id");
+      if (!approvalId) return { kind: "unknown", ...base };
+      return {
+        kind: "approval",
+        ...base,
+        approvalId,
+        toolName: str(b, "tool_name") ?? "action",
+        reason: str(b, "reason") ?? "",
+        status: str(b, "status") ?? "pending",
+      };
+    }
+    case "ARTIFACT": {
+      const artifactId = str(b, "artifact_id");
+      if (!artifactId) return { kind: "unknown", ...base };
+      return {
+        kind: "artifact",
+        ...base,
+        artifactId,
+        artifactType: str(b, "artifact_type") ?? "artifact",
+        metadata: obj(b.metadata),
+      };
+    }
+    case "FINAL":
+      return { kind: "final", ...base, finishReason: str(b, "finishReason") };
+    case "ERROR":
+      return {
+        kind: "error",
+        ...base,
+        code: str(b, "code") ?? "error",
+        message: str(b, "message") ?? "",
+        retryable: typeof b.retryable === "boolean" ? b.retryable : undefined,
+      };
+    default:
+      return { kind: "unknown", ...base };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Timeline: pair TOOL_CALL / TOOL_RESULT / TOOL_PROGRESS by call_id.
+// ---------------------------------------------------------------------------
+
+export interface RagFile {
+  fileId: string;
+  filename: string;
+  page?: number;
+}
+
+export interface ToolRunModel {
+  callId: string;
+  toolName: string;
+  toolId?: string;
+  args: Record<string, unknown>;
+  status: ToolStatus;
+  startedTs: number;
+  endedTs?: number;
+  result?: unknown;
+  progress?: { progress: number; message?: string };
+  /** Cheap identity for React.memo — changes only when this run actually changes. */
+  signature: string;
+}
+
+export interface ParsedCitation {
+  sourceId: string;
+  title?: string;
+  url?: string;
+  page?: number;
+  kind: "rag" | "memory" | "web";
+}
+
+export interface ParsedArtifact {
+  artifactId: string;
+  artifactType: string;
+  url?: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ParsedApproval {
+  approvalId: string;
+  toolName: string;
+  reason: string;
+  status: string;
+}
+
+export interface TimelineModel {
+  runs: ToolRunModel[];
+  citations: ParsedCitation[];
+  ragFiles: RagFile[];
+  artifacts: ParsedArtifact[];
+  approval?: ParsedApproval;
+  terminal?: { kind: "final" | "error"; code?: string; message?: string };
+  /** True once any structured (non-terminal) event exists — drives whether to render. */
+  hasActivity: boolean;
+}
+
+function citationKind(sourceId: string): ParsedCitation["kind"] {
+  if (sourceId.startsWith("memory:")) return "memory";
+  if (/^https?:\/\//.test(sourceId)) return "web";
+  return "rag";
+}
+
+function num(v: unknown): number | undefined {
+  return typeof v === "number" ? v : undefined;
+}
+
+function extractRagFiles(result: unknown): RagFile[] {
+  const r = obj(result);
+  const files = Array.isArray(r.files) ? r.files : [];
+  const out: RagFile[] = [];
+  for (const f of files) {
+    const fo = obj(f);
+    const fileId = str(fo, "file_id");
+    const filename = str(fo, "filename");
+    if (fileId && filename) out.push({ fileId, filename, page: num(fo.page) });
+  }
+  return out;
+}
+
+/**
+ * Build the ordered view-model from the raw event array. Runs are ordered by
+ * first appearance (TOOL_CALL seq). Progress folds to the latest tick per call.
+ * The FINAL/ERROR terminal (server-synthesized at fold) becomes `terminal`.
+ */
+export function buildTimeline(events: TypedEvent[] | undefined): TimelineModel {
+  const runs = new Map<string, ToolRunModel>();
+  const citations: ParsedCitation[] = [];
+  const ragFileById = new Map<string, RagFile>();
+  const artifacts: ParsedArtifact[] = [];
+  let approval: ParsedApproval | undefined;
+  let terminal: TimelineModel["terminal"];
+  let hasActivity = false;
+
+  const sorted = [...(events ?? [])].sort((a, b) => a.seq - b.seq);
+  for (const raw of sorted) {
+    const e = parseEvent(raw);
+    switch (e.kind) {
+      case "tool_call": {
+        hasActivity = true;
+        runs.set(e.callId, {
+          callId: e.callId,
+          toolName: e.toolName,
+          toolId: e.toolId,
+          args: e.args,
+          status: "running",
+          startedTs: e.ts,
+          signature: `${e.callId}:call:${e.eventId}`,
+        });
+        break;
+      }
+      case "tool_result": {
+        hasActivity = true;
+        const run = runs.get(e.callId) ?? {
+          callId: e.callId,
+          toolName: "tool",
+          args: {},
+          status: "running" as ToolStatus,
+          startedTs: e.ts,
+          signature: e.callId,
+        };
+        run.status = e.status === "success" ? "success" : "error";
+        run.result = e.result;
+        run.endedTs = e.ts;
+        run.signature = `${run.signature}|result:${e.eventId}`;
+        runs.set(e.callId, run);
+        for (const f of extractRagFiles(e.result)) ragFileById.set(f.fileId, f);
+        break;
+      }
+      case "tool_progress": {
+        hasActivity = true;
+        const run = runs.get(e.callId);
+        if (run) {
+          run.progress = { progress: e.progress, message: e.message };
+          run.signature = `${run.signature}|prog:${e.eventId}`;
+          runs.set(e.callId, run);
+        }
+        break;
+      }
+      case "citation": {
+        hasActivity = true;
+        citations.push({
+          sourceId: e.sourceId,
+          title: e.title,
+          url: e.url,
+          page: num(e.metadata.page),
+          kind: citationKind(e.sourceId),
+        });
+        break;
+      }
+      case "artifact": {
+        hasActivity = true;
+        artifacts.push({
+          artifactId: e.artifactId,
+          artifactType: e.artifactType,
+          url: str(e.metadata, "url"),
+          metadata: e.metadata,
+        });
+        break;
+      }
+      case "approval": {
+        hasActivity = true;
+        approval = {
+          approvalId: e.approvalId,
+          toolName: e.toolName,
+          reason: e.reason,
+          status: e.status,
+        };
+        break;
+      }
+      case "final":
+        terminal = { kind: "final" };
+        break;
+      case "error":
+        terminal = { kind: "error", code: e.code, message: e.message };
+        break;
+      default:
+        break; // unknown → skipped, never crashes
+    }
+  }
+
+  return {
+    runs: [...runs.values()],
+    citations,
+    ragFiles: [...ragFileById.values()],
+    artifacts,
+    approval,
+    terminal,
+    hasActivity,
+  };
+}
+
+/** Cheap memo signature for a whole timeline — changes only when an event appends. */
+export function timelineSignature(events: TypedEvent[] | undefined): string {
+  const n = events?.length ?? 0;
+  return `${n}:${events?.at(-1)?.eventId ?? ""}`;
+}
+
+// ---------------------------------------------------------------------------
+// Human-readable tool labels — synchronous, query-free, no per-model hardcoding.
+// ---------------------------------------------------------------------------
+
+export interface ToolLabel {
+  icon: string;
+  /** Present-progressive, shown while running: "Searching the web". */
+  running: string;
+  /** Short noun for the settled/idle line: "Web search". */
+  noun: string;
+}
+
+const RESERVED: Record<string, ToolLabel> = {
+  search_knowledge: {
+    icon: "📄",
+    running: "Reading your documents",
+    noun: "Document search",
+  },
+  search_memory: {
+    icon: "🧠",
+    running: "Recalling memory",
+    noun: "Memory",
+  },
+  remember: {
+    icon: "🧠",
+    running: "Saving to memory",
+    noun: "Memory",
+  },
+};
+
+const VERB_PREFIXES: Array<[RegExp, string, string]> = [
+  [/^(web_)?search|^search_/, "Searching", "🔎"],
+  [/^(scrape|fetch|get|read|crawl)/, "Fetching", "🌐"],
+  [/^convert|^transform/, "Converting", "🔁"],
+  [/^weather/, "Checking weather", "⛅"],
+];
+
+function titleCase(slug: string): string {
+  const words = slug
+    .replace(/[-_.]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return words
+    .map((w) => (w[0] ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+/** Derive a friendly icon + label from a tool's id/name. Never throws. */
+export function toolLabel(toolName: string, toolId?: string): ToolLabel {
+  const key = (toolId ?? toolName ?? "").toLowerCase();
+  if (RESERVED[key]) return RESERVED[key];
+  const name = toolName || toolId || "tool";
+  const lower = name.toLowerCase();
+  for (const [re, verb, icon] of VERB_PREFIXES) {
+    if (re.test(lower)) {
+      const rest = titleCase(lower.replace(re, "")).trim();
+      return {
+        icon,
+        running: rest ? `${verb} ${rest.toLowerCase()}` : verb,
+        noun: titleCase(name),
+      };
+    }
+  }
+  const nice = titleCase(name);
+  return { icon: "🔧", running: `Running ${nice}`, noun: nice };
+}
+
+// ---------------------------------------------------------------------------
+// Error copy — the centralized code → {message, retryable} registry (§16/17).
+// Codes originate in runner.py, chat/stream.ts and http.ts; both spellings of
+// the deadline/timeout family map to the same user-facing copy.
+// ---------------------------------------------------------------------------
+
+export const ERROR_COPY: Record<string, { message: string; retryable: boolean }> =
+  {
+    not_configured: {
+      message: "Chat isn't configured yet. Contact your administrator.",
+      retryable: false,
+    },
+    dispatch_failed: {
+      message: "Couldn't reach the model service. Please try again.",
+      retryable: true,
+    },
+    dispatch_unreachable: {
+      message: "Couldn't reach the model service. Please try again.",
+      retryable: true,
+    },
+    ingress_unavailable: {
+      message: "The model service is temporarily unavailable. Please try again.",
+      retryable: true,
+    },
+    cancelled: { message: "You stopped this response.", retryable: true },
+    interrupted: { message: "The response was interrupted. Please try again.", retryable: true },
+    deadline: { message: "This response took too long and was stopped.", retryable: true },
+    deadline_exceeded: {
+      message: "This response took too long and was stopped.",
+      retryable: true,
+    },
+    timeout: { message: "This response timed out. Please try again.", retryable: true },
+    provider_timeout: { message: "The model timed out. Please try again.", retryable: true },
+    provider_error: { message: "The model had a problem. Please try again.", retryable: true },
+    attachment_failed: {
+      message: "One of your attachments couldn't be processed.",
+      retryable: true,
+    },
+    approval_expired: {
+      message: "The approval request expired before it was answered.",
+      retryable: true,
+    },
+    internal: { message: "Something went wrong. Please try again.", retryable: true },
+  };
+
+/**
+ * Resolve an errorCode (+ optional raw backend message) to display copy. An
+ * unknown code falls back to the raw message (already length-capped server-side)
+ * and, absent that, a safe generic — and is treated as retryable so the user is
+ * never stranded (the backend `retry` mutation is the real idempotency gate).
+ */
+export function errorCopy(
+  code?: string | null,
+  fallback?: string | null,
+): { message: string; retryable: boolean } {
+  if (code && ERROR_COPY[code]) return ERROR_COPY[code];
+  return { message: fallback || "Something went wrong.", retryable: true };
+}
