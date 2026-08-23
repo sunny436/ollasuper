@@ -66,7 +66,9 @@ async def test_lists_metadata_only():
         assert r.status_code == 200
         body = r.json()
         assert body["count"] == 12
-        assert body["enabled"] == 7
+        # read-only + EXTERNAL (registered enabled, approval-gated); HIGH_IMPACT
+        # stays disabled.
+        assert body["enabled"] == 9
         assert body["returned"] == 12
         assert body["categories"]["Scraping"] == 3
         # Compact rows carry metadata only — no schemas, no credentials.

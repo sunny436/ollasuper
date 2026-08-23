@@ -46,7 +46,11 @@ def test_snapshot_counts():
     reg = _reg()
     snap = reg.snapshot()
     assert snap["count"] == 12
-    assert snap["enabled"] == 7  # the read-only tools
+    # read-only tools PLUS the EXTERNAL_SIDE_EFFECT tools, which are now
+    # registered enabled so the approval round-trip can surface them (they are
+    # still never auto-run — the default scope denies them). HIGH_IMPACT stays
+    # disabled.
+    assert snap["enabled"] == 9
     assert snap["categories"]["Scraping"] == 3
 
 

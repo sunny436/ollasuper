@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     # shipping a real high-impact tool; it is empty in production.
     ai_agent_approval_ttl_s: float = 900.0
     ai_agent_approval_test_tool_ids: frozenset[str] = frozenset()
+    # When true, the agent may propose EXTERNAL_SIDE_EFFECT web tools
+    # (scrape/analyze/extract) — every one goes through the approval round-trip
+    # (never auto-run), and HIGH_IMPACT tools (billing/keys/auth) stay disabled.
+    # Off by default: the safe posture is read-only tools only.
+    ai_agent_side_effect_enabled: bool = False
     # Phase 8: observability. When set, the inference plane reports unhandled
     # errors to GlitchTip/Sentry (events scrubbed through the log redactor first).
     # Empty by default and in CI; the SDK is an optional import, so nothing is

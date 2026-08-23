@@ -6,7 +6,12 @@ field under test set, so the ordered gate is verified dimension by dimension.
 
 from __future__ import annotations
 
-from app.agent.policy import READ_SCOPE, PolicyScope, check_tool_policy
+from app.agent.policy import (
+    READ_SCOPE,
+    WRITE_SCOPE,
+    PolicyScope,
+    check_tool_policy,
+)
 from app.models.tools import (
     Availability,
     SideEffect,
@@ -51,6 +56,50 @@ def test_external_side_effect_needs_approval():
         READ_SCOPE,
     )
     assert r.needs_approval
+
+
+def test_external_write_tool_denied_under_read_scope():
+    # A real EXTERNAL tool requires ollagraph:write, which the default read scope
+    # does NOT grant → hard deny; it can never be auto-run without the elevated
+    # scope, regardless of approval.
+    r = check_tool_policy(
+        _tool(
+            side_effect=SideEffect.EXTERNAL_SIDE_EFFECT,
+            permissions=ToolPermissions(
+                required_permissions=["ollagraph:write"], approval_required=True
+            ),
+        ),
+        READ_SCOPE,
+    )
+    assert r.denied
+
+
+def test_external_write_tool_needs_approval_under_write_scope():
+    # With side-effect tools enabled (WRITE_SCOPE), the same tool is surfaced but
+    # parked for approval — never auto-run.
+    r = check_tool_policy(
+        _tool(
+            side_effect=SideEffect.EXTERNAL_SIDE_EFFECT,
+            permissions=ToolPermissions(
+                required_permissions=["ollagraph:write"], approval_required=True
+            ),
+        ),
+        WRITE_SCOPE,
+    )
+    assert r.needs_approval
+
+
+def test_high_impact_still_denied_under_write_scope():
+    # WRITE_SCOPE must not unlock admin/high-impact tools — they need
+    # ollagraph:admin (never granted).
+    r = check_tool_policy(
+        _tool(
+            side_effect=SideEffect.HIGH_IMPACT,
+            permissions=ToolPermissions(required_permissions=["ollagraph:admin"]),
+        ),
+        WRITE_SCOPE,
+    )
+    assert r.denied
 
 
 def test_approval_required_flag_needs_approval():
