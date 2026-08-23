@@ -61,6 +61,21 @@ class HistoryMessage(BaseModel):
     attachments: list[Attachment] = Field(default_factory=list)
 
 
+class MemoryItem(BaseModel):
+    """One long-term memory pre-loaded into the turn by Convex dispatchPayload.
+
+    The set is already scope-authorized server-side (derived from the stream's
+    userId), so the agent's `search_memory` tool only RANKS this pool — it never
+    widens scope. `content` is capped to match the Convex write cap."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    kind: str = Field(max_length=40)
+    content: str = Field(max_length=2000)
+    source: str = Field(default="explicit", max_length=20)
+
+
 class GenerateRequest(BaseModel):
     """Everything needed for one turn.
 
@@ -95,6 +110,12 @@ class GenerateRequest(BaseModel):
     # >0 when the user has ready knowledge-base files; gates RAG retrieval so
     # users with no files pay no extra latency. Computed in Convex dispatchPayload.
     ragFileCount: int = 0
+    # Phase 6 long-term memory. `memoryEnabled` is the user's setting (default
+    # false here so an older Convex deploy that omits it disables memory safely);
+    # `memories` is the bounded, scope-authorized active set Convex pre-loaded for
+    # this turn. Both default so `extra="forbid"` never 400s a pre-Phase-6 caller.
+    memoryEnabled: bool = False
+    memories: list[MemoryItem] = Field(default_factory=list, max_length=200)
 
 
 class GenerateAccepted(BaseModel):

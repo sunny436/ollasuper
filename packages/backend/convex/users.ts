@@ -125,6 +125,17 @@ export const deleteUserAccount = internalMutation({
         await ctx.db.delete(authAccount._id);
       },
     );
+    // Phase 6: purge the user's long-term memories (Convex-only, no external
+    // store). Batched delete pinned to the userId.
+    for (;;) {
+      const batch = await ctx.db
+        .query("userMemories")
+        .withIndex("by_user_status", (q) => q.eq("userId", args.userId))
+        .take(500);
+      if (batch.length === 0) break;
+      for (const m of batch) await ctx.db.delete(m._id);
+      if (batch.length < 500) break;
+    }
     await ctx.db.delete(args.userId);
   },
 });

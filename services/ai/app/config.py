@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     # and retrieval reuses retrieve_context/render_rag_block unchanged. Decoupled
     # from ai_agent_enabled: RAG-as-tool works with or without Ollagraph.
     ai_agent_rag_tool_enabled: bool = False
+    # Phase 6: expose long-term memory as agent-decided `search_memory` +
+    # `remember` tools. OFF by default → no memory tools are bound and the turn
+    # is byte-identical to before. Also gated per-user by `memoryEnabled` on the
+    # request (Convex chatSettings), so a user can disable memory entirely.
+    ai_agent_memory_tool_enabled: bool = False
 
     ai_default_model: str = "gpt-5.6-luna"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
