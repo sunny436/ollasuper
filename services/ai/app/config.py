@@ -95,6 +95,13 @@ class Settings(BaseSettings):
     ai_agent_tool_result_max_chars: int = 8000
     # How many discovered candidates are bound to the model per turn (never 223).
     ai_agent_discovery_top_k: int = 5
+    # Phase 5: expose the EXISTING RAG as an agent-decided `search_knowledge`
+    # tool instead of the always-on pre-run injection. OFF by default → the
+    # pre-run RAG path (below) runs byte-identically. When on (and the user has
+    # ready files), the agent decides whether to retrieve, pre-run is skipped,
+    # and retrieval reuses retrieve_context/render_rag_block unchanged. Decoupled
+    # from ai_agent_enabled: RAG-as-tool works with or without Ollagraph.
+    ai_agent_rag_tool_enabled: bool = False
 
     ai_default_model: str = "gpt-5.6-luna"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).

@@ -15,8 +15,9 @@ from app.agent.context import (
     to_lc_messages,
     trim,
 )
-from app.agent.executor import ToolExecContext, build_tool_specs
+from app.agent.executor import RagContext, ToolExecContext, build_tool_specs
 from app.agent.graph import build_graph
+from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
 from app.agent.llm import build_llm
 from app.agent.policy import READ_SCOPE
 from app.clients.attachments import AttachmentError, build_user_content
@@ -81,11 +82,21 @@ async def run_generation(
                 update={"content": latest.content[: settings.ai_max_turn_chars]}
             )
 
+        # Phase 5: when the RAG tool is enabled AND the user has files, the AGENT
+        # decides whether to retrieve (via the `search_knowledge` tool below), so
+        # the always-on pre-run is skipped entirely. Off by default → this stays
+        # False and the pre-run path runs byte-identically.
+        rag_as_tool = (
+            settings.ai_agent_rag_tool_enabled
+            and engine is not None
+            and req.ragFileCount > 0
+        )
+
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
         # ragFileCount (computed in Convex) so users with no files pay nothing.
         rag_task = None
-        if engine is not None and req.ragFileCount > 0:
+        if engine is not None and req.ragFileCount > 0 and not rag_as_tool:
             rag_task = asyncio.create_task(
                 retrieve_context(
                     settings, engine, user_id=req.userId, query=latest.content
@@ -161,19 +172,24 @@ async def run_generation(
             api_key=settings.ollima_api_key,
         )
 
-        # --- agent tools (Phase 4) ----------------------------------------
-        # Best-effort and fully gated: off unless the agent is enabled AND the
-        # registry is populated AND a shared http client exists. Any setup
-        # failure degrades to the plain no-tools graph — chat never breaks.
-        llm_tools = None
-        tools_ctx = None
-        if (
+        # --- agent tools (Phase 4 web tools + Phase 5 knowledge tool) ------
+        # Two INDEPENDENT tool sources feed one bind_tools: Ollagraph web tools
+        # (agent_enabled) and the RAG `search_knowledge` tool (rag_as_tool).
+        # Either alone builds the agent graph. Degrades safely: a web-spec
+        # problem never drops the knowledge tool (knowledge-only retry-bind), and
+        # a total failure falls back to the plain graph — chat never breaks.
+        specs: list[dict] = []
+        name_to_id: dict[str, str] = {}
+        adapter = None
+        rag_ctx = None
+        web_active = (
             settings.agent_enabled
             and tool_registry is not None
             and tool_selector is not None
             and ollagraph_http is not None
             and tool_registry.count > 0
-        ):
+        )
+        if web_active:
             try:
                 candidates = tool_selector.select(
                     latest.content,
@@ -182,22 +198,49 @@ async def run_generation(
                     min_score=settings.tool_discovery_min_score,
                 ).candidates
                 if candidates:
-                    specs, name_to_id = build_tool_specs(candidates, tool_registry)
-                    if specs:
-                        llm_tools = llm.bind_tools(specs)
-                        tools_ctx = ToolExecContext(
-                            registry=tool_registry,
-                            adapter=OllagraphAdapter(settings, ollagraph_http),
-                            writer=writer,
-                            scope=READ_SCOPE,
-                            name_to_tool_id=name_to_id,
-                            result_max_chars=settings.ai_agent_tool_result_max_chars,
-                            default_timeout_s=settings.ollagraph_default_tool_timeout_s,
-                        )
-            except Exception:  # noqa: BLE001 — tools are optional; never break chat
-                log.warning("agent_tools_disabled", extra={"stream_id": req.streamId})
+                    web_specs, name_to_id = build_tool_specs(
+                        candidates, tool_registry, reserved={KNOWLEDGE_TOOL_NAME}
+                    )
+                    specs += web_specs
+                    adapter = OllagraphAdapter(settings, ollagraph_http)
+            except Exception:  # noqa: BLE001 — web tools are optional
+                log.warning(
+                    "agent_web_tools_disabled", extra={"stream_id": req.streamId}
+                )
+                specs, name_to_id, adapter = [], {}, None
+        if rag_as_tool:
+            specs.append(KNOWLEDGE_TOOL_SPEC)
+            rag_ctx = RagContext(
+                engine=engine, user_id=req.userId, settings=settings
+            )
+
+        llm_tools = None
+        tools_ctx = None
+        if specs:
+            try:
+                llm_tools = llm.bind_tools(specs)
+            except Exception:  # noqa: BLE001 — a bad web spec must not kill RAG
+                log.warning(
+                    "agent_tools_bind_failed", extra={"stream_id": req.streamId}
+                )
                 llm_tools = None
-                tools_ctx = None
+                if rag_as_tool:
+                    try:
+                        llm_tools = llm.bind_tools([KNOWLEDGE_TOOL_SPEC])
+                        name_to_id, adapter = {}, None
+                    except Exception:  # noqa: BLE001
+                        llm_tools = None
+            if llm_tools is not None:
+                tools_ctx = ToolExecContext(
+                    registry=tool_registry,
+                    adapter=adapter,
+                    writer=writer,
+                    scope=READ_SCOPE,
+                    name_to_tool_id=name_to_id,
+                    result_max_chars=settings.ai_agent_tool_result_max_chars,
+                    default_timeout_s=settings.ollagraph_default_tool_timeout_s,
+                    rag=rag_ctx,
+                )
 
         graph = build_graph(llm, llm_tools=llm_tools, tools_ctx=tools_ctx)
 

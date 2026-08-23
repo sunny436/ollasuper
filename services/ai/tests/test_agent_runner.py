@@ -17,6 +17,7 @@ from __future__ import annotations
 import httpx
 from langchain_core.messages import AIMessage
 
+from app.ingest import retrieve
 from app.models.chat import GenerateRequest, HistoryMessage
 from app.models.tools import (
     Availability,
@@ -62,7 +63,7 @@ class FakeLLM:
         return self._plain
 
 
-def _req(content: str) -> GenerateRequest:
+def _req(content: str, *, rag_file_count: int = 0) -> GenerateRequest:
     return GenerateRequest(
         streamId="s1",
         threadId="t1",
@@ -71,6 +72,7 @@ def _req(content: str) -> GenerateRequest:
         workspaceId="w1",
         model="gpt-5.6-luna",
         history=[HistoryMessage(role="user", content=content, seq=1)],
+        ragFileCount=rag_file_count,
     )
 
 
@@ -190,3 +192,127 @@ async def test_agent_off_by_flag_binds_no_tools(monkeypatch):
     finally:
         await http.aclose()
     assert _ops(convex, "event") == []
+
+
+# ---- Phase 5: RAG-as-tool migration gate -------------------------------------
+def _patch_retrieve(monkeypatch, rows, *, queries=None):
+    async def fake_embed(settings, q):
+        if queries is not None:
+            queries.append(q)
+        return [0.0] * settings.embedding_dimensions
+
+    async def fake_retrieve(engine, **kw):
+        return rows
+
+    monkeypatch.setattr(retrieve.embed, "embed_query", fake_embed)
+    monkeypatch.setattr(retrieve.store, "retrieve", fake_retrieve)
+
+
+_ROW = {
+    "file_id": "f1",
+    "content": "Annual leave is 25 days.",
+    "source_metadata": {"source": "policy.pdf"},
+    "page": 3,
+    "section": None,
+    "distance": 0.2,
+}
+
+
+async def test_rag_tool_on_retrieves_and_skips_prerun(monkeypatch):
+    queries: list[str] = []
+    _patch_retrieve(monkeypatch, [_ROW], queries=queries)
+    tc = {"name": "search_knowledge", "args": {"query": "annual leave"}, "id": "c1"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain"),
+            [AIMessage(content="", tool_calls=[tc]), AIMessage(content="answer")],
+        ),
+    )
+    settings = make_settings("http://x", ai_agent_rag_tool_enabled=True)
+    convex = RecordingConvex()
+    await run_generation(
+        _req("please check my uploaded files", rag_file_count=1),
+        settings,
+        convex,
+        engine=object(),
+    )
+    types = _event_types(convex)
+    assert "CITATION" in types and "TOOL_RESULT" in types
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"
+    # Pre-run RAG was skipped: the ONLY embed query is the tool's, never latest.content.
+    assert queries == ["annual leave"]
+
+
+async def test_rag_tool_binds_even_with_no_web_candidate(monkeypatch):
+    # bug #2: agent_enabled + a registry that yields NO candidate for the query
+    # must still bind search_knowledge (RAG never silently disappears).
+    queries: list[str] = []
+    _patch_retrieve(monkeypatch, [_ROW], queries=queries)
+    tc = {"name": "search_knowledge", "args": {"query": "leave days"}, "id": "c1"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain"),
+            [AIMessage(content="", tool_calls=[tc]), AIMessage(content="answer")],
+        ),
+    )
+    settings = make_settings(
+        "http://x",
+        ai_agent_enabled=True,
+        ollagraph_base_url="https://api.ollagraph.test",
+        ollagraph_api_key="osk_test_key_123456",
+        ai_agent_rag_tool_enabled=True,
+    )
+    reg = ToolRegistry()
+    reg.register(
+        ToolDefinition(
+            tool_id="weather_now",
+            name="Weather Forecast",
+            description="Current weather",
+            path="/v1/weather",
+            method="post",
+            side_effect=SideEffect.READ_ONLY,
+            permissions=ToolPermissions(required_permissions=["ollagraph:read"]),
+        )
+    )
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+    )
+    convex = RecordingConvex()
+    try:
+        await run_generation(
+            _req("what do my documents say about leave", rag_file_count=1),
+            settings,
+            convex,
+            engine=object(),
+            tool_registry=reg,
+            tool_selector=ToolSelector(reg),
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+    assert "CITATION" in _event_types(convex)  # RAG tool bound + used
+
+
+async def test_rag_tool_off_runs_prerun_no_events(monkeypatch):
+    queries: list[str] = []
+    _patch_retrieve(monkeypatch, [_ROW], queries=queries)
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(AIMessage(content="plain"), []),
+    )
+    settings = make_settings("http://x")  # ai_agent_rag_tool_enabled defaults False
+    convex = RecordingConvex()
+    await run_generation(
+        _req("what does my file say about leave", rag_file_count=1),
+        settings,
+        convex,
+        engine=object(),
+    )
+    assert _ops(convex, "event") == []  # no knowledge/tool events
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"
+    # Pre-run DID run: it embedded latest.content.
+    assert queries == ["what does my file say about leave"]

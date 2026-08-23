@@ -145,6 +145,7 @@ async def retrieve(
     fetch_k: int,
     embedding_dimensions: int,
     embedding_model: str | None = None,
+    file_ids: list[str] | None = None,
     ef_search: int = 100,
     iterative_scan: str = "relaxed_order",
 ) -> list[dict[str, Any]]:
@@ -159,8 +160,13 @@ async def retrieve(
     ef = int(ef_search)
     _valid = {"relaxed_order", "strict_order", "off"}
     scan = iterative_scan if iterative_scan in _valid else "relaxed_order"
-    # Fixed literal, never user input (like `dim`); every value stays a bind.
+    # Fixed literals, never user input (like `dim`); every value stays a bind.
     model_clause = "AND embedding_model = :model" if embedding_model else ""
+    # Optional per-file narrowing (Phase 5 selected-files). ALWAYS under the
+    # user_id clause, so it can only restrict WITHIN the caller's own corpus — a
+    # foreign/invalid file_id simply matches nothing. `= ANY(:fids)` binds a
+    # Python list as a text[] array (psycopg3), so file ids stay parameterized.
+    file_clause = "AND file_id = ANY(:fids)" if file_ids else ""
     params: dict[str, Any] = {
         "uid": user_id,
         "qvec": _vec_literal(query_embedding),
@@ -168,6 +174,8 @@ async def retrieve(
     }
     if embedding_model:
         params["model"] = embedding_model
+    if file_ids:
+        params["fids"] = list(file_ids)
     async with engine.begin() as conn:
         await conn.execute(text(f"SET LOCAL hnsw.ef_search = {ef}"))
         await conn.execute(text(f"SET LOCAL hnsw.iterative_scan = {scan}"))
@@ -178,7 +186,7 @@ async def retrieve(
                         embedding::halfvec({dim}) <=> CAST(:qvec AS halfvec({dim}))
                         AS distance
                     FROM file_chunks
-                    WHERE user_id = :uid {model_clause}
+                    WHERE user_id = :uid {model_clause} {file_clause}
                     ORDER BY embedding::halfvec({dim})
                         <=> CAST(:qvec AS halfvec({dim}))
                     LIMIT :k
