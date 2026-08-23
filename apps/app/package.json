@@ -10,7 +10,7 @@
     "format": "biome format --write .",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "bun run ./src/lib/ambience/contrast.check.ts"
+    "test": "bun test && bun run ./src/lib/ambience/contrast.check.ts"
   },
   "dependencies": {
     "@auth/core": "0.37.0",

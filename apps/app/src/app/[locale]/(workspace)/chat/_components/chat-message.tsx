@@ -6,8 +6,11 @@ import { useMutation } from "convex/react";
 import { Check, Copy, Pencil, RefreshCw, RotateCcw, Share2, Sparkles } from "lucide-react";
 import { memo, useRef, useState } from "react";
 import { toast } from "sonner";
+import type { TypedEvent } from "../_lib/agent-events";
 import { modelLabel } from "../_lib/models";
-import { EventList, type TypedEvent } from "./event-renderer";
+import { AgentActivity } from "./agent-activity";
+import { AgentSources } from "./agent-sources";
+import { ErrorNotice } from "./error-notice";
 import { IntelligenceCore } from "./intelligence-core";
 import { StreamingText } from "./streaming-text";
 
@@ -19,6 +22,9 @@ export interface ChatMessageDoc {
   status: "pending" | "streaming" | "complete" | "error" | "aborted";
   model?: string | null;
   error?: string | null;
+  // Structured failure code (deadline / not_configured / …). Mapped to friendly
+  // copy + safe-retry gating by ErrorNotice; already surfaced by toPublic.
+  errorCode?: string | null;
   // The browser-minted idempotency key, echoed back by listPaged so an
   // optimistic user row can be deduped against its settled twin. Absent on the
   // in-flight assistant row (which never carries one).
@@ -195,20 +201,18 @@ function ChatMessageImpl({
         who={modelLabel(message.model)}
         at={message.createdAt}
       />
+      <AgentActivity events={message.events} isStreaming={isStreaming} />
       <StreamingText text={text} isStreaming={isStreaming} />
-      <EventList events={message.events} />
+      <AgentSources events={message.events} />
 
       {message.status === "error" && (
-        <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
-          <p className="text-primary/80">{message.error ?? "Something went wrong."}</p>
-          <button
-            type="button"
-            onClick={() => guard(() => retry({ messageId: message._id }), "Retry failed")}
-            className="mt-2 inline-flex items-center gap-1.5 text-xs text-brand-ink hover:underline"
-          >
-            <RotateCcw className="h-3 w-3" /> Retry
-          </button>
-        </div>
+        <ErrorNotice
+          code={message.errorCode}
+          message={message.error}
+          onRetry={() =>
+            guard(() => retry({ messageId: message._id }), "Retry failed")
+          }
+        />
       )}
 
       {message.status === "aborted" && (

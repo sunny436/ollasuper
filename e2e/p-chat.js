@@ -145,6 +145,16 @@ const step = async (n, f) => {
     );
   });
 
+  await step("a plain text turn shows no agent-activity UI (Phase 8a inert)", async () => {
+    // The agent-activity timeline renders ONLY when a turn emits typed events.
+    // A normal text reply must render exactly as before — no tool panels, no
+    // sources — so ordinary chat is visually unchanged. (When the agent is
+    // enabled on the deployment, scenarios B/C below exercise the timeline.)
+    await settle(page);
+    if ((await page.locator("[data-agent-activity]").count()) !== 0)
+      throw new Error("agent-activity UI appeared on a plain text turn");
+  });
+
   await step("the conversation persists across a reload", async () => {
     const url = page.url();
     await page.reload({ waitUntil: "domcontentloaded" });
