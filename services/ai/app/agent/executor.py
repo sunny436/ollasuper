@@ -23,6 +23,7 @@ success. Nothing here streams as user-visible text (the runner only forwards the
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import random
 import re
@@ -110,6 +111,13 @@ class ToolExecContext:
     rag: RagContext | None = None
     # Phase 6: set when the memory tools (search_memory/remember) are bound.
     memory: MemoryContext | None = None
+    # Phase 8: durable approval round-trip. `approvals` = resolved decisions
+    # keyed by the STABLE approval id (threaded from the resume dispatch);
+    # `force_approval_ids` promotes read-only tools to approval-gated for testing
+    # /staging; `approval_ttl_ms` bounds a newly-parked request.
+    approvals: dict[str, dict] = field(default_factory=dict)
+    force_approval_ids: frozenset[str] = frozenset()
+    approval_ttl_ms: int = 900_000
 
 
 # --- OpenAI function-spec construction (runner-side) ----------------------
@@ -270,20 +278,58 @@ async def _run_one(tc: dict, ctx: ToolExecContext, index: int) -> ToolMessage:
     ctx.seen_calls[tool_id] = dedup_key
 
     decision = check_tool_policy(tool, ctx.scope)
-    if decision.needs_approval:
-        await ctx.writer.emit_event(
-            EventType.APPROVAL_REQUEST,
-            approval_id=call_id,
-            tool_name=tool.name,
-            reason=decision.reason,
-            status="pending",
+    needs_approval = decision.needs_approval or tool_id in ctx.force_approval_ids
+    if needs_approval:
+        # STABLE approval id = tool_id + hash(canonical args). Resume-stable
+        # (unlike the model's per-turn call_id), so a re-emitted request upserts
+        # the SAME durable row instead of creating a duplicate.
+        approval_id = (
+            f"{tool_id}:{hashlib.sha256(dedup_key.encode()).hexdigest()[:16]}"
         )
-        return _tool_message(
-            call_id,
-            {"status": "approval_required", "reason": decision.reason},
-            status="error",
-        )
-    if decision.denied:
+        d = ctx.approvals.get(approval_id)
+        if d and d.get("decision") == "approved" and d.get("token"):
+            pass  # approved WITH a token → fall through to execute
+        elif d and d.get("decision") in ("rejected", "expired"):
+            # Inject a rejection observation and let the model finish in text.
+            await ctx.writer.emit_event(
+                EventType.TOOL_RESULT,
+                call_id=call_id,
+                status="error",
+                result={"status": d["decision"]},
+            )
+            return _tool_message(
+                call_id,
+                {"status": d["decision"], "reason": "not approved"},
+                status="error",
+            )
+        else:
+            # First encounter: park a durable approval + suspend the turn. A
+            # resolved reply (a live run learning of a prior decision) is acted
+            # on inline without suspending.
+            resp = await ctx.writer.request_approval(
+                approval_id=approval_id,
+                tool_id=tool_id,
+                tool_name=tool.name,
+                args_key=dedup_key,
+                reason=decision.reason or "",
+                ttl_ms=ctx.approval_ttl_ms,
+            )
+            rdec = resp.get("decision")
+            if rdec == "approved" and resp.get("token"):
+                pass  # execute
+            elif rdec in ("rejected", "expired"):
+                return _tool_message(
+                    call_id,
+                    {"status": rdec, "reason": "not approved"},
+                    status="error",
+                )
+            else:
+                # NEVER treat missing/pending as approval — suspend, do not run.
+                ctx.writer.suspended = True
+                return _tool_message(
+                    call_id, {"status": "awaiting_approval"}, status="error"
+                )
+    elif decision.denied:
         return _tool_message(
             call_id,
             {"error": "not permitted", "reason": decision.reason},

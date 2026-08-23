@@ -94,6 +94,10 @@ class DeltaWriter:
         # so a reordered POST self-heals — but it keeps the common case simple.
         self._lock = asyncio.Lock()
         self._cancel_requested = False
+        # Phase 8: set when a tool parked awaiting approval. The runner sees it
+        # after the graph routes to END and SKIPS finalize (the durable park is
+        # already recorded; finalizing would drive waiting_approval -> done).
+        self.suspended = False
         self._first_failure_at: float | None = None
         self.stats = WriterStats()
 
@@ -372,6 +376,57 @@ class DeltaWriter:
                 return
             if resp.get("cancel"):
                 self._cancel_requested = True
+
+    async def request_approval(
+        self,
+        *,
+        approval_id: str,
+        tool_id: str,
+        tool_name: str,
+        args_key: str,
+        reason: str,
+        ttl_ms: int,
+    ) -> dict:
+        """Phase 8: park a tool approval + suspend the stream (`op:"approval"`).
+
+        Embeds the APPROVAL_REQUEST event (so the chip/dialog renders) and parks
+        the durable `chatApprovals` row atomically. Returns the ingress response:
+        `{decision: "pending"|"approved"|"rejected"|"expired", token?}`. A
+        "pending" reply means the turn is now suspended; a resolved reply means a
+        prior decision exists and the live run can act on it inline."""
+        envelope = make_event(
+            EventType.APPROVAL_REQUEST,
+            self._event_seq,
+            generation_id=self._stream_id,
+            text_offset=self._total,
+            approval_id=approval_id,
+            tool_name=tool_name,
+            reason=reason,
+            status="pending",
+        )
+        self._event_seq += 1
+        body = {
+            "op": "approval",
+            "streamId": self._stream_id,
+            "approvalId": approval_id,
+            "toolId": tool_id,
+            "toolName": tool_name,
+            "argsKey": args_key,
+            "reason": reason,
+            "ttlMs": ttl_ms,
+            "event": envelope.to_wire(),
+        }
+        async with self._lock:
+            try:
+                resp = await self._convex.ingress(body)
+            except ConvexUnavailable:
+                return {"decision": "unavailable"}
+            except ConvexRejected:
+                log.error("approval_rejected", extra={"stream_id": self._stream_id})
+                return {"decision": "unavailable"}
+        if resp.get("cancel"):
+            self._cancel_requested = True
+        return resp
 
     async def emit_final(
         self,

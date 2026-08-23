@@ -164,6 +164,9 @@ export const appendDeltas = internalMutation({
     if (!stream) return { ok: false, cancel: true, unknown: true };
     // Late delta racing a finalize or an abort: write nothing, tell it to stop.
     if (isTerminal(stream.status)) return { ok: true, cancel: true };
+    // Parked awaiting approval: unwind any stray/duplicate run cleanly (no run
+    // may be alive while an approval is parked).
+    if (stream.status === "waiting_approval") return { ok: true, cancel: true };
 
     const now = Date.now();
     let maxSeq = stream.chunkSeq;
@@ -246,6 +249,7 @@ export const heartbeat = internalMutation({
     const stream = await loadStream(ctx, streamId);
     if (!stream) return { ok: false, cancel: true, unknown: true };
     if (isTerminal(stream.status)) return { ok: true, cancel: true };
+    if (stream.status === "waiting_approval") return { ok: true, cancel: true };
     await ctx.db.patch(stream._id, {
       heartbeatAt: Date.now(),
       ...(stream.status === "queued" ? { status: "running" as const } : {}),
@@ -270,6 +274,7 @@ export const appendEvent = internalMutation({
     const stream = await loadStream(ctx, streamId);
     if (!stream) return { ok: false, cancel: true, unknown: true };
     if (isTerminal(stream.status)) return { ok: true, cancel: true };
+    if (stream.status === "waiting_approval") return { ok: true, cancel: true };
 
     const now = Date.now();
     for (const e of events.slice(0, MAX_EVENTS_PER_BATCH)) {
@@ -331,6 +336,9 @@ export const finishStream = internalMutation({
     if (!stream) return { ok: false, unknown: true };
     // Idempotent, and never resurrects a message the user already stopped.
     if (isTerminal(stream.status)) return { ok: true, alreadyFinal: true };
+    // Late finalize onto a parked approval → drop it (see finalizeError).
+    if (stream.status === "waiting_approval")
+      return { ok: true, suspended: true };
 
     const now = Date.now();
     await deleteChunks(ctx, stream.messageId);
@@ -407,6 +415,58 @@ export const finishStream = internalMutation({
 });
 
 /**
+ * The terminal-error write, WITHOUT the ingress guards. Keeps partial text and
+ * folds a terminal ERROR event. Shared by the ingress `failStream` (which guards
+ * first) and the approval expiry/cancel paths, which DELIBERATELY terminate a
+ * `waiting_approval` stream — routing them through the guarded `failStream`
+ * (which no-ops on `waiting_approval`, see below) would make expiry unable to
+ * ever end a parked turn.
+ */
+export async function finalizeError(
+  ctx: MutationCtx,
+  stream: Doc<"chatStreams">,
+  args: { error: string; errorCode?: string; text?: string },
+): Promise<void> {
+  const partial =
+    args.text ??
+    stream.committedText +
+      (await residentText(ctx, stream.messageId, stream.committedSeq));
+
+  const now = Date.now();
+  await deleteChunks(ctx, stream.messageId);
+  const events = stream.hasEvents
+    ? await foldEvents(
+        ctx,
+        stream.messageId,
+        terminalEvent("ERROR", 0, {
+          code: args.errorCode ?? "error",
+          message: args.error.slice(0, 500),
+        }),
+      )
+    : undefined;
+  await ctx.db.patch(stream._id, {
+    status: "error",
+    committedText: "",
+    endedAt: now,
+  });
+  await ctx.db.patch(stream.messageId, {
+    content: partial.slice(0, MAX_MESSAGE_CHARS),
+    status: "error",
+    error: args.error.slice(0, 500),
+    errorCode: args.errorCode?.slice(0, 64),
+    ...(events ? { events } : {}),
+    updatedAt: now,
+  });
+  const thread = await ctx.db.get(stream.threadId);
+  if (thread) {
+    await ctx.db.patch(thread._id, {
+      streamingMessageId: undefined,
+      updatedAt: now,
+    });
+  }
+}
+
+/**
  * Terminal failure. Keeps whatever partial text was produced so the user does
  * not lose a half-written answer to a transient provider error.
  */
@@ -421,44 +481,13 @@ export const failStream = internalMutation({
     const stream = await loadStream(ctx, args.streamId);
     if (!stream) return { ok: false, unknown: true };
     if (isTerminal(stream.status)) return { ok: true, alreadyFinal: true };
-
-    const partial =
-      args.text ??
-      stream.committedText +
-        (await residentText(ctx, stream.messageId, stream.committedSeq));
-
-    const now = Date.now();
-    await deleteChunks(ctx, stream.messageId);
-    const events = stream.hasEvents
-      ? await foldEvents(
-          ctx,
-          stream.messageId,
-          terminalEvent("ERROR", 0, {
-            code: args.errorCode ?? "error",
-            message: args.error.slice(0, 500),
-          }),
-        )
-      : undefined;
-    await ctx.db.patch(stream._id, {
-      status: "error",
-      committedText: "",
-      endedAt: now,
-    });
-    await ctx.db.patch(stream.messageId, {
-      content: partial.slice(0, MAX_MESSAGE_CHARS),
-      status: "error",
-      error: args.error.slice(0, 500),
-      errorCode: args.errorCode?.slice(0, 64),
-      ...(events ? { events } : {}),
-      updatedAt: now,
-    });
-    const thread = await ctx.db.get(stream.threadId);
-    if (thread) {
-      await ctx.db.patch(thread._id, {
-        streamingMessageId: undefined,
-        updatedAt: now,
-      });
-    }
+    // A late finalize from a crashed/duplicate run must NOT destroy a parked
+    // approval (that would delete the folded APPROVAL_REQUEST + silently fail
+    // the turn). Drop it; expiry/cancel terminate a parked stream via
+    // finalizeError, not through this guarded path.
+    if (stream.status === "waiting_approval")
+      return { ok: true, suspended: true };
+    await finalizeError(ctx, stream, args);
     return { ok: true };
   },
 });

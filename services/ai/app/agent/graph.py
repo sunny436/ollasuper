@@ -120,7 +120,7 @@ def _build_agent_graph(
     def route_after_model(state: ChatState) -> str:
         # Superset of langgraph's tools_condition: also honours the step budget
         # and a cancel arriving mid-turn.
-        if tools_ctx.writer.cancel_requested:
+        if tools_ctx.writer.cancel_requested or tools_ctx.writer.suspended:
             return END
         last = state["messages"][-1]
         has_calls = bool(getattr(last, "tool_calls", None))
@@ -129,8 +129,13 @@ def _build_agent_graph(
         return END
 
     def route_after_executor(state: ChatState) -> str:
-        # Back to the model to observe the results, unless the user cancelled.
-        return END if tools_ctx.writer.cancel_requested else "model"
+        # Back to the model to observe the results, unless the user cancelled or
+        # a tool parked awaiting approval (Phase 8 — the turn suspends here).
+        return (
+            END
+            if tools_ctx.writer.cancel_requested or tools_ctx.writer.suspended
+            else "model"
+        )
 
     builder = StateGraph(ChatState)
     builder.add_node("prepare", _prepare)

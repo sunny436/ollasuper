@@ -12,6 +12,7 @@ import {
 } from "../_generated/server";
 import { loadMemoriesForDispatch } from "../memories";
 import { userHasReadyFiles } from "../userFiles";
+import { resolvedApprovalsForStream } from "./approvals";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
 import { buildHistory } from "./messages";
 import { contextWindowFor } from "./models";
@@ -91,6 +92,18 @@ export const active = query({
           }))
       : [];
 
+    // Phase 8: the pending approval (if the turn is parked) rides this same hot
+    // subscription so the dialog appears + survives refresh with no extra query.
+    const pendingApproval =
+      stream.status === "waiting_approval"
+        ? await ctx.db
+            .query("chatApprovals")
+            .withIndex("by_thread_status", (q) =>
+              q.eq("threadId", tid).eq("status", "pending"),
+            )
+            .first()
+        : null;
+
     return {
       messageId: message._id,
       seq: message.seq,
@@ -107,6 +120,15 @@ export const active = query({
       committedText: stream.committedText,
       chunks: chunks.map((c) => ({ seq: c.seq, text: c.text })),
       startedAt: stream.startedAt,
+      pendingApproval: pendingApproval
+        ? {
+            _id: pendingApproval._id,
+            approvalId: pendingApproval.approvalId,
+            toolName: pendingApproval.toolName,
+            reason: pendingApproval.reason,
+            expiresAt: pendingApproval.expiresAt,
+          }
+        : null,
     };
   },
 });
@@ -167,6 +189,17 @@ export const stop = mutation({
       lastMessageAt: now,
       updatedAt: now,
     });
+
+    // Phase 8: stopping a parked turn cancels its pending approval so it can
+    // never be resolved-into a dead stream.
+    const approvals = await ctx.db
+      .query("chatApprovals")
+      .withIndex("by_stream_approval", (q) => q.eq("streamId", stream.streamId))
+      .collect();
+    for (const ap of approvals) {
+      if (ap.status === "pending")
+        await ctx.db.patch(ap._id, { status: "cancelled", resolvedAt: now });
+    }
   },
 });
 
@@ -257,13 +290,20 @@ export const dispatchPayload = internalQuery({
       ? await loadMemoriesForDispatch(ctx, stream.userId, stream.workspaceId)
       : [];
 
-    // Phase 7: on a resume (attempts > 0) reconstruct the completed tool steps
-    // from the durable event log so they are not re-executed.
+    // Reconstruct completed tool steps on a crash-resume (attempts > 0) OR an
+    // approval-resume (attempts stays 0, but events survived). Decoupled from
+    // `attempt` and mirrored in the Python runner (`if req.completedTools`) so
+    // the resumed run's events baseline past the survivors instead of colliding
+    // on (messageId, seq). A FIRST dispatch always has hasEvents=false (Python
+    // hasn't emitted yet), so this is a no-op there.
     const attempt = stream.attempts ?? 0;
     const resume =
-      attempt > 0
+      attempt > 0 || (stream.hasEvents ?? false)
         ? await collectCompletedTools(ctx, stream.messageId)
         : { completedTools: [], eventSeqBaseline: 0 };
+    // Phase 8: resolved approval decisions (+token) so the resumed run executes
+    // an approved tool / injects a rejection. Empty on a normal turn.
+    const approvals = await resolvedApprovalsForStream(ctx, streamId);
 
     return {
       streamId,
@@ -287,6 +327,8 @@ export const dispatchPayload = internalQuery({
       deadlineAt: stream.deadlineAt ?? 0,
       completedTools: resume.completedTools,
       eventSeqBaseline: resume.eventSeqBaseline,
+      // Phase 8 durable approval decisions.
+      approvals,
     };
   },
 });

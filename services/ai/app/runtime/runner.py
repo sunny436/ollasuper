@@ -314,6 +314,12 @@ async def run_generation(
                     tool_retry_base_s=settings.ai_agent_tool_retry_base_s,
                     rag=rag_ctx,
                     memory=mem_ctx,
+                    approvals={
+                        a.approvalId: {"decision": a.decision, "token": a.token}
+                        for a in req.approvals
+                    },
+                    force_approval_ids=settings.ai_agent_approval_test_tool_ids,
+                    approval_ttl_ms=int(settings.ai_agent_approval_ttl_s * 1000),
                 )
 
         graph = build_graph(llm, llm_tools=llm_tools, tools_ctx=tools_ctx)
@@ -325,7 +331,11 @@ async def run_generation(
         # continue the typed-event seq space so resumed events don't collide.
         messages: list = [*prior, HumanMessage(content=content)]
         completed_steps = 0
-        if req.attempt > 0 and req.completedTools:
+        # Reconstruct completed tool steps on ANY resume — a crash-resume
+        # (attempt > 0) OR an approval-resume (attempt stays 0 but pre-approval
+        # tools ran). Gated on completedTools, NOT attempt, and mirrored in
+        # Convex dispatchPayload, so an approved tool's turn rebuilds correctly.
+        if req.completedTools:
             for i, ct in enumerate(req.completedTools):
                 cid = f"resume_{i}"
                 messages.append(
@@ -342,8 +352,13 @@ async def run_generation(
                         ct.args, sort_keys=True, default=str
                     )
             completed_steps = len(req.completedTools)
-            if req.eventSeqBaseline:
-                writer.set_event_seq(req.eventSeqBaseline)
+        # Continue the typed-event seq space whenever events survived (a parked
+        # approval with no prior tool still has a surviving APPROVAL_REQUEST), so
+        # resumed events don't collide on the (messageId, seq) probe. Independent
+        # of completedTools for exactly that case.
+        if req.eventSeqBaseline:
+            writer.set_event_seq(req.eventSeqBaseline)
+        if req.completedTools or req.eventSeqBaseline:
             log.info(
                 "generation_resumed",
                 extra={
@@ -426,6 +441,13 @@ async def run_generation(
                         return
 
         await writer.flush(force=True)
+        # Phase 8: a tool parked awaiting approval routed the graph to END. The
+        # durable approval + suspend is already recorded in Convex; do NOT
+        # finalize (that would drive waiting_approval -> done and destroy the
+        # parked approval). The turn resumes when the user resolves it.
+        if writer.suspended:
+            status = "suspended"
+            return
         status = "done"
 
     except asyncio.CancelledError:
@@ -486,16 +508,21 @@ async def run_generation(
                 "total_ms": round((time.monotonic() - started) * 1000),
             },
         )
-        # shield: the CancelledError that got us here must not also cancel the
-        # write that records the cancellation.
-        await asyncio.shield(
-            writer.finalize(
-                "error" if status == "error" else status,
-                usage=usage,
-                finish_reason=finish_reason,
-                error=error,
+        # Phase 8: a suspended turn's durable park is already recorded; a
+        # finalize here would drive waiting_approval -> done and destroy it. Skip
+        # the terminal write. (Guarded, not `return`-in-finally, which would
+        # silence an in-flight exception.)
+        if status != "suspended":
+            # shield: the CancelledError that got us here must not also cancel the
+            # write that records the cancellation.
+            await asyncio.shield(
+                writer.finalize(
+                    "error" if status == "error" else status,
+                    usage=usage,
+                    finish_reason=finish_reason,
+                    error=error,
+                )
             )
-        )
 
 
 def _chunk_text(chunk: object) -> str:

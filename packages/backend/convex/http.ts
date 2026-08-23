@@ -250,6 +250,56 @@ http.route({
           return aiJson({ error: "unknown stream" }, 404);
         return aiJson(r);
       }
+      case "approval": {
+        // Phase 8: a tool parked awaiting user approval. Carries the stable
+        // approvalId + the embedded APPROVAL_REQUEST event (filtered like
+        // `event`). The response hands back any already-resolved decision so a
+        // live run can act inline instead of suspending.
+        if (
+          !streamId ||
+          typeof body.approvalId !== "string" ||
+          typeof body.toolId !== "string" ||
+          typeof body.event !== "object" ||
+          body.event === null
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        const e = body.event as Record<string, unknown>;
+        if (
+          typeof e.eventId !== "string" ||
+          typeof e.seq !== "number" ||
+          e.type !== "APPROVAL_REQUEST" ||
+          typeof e.payload !== "string"
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        const r = await ctx.runMutation(
+          internal.chat.approvals.requestApproval,
+          {
+            streamId,
+            approvalId: body.approvalId,
+            toolId: body.toolId,
+            toolName:
+              typeof body.toolName === "string" ? body.toolName : "action",
+            argsKey: typeof body.argsKey === "string" ? body.argsKey : "",
+            reason: typeof body.reason === "string" ? body.reason : "",
+            ttlMs: typeof body.ttlMs === "number" ? body.ttlMs : 900_000,
+            event: {
+              eventId: e.eventId,
+              seq: e.seq,
+              type: "APPROVAL_REQUEST" as const,
+              v: typeof e.v === "number" ? e.v : 1,
+              ts: typeof e.ts === "number" ? e.ts : Date.now(),
+              textOffset:
+                typeof e.textOffset === "number" ? e.textOffset : undefined,
+              payload: e.payload,
+            },
+          },
+        );
+        if ("unknown" in r && r.unknown)
+          return aiJson({ error: "unknown stream" }, 404);
+        return aiJson(r);
+      }
       case "file": {
         // File-ingestion status callback. Scoped by the ingestId capability
         // (body.fileId), not streamId — the streamId parsed above is unused here.

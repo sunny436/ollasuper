@@ -157,20 +157,19 @@ async def test_max_steps_forces_plain_final():
     assert out["messages"][-1].content == "forced final"
 
 
-async def test_approval_required_not_executed_but_loop_completes():
+async def test_approval_required_parks_and_suspends():
+    # Phase 8: an approval-gated tool parks a durable approval and suspends the
+    # turn (routes to END) instead of looping on to a text answer.
     high = _read_tool(side_effect=SideEffect.HIGH_IMPACT, permissions=ToolPermissions())
-    ctx, adapter, convex, _ = _setup([high])
-    tools_llm = ScriptedLLM(
-        [
-            AIMessage(content="", tool_calls=[_tc("c1")]),
-            AIMessage(content="cannot do that without approval"),
-        ]
-    )
+    ctx, adapter, convex, writer = _setup([high])
+    tools_llm = ScriptedLLM([AIMessage(content="", tool_calls=[_tc("c1")])])
     plain = ScriptedLLM([AIMessage(content="unused")])
     out = await _invoke(plain, tools_llm, ctx, budget=4)
     assert adapter.calls == 0  # high-impact never silently executed
-    assert "APPROVAL_REQUEST" in _event_types(convex)
-    assert out["messages"][-1].content == "cannot do that without approval"
+    assert writer.suspended is True  # parked, the loop does NOT continue
+    assert [c for c in convex.calls if c.get("op") == "approval"]
+    # The turn ends on the awaiting-approval observation.
+    assert out["messages"][-1].tool_call_id == "c1"
 
 
 async def test_cancel_mid_loop_stops_before_next_model_step():

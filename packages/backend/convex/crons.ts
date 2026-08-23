@@ -25,6 +25,19 @@ crons.interval(
   {},
 );
 
+/**
+ * Expire tool-approval requests that sat unanswered past their TTL (Phase 8).
+ * An expired approval terminates the parked turn — the tool must NOT run — and
+ * is separate from the stall reaper because a `waiting_approval` stream is
+ * deliberately invisible to the running/queued stall scan.
+ */
+crons.interval(
+  "reap expired chat approvals",
+  { seconds: 60 },
+  internal.chat.approvals.reapExpired,
+  {},
+);
+
 /** Hard-delete conversations that have sat in the trash past the retention TTL. */
 crons.interval(
   "purge trashed chat threads",
