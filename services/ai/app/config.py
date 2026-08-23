@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     # unavailable). Non-retryable errors (auth/invalid/schema) never retry.
     ai_agent_tool_max_retries: int = 2
     ai_agent_tool_retry_base_s: float = 0.5
+    # Phase 8: durable approval round-trip. TTL for a parked approval — a human
+    # deliberation window, kept well above the 300s execution deadline so the two
+    # never collide. `approval_test_tool_ids` promotes otherwise READ_ONLY tools
+    # to approval-gated so the round-trip is verifiable on staging WITHOUT
+    # shipping a real high-impact tool; it is empty in production.
+    ai_agent_approval_ttl_s: float = 900.0
+    ai_agent_approval_test_tool_ids: frozenset[str] = frozenset()
 
     ai_default_model: str = "gpt-5.6-luna"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).

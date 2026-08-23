@@ -145,7 +145,9 @@ async def test_policy_deny_does_not_call_adapter():
     assert not _events(convex, "TOOL_CALL")
 
 
-async def test_approval_required_emits_request_and_does_not_execute():
+async def test_approval_required_parks_and_suspends_without_executing():
+    # Phase 8: an approval-gated tool with NO decision parks a durable approval
+    # (op:"approval") and SUSPENDS the turn, rather than terminating the call.
     called = {"n": 0}
 
     def handler(req):
@@ -160,10 +162,11 @@ async def test_approval_required_emits_request_and_does_not_execute():
         msgs = await execute_tool_calls([_tc("search_web", {"q": "x"}, "c1")], ctx)
     finally:
         await client.aclose()
-    assert called["n"] == 0
-    assert _events(convex, "APPROVAL_REQUEST")
+    assert called["n"] == 0  # never executed without approval
+    assert [c for c in convex.calls if c.get("op") == "approval"]
+    assert ctx.writer.suspended is True
     body = json.loads(msgs[0].content)
-    assert body["status"] == "approval_required"
+    assert body["status"] == "awaiting_approval"
 
 
 async def test_tool_error_maps_to_error_result():

@@ -20,6 +20,7 @@ import type * as authEvents from "../authEvents.js";
 import type * as authCodes from "../authCodes.js";
 import type * as authProbe from "../authProbe.js";
 import type * as backend from "../backend.js";
+import type * as chat_approvals from "../chat/approvals.js";
 import type * as chat_attachments from "../chat/attachments.js";
 import type * as chat_authz from "../chat/authz.js";
 import type * as chat_ingest from "../chat/ingest.js";
@@ -80,6 +81,7 @@ declare const fullApi: ApiFromModules<{
   authCodes: typeof authCodes;
   authProbe: typeof authProbe;
   backend: typeof backend;
+  "chat/approvals": typeof chat_approvals;
   "chat/attachments": typeof chat_attachments;
   "chat/authz": typeof chat_authz;
   "chat/ingest": typeof chat_ingest;

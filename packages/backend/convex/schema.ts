@@ -353,6 +353,10 @@ export default defineSchema({
       v.literal("done"),
       v.literal("error"),
       v.literal("aborted"),
+      // Phase 8: parked awaiting a user approval decision. Additive literal —
+      // existing rows still validate. Invisible to the stall reaper (which scans
+      // running/queued only), so a parked turn is never resumed as "stalled".
+      v.literal("waiting_approval"),
     ),
     cancelRequested: v.boolean(),
     chunkSeq: v.number(),
@@ -396,6 +400,41 @@ export default defineSchema({
     streamId: v.string(),
     ...eventFields,
   }).index("by_message_seq", ["messageId", "seq"]),
+
+  // Phase 8: durable tool-approval records. A HIGH_IMPACT tool that needs
+  // user approval parks a row here + flips its stream to "waiting_approval";
+  // the user resolves it, or the expiry reaper marks it "expired". The approval
+  // TOKEN (minted server-side on approve) is the only execute capability — the
+  // model never sees it. `approvalId` is STABLE = tool_id + hash(canonical args)
+  // (resume-stable, unlike the model's per-turn tool_call id), so a re-emitted
+  // request on resume upserts the SAME row rather than creating a duplicate.
+  chatApprovals: defineTable({
+    approvalId: v.string(),
+    streamId: v.string(),
+    messageId: v.id("chatMessages"),
+    threadId: v.id("chatThreads"),
+    workspaceId: v.id("workspaces"),
+    userId: v.id("users"),
+    toolId: v.string(),
+    toolName: v.string(),
+    argsKey: v.string(),
+    reason: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("approved"),
+      v.literal("rejected"),
+      v.literal("expired"),
+      v.literal("cancelled"),
+    ),
+    token: v.optional(v.string()),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    resolvedAt: v.optional(v.number()),
+    resolvedBy: v.optional(v.id("users")),
+  })
+    .index("by_stream_approval", ["streamId", "approvalId"])
+    .index("by_status_expiresAt", ["status", "expiresAt"])
+    .index("by_thread_status", ["threadId", "status"]),
 
 
 

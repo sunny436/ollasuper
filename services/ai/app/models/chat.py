@@ -89,6 +89,20 @@ class CompletedTool(BaseModel):
     resultContent: str = Field(default="", max_length=16000)
 
 
+class ApprovalDecision(BaseModel):
+    """Phase 8 — a resolved tool-approval decision, threaded back on the resume
+    dispatch. `token` (server-minted on approve, never seen by the model) is the
+    ONLY execute capability: absent / rejected / expired never runs the tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    approvalId: str = Field(max_length=200)
+    toolId: str = Field(max_length=200)
+    argsKey: str = Field(default="", max_length=8000)
+    decision: str = Field(max_length=20)
+    token: str | None = Field(default=None, max_length=200)
+
+
 class GenerateRequest(BaseModel):
     """Everything needed for one turn.
 
@@ -139,6 +153,9 @@ class GenerateRequest(BaseModel):
     deadlineAt: int = 0
     completedTools: list[CompletedTool] = Field(default_factory=list, max_length=64)
     eventSeqBaseline: int = 0
+    # Phase 8: resolved approval decisions for this stream (empty on a normal
+    # turn). Default-empty so extra="forbid" never 400s a pre-Phase-8 caller.
+    approvals: list[ApprovalDecision] = Field(default_factory=list, max_length=64)
 
 
 class GenerateAccepted(BaseModel):

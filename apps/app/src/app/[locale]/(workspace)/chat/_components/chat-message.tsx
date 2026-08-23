@@ -103,6 +103,8 @@ function ChatMessageImpl({
   showOrb,
   onEdit,
   onShare,
+  pendingApproval,
+  onResolveApproval,
 }: {
   message: ChatMessageDoc;
   isStreaming: boolean;
@@ -110,6 +112,14 @@ function ChatMessageImpl({
   showOrb?: boolean;
   onEdit?: (m: ChatMessageDoc) => void;
   onShare?: (id: Id<"chatMessages">) => void;
+  // Phase 8: the live turn's durable pending approval + resolver (live row only).
+  // `_id` flows as a string through AgentActivity; message-list re-narrows it to
+  // Id<"chatApprovals"> at the mutation call.
+  pendingApproval?: { _id: string; approvalId: string } | null;
+  onResolveApproval?: (
+    approvalId: string,
+    decision: "approve" | "reject",
+  ) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -201,7 +211,12 @@ function ChatMessageImpl({
         who={modelLabel(message.model)}
         at={message.createdAt}
       />
-      <AgentActivity events={message.events} isStreaming={isStreaming} />
+      <AgentActivity
+        events={message.events}
+        isStreaming={isStreaming}
+        pendingApproval={pendingApproval}
+        onResolveApproval={onResolveApproval}
+      />
       <StreamingText text={text} isStreaming={isStreaming} />
       <AgentSources events={message.events} />
 
@@ -299,5 +314,8 @@ export const ChatMessage = memo(
     // Typed events change independently of text — without this, streamed
     // structured events would not repaint (Convex hands back fresh identities).
     (a.message.events?.length ?? 0) === (b.message.events?.length ?? 0) &&
-    a.message.events?.at(-1)?.eventId === b.message.events?.at(-1)?.eventId,
+    a.message.events?.at(-1)?.eventId === b.message.events?.at(-1)?.eventId &&
+    // Phase 8: repaint when the pending approval appears/clears (Approve/Reject).
+    (a.pendingApproval?.approvalId ?? null) ===
+      (b.pendingApproval?.approvalId ?? null),
 );

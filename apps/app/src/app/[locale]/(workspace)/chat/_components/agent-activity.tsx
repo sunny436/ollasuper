@@ -22,9 +22,18 @@ import { Mermaid } from "./mermaid";
 export function AgentActivity({
   events,
   isStreaming,
+  pendingApproval,
+  onResolveApproval,
 }: {
   events?: TypedEvent[];
   isStreaming: boolean;
+  // The live turn's durable pending approval (from stream.active). Absent on
+  // settled turns, so their approval card is a neutral historical note.
+  pendingApproval?: { _id: string; approvalId: string } | null;
+  onResolveApproval?: (
+    approvalId: string,
+    decision: "approve" | "reject",
+  ) => void;
 }) {
   // Rebuild only when an event actually appends (not per streamed text token).
   const timeline = useMemo(
@@ -41,7 +50,18 @@ export function AgentActivity({
       {timeline.runs.map((run) => (
         <ToolRun key={run.callId} run={run} />
       ))}
-      {timeline.approval && <ApprovalCard approval={timeline.approval} />}
+      {timeline.approval && (
+        <ApprovalCard
+          approval={timeline.approval}
+          onResolve={
+            pendingApproval &&
+            onResolveApproval &&
+            pendingApproval.approvalId === timeline.approval.approvalId
+              ? (decision) => onResolveApproval(pendingApproval._id, decision)
+              : undefined
+          }
+        />
+      )}
       {/* One polite live region so a screen reader announces the current step
           without re-reading the whole timeline. */}
       {isStreaming && current && (

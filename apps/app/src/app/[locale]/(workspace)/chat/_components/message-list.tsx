@@ -30,6 +30,7 @@ export function MessageList({ threadId }: { threadId: string | null }) {
   const [editing, setEditing] = useState<ChatMessageDoc | null>(null);
   const [shareMsgId, setShareMsgId] = useState<Id<"chatMessages"> | null>(null);
   const editMessage = useMutation(api.chat.messages.editUserMessage);
+  const resolveApproval = useMutation(api.chat.approvals.resolve);
 
   const {
     results,
@@ -265,6 +266,15 @@ export function MessageList({ threadId }: { threadId: string | null }) {
               // before the oldest get dropped), so exactly one exists: on the
               // turn being generated. Settled turns keep the flat glyph.
               showOrb
+              pendingApproval={live.pendingApproval}
+              onResolveApproval={(approvalId, decision) => {
+                resolveApproval({
+                  approvalId: approvalId as Id<"chatApprovals">,
+                  decision,
+                }).catch(() => {
+                  toast.error("Couldn't submit your decision");
+                });
+              }}
             />
           )}
         </div>

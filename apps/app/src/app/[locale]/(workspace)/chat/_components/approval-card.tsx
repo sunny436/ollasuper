@@ -4,28 +4,27 @@ import { Check, ShieldAlert, X } from "lucide-react";
 import type { ParsedApproval } from "../_lib/agent-events";
 
 /**
- * A tool that requested user approval before running. In PR 8a this is
- * presentation-only: the approval round-trip (durable state + resolve mutation)
- * lands in PR 8b, which passes `onResolve` to enable the Approve/Reject buttons.
- * Without a handler the card shows the pending request without actions — a
- * hidden/disabled button is never the security authority; the backend is.
+ * A tool that requested user approval before running (Phase 8). Actionable ONLY
+ * when `onResolve` is supplied — i.e. on the LIVE turn whose durable pending
+ * approval matches this event. On a settled turn (no handler) it is a neutral
+ * historical note. The frontend is never the security authority: the buttons
+ * call `chat.approvals.resolve`, which re-checks ownership and mints the execute
+ * token server-side.
  */
 export function ApprovalCard({
   approval,
   onResolve,
-  pending = true,
 }: {
   approval: ParsedApproval;
   onResolve?: (decision: "approve" | "reject") => void;
-  /** False once the approval is resolved (8b) — collapses to a static line. */
-  pending?: boolean;
 }) {
-  const resolved = !pending || approval.status !== "pending";
-
   return (
     <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs">
       <div className="flex items-start gap-2">
-        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden />
+        <ShieldAlert
+          className="mt-0.5 h-4 w-4 shrink-0 text-amber-600"
+          aria-hidden
+        />
         <div className="min-w-0 flex-1">
           <p className="font-medium text-primary/80">
             Approval required · {approval.toolName}
@@ -36,17 +35,7 @@ export function ApprovalCard({
             </p>
           )}
 
-          {resolved ? (
-            <p className="mt-1 text-primary/50">
-              {approval.status === "approved"
-                ? "Approved."
-                : approval.status === "rejected"
-                  ? "Rejected."
-                  : approval.status === "expired"
-                    ? "Expired."
-                    : "Awaiting approval."}
-            </p>
-          ) : onResolve ? (
+          {onResolve ? (
             <div className="mt-2 flex gap-2">
               <button
                 type="button"
@@ -64,7 +53,7 @@ export function ApprovalCard({
               </button>
             </div>
           ) : (
-            <p className="mt-1 text-primary/50">Awaiting approval.</p>
+            <p className="mt-1 text-primary/50">This action required approval.</p>
           )}
         </div>
       </div>
