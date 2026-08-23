@@ -22,6 +22,10 @@ const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
 const MAX_CONTENT = 100_000;
 /** A user may have this many generations running at once, across all threads. */
 const MAX_CONCURRENT_STREAMS = 3;
+// Phase 7: total wall-clock deadline for one turn (incl. any reaper resumes).
+// Mirrors the Python ai_agent_total_deadline_s; the reaper fails a stream past
+// this instead of resuming it.
+const AGENT_TOTAL_DEADLINE_MS = 300_000;
 const MAX_ATTACHMENTS = 6;
 /** Bound for truncate/delete cascades. */
 const TAIL_BATCH = 200;
@@ -285,6 +289,8 @@ async function startAssistantTurn(
     committedSeq: -1,
     heartbeatAt: now,
     startedAt: now,
+    attempts: 0,
+    deadlineAt: now + AGENT_TOTAL_DEADLINE_MS,
   });
 
   await ctx.db.patch(thread._id, {

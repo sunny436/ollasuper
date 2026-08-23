@@ -110,6 +110,14 @@ class DeltaWriter:
     def text(self) -> str:
         return "".join(self._full)
 
+    def set_event_seq(self, seq: int) -> None:
+        """Phase 7 resume: continue the typed-event seq space from the durable
+        baseline so a resumed run's new events don't collide with the surviving
+        ones on Convex's (messageId, seq) idempotency probe (which would silently
+        drop them). Text/delta seq restarts at 0 — the reaper cleared the
+        committed text + resident chunks — so only the event seq needs seeding."""
+        self._event_seq = max(0, int(seq))
+
     # -- policy -------------------------------------------------------------
 
     def _chunk_target(self) -> int:

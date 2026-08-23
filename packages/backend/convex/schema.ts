@@ -365,6 +365,12 @@ export default defineSchema({
     // Set on the first typed event. Gates the extra events read in stream.active
     // and the finalize fold, so normal text chat pays nothing.
     hasEvents: v.optional(v.boolean()),
+    // Phase 7 durable execution. `attempts` bounds reaper-driven resumes of a
+    // crashed turn (mirrors userFiles.attempts); `deadlineAt` (epoch ms) is the
+    // total-execution deadline enforced by both Python and the reaper. Both
+    // optional + additive so pre-migration rows validate on the live deployment.
+    attempts: v.optional(v.number()),
+    deadlineAt: v.optional(v.number()),
   })
     .index("by_streamId", ["streamId"])
     .index("by_message", ["messageId"])

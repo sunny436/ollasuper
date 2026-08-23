@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from contextlib import aclosing
 
 import httpx
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.agent.context import (
@@ -51,6 +52,37 @@ ERR_TIMEOUT = "provider_timeout"
 ERR_ATTACHMENT = "attachment_failed"
 ERR_INGRESS = "ingress_unavailable"
 ERR_INTERNAL = "internal"
+ERR_DEADLINE = "deadline_exceeded"  # Phase 7: total execution deadline hit
+
+
+async def _background_heartbeat(
+    writer: DeltaWriter,
+    interval_ms: int,
+    deadline_mono: float,
+    main_task: asyncio.Task,
+    deadline_flag: dict,
+) -> None:
+    """Phase 7: node-independent liveness beat + hard total-deadline guard.
+
+    The inline heartbeat only fires on model chunks, so a slow first token or a
+    long tool call would otherwise trip the 90s Convex reaper on a LIVE worker
+    (→ spurious resume/double-run). This keeps heartbeatAt fresh regardless of
+    token flow. It also enforces the total-execution deadline even for a turn
+    that produces no tokens (a hang the inline check can't see): on deadline it
+    marks the flag and cancels the main task, which the CancelledError handler
+    converts to a clean TIMED_OUT. Cancelled in finally."""
+    try:
+        while True:
+            await asyncio.sleep(max(0.01, interval_ms / 1000))
+            if time.monotonic() > deadline_mono:
+                deadline_flag["hit"] = True
+                main_task.cancel()
+                return
+            await writer.heartbeat()
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — a heartbeat failure must never break the turn
+        return
 
 
 async def run_generation(
@@ -76,6 +108,8 @@ async def run_generation(
     finish_reason: str | None = None
     error: dict | None = None
     started = time.monotonic()
+    hb_task: asyncio.Task | None = None
+    deadline_flag = {"hit": False}
 
     try:
         # --- assemble ------------------------------------------------------
@@ -276,18 +310,64 @@ async def run_generation(
                     name_to_tool_id=name_to_id,
                     result_max_chars=settings.ai_agent_tool_result_max_chars,
                     default_timeout_s=settings.ollagraph_default_tool_timeout_s,
+                    tool_max_retries=settings.ai_agent_tool_max_retries,
+                    tool_retry_base_s=settings.ai_agent_tool_retry_base_s,
                     rag=rag_ctx,
                     memory=mem_ctx,
                 )
 
         graph = build_graph(llm, llm_tools=llm_tools, tools_ctx=tools_ctx)
 
-        state = {
-            "messages": [*prior, HumanMessage(content=content)],
-            "system_prompt": system,
-        }
+        # Phase 7 resume: rebuild the already-completed tool steps from the durable
+        # event log (Convex pushed them in `completedTools`) so side-effecting
+        # tools are NOT re-executed, seed the step budget with the completed count
+        # (durable — a crash can't reset it), re-seed the idempotency guard, and
+        # continue the typed-event seq space so resumed events don't collide.
+        messages: list = [*prior, HumanMessage(content=content)]
+        completed_steps = 0
+        if req.attempt > 0 and req.completedTools:
+            for i, ct in enumerate(req.completedTools):
+                cid = f"resume_{i}"
+                messages.append(
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": ct.toolId, "args": ct.args, "id": cid}],
+                    )
+                )
+                messages.append(
+                    ToolMessage(content=ct.resultContent, tool_call_id=cid)
+                )
+                if tools_ctx is not None:
+                    tools_ctx.seen_calls[ct.toolId] = json.dumps(
+                        ct.args, sort_keys=True, default=str
+                    )
+            completed_steps = len(req.completedTools)
+            if req.eventSeqBaseline:
+                writer.set_event_seq(req.eventSeqBaseline)
+            log.info(
+                "generation_resumed",
+                extra={
+                    "stream_id": req.streamId,
+                    "attempt": req.attempt,
+                    "completed_steps": completed_steps,
+                },
+            )
+
+        state = {"messages": messages, "system_prompt": system}
         if tools_ctx is not None:
-            state["tool_budget"] = settings.ai_agent_max_steps
+            state["tool_budget"] = max(
+                0, settings.ai_agent_max_steps - completed_steps
+            )
+
+        # Phase 7: the total-execution deadline (durable across resume). Convex's
+        # `deadlineAt` (epoch ms) is authoritative when present so a crash-loop
+        # can't extend it; else fall back to now + the configured budget.
+        if req.deadlineAt > 0:
+            deadline_mono = time.monotonic() + max(
+                0.0, req.deadlineAt / 1000 - time.time()
+            )
+        else:
+            deadline_mono = started + settings.ai_agent_total_deadline_s
 
         # --- stream --------------------------------------------------------
         #
@@ -299,6 +379,15 @@ async def run_generation(
         # Observed against the real OpenRouter endpoint. Every early exit below
         # is exactly that case, so this wraps the whole iteration.
         last_beat = time.monotonic()
+        hb_task = asyncio.create_task(
+            _background_heartbeat(
+                writer,
+                settings.ai_heartbeat_ms,
+                deadline_mono,
+                asyncio.current_task(),
+                deadline_flag,
+            )
+        )
         async with aclosing(graph.astream(state, stream_mode="messages")) as stream:
             async for chunk, metadata in stream:
                 # Only the model node's output is user-visible. Tool nodes added
@@ -310,12 +399,14 @@ async def run_generation(
                 if text:
                     await writer.push(text)
 
+                # Sum token usage ACROSS the multi-step loop (each model call
+                # reports its own usage on its final chunk) — the old code kept
+                # only the last call's, understating a multi-tool turn.
                 meta_usage = getattr(chunk, "usage_metadata", None)
                 if meta_usage:
-                    usage = {
-                        "promptTokens": meta_usage.get("input_tokens"),
-                        "completionTokens": meta_usage.get("output_tokens"),
-                    }
+                    usage = usage or {"promptTokens": 0, "completionTokens": 0}
+                    usage["promptTokens"] += meta_usage.get("input_tokens") or 0
+                    usage["completionTokens"] += meta_usage.get("output_tokens") or 0
                 resp_meta = getattr(chunk, "response_metadata", None) or {}
                 if resp_meta.get("finish_reason"):
                     finish_reason = resp_meta["finish_reason"]
@@ -338,9 +429,20 @@ async def run_generation(
         status = "done"
 
     except asyncio.CancelledError:
-        # The fast cancel path: registry.cancel() -> task.cancel().
-        status = "cancelled"
-        raise
+        if deadline_flag["hit"]:
+            # OUR OWN cancel: the total-execution deadline fired. Convert to a
+            # clean TIMED_OUT and let the shielded finalize record it (do NOT
+            # re-raise — this is not a user stop).
+            status = "error"
+            error = {
+                "code": ERR_DEADLINE,
+                "message": "The response exceeded the time limit",
+                "retryable": False,
+            }
+        else:
+            # The fast cancel path: registry.cancel() -> task.cancel().
+            status = "cancelled"
+            raise
     except ConvexUnavailable:
         status = "error"
         error = error or {
@@ -366,6 +468,8 @@ async def run_generation(
             "retryable": True,
         }
     finally:
+        if hb_task is not None:
+            hb_task.cancel()
         log.info(
             "generation_finished",
             extra={
@@ -374,6 +478,7 @@ async def run_generation(
                 "user_id": req.userId,
                 "model": req.model,
                 "status": status,
+                "attempt": req.attempt,
                 "chars_out": writer.stats.chars,
                 "flushes": writer.stats.flushes,
                 "dropped": writer.stats.dropped,

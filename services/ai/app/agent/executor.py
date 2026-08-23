@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -97,7 +98,13 @@ class ToolExecContext:
     name_to_tool_id: dict[str, str]
     result_max_chars: int
     default_timeout_s: float
+    # Phase 7: bounded retry for a RETRYABLE ToolError (0 = no retry, the default
+    # so existing tests are unchanged; the runner sets it from config).
+    tool_max_retries: int = 0
+    tool_retry_base_s: float = 0.5
     # Per-generation duplicate guard: (tool_id, canonical-args) already executed.
+    # Also RE-SEEDED from the durable event log on resume so completed tools are
+    # never re-executed (idempotency key = (tool_id, canonical-args)).
     seen_calls: dict[str, str] = field(default_factory=dict)
     # Phase 5: set when the `search_knowledge` RAG tool is bound this turn.
     rag: RagContext | None = None
@@ -289,32 +296,56 @@ async def _run_one(tc: dict, ctx: ToolExecContext, index: int) -> ToolMessage:
     await ctx.writer.emit_event(
         EventType.TOOL_CALL,
         tool_name=tool.name,
+        tool_id=tool_id,
         call_id=call_id,
         arguments=args,
         status="running",
     )
+    # Bounded retry (§7): a RETRYABLE ToolError (timeout/rate_limited/upstream/
+    # unavailable) or a wait_for TimeoutError backs off and retries up to
+    # tool_max_retries; a non-retryable error (auth/invalid/schema) gives up at
+    # once. Never infinite.
     timeout = tool.timeout or ctx.default_timeout_s
-    try:
-        result = await asyncio.wait_for(
-            ctx.adapter.call_tool(tool, args, input_schema=input_schema),
-            timeout=timeout,
-        )
-    except TimeoutError:
-        await ctx.writer.emit_event(
-            EventType.TOOL_RESULT,
-            call_id=call_id,
-            status="error",
-            result={"error": "timeout"},
-        )
-        return _tool_message(call_id, {"error": "tool timed out"}, status="error")
-    except ToolError as e:
-        # Safe, provider-text-free failure shape (ToolError.as_dict()).
-        await ctx.writer.emit_event(
-            EventType.TOOL_RESULT, call_id=call_id, status="error", result=e.as_dict()
-        )
-        return _tool_message(call_id, e.as_dict(), status="error")
+    result: dict | None = None
+    err_payload: dict = {"error": "tool failed"}
+    for attempt in range(ctx.tool_max_retries + 1):
+        try:
+            result = await asyncio.wait_for(
+                ctx.adapter.call_tool(tool, args, input_schema=input_schema),
+                timeout=timeout,
+            )
+            break
+        except TimeoutError:
+            err_payload = {"error": "timeout", "retryable": True}
+        except ToolError as e:
+            err_payload = e.as_dict()
+            if not e.retryable:
+                break  # non-retryable → do not retry
+        if attempt < ctx.tool_max_retries:
+            backoff = ctx.tool_retry_base_s * (2**attempt)
+            await asyncio.sleep(backoff * (0.75 + 0.5 * random.random()))  # noqa: S311
+            log.info(
+                "agent.tool_retry",
+                extra={"tool_id": tool_id, "attempt": attempt + 1},
+            )
 
+    if result is None:
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT, call_id=call_id, status="error", result=err_payload
+        )
+        return _tool_message(call_id, err_payload, status="error")
+
+    # Thread the Ollagraph credit cost (captured by the adapter, previously
+    # dropped) into observability. Never in the ToolMessage (keeps reconstruction
+    # clean); the runner sums token usage for the cost budget.
+    cost = result.get("cost")
+    if isinstance(cost, dict) and cost.get("credits") is not None:
+        log.info(
+            "agent.tool_cost", extra={"tool_id": tool_id, "credits": cost["credits"]}
+        )
     body, truncated = _bounded(result.get("data"), ctx.result_max_chars)
+    # `result=body` IS the ToolMessage content for an Ollagraph tool, so resume
+    # reconstruction reads it directly (no separate `content` needed here).
     await ctx.writer.emit_event(
         EventType.TOOL_RESULT, call_id=call_id, status="success", result=body
     )
@@ -351,6 +382,7 @@ async def _run_knowledge(ctx: ToolExecContext, call_id: str, args: dict) -> Tool
     await ctx.writer.emit_event(
         EventType.TOOL_CALL,
         tool_name=KNOWLEDGE_TOOL_NAME,
+        tool_id=KNOWLEDGE_TOOL_NAME,
         call_id=call_id,
         arguments={"query": query},
         status="running",
@@ -436,6 +468,9 @@ async def _run_knowledge(ctx: ToolExecContext, call_id: str, args: dict) -> Tool
         call_id=call_id,
         status="success",
         result={"n_results": len(result.chunks), "files": files_summary},
+        # Phase 7: the bounded block for durable resume reconstruction (§17);
+        # `result` above stays the compact UI summary.
+        content=result.block[: ctx.result_max_chars],
     )
     # Block VERBATIM: already token-bounded + injection-framed by render_rag_block.
     # Must NOT pass through _bounded (would sever the closing </retrieved_context>).
@@ -467,6 +502,7 @@ async def _run_memory_search(
     await ctx.writer.emit_event(
         EventType.TOOL_CALL,
         tool_name=MEMORY_SEARCH_TOOL_NAME,
+        tool_id=MEMORY_SEARCH_TOOL_NAME,
         call_id=call_id,
         arguments={"query": query},
         status="running",
@@ -499,6 +535,7 @@ async def _run_memory_search(
         call_id=call_id,
         status="success",
         result={"n_results": len(selection.selected)},
+        content=selection.block[: mem.settings.ai_agent_tool_result_max_chars],
     )
     return ToolMessage(content=selection.block, tool_call_id=call_id, status="success")
 
@@ -527,6 +564,7 @@ async def _run_remember(ctx: ToolExecContext, call_id: str, args: dict) -> ToolM
     await ctx.writer.emit_event(
         EventType.TOOL_CALL,
         tool_name=REMEMBER_TOOL_NAME,
+        tool_id=REMEMBER_TOOL_NAME,
         call_id=call_id,
         arguments={"kind": kind},  # content persists as the memory; not duplicated here
         status="running",
