@@ -46,9 +46,13 @@ def build_llm(
         model=model,
         api_key=resolved_key,
         base_url=resolved_base,
-        # Without this, usage_metadata never appears on streamed chunks and
-        # token accounting is silently always zero.
-        stream_usage=True,
+        # Stream-usage only applies to a STREAMING call (usage rides the final
+        # chunk). A non-streaming call already returns usage in the response body,
+        # and requesting stream-usage there makes langchain-openai send
+        # `stream=True` and then choke on the returned stream
+        # (`AsyncStream has no attribute model_dump`). Gate it on `streaming` so
+        # the tool-bound (streaming=False) client is cleanly non-streaming.
+        stream_usage=streaming,
         streaming=streaming,
         # Clamped against the context window: the catalogue contains models
         # with a 4095-token window, and asking those for 8192 output tokens is
