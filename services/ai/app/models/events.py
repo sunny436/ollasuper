@@ -47,12 +47,21 @@ class ToolCallPayload(_Payload):
     call_id: str
     arguments: dict = Field(default_factory=dict)
     status: str = "running"
+    # Phase 7: the DURABLE idempotency key (the seen_calls key: an Ollagraph
+    # tool_id or a reserved tool name). tool_call_id is model-generated per turn
+    # and not resume-stable, so resume reconstruction keys on this instead.
+    tool_id: str | None = None
 
 
 class ToolResultPayload(_Payload):
     call_id: str
     status: str = "success"
     result: dict | None = None
+    # Phase 7: the exact ToolMessage content, for durable resume reconstruction
+    # (§17). `result` stays the compact UI summary; `content` is the reconstruction
+    # source. Ollagraph omits it (its `result` already IS the content); the RAG/
+    # memory branches set it because their `result` is only a summary.
+    content: str | None = None
 
 
 class ToolProgressPayload(_Payload):

@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     # is byte-identical to before. Also gated per-user by `memoryEnabled` on the
     # request (Convex chatSettings), so a user can disable memory entirely.
     ai_agent_memory_tool_enabled: bool = False
+    # Phase 7 — durable multi-step execution.
+    # Total wall-clock deadline for one turn (model↔tool loop). Enforced in the
+    # runner (self-terminate → TIMED_OUT) AND durably via chatStreams.deadlineAt
+    # (the Convex reaper fails, not resumes, a turn past deadline). This is the
+    # single aggregate cap the system lacked — component timeouts don't sum.
+    ai_agent_total_deadline_s: float = 300.0
+    # Bounded retry for a RETRYABLE ToolError (timeout/rate_limited/upstream/
+    # unavailable). Non-retryable errors (auth/invalid/schema) never retry.
+    ai_agent_tool_max_retries: int = 2
+    ai_agent_tool_retry_base_s: float = 0.5
 
     ai_default_model: str = "gpt-5.6-luna"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).

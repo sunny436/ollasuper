@@ -1,11 +1,13 @@
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import {
   internalAction,
   internalMutation,
   internalQuery,
   mutation,
+  type MutationCtx,
+  type QueryCtx,
   query,
 } from "../_generated/server";
 import { loadMemoriesForDispatch } from "../memories";
@@ -20,6 +22,9 @@ import { contextWindowFor } from "./models";
  * missed beats — comfortably past a slow model warm-up or a brief GC pause.
  */
 const STALL_MS = 90_000;
+// Phase 7: how many times the reaper re-dispatches a crashed turn before giving
+// up (mirrors userFiles MAX_ATTEMPTS). Bounds a crash-loop.
+const MAX_RESUME_ATTEMPTS = 3;
 
 /** Upper bound on chunk rows the tail query will read. Compaction keeps ~24. */
 const MAX_RESIDENT_CHUNKS = 64;
@@ -166,6 +171,60 @@ export const stop = mutation({
 });
 
 /** Everything the Python service needs for one generation, in one read. */
+/**
+ * Phase 7 resume checkpoint: reconstruct the already-completed tool steps from
+ * the LIVE typed-event log (still present while status is running) so the
+ * resumed run does NOT re-execute side-effecting tools. Pairs each successful
+ * TOOL_CALL with its TOOL_RESULT by call_id; the durable idempotency key is the
+ * `tool_id` in the payload (the model's tool_call id is not resume-stable).
+ * Returns the completed steps + the next event seq so the resumed run's new
+ * events don't collide with these survivors on the (messageId, seq) probe.
+ */
+async function collectCompletedTools(
+  ctx: QueryCtx,
+  messageId: Id<"chatMessages">,
+) {
+  const rows = await ctx.db
+    .query("chatStreamEvents")
+    .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+    .collect();
+  let maxSeq = -1;
+  const calls = new Map<string, { toolId: string; args: unknown }>();
+  const results = new Map<string, string>();
+  for (const e of rows) {
+    if (e.seq > maxSeq) maxSeq = e.seq;
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(e.payload) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const cid = body.call_id;
+    if (typeof cid !== "string") continue;
+    if (e.type === "TOOL_CALL" && typeof body.tool_id === "string") {
+      calls.set(cid, { toolId: body.tool_id, args: body.arguments ?? {} });
+    } else if (e.type === "TOOL_RESULT" && body.status === "success") {
+      const content =
+        typeof body.content === "string"
+          ? body.content
+          : JSON.stringify(body.result ?? {});
+      results.set(cid, content.slice(0, 16000));
+    }
+  }
+  const completedTools: {
+    toolId: string;
+    args: unknown;
+    resultContent: string;
+  }[] = [];
+  for (const [cid, call] of calls) {
+    const resultContent = results.get(cid);
+    if (resultContent !== undefined) {
+      completedTools.push({ toolId: call.toolId, args: call.args, resultContent });
+    }
+  }
+  return { completedTools, eventSeqBaseline: maxSeq + 1 };
+}
+
 export const dispatchPayload = internalQuery({
   args: { streamId: v.string() },
   handler: async (ctx, { streamId }) => {
@@ -198,6 +257,14 @@ export const dispatchPayload = internalQuery({
       ? await loadMemoriesForDispatch(ctx, stream.userId, stream.workspaceId)
       : [];
 
+    // Phase 7: on a resume (attempts > 0) reconstruct the completed tool steps
+    // from the durable event log so they are not re-executed.
+    const attempt = stream.attempts ?? 0;
+    const resume =
+      attempt > 0
+        ? await collectCompletedTools(ctx, stream.messageId)
+        : { completedTools: [], eventSeqBaseline: 0 };
+
     return {
       streamId,
       threadId: stream.threadId,
@@ -215,6 +282,11 @@ export const dispatchPayload = internalQuery({
       ragFileCount,
       memoryEnabled,
       memories,
+      // Phase 7 durable resume.
+      attempt,
+      deadlineAt: stream.deadlineAt ?? 0,
+      completedTools: resume.completedTools,
+      eventSeqBaseline: resume.eventSeqBaseline,
     };
   },
 });
@@ -314,12 +386,72 @@ export const dispatch = internalAction({
 });
 
 /**
+ * Phase 7: RE-dispatch a resumed turn. Unlike `dispatch`, this NEVER failStreams
+ * on a non-2xx — a `409` means the worker is alive (its Registry rejected the
+ * duplicate, so the original run is still converging), and any transient 5xx /
+ * unreachable is retried by the next reaper tick within the `attempts` budget.
+ * failStreaming here would kill a live or recoverable turn. The stream already
+ * got a fresh heartbeat window from `resumeStalledStream`.
+ */
+export const redispatch = internalAction({
+  args: { streamId: v.string() },
+  handler: async (ctx, { streamId }) => {
+    const base = process.env.AI_BASE_URL;
+    const key = process.env.AI_SERVICE_KEY;
+    if (!base || !key) return; // unconfigured: the next tick / an operator retries
+    const payload = await ctx.runQuery(internal.chat.stream.dispatchPayload, {
+      streamId,
+    });
+    if (!payload) return; // stream vanished
+    try {
+      await fetch(`${base.replace(/\/$/, "")}/v1/generate`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-service-key": key },
+        body: JSON.stringify(payload),
+      });
+      // 2xx → resumed. 409 → worker alive (benign). Other non-2xx → the reaper
+      // retries within attempts. In all cases: do NOT finalize here.
+    } catch {
+      // Unreachable inference plane: the next reaper tick retries.
+    }
+  },
+});
+
+/**
  * Cron: finalize streams whose worker died.
  *
  * Without this, a SIGKILLed Python process leaves a message spinning forever —
  * no in-process `finally:` runs in that case, and systemd restarts it with an
  * empty task registry.
  */
+/**
+ * Phase 7: RESUME a crashed turn instead of failing it. Resets the visible text
+ * (it regenerates) but PRESERVES the typed events — they are the checkpoint the
+ * resumed run rebuilds completed tools from — bumps `attempts` + `heartbeatAt`
+ * (a fresh liveness window so we don't self-re-reap), and re-dispatches. Never
+ * touches the thread/streamingMessageId so the browser keeps its subscription.
+ */
+async function resumeStalledStream(ctx: MutationCtx, s: Doc<"chatStreams">) {
+  const now = Date.now();
+  await ctx.db.patch(s._id, {
+    attempts: (s.attempts ?? 0) + 1,
+    heartbeatAt: now,
+    committedText: "",
+    committedSeq: -1,
+    chunkSeq: -1,
+  });
+  // The resumed run re-streams fresh text from delta seq 0, so drop the resident
+  // chunks. Events are intentionally left in place (the durable checkpoint).
+  const chunks = await ctx.db
+    .query("chatStreamChunks")
+    .withIndex("by_message_seq", (q) => q.eq("messageId", s.messageId))
+    .collect();
+  for (const c of chunks) await ctx.db.delete(c._id);
+  await ctx.scheduler.runAfter(0, internal.chat.stream.redispatch, {
+    streamId: s.streamId,
+  });
+}
+
 export const reapStalled = internalMutation({
   args: {},
   handler: async (ctx) => {
@@ -330,7 +462,6 @@ export const reapStalled = internalMutation({
         q.eq("status", "running").lt("heartbeatAt", cutoff),
       )
       .take(25);
-
     // Also catch streams that never started — a dispatch that never landed.
     const neverStarted = await ctx.db
       .query("chatStreams")
@@ -339,14 +470,38 @@ export const reapStalled = internalMutation({
       )
       .take(25);
 
+    let resumed = 0;
+    let failed = 0;
+    const now = Date.now();
     for (const s of [...stalled, ...neverStarted]) {
-      await ctx.runMutation(internal.chat.ingest.failStream, {
-        streamId: s.streamId,
-        error: "The response timed out",
-        errorCode: "timeout",
-      });
+      if (s.cancelRequested) {
+        // The user asked to stop — never resume; finalize as the terminal fail.
+        await ctx.runMutation(internal.chat.ingest.failStream, {
+          streamId: s.streamId,
+          error: "Cancelled",
+          errorCode: "cancelled",
+        });
+        failed++;
+      } else if (s.deadlineAt != null && now > s.deadlineAt) {
+        await ctx.runMutation(internal.chat.ingest.failStream, {
+          streamId: s.streamId,
+          error: "The response exceeded the time limit",
+          errorCode: "deadline",
+        });
+        failed++;
+      } else if ((s.attempts ?? 0) >= MAX_RESUME_ATTEMPTS) {
+        await ctx.runMutation(internal.chat.ingest.failStream, {
+          streamId: s.streamId,
+          error: "The response timed out",
+          errorCode: "timeout",
+        });
+        failed++;
+      } else {
+        await resumeStalledStream(ctx, s);
+        resumed++;
+      }
     }
-    return stalled.length + neverStarted.length;
+    return { resumed, failed };
   },
 });
 

@@ -1132,6 +1132,9 @@ describe("stall reaper", () => {
     const { threadId, assistantMessageId } = await seedThread(t, owner, ws);
 
     // Simulate a SIGKILLed Python process: running, but no heartbeat for ages.
+    // Phase 7: the reaper RESUMES a stalled turn (attempts < MAX); only at the
+    // attempts ceiling does it finalize as an error — pin attempts at the cap so
+    // this test still exercises the terminal-fail path.
     await t.run(async (ctx) => {
       const s = await ctx.db
         .query("chatStreams")
@@ -1143,6 +1146,7 @@ describe("stall reaper", () => {
         await ctx.db.patch(s._id, {
           status: "running",
           heartbeatAt: Date.now() - 10 * 60 * 1000,
+          attempts: 3,
         });
       }
     });

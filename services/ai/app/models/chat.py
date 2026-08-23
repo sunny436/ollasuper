@@ -76,6 +76,19 @@ class MemoryItem(BaseModel):
     source: str = Field(default="explicit", max_length=20)
 
 
+class CompletedTool(BaseModel):
+    """Phase 7 — one already-executed tool step, reconstructed by Convex from the
+    LIVE chatStreamEvents (a TOOL_CALL + its TOOL_RESULT) when a crashed turn is
+    resumed. The runner rebuilds `AIMessage(tool_calls) + ToolMessage(result)`
+    from these so completed (side-effecting) tools are NEVER re-executed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    toolId: str = Field(max_length=200)
+    args: dict = Field(default_factory=dict)
+    resultContent: str = Field(default="", max_length=16000)
+
+
 class GenerateRequest(BaseModel):
     """Everything needed for one turn.
 
@@ -116,6 +129,16 @@ class GenerateRequest(BaseModel):
     # this turn. Both default so `extra="forbid"` never 400s a pre-Phase-6 caller.
     memoryEnabled: bool = False
     memories: list[MemoryItem] = Field(default_factory=list, max_length=200)
+    # Phase 7 durable resume. All default so `extra="forbid"` never 400s a caller
+    # that predates Phase 7. `attempt` > 0 means this is a reaper-driven resume of
+    # a crashed turn: `completedTools` reconstructs the already-run steps (so they
+    # are not re-executed), `eventSeqBaseline` continues the typed-event seq space
+    # (so resumed events don't collide with survivors), and `deadlineAt` (epoch ms)
+    # bounds the whole turn.
+    attempt: int = 0
+    deadlineAt: int = 0
+    completedTools: list[CompletedTool] = Field(default_factory=list, max_length=64)
+    eventSeqBaseline: int = 0
 
 
 class GenerateAccepted(BaseModel):
