@@ -220,6 +220,20 @@ async def run_generation(
             base_url=settings.ollima_base_url,
             api_key=settings.ollima_api_key,
         )
+        # A DEDICATED non-streaming client for tool-bound calls. Ollima streams
+        # tool-call deltas in a shape langchain-openai's accumulator rejects
+        # ("Tool call index out of bounds"), so the model node must NOT stream
+        # when tools are bound. A `streaming=False` client returns the tool call
+        # as one complete message; `llm` above keeps streaming for the final
+        # answer. Built lazily below only if tools are actually bound.
+        llm_for_tools = build_llm(
+            settings,
+            model=req.model,
+            context_window=req.contextWindow,
+            streaming=False,
+            base_url=settings.ollima_base_url,
+            api_key=settings.ollima_api_key,
+        )
 
         # --- agent tools (Phase 4 web tools + Phase 5 knowledge tool) ------
         # Two INDEPENDENT tool sources feed one bind_tools: Ollagraph web tools
@@ -289,7 +303,7 @@ async def run_generation(
         tools_ctx = None
         if specs:
             try:
-                llm_tools = llm.bind_tools(specs)
+                llm_tools = llm_for_tools.bind_tools(specs)
             except Exception:  # noqa: BLE001 — a bad web spec must not kill RAG/memory
                 log.warning(
                     "agent_tools_bind_failed", extra={"stream_id": req.streamId}
@@ -297,7 +311,7 @@ async def run_generation(
                 llm_tools = None
                 if reserved_specs:
                     try:
-                        llm_tools = llm.bind_tools(reserved_specs)
+                        llm_tools = llm_for_tools.bind_tools(reserved_specs)
                         name_to_id, adapter = {}, None
                     except Exception:  # noqa: BLE001
                         llm_tools = None
