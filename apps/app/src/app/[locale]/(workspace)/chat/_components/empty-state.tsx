@@ -1,73 +1,32 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 import { useAmbience } from "@/lib/ambience/ambience-provider";
 import { useCachedUser } from "../_hooks/use-cached-user";
 
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReduced(mq.matches);
-    const on = () => setReduced(mq.matches);
-    mq.addEventListener?.("change", on);
-    return () => mq.removeEventListener?.("change", on);
-  }, []);
-  return reduced;
-}
-
 /**
- * The greeting, revealed character by character — the signature Gemini landing
- * motion. Each glyph lifts and un-rotates into place on a staggered spring, then
- * settles to `transform: none` so no residual 3D context clips the descenders
- * (the 'g'/'y' tails). The colour is the ambience-interpolated foreground so it
- * stays legible across daylight/amber/midnight (the old fixed sky→indigo
- * gradient clashed on amber and washed out on daylight). Reduced-motion renders
- * final state; the colour still applies.
+ * The greeting, revealed by a pure-CSS gradient sweep (`.greeting-sweep` in
+ * globals.css): a soft mask wipes the text in left→right while an
+ * indigo→magenta→rose beam rides the reveal edge, then every letter settles to
+ * the ambience-adaptive foreground. The settle colour is passed in as
+ * `--greeting-ink` so the CSS stays ambience-adaptive (legible across
+ * daylight/amber/midnight) without a hardcoded hex — the old fixed sky→indigo
+ * gradient clashed on amber and washed out on daylight. Runs once on mount.
+ * Reduced motion and the no-`background-clip` fallback both resolve to solid,
+ * fully-visible text (see the @supports / @media guards in globals.css).
+ * `inline-block` shrink-wraps the glyph run so the mask/beam geometry maps to
+ * the text, not the full-width centred line box (it still centres via the
+ * parent's `text-center`). No transform / 3D context, so descenders are never
+ * clipped.
  */
 function AnimatedHeadline({ text }: { text: string }) {
-  const reduced = usePrefersReducedMotion();
   const { colors } = useAmbience();
-  const [revealed, setRevealed] = useState(false);
-  // The stagger plays exactly ONCE. A later text change (name arriving after the
-  // greeting) snaps to the final state rather than re-animating.
-  const animatedOnce = useRef(false);
-
-  useEffect(() => {
-    if (!text || animatedOnce.current) return;
-    animatedOnce.current = true;
-    const id = requestAnimationFrame(() => setRevealed(true));
-    return () => cancelAnimationFrame(id);
-  }, [text]);
-
-  const settled = revealed || animatedOnce.current;
-  const chars = useMemo(() => Array.from(text), [text]);
-
   return (
-    <h1 className="whitespace-nowrap pb-3 text-2xl font-medium leading-[1.35] sm:text-4xl">
-      {chars.map((char, i) => (
-        <span
-          // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph run
-          key={i}
-          className="inline-block"
-          style={{
-            color: colors.text,
-            ...(reduced
-              ? {}
-              : {
-                  opacity: settled ? 1 : 0,
-                  // `none` once settled — a lingering rotateX(0) keeps a 3D
-                  // rendering context that clips the glyph box and eats the
-                  // descenders.
-                  transform: settled ? "none" : "translateY(20px) rotateX(-20deg)",
-                  transition: `opacity 0.5s ease, transform 0.7s cubic-bezier(0.16, 1, 0.3, 1) ${0.1 + i * 0.035}s`,
-                }),
-          }}
-        >
-          {char === " " ? " " : char}
-        </span>
-      ))}
+    <h1
+      className="greeting-sweep inline-block whitespace-nowrap pb-3 text-2xl font-medium leading-[1.35] sm:text-4xl"
+      style={{ "--greeting-ink": colors.text } as CSSProperties}
+    >
+      {text}
     </h1>
   );
 }

@@ -167,3 +167,70 @@
 .dark .shiki span {
   color: var(--s-dark);
 }
+
+/* Greeting gradient-sweep reveal (chat empty-state <h1>). PURE CSS, one shot.
+   Letters are painted by a background clipped to the glyphs; the settle colour
+   is background-color: var(--greeting-ink) (the ambience hsl the component
+   passes in). A soft mask wipes the text in left->right; an indigo->magenta->
+   rose beam rides the same edge because mask + background share size and one
+   animated position. Final state: solid ink, no mask/beam/transform/filter,
+   static.
+   NEVER-INVISIBLE: the base rule sets a real opaque colour; the transparent-
+   fill treatment lives inside @supports, and the RESTING mask/beam positions
+   already show solid ink (the hidden state exists only inside the keyframes),
+   so every fallback path resolves to visible text. */
+.greeting-sweep {
+  color: var(--greeting-ink, hsl(var(--foreground)));
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .greeting-sweep {
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    background-color: var(--greeting-ink, hsl(var(--foreground)));
+    background-image: linear-gradient(
+      to right,
+      transparent 40%,
+      #6366f1 45%,
+      #d946ef 50%,
+      #f43f5e 55%,
+      transparent 60%
+    );
+    background-repeat: no-repeat;
+    background-size: 300% 100%;
+    background-position: 0% 0; /* resting: beam parked off-text -> solid ink */
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-mask-image: linear-gradient(to right, #000 40%, transparent 60%);
+    mask-image: linear-gradient(to right, #000 40%, transparent 60%);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-size: 300% 100%;
+    mask-size: 300% 100%;
+    -webkit-mask-position: 0% 0; /* resting: fully revealed */
+    mask-position: 0% 0;
+    animation: greeting-sweep 2s ease-in-out 0.15s 1 backwards;
+  }
+
+  @keyframes greeting-sweep {
+    from {
+      -webkit-mask-position: 100% 0;
+      mask-position: 100% 0;
+      background-position: 100% 0;
+    }
+    to {
+      -webkit-mask-position: 0% 0;
+      mask-position: 0% 0;
+      background-position: 0% 0;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .greeting-sweep {
+    animation: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+    background-image: none;
+  }
+}
