@@ -23,6 +23,7 @@ from app.models.chat import MemoryItem
 
 MEMORY_SEARCH_TOOL_NAME = "search_memory"
 REMEMBER_TOOL_NAME = "remember"
+FORGET_TOOL_NAME = "forget_memory"
 
 # Closed whitelist, mirrored by the Convex `kind` union. `preference`/`instruction`
 # default to user-scope; `fact`/`project_context` default to workspace-scope
@@ -88,6 +89,31 @@ REMEMBER_TOOL_SPEC: dict = {
     },
 }
 
+FORGET_TOOL_SPEC: dict = {
+    "type": "function",
+    "function": {
+        "name": FORGET_TOOL_NAME,
+        "description": (
+            "Turn OFF a saved memory about the user when they ask you to forget "
+            "something you remember about them (e.g. 'forget my favorite "
+            "color'). It disables the matching memory — it is reversible, and "
+            "the user can restore it in Settings. Only affects THIS user's own "
+            "memories. Do NOT use it for the user's uploaded documents or the "
+            "current conversation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A short description of what to forget.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 
 @dataclass(slots=True)
 class RecalledMemory:
@@ -136,11 +162,16 @@ def select_memories(
     *,
     top_k: int = _DEFAULT_TOP_K,
     max_chars: int = 8000,
+    fallback_to_recent: bool = True,
 ) -> MemorySelection:
     """Rank the pre-loaded memory pool by keyword overlap, top-K, and render a
     bounded injection-framed block. Falls back to the most-recent items (the pool
     is already recency-ordered) when nothing keyword-matches, since the agent
-    explicitly asked to recall and the pool is small and all user-stated."""
+    explicitly asked to recall and the pool is small and all user-stated.
+
+    `fallback_to_recent=False` disables that fallback so a non-matching query
+    selects NOTHING — used by `forget_memory`, where disabling a recency-picked
+    memory the user never named would be wrong."""
     if not memories or not query.strip():
         return MemorySelection("", [], "no_results")
 
@@ -153,6 +184,8 @@ def select_memories(
         scored.append((overlap, i, m))
 
     any_match = any(s[0] > 0 for s in scored)
+    if not any_match and not fallback_to_recent:
+        return MemorySelection("", [], "no_results")
     pool = [s for s in scored if s[0] > 0] if any_match else scored
     pool.sort(key=lambda s: (-s[0], s[1]))
     top = [m for _, _, m in pool[:top_k]]

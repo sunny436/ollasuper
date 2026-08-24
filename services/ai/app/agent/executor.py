@@ -34,6 +34,7 @@ from langchain_core.messages import ToolMessage
 
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, retrieve_knowledge
 from app.agent.memory import (
+    FORGET_TOOL_NAME,
     MEMORY_SEARCH_TOOL_NAME,
     REMEMBER_TOOL_NAME,
     clean_remember_args,
@@ -239,6 +240,8 @@ async def _run_one(tc: dict, ctx: ToolExecContext, index: int) -> ToolMessage:
         return await _run_memory_search(ctx, call_id, args)
     if ctx.memory is not None and bound_name == REMEMBER_TOOL_NAME:
         return await _run_remember(ctx, call_id, args)
+    if ctx.memory is not None and bound_name == FORGET_TOOL_NAME:
+        return await _run_forget(ctx, call_id, args)
 
     # Tools-only turn (no registry/Ollagraph): any unmatched tool is unknown.
     if ctx.registry is None:
@@ -642,6 +645,80 @@ async def _run_remember(ctx: ToolExecContext, call_id: str, args: dict) -> ToolM
     )
     return _tool_message(
         call_id, {"status": "not_saved", "reason": reason}, status="error"
+    )
+
+
+async def _run_forget(ctx: ToolExecContext, call_id: str, args: dict) -> ToolMessage:
+    """Phase 6: DISABLE the user's OWN saved memories that match `query`. Targets
+    are chosen by the SAME in-Python ranker as search over the pre-loaded pool,
+    so only this user's active memories can be named; Convex re-checks ownership
+    and disables (reversible) — never deletes, never touches another user. The
+    agent reports the true count so it cannot claim a forget that did not happen."""
+    mem = ctx.memory
+    assert mem is not None  # guarded by the caller
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return _tool_message(
+            call_id, {"status": "error", "message": "query is required"}, status="error"
+        )
+
+    dedup_key = json.dumps({"q": query}, sort_keys=True, default=str)
+    if ctx.seen_calls.get(FORGET_TOOL_NAME) == dedup_key:
+        return _tool_message(
+            call_id, {"note": "duplicate call skipped"}, status="error"
+        )
+    ctx.seen_calls[FORGET_TOOL_NAME] = dedup_key
+
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=FORGET_TOOL_NAME,
+        tool_id=FORGET_TOOL_NAME,
+        call_id=call_id,
+        arguments={"query": query},
+        status="running",
+    )
+    # fallback_to_recent=False: only disable memories that ACTUALLY match the
+    # query, never a recency-picked one the user did not name.
+    selection = select_memories(
+        mem.memories,
+        query,
+        max_chars=mem.settings.ai_agent_tool_result_max_chars,
+        fallback_to_recent=False,
+    )
+    if selection.status == "no_results":
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT, call_id=call_id, status="success",
+            result={"disabled": 0},
+        )
+        return _tool_message(
+            call_id,
+            {"status": "no_match", "message": "No matching saved memory to forget."},
+            status="success",
+        )
+
+    ids = [m.id for m in selection.selected]
+    result = await ctx.writer.forget(memory_ids=ids)
+    n = int(result.get("disabled") or 0)
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="success" if n > 0 else "error",
+        result={"disabled": n},
+    )
+    if n > 0:
+        return _tool_message(
+            call_id,
+            {
+                "status": "forgotten",
+                "disabled": n,
+                "note": "Disabled; the user can restore it in Settings.",
+            },
+            status="success",
+        )
+    return _tool_message(
+        call_id,
+        {"status": "not_forgotten", "reason": result.get("reason") or "no_match"},
+        status="error",
     )
 
 

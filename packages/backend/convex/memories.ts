@@ -320,3 +320,46 @@ export const rememberFromIngress = internalMutation({
     return { ok: true, id, cancel: stream.cancelRequested };
   },
 });
+
+/**
+ * Phase 6 — the agent's `forget_memory` tool. DISABLES (reversible) the caller's
+ * OWN active memories named by `memoryIds` (chosen by the inference plane from
+ * the pre-loaded, scope-authorized pool). Ownership is the streamId capability,
+ * never a client userId: an id belonging to another user — or an already
+ * inactive row — is silently skipped, so a forget can never cross users or
+ * hard-delete. Returns `{disabled}` so the agent reports the true count.
+ */
+export const forgetFromIngress = internalMutation({
+  args: {
+    streamId: v.string(),
+    memoryIds: v.array(v.id("userMemories")),
+  },
+  handler: async (ctx, a) => {
+    const stream = await ctx.db
+      .query("chatStreams")
+      .withIndex("by_streamId", (q) => q.eq("streamId", a.streamId))
+      .unique();
+    if (!stream) return { ok: false, cancel: true, unknown: true };
+    if (
+      stream.status === "done" ||
+      stream.status === "error" ||
+      stream.status === "aborted"
+    ) {
+      return { ok: true, dropped: "terminal", cancel: true };
+    }
+
+    let disabled = 0;
+    for (const id of a.memoryIds.slice(0, 25)) {
+      const m = await ctx.db.get(id);
+      if (!m || m.userId !== stream.userId || m.status !== "active") continue;
+      await ctx.db.patch(id, { status: "disabled", updatedAt: Date.now() });
+      disabled++;
+    }
+    if (disabled > 0) {
+      await audit(ctx, stream.workspaceId, stream.userId, "memory.forget", {
+        count: disabled,
+      });
+    }
+    return { ok: true, disabled, cancel: stream.cancelRequested };
+  },
+});

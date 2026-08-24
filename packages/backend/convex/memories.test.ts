@@ -339,3 +339,80 @@ describe("rememberFromIngress capability + validation", () => {
     expect(await countMemories(t)).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The forget path (Python -> /ai/ingress -> forgetFromIngress). DISABLES
+// (reversible), own-user only, never hard-deletes or crosses users.
+// ---------------------------------------------------------------------------
+describe("forgetFromIngress capability + ownership", () => {
+  test("disables the caller's own active memory (reversible, not deleted)", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const id = await insertMemory(t, {
+      userId: owner,
+      workspaceId: ws,
+      content: "favorite color is teal",
+    });
+    const { streamId } = await seedStream(t, { userId: owner, workspaceId: ws });
+    const r = await t.mutation(internal.memories.forgetFromIngress, {
+      streamId,
+      memoryIds: [id],
+    });
+    expect(r).toMatchObject({ ok: true, disabled: 1 });
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.status).toBe("disabled"); // disabled, NOT deleted
+    expect(await countMemories(t)).toBe(1); // row still present (recoverable)
+  });
+
+  test("cannot disable another user's memory", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, member, ws } = await seed(t);
+    const victim = await insertMemory(t, {
+      userId: member,
+      workspaceId: ws,
+      content: "member's private memory",
+    });
+    const { streamId } = await seedStream(t, { userId: owner, workspaceId: ws });
+    const r = await t.mutation(internal.memories.forgetFromIngress, {
+      streamId,
+      memoryIds: [victim],
+    });
+    expect(r).toMatchObject({ ok: true, disabled: 0 }); // skipped, cross-user
+    const row = await t.run((ctx) => ctx.db.get(victim));
+    expect(row?.status).toBe("active"); // untouched
+  });
+
+  test("unknown streamId disables nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const id = await insertMemory(t, {
+      userId: owner,
+      workspaceId: ws,
+      content: "x",
+    });
+    const r = await t.mutation(internal.memories.forgetFromIngress, {
+      streamId: "nope",
+      memoryIds: [id],
+    });
+    expect(r).toMatchObject({ unknown: true });
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.status).toBe("active");
+  });
+
+  test("already-inactive rows are skipped (disabled count 0)", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const id = await insertMemory(t, {
+      userId: owner,
+      workspaceId: ws,
+      content: "already off",
+      status: "disabled",
+    });
+    const { streamId } = await seedStream(t, { userId: owner, workspaceId: ws });
+    const r = await t.mutation(internal.memories.forgetFromIngress, {
+      streamId,
+      memoryIds: [id],
+    });
+    expect(r).toMatchObject({ ok: true, disabled: 0 });
+  });
+});

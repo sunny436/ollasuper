@@ -26,6 +26,7 @@ from app.agent.graph import build_graph
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
 from app.agent.llm import build_llm
 from app.agent.memory import (
+    FORGET_TOOL_SPEC,
     MEMORY_SEARCH_TOOL_NAME,
     MEMORY_SEARCH_TOOL_SPEC,
     REMEMBER_TOOL_NAME,
@@ -294,8 +295,9 @@ async def run_generation(
             )
         if memory_as_tool:
             specs.append(REMEMBER_TOOL_SPEC)
-            if req.memories:  # only bind recall when there is something to recall
+            if req.memories:  # only bind recall/forget when there is something there
                 specs.append(MEMORY_SEARCH_TOOL_SPEC)
+                specs.append(FORGET_TOOL_SPEC)
             mem_ctx = MemoryContext(memories=req.memories, settings=settings)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
@@ -307,6 +309,7 @@ async def run_generation(
             reserved_specs.append(REMEMBER_TOOL_SPEC)
             if req.memories:
                 reserved_specs.append(MEMORY_SEARCH_TOOL_SPEC)
+                reserved_specs.append(FORGET_TOOL_SPEC)
 
         llm_tools = None
         tools_ctx = None
