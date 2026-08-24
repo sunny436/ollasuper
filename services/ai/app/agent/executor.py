@@ -38,6 +38,7 @@ from app.agent.memory import (
     MEMORY_SEARCH_TOOL_NAME,
     REMEMBER_TOOL_NAME,
     clean_remember_args,
+    match_memories_to_forget,
     select_memories,
 )
 from app.agent.policy import PolicyScope, check_tool_policy
@@ -677,15 +678,10 @@ async def _run_forget(ctx: ToolExecContext, call_id: str, args: dict) -> ToolMes
         arguments={"query": query},
         status="running",
     )
-    # fallback_to_recent=False: only disable memories that ACTUALLY match the
-    # query, never a recency-picked one the user did not name.
-    selection = select_memories(
-        mem.memories,
-        query,
-        max_chars=mem.settings.ai_agent_tool_result_max_chars,
-        fallback_to_recent=False,
-    )
-    if selection.status == "no_results":
+    # Disable ONLY the strongest-matching tier, so a weak match on a generic
+    # framing token (e.g. "user") can't sweep in an unrelated memory.
+    ids = match_memories_to_forget(mem.memories, query)
+    if not ids:
         await ctx.writer.emit_event(
             EventType.TOOL_RESULT, call_id=call_id, status="success",
             result={"disabled": 0},
@@ -696,7 +692,6 @@ async def _run_forget(ctx: ToolExecContext, call_id: str, args: dict) -> ToolMes
             status="success",
         )
 
-    ids = [m.id for m in selection.selected]
     result = await ctx.writer.forget(memory_ids=ids)
     n = int(result.get("disabled") or 0)
     await ctx.writer.emit_event(

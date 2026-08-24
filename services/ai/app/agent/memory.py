@@ -162,16 +162,11 @@ def select_memories(
     *,
     top_k: int = _DEFAULT_TOP_K,
     max_chars: int = 8000,
-    fallback_to_recent: bool = True,
 ) -> MemorySelection:
     """Rank the pre-loaded memory pool by keyword overlap, top-K, and render a
     bounded injection-framed block. Falls back to the most-recent items (the pool
     is already recency-ordered) when nothing keyword-matches, since the agent
-    explicitly asked to recall and the pool is small and all user-stated.
-
-    `fallback_to_recent=False` disables that fallback so a non-matching query
-    selects NOTHING — used by `forget_memory`, where disabling a recency-picked
-    memory the user never named would be wrong."""
+    explicitly asked to recall and the pool is small and all user-stated."""
     if not memories or not query.strip():
         return MemorySelection("", [], "no_results")
 
@@ -184,8 +179,6 @@ def select_memories(
         scored.append((overlap, i, m))
 
     any_match = any(s[0] > 0 for s in scored)
-    if not any_match and not fallback_to_recent:
-        return MemorySelection("", [], "no_results")
     pool = [s for s in scored if s[0] > 0] if any_match else scored
     pool.sort(key=lambda s: (-s[0], s[1]))
     top = [m for _, _, m in pool[:top_k]]
@@ -210,6 +203,26 @@ def select_memories(
 
     block = _MEMORY_HEADER + "\n" + "\n".join(rendered) + "\n</user_memory>"
     return MemorySelection(block=block, selected=selected, status="ok")
+
+
+def match_memories_to_forget(
+    memories: list[MemoryItem], query: str, *, cap: int = 25
+) -> list[str]:
+    """IDs of the memories a `forget` should disable: ONLY those at the single
+    highest keyword-overlap tier. Search tolerates weak/partial matches (more
+    context is harmless), but forget is destructive-ish, so a memory that shares
+    only a generic framing token with the query — e.g. "user", which the model
+    puts in nearly every memory ("the user's favorite color…", "the user works
+    as…") — must NOT be swept in alongside the real target. Returns [] when
+    nothing genuinely matches."""
+    q = _tokenize(query)
+    if not q or not memories:
+        return []
+    scored = [(len(q & _tokenize(f"{m.content} {m.kind}")), m) for m in memories]
+    best = max(s for s, _ in scored)
+    if best == 0:
+        return []
+    return [m.id for s, m in scored if s == best][:cap]
 
 
 def clean_remember_args(content: object, kind: object) -> tuple[str, str] | None:

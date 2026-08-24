@@ -195,6 +195,23 @@ async def test_forget_disables_matched_and_reports_true_count():
     assert results[-1]["result"] == {"disabled": 1}
 
 
+async def test_forget_ignores_weak_generic_token_match():
+    # Both memories share the framing token "user" (the model puts it in nearly
+    # every memory). A forget targeting the color must disable ONLY the color
+    # memory, never the unrelated job memory on that single weak overlap.
+    ctx, convex = _ctx(
+        [
+            _m("m1", "the user's favorite color is teal", kind="preference"),
+            _m("m2", "the user works as a data scientist at Acme", kind="fact"),
+        ],
+        resp={"ok": True, "disabled": 1},
+    )
+    await execute_tool_calls([_forget("user's favorite color")], ctx)
+    ops = _ops(convex, "forget")
+    assert len(ops) == 1
+    assert ops[0]["memoryIds"] == ["m1"]  # ONLY the color memory, not the job
+
+
 async def test_forget_no_keyword_match_disables_nothing():
     # fallback_to_recent is OFF for forget: an unrelated query must NOT disable a
     # recency-picked memory the user never named.
