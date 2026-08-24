@@ -129,7 +129,8 @@ def test_exact_query_unaffected_by_expansion():
     # A word that is NOT an alias key expands to nothing; the exact-name bonus
     # (keyed on the original tokens) keeps the exact tool ranked first.
     assert discover_tools(REG, "crawl").candidates[0].tool.tool_id == "crawl"
-    assert discover_tools(REG, "scrape a web page").candidates[0].tool.tool_id == "scrape"
+    scraped = discover_tools(REG, "scrape a web page")
+    assert scraped.candidates[0].tool.tool_id == "scrape"
 
 
 def test_selection_module_is_pure_no_network_no_llm():
