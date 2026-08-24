@@ -12,7 +12,11 @@ import json
 from langchain_core.messages import ToolMessage
 
 from app.agent.executor import MemoryContext, ToolExecContext, execute_tool_calls
-from app.agent.memory import MEMORY_SEARCH_TOOL_NAME, REMEMBER_TOOL_NAME
+from app.agent.memory import (
+    FORGET_TOOL_NAME,
+    MEMORY_SEARCH_TOOL_NAME,
+    REMEMBER_TOOL_NAME,
+)
 from app.agent.policy import READ_SCOPE
 from app.models.chat import MemoryItem
 from app.runtime.writer import DeltaWriter
@@ -169,3 +173,86 @@ async def test_cancel_skips_but_pairs():
     assert msgs[0].tool_call_id == "c1"
     assert json.loads(msgs[0].content)["status"] == "cancelled"
     assert _ops(convex, "remember") == []  # not written after cancel
+
+
+# --- forget_memory (Phase 6) ----------------------------------------------
+def _forget(query, cid="c1"):
+    return {"name": FORGET_TOOL_NAME, "args": {"query": query}, "id": cid}
+
+
+async def test_forget_disables_matched_and_reports_true_count():
+    ctx, convex = _ctx(
+        [_m("m1", "my favorite color is teal", kind="preference")],
+        resp={"ok": True, "disabled": 1},
+    )
+    msgs = await execute_tool_calls([_forget("favorite color")], ctx)
+    ops = _ops(convex, "forget")
+    assert len(ops) == 1
+    assert ops[0]["memoryIds"] == ["m1"]  # matched memory's id, from the pool
+    body = json.loads(msgs[0].content)
+    assert body["status"] == "forgotten" and body["disabled"] == 1
+    results = _events(convex, "TOOL_RESULT")
+    assert results[-1]["result"] == {"disabled": 1}
+
+
+async def test_forget_ignores_weak_generic_token_match():
+    # Both memories share the framing token "user" (the model puts it in nearly
+    # every memory). A forget targeting the color must disable ONLY the color
+    # memory, never the unrelated job memory on that single weak overlap.
+    ctx, convex = _ctx(
+        [
+            _m("m1", "the user's favorite color is teal", kind="preference"),
+            _m("m2", "the user works as a data scientist at Acme", kind="fact"),
+        ],
+        resp={"ok": True, "disabled": 1},
+    )
+    await execute_tool_calls([_forget("user's favorite color")], ctx)
+    ops = _ops(convex, "forget")
+    assert len(ops) == 1
+    assert ops[0]["memoryIds"] == ["m1"]  # ONLY the color memory, not the job
+
+
+async def test_forget_no_keyword_match_disables_nothing():
+    # fallback_to_recent is OFF for forget: an unrelated query must NOT disable a
+    # recency-picked memory the user never named.
+    ctx, convex = _ctx(
+        [_m("m1", "my favorite color is teal", kind="preference")],
+        resp={"ok": True, "disabled": 1},
+    )
+    msgs = await execute_tool_calls([_forget("quantum chromodynamics")], ctx)
+    assert _ops(convex, "forget") == []  # nothing sent to Convex
+    body = json.loads(msgs[0].content)
+    assert body["status"] == "no_match"
+    assert msgs[0].status == "success"  # honest, not an error
+
+
+async def test_forget_missing_query_is_error():
+    ctx, convex = _ctx([_m("m1", "x")])
+    msgs = await execute_tool_calls(
+        [{"name": FORGET_TOOL_NAME, "args": {}, "id": "c1"}], ctx
+    )
+    assert msgs[0].status == "error"
+    assert _ops(convex, "forget") == []
+
+
+async def test_forget_zero_disabled_is_reported_honestly():
+    # Convex disabled nothing (e.g. rows already inactive) -> agent must not claim
+    # it forgot.
+    ctx, convex = _ctx(
+        [_m("m1", "my favorite color is teal", kind="preference")],
+        resp={"ok": True, "disabled": 0},
+    )
+    msgs = await execute_tool_calls([_forget("favorite color")], ctx)
+    assert msgs[0].status == "error"
+    assert json.loads(msgs[0].content)["status"] == "not_forgotten"
+
+
+async def test_duplicate_forget_not_re_sent():
+    ctx, convex = _ctx(
+        [_m("m1", "favorite color teal", kind="preference")],
+        resp={"ok": True, "disabled": 1},
+    )
+    await execute_tool_calls(
+        [_forget("favorite color", "c1"), _forget("favorite color", "c2")], ctx
+    )
+    assert len(_ops(convex, "forget")) == 1

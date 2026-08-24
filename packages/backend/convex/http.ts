@@ -1,5 +1,6 @@
 import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
 import { auth } from "./auth";
 import { EVENT_TYPES } from "./chat/events";
@@ -383,6 +384,25 @@ http.route({
           internal.memories.rememberFromIngress,
           { streamId, content, kind, source, scope, reason },
         );
+        if ("unknown" in r && r.unknown)
+          return aiJson({ error: "unknown stream" }, 404);
+        return aiJson(r);
+      }
+      case "forget": {
+        // Phase 6: disable the agent-named memories. Ownership is re-checked in
+        // the mutation (own-user, active rows only); ids come from the pre-loaded
+        // pool. Coerce to a string[] at the edge before the id validator.
+        const ids = Array.isArray(body.memoryIds)
+          ? (body.memoryIds.filter(
+              (x) => typeof x === "string",
+            ) as Id<"userMemories">[])
+          : [];
+        if (!streamId || ids.length === 0)
+          return aiJson({ error: "bad request" }, 400);
+        const r = await ctx.runMutation(internal.memories.forgetFromIngress, {
+          streamId,
+          memoryIds: ids,
+        });
         if ("unknown" in r && r.unknown)
           return aiJson({ error: "unknown stream" }, 404);
         return aiJson(r);

@@ -335,6 +335,30 @@ class DeltaWriter:
             return {"saved": True, "id": resp.get("id")}
         return {"saved": False, "reason": "not_saved"}
 
+    async def forget(self, *, memory_ids: list[str]) -> dict:
+        """Phase 6: DISABLE (reversible) the user's OWN matching memories through
+        Convex (`op:"forget"`). Ownership is derived from the streamId capability
+        — Convex only ever disables rows belonging to the stream's user, and it
+        disables (not deletes), so the user can restore them in Settings. Returns
+        `{disabled: int}` (0 when nothing matched or memory is off) so the agent
+        reports the true outcome instead of claiming it forgot."""
+        body = {
+            "op": "forget",
+            "streamId": self._stream_id,
+            "memoryIds": memory_ids,
+        }
+        try:
+            resp = await self._convex.ingress(body)
+        except ConvexUnavailable:
+            return {"disabled": 0, "reason": "unavailable"}
+        except ConvexRejected:
+            return {"disabled": 0, "reason": "rejected"}
+        if resp.get("cancel"):
+            self._cancel_requested = True
+        if resp.get("unknown") or resp.get("dropped"):
+            return {"disabled": 0, "reason": "stream_closed"}
+        return {"disabled": int(resp.get("disabled") or 0)}
+
     # -- typed event protocol (Phase 3) -------------------------------------
     #
     # These make the writer CAPABLE of emitting typed events. Nothing in the

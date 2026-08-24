@@ -23,6 +23,7 @@ from app.models.chat import MemoryItem
 
 MEMORY_SEARCH_TOOL_NAME = "search_memory"
 REMEMBER_TOOL_NAME = "remember"
+FORGET_TOOL_NAME = "forget_memory"
 
 # Closed whitelist, mirrored by the Convex `kind` union. `preference`/`instruction`
 # default to user-scope; `fact`/`project_context` default to workspace-scope
@@ -84,6 +85,31 @@ REMEMBER_TOOL_SPEC: dict = {
                 },
             },
             "required": ["content", "kind"],
+        },
+    },
+}
+
+FORGET_TOOL_SPEC: dict = {
+    "type": "function",
+    "function": {
+        "name": FORGET_TOOL_NAME,
+        "description": (
+            "Turn OFF a saved memory about the user when they ask you to forget "
+            "something you remember about them (e.g. 'forget my favorite "
+            "color'). It disables the matching memory — it is reversible, and "
+            "the user can restore it in Settings. Only affects THIS user's own "
+            "memories. Do NOT use it for the user's uploaded documents or the "
+            "current conversation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A short description of what to forget.",
+                }
+            },
+            "required": ["query"],
         },
     },
 }
@@ -177,6 +203,26 @@ def select_memories(
 
     block = _MEMORY_HEADER + "\n" + "\n".join(rendered) + "\n</user_memory>"
     return MemorySelection(block=block, selected=selected, status="ok")
+
+
+def match_memories_to_forget(
+    memories: list[MemoryItem], query: str, *, cap: int = 25
+) -> list[str]:
+    """IDs of the memories a `forget` should disable: ONLY those at the single
+    highest keyword-overlap tier. Search tolerates weak/partial matches (more
+    context is harmless), but forget is destructive-ish, so a memory that shares
+    only a generic framing token with the query — e.g. "user", which the model
+    puts in nearly every memory ("the user's favorite color…", "the user works
+    as…") — must NOT be swept in alongside the real target. Returns [] when
+    nothing genuinely matches."""
+    q = _tokenize(query)
+    if not q or not memories:
+        return []
+    scored = [(len(q & _tokenize(f"{m.content} {m.kind}")), m) for m in memories]
+    best = max(s for s, _ in scored)
+    if best == 0:
+        return []
+    return [m.id for s, m in scored if s == best][:cap]
 
 
 def clean_remember_args(content: object, kind: object) -> tuple[str, str] | None:
