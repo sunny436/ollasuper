@@ -527,6 +527,23 @@ describe("attachments", () => {
       .query(api.chat.attachments.get, { attachmentId });
     expect(row?.size).toBe(body.length);
   });
+
+  test("an empty (0-byte) file is rejected as empty, not 'too large'", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob([], { type: "text/plain" })),
+    );
+    await expect(
+      t.withIdentity(as(owner)).mutation(api.chat.attachments.register, {
+        workspaceId: ws,
+        storageId,
+        name: "empty.txt",
+        size: 0,
+        contentType: "text/plain",
+      }),
+    ).rejects.toThrow(/File is empty/);
+  });
 });
 
 // ---------------------------------------------------------------------------

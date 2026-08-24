@@ -126,7 +126,12 @@ export const register = mutation({
     // service later pulls the whole blob into memory to build a data: URI.
     const meta = await ctx.db.system.get(args.storageId);
     const realSize = meta?.size ?? args.size;
-    if (realSize <= 0 || realSize > MAX_BYTES) {
+    // Split the guard so an empty (0-byte) file gets a truthful message instead
+    // of the nonsensical "too large".
+    if (realSize <= 0) {
+      throw new ConvexError("File is empty");
+    }
+    if (realSize > MAX_BYTES) {
       throw new ConvexError("File too large (max 20MB)");
     }
     const kind = classify(args.contentType, args.name);
