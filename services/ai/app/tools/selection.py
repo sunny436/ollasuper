@@ -74,6 +74,39 @@ def _tokenize(text: str) -> set[str]:
     return out
 
 
+# QUERY-SIDE ONLY alias map: user vocabulary -> the canonical verb that actually
+# appears in Ollagraph tool metadata. The deterministic ranker is exact-lexical
+# (Layer 2), and the Ollagraph spec is sparse (the scrape tool's only token is
+# "scrape"), so a request that avoids the exact keyword — "fetch the page",
+# "grab the text" — matched nothing. This bridges the common synonyms without a
+# semantic model. Keys are already post-_tokenize (lowercased, singularized).
+# It NEVER touches the tool index and only ADDS query tokens, so it cannot
+# surface a disabled/unauthorized tool (those are filtered before scoring) and
+# cannot lower an exact query's score (the name-exact bonus keys off the
+# ORIGINAL tokens — see _score_entry). Typos are deliberately out of scope.
+_SYNONYMS = {
+    # -> scrape (fetch web content)
+    "fetch": "scrape", "grab": "scrape", "pull": "scrape", "download": "scrape",
+    "retrieve": "scrape", "scraping": "scrape",
+    # -> crawl
+    "spider": "crawl", "crawling": "crawl",
+    # -> extract
+    "parse": "extract", "parsing": "extract", "extraction": "extract",
+    # -> search
+    "lookup": "search", "google": "search",
+    # -> convert
+    "transform": "convert", "conversion": "convert",
+    # -> audit (SEO/AEO page analysis)
+    "analyze": "audit", "analyse": "audit", "inspect": "audit", "examine": "audit",
+}
+
+
+def _expand_synonyms(q: set[str]) -> set[str]:
+    """Add canonical aliases for any query token that has one. Additive only."""
+    extra = {_SYNONYMS[w] for w in q if w in _SYNONYMS}
+    return q | extra if extra else q
+
+
 @dataclass(slots=True)
 class _Entry:
     tool: ToolDefinition
@@ -112,7 +145,9 @@ def _overlap(q: set[str], field: set[str]) -> float:
     return len(q & field) / min(len(q), len(field)) if q and field else 0.0
 
 
-def _score_entry(q: set[str], e: _Entry) -> tuple[float, list[str], str]:
+def _score_entry(
+    q: set[str], e: _Entry, q_exact: set[str] | None = None
+) -> tuple[float, list[str], str]:
     n = _overlap(q, e.name_toks)
     p = _overlap(q, e.path_toks)
     c = _overlap(q, e.cat_toks)
@@ -129,7 +164,10 @@ def _score_entry(q: set[str], e: _Entry) -> tuple[float, list[str], str]:
     if d:
         signals.append("description")
     # Every query term present in the tool name/id is a strong, precise match.
-    if q and q <= e.name_toks:
+    # Keyed off the ORIGINAL (un-expanded) tokens so synonym expansion can only
+    # add candidates, never demote an exact query by widening its token set.
+    exact = q_exact if q_exact is not None else q
+    if exact and exact <= e.name_toks:
         score += _NAME_EXACT_BONUS
         signals.append("name_exact")
 
@@ -189,10 +227,11 @@ class ToolSelector:
         pool = [e for e in index.entries if _passes(e.tool, filters)]
         t_filter = perf_counter()
 
-        q = _tokenize(query)
+        q_exact = _tokenize(query)
+        q = _expand_synonyms(q_exact)
         scored: list[ToolCandidate] = []
         for e in pool:
-            score, signals, reason = _score_entry(q, e)
+            score, signals, reason = _score_entry(q, e, q_exact)
             if score >= threshold:
                 scored.append(
                     ToolCandidate(

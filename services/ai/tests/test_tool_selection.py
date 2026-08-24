@@ -100,6 +100,38 @@ def test_scores_are_normalized_0_to_1():
     assert all(0.0 <= c.score <= 1.0 for c in r.candidates)
 
 
+def test_synonym_fetch_surfaces_scrape():
+    # Regression (Phase-2 2.3): "fetch" is a synonym for scrape. Without query-
+    # side alias expansion the scrape tool scored below min_score and the agent
+    # was bound no web tool at all.
+    r = discover_tools(REG, "fetch the contents of a website")
+    assert not r.no_match
+    assert "scrape" in _ids(r)
+
+
+def test_paraphrase_grab_text_surfaces_scrape():
+    # Regression (Phase-2 2.2): a natural paraphrase that avoids the word
+    # "scrape" must still reach the scrape tool via the alias map.
+    r = discover_tools(REG, "grab the readable text from a web page")
+    assert not r.no_match
+    assert "scrape" in _ids(r)
+
+
+def test_synonym_expansion_preserves_no_match():
+    # Safety: expansion is additive but must not manufacture matches for a query
+    # with no relevant tool.
+    r = discover_tools(REG, "explain gradient descent")
+    assert r.no_match
+    assert r.candidates == []
+
+
+def test_exact_query_unaffected_by_expansion():
+    # A word that is NOT an alias key expands to nothing; the exact-name bonus
+    # (keyed on the original tokens) keeps the exact tool ranked first.
+    assert discover_tools(REG, "crawl").candidates[0].tool.tool_id == "crawl"
+    assert discover_tools(REG, "scrape a web page").candidates[0].tool.tool_id == "scrape"
+
+
 def test_selection_module_is_pure_no_network_no_llm():
     # Structural guarantee: discovery never executes/embeds/binds tools.
     src = (Path(__file__).parent.parent / "app" / "tools" / "selection.py").read_text()
