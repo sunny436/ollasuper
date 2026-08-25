@@ -181,6 +181,7 @@ async def build_user_content(
     *,
     model: str,
     stream_id: str,
+    doc_budget: int | None = None,
 ) -> tuple[str | list[dict], int]:
     """Build the user turn's content, returning (content, image_count).
 
@@ -209,7 +210,10 @@ async def build_user_content(
             raise AttachmentError(f"could not load {att.name}") from e
 
     doc_blocks: list[str] = []
-    doc_budget = settings.ai_max_turn_chars
+    # Phase 6: the shared document char budget is window-aware — the runner passes
+    # a smaller value on a small-context model so the latest turn fits; it defaults
+    # to the flat ai_max_turn_chars for direct/non-runner callers.
+    doc_budget = settings.ai_max_turn_chars if doc_budget is None else doc_budget
     for att in others:
         try:
             text = await _document_text(att, convex, settings, stream_id)

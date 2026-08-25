@@ -52,6 +52,19 @@ class PolicyScope:
     )
     # Ceiling on blast radius the caller may execute WITHOUT approval.
     max_side_effect: SideEffect = SideEffect.READ_ONLY
+    # Phase 5: AUTHORITATIVE caller identity, threaded from the Convex-
+    # authenticated request (never the model). Defaulted empty so READ_SCOPE/
+    # WRITE_SCOPE stay valid permission TEMPLATES and every existing call site +
+    # test constructs unchanged; the runner builds the per-turn scope via
+    # dataclasses.replace(...). user/workspace/tenant feed the outbound Ollagraph
+    # scope headers (the tenant/user isolation boundary the provider enforces);
+    # agent_id/capabilities are placeholders for a future agent/capability
+    # identity and are NOT yet enforced.
+    user_id: str = ""
+    workspace_id: str = ""
+    tenant_id: str = ""
+    agent_id: str | None = None
+    capabilities: frozenset[str] = frozenset()
 
 
 # The default scope for an ordinary authenticated chat turn.

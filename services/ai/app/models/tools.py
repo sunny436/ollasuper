@@ -70,6 +70,12 @@ class ToolDefinition(BaseModel):
     side_effect: SideEffect = SideEffect.READ_ONLY
     enabled: bool = True
     availability: Availability = Availability.AVAILABLE
+    # Phase 2: does the PROVIDER honour an idempotency key for this op (so a retry
+    # is provider-deduped)? Set at discovery when the op declares an
+    # Idempotency-Key param; false otherwise. Ollagraph declares none, so this is
+    # false for every current tool. Read-only tools are safe to retry regardless;
+    # this only makes a SIDE-EFFECTING tool safe to auto-retry.
+    provider_idempotency_supported: bool = False
     version: str = ""
     # Provenance / future request construction. `required_auth` names the
     # provider security scheme this op needs (e.g. BearerAuth vs AdminToken).
@@ -91,6 +97,12 @@ class ToolFilters(BaseModel):
     include_unavailable: bool = False
     # Ceiling on blast radius. None = no ceiling (any side_effect allowed).
     max_side_effect: SideEffect | None = None
+    # Phase 5: the caller's granted permissions. When set, a tool the caller can
+    # never run (its required_permissions are not a subset) is not even ranked —
+    # a scope-shaped narrowing that keeps selection aligned with authorization
+    # (execution still enforces the resolved set + check_tool_policy). None = no
+    # permission prefilter.
+    granted_permissions: frozenset[str] | None = None
 
 
 class ToolCandidate(BaseModel):

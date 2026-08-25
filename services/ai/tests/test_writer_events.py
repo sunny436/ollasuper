@@ -17,7 +17,12 @@ class RecordingConvex:
 
     async def ingress(self, body: dict) -> dict:
         self.calls.append(body)
-        return self._resp
+        resp = dict(self._resp)
+        # Phase 2/3: a live event / execution write is durable — report `persisted`
+        # so the executor's write-ahead lands (a test can override via `_resp`).
+        if body.get("op") in ("event", "execution") and "persisted" not in resp:
+            resp["persisted"] = True
+        return resp
 
 
 def _writer(resp: dict | None = None) -> tuple[DeltaWriter, RecordingConvex]:

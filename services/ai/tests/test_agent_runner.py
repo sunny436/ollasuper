@@ -14,6 +14,8 @@ events fire. Real streamed text with tools is covered by e2e (p-chat.js).
 
 from __future__ import annotations
 
+import json
+
 import httpx
 from langchain_core.messages import AIMessage
 
@@ -38,7 +40,10 @@ class RecordingConvex:
 
     async def ingress(self, body: dict) -> dict:
         self.calls.append(body)
-        return self._resp
+        resp = dict(self._resp)
+        if body.get("op") in ("event", "execution") and "persisted" not in resp:
+            resp["persisted"] = True
+        return resp
 
 
 class FakeTools:
@@ -395,3 +400,157 @@ async def test_memory_off_binds_nothing(monkeypatch):
     )
     assert [c for c in convex.calls if c.get("op") == "remember"] == []
     assert _ops(convex, "event") == []
+
+
+# --- Phase 12b (Stage 1): dynamic capability discovery wired into the runner ---
+def _seo_tool() -> ToolDefinition:
+    # Does NOT match "search the web", so it is absent from the initial discovery.
+    return ToolDefinition(
+        tool_id="broken_links_audit",
+        name="Broken Links Audit",
+        description="Audit a site for broken links",
+        path="/v1/seo/broken-links-audit",
+        method="post",
+        side_effect=SideEffect.READ_ONLY,
+        enabled=True,
+        availability=Availability.AVAILABLE,
+        permissions=ToolPermissions(required_permissions=["ollagraph:read"]),
+        input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+    )
+
+
+def _tool_call_ids(convex: RecordingConvex) -> list[str]:
+    out: list[str] = []
+    for c in _ops(convex, "event"):
+        for ev in c["events"]:
+            if ev["type"] == "TOOL_CALL":
+                out.append(json.loads(ev["payload"]).get("tool_id"))
+    return out
+
+
+def _agent_settings(**over):
+    return make_settings(
+        "http://x",
+        ai_agent_enabled=True,
+        ollagraph_base_url="https://api.ollagraph.test",
+        ollagraph_api_key="osk_test_key_123456",
+        **over,
+    )
+
+
+def _ok_http() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": []}))
+    )
+
+
+async def test_orchestrated_reaches_tool_outside_initial_discovery(monkeypatch):
+    # FLAGSHIP (§8): with dynamic discovery ON, the model reaches a tool that was
+    # NOT in the initial top-K discovery, via find_capabilities -> dynamic load.
+    find = {"name": "find_capabilities",
+            "args": {"query": "broken links audit"}, "id": "c1"}
+    target = {"name": "broken_links_audit", "args": {"q": "x"}, "id": "c2"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain-final"),
+            [
+                AIMessage(content="", tool_calls=[find]),
+                AIMessage(content="", tool_calls=[target]),
+                AIMessage(content="audited"),
+            ],
+        ),
+    )
+    reg = ToolRegistry()
+    reg.register(_read_tool())
+    reg.register(_seo_tool())
+    selector = ToolSelector(reg)
+    http = _ok_http()
+    convex = RecordingConvex()
+    try:
+        await run_generation(
+            _req("search the web for cats"),
+            _agent_settings(ai_orchestrated_runtime_enabled=True),
+            convex,
+            tool_registry=reg,
+            tool_selector=selector,
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+    # the tool ranked OUTSIDE the initial discovery actually executed
+    assert "broken_links_audit" in _tool_call_ids(convex)
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"
+
+
+async def test_orchestrated_off_leaves_tool_unreachable(monkeypatch):
+    # GATE: flag OFF -> find_capabilities is not bound/routed -> the out-of-discovery
+    # tool is never loaded -> never executed. Proves the wiring is flag-gated.
+    find = {"name": "find_capabilities",
+            "args": {"query": "broken links audit"}, "id": "c1"}
+    target = {"name": "broken_links_audit", "args": {"q": "x"}, "id": "c2"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain-final"),
+            [
+                AIMessage(content="", tool_calls=[find]),
+                AIMessage(content="", tool_calls=[target]),
+                AIMessage(content="done"),
+            ],
+        ),
+    )
+    reg = ToolRegistry()
+    reg.register(_read_tool())
+    reg.register(_seo_tool())
+    selector = ToolSelector(reg)
+    http = _ok_http()
+    convex = RecordingConvex()
+    try:
+        await run_generation(
+            _req("search the web for cats"),
+            _agent_settings(),  # ai_orchestrated_runtime_enabled defaults False
+            convex,
+            tool_registry=reg,
+            tool_selector=selector,
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+    assert "broken_links_audit" not in _tool_call_ids(convex)  # never reachable
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"  # still completes
+
+
+async def test_orchestrated_on_normal_tool_flow_still_streams(monkeypatch):
+    # ON path does not regress a normal in-discovery tool flow: events fire + the
+    # run finalizes through the streaming astream path.
+    tc = {"name": "search_web", "args": {"q": "cats"}, "id": "c1"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain-final"),
+            [AIMessage(content="", tool_calls=[tc]), AIMessage(content="answer")],
+        ),
+    )
+    reg = ToolRegistry()
+    reg.register(_read_tool())
+    selector = ToolSelector(reg)
+    http = _ok_http()
+    convex = RecordingConvex()
+    try:
+        await run_generation(
+            _req("search the web for cats"),
+            _agent_settings(ai_orchestrated_runtime_enabled=True),
+            convex,
+            tool_registry=reg,
+            tool_selector=selector,
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+    types = _event_types(convex)
+    assert "TOOL_CALL" in types and "TOOL_RESULT" in types
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"

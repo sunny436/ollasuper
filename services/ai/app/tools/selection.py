@@ -189,6 +189,13 @@ def _passes(tool: ToolDefinition, f: ToolFilters) -> bool:
         tool.side_effect, 0
     ) > _SIDE_EFFECT_RANK.get(f.max_side_effect, 2):
         return False
+    # Phase 5: a tool the caller lacks the permission to run is never ranked/bound
+    # (execution still re-checks via check_tool_policy — this only avoids offering
+    # it). A tool with no required_permissions is unaffected.
+    if f.granted_permissions is not None:
+        required = set(tool.permissions.required_permissions)
+        if required and not required <= f.granted_permissions:
+            return False
     return True
 
 

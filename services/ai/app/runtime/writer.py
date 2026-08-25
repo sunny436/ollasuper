@@ -32,6 +32,7 @@ coordination and no queue depth to tune.
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from collections import deque
@@ -39,7 +40,7 @@ from dataclasses import dataclass, field
 
 from app.clients.convex import ConvexClient, ConvexRejected, ConvexUnavailable
 from app.config import Settings
-from app.logging import get_logger
+from app.logging import get_logger, redact_obj, redact_text
 from app.models.events import EventType, make_event
 
 log = get_logger(__name__)
@@ -359,6 +360,60 @@ class DeltaWriter:
             return {"disabled": 0, "reason": "stream_closed"}
         return {"disabled": int(resp.get("disabled") or 0)}
 
+    async def record_execution(
+        self,
+        execution,
+        *,
+        side_effect: str,
+        args: object = None,
+        result_content: str | None = None,
+        error: dict | None = None,
+        approval_ref: str | None = None,
+    ) -> bool:
+        """Phase 3: durably UPSERT the tool-execution record (`op:"execution"`) — the
+        crash-recovery AUTHORITY. Called at RUNNING (write-ahead, before a side
+        effect), at the terminal state (with result/error), and at WAITING_APPROVAL
+        (with the durable args, so an approved resume executes it directly). Returns
+        whether the record durably LANDED (the write-ahead signal). An OLD Convex
+        without this op 400s → ConvexRejected → False, and the executor's DUAL gate
+        falls back to the TOOL_CALL event's persisted-bool (deploy Python first)."""
+        body: dict = {
+            "op": "execution",
+            "streamId": self._stream_id,
+            "executionId": execution.execution_id,
+            "stepId": execution.step_id,
+            "toolCallId": execution.tool_call_id,
+            "toolId": execution.tool_id,
+            "attemptId": execution.attempt_id,
+            "attempt": execution.attempt,
+            "actionType": "tool",
+            "sideEffect": side_effect,
+            "state": str(execution.state),
+            "inputHash": execution.args_hash,
+            "createdAt": execution.created_at,
+        }
+        if args is not None:
+            body["args"] = args
+        if result_content is not None:
+            body["resultContent"] = result_content[:16000]
+        if error is not None:
+            body["error"] = json.dumps(error, default=str)[:2000]
+        if approval_ref is not None:
+            body["approvalRef"] = approval_ref
+        if execution.started_at is not None:
+            body["startedAt"] = execution.started_at
+        if execution.ended_at is not None:
+            body["endedAt"] = execution.ended_at
+        try:
+            resp = await self._convex.ingress(body)
+        except ConvexUnavailable:
+            return False
+        except ConvexRejected:
+            return False  # old Convex without op:"execution" → dual gate falls back
+        if resp.get("cancel"):
+            self._cancel_requested = True
+        return bool(resp.get("persisted")) and not resp.get("unknown")
+
     # -- typed event protocol (Phase 3) -------------------------------------
     #
     # These make the writer CAPABLE of emitting typed events. Nothing in the
@@ -371,11 +426,29 @@ class DeltaWriter:
         """Protocol alias — text rides the existing high-volume delta channel."""
         await self.push(text)
 
-    async def emit_event(self, type: EventType, **body: object) -> None:
+    async def emit_event(self, type: EventType, **body: object) -> bool:
         """Emit ONE structured typed event. Best-effort like a delta: a lost
         structured event is cosmetic (the terminal FINAL/ERROR is folded
         server-side at finalize). `textOffset` = current text length, so a future
-        phase can interleave the event with the text deterministically."""
+        phase can interleave the event with the text deterministically.
+
+        Phase 2: RETURNS whether the event durably LANDED (persisted and the
+        stream is live) — the executor uses this on a side-effecting TOOL_CALL as
+        a write-ahead: it only calls the provider if the intent was recorded. The
+        ingress client already retries transient failures 4x; `appendEvent`
+        reports `persisted` only when it actually inserted (NOT on a terminal /
+        waiting_approval / unknown stream). Existing callers ignore the bool.
+
+        Phase 8: redact secret SHAPES from tool arguments/results at the emit edge
+        so the durable ledger never persists a leaked token. Shape-based, so real
+        args (query/url/id) are inert; the transient toolExecutions record (resume
+        authority) is untouched, so replay/recovery stay exact."""
+        if "arguments" in body:
+            body["arguments"] = redact_obj(body["arguments"])
+        if "result" in body:
+            body["result"] = redact_obj(body["result"])
+        if isinstance(body.get("content"), str):
+            body["content"] = redact_text(body["content"])
         envelope = make_event(
             type,
             self._event_seq,
@@ -394,12 +467,14 @@ class DeltaWriter:
                     }
                 )
             except ConvexUnavailable:
-                return  # transient; the answer text is unaffected
+                return False  # transient; the answer text is unaffected
             except ConvexRejected:
                 log.error("event_rejected", extra={"stream_id": self._stream_id})
-                return
+                return False
             if resp.get("cancel"):
                 self._cancel_requested = True
+            # Landed iff Convex actually persisted the row AND the stream is live.
+            return bool(resp.get("persisted")) and not resp.get("unknown")
 
     async def request_approval(
         self,

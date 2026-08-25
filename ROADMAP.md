@@ -2,6 +2,25 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Agentic runtime program (Phases 0–12) — architecture built + test-proven
+
+A separate 0–12 program (distinct from the product "Phase N" sections below) built an all-rounder agentic
+runtime in `services/ai`. **Full design reference: [`services/ai/ARCHITECTURE.md`](services/ai/ARCHITECTURE.md).**
+
+- **Phases 1–8 (durable execution engine) are LIVE** in `app/runtime/runner.py`: durable tool execution,
+  identity/lifecycle, at-most-once side effects, crash recovery, all-or-pause approval, bounded parallelism,
+  context budgets, capability authorization, and the observability ledger.
+- **Phases 9–12 (agent · orchestrator · dynamic capability-resolution · skills · `AgenticRuntime`) are built and
+  fully test-proven but NOT yet wired into the live streaming path** (Option A throughout). The live chat still
+  runs the Phase 1–8 loop with `ai_agent_discovery_top_k = 5`.
+- **Verification:** `cd services/ai && uv run ruff check . && uv run pytest` → **437 passed, 11 skipped** (incl.
+  the 21-test Phase-12 E2E suite covering all 22 acceptance scenarios); Convex `bun run test` 192 pass;
+  `bun run typecheck` 7/7. All Phase 9–12 work is Python-only + additive (no Convex/schema change).
+- **Remaining productionization (deferred, deploy-gated):** wire `AgenticRuntime` into the live streaming
+  `runner.py` (the invoke→stream integration + multi-agent streaming), fold window-aware `ContextBudget` into
+  the orchestrated path, add durable Convex ROUTE/SKILL observability events — then prod headed-Chrome
+  verification. Not production-ready merely because tests pass (see ARCHITECTURE.md "Known limitations").
+
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
 

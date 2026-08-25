@@ -6,11 +6,19 @@ import asyncio
 import json
 import time
 from contextlib import aclosing
+from dataclasses import replace
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.agent.budget import (
+    ContextBudget,
+    content_tokens,
+    fit_messages,
+    spec_tokens,
+    tokens,
+)
 from app.agent.context import (
     build_system_prompt,
     to_lc_messages,
@@ -21,17 +29,20 @@ from app.agent.executor import (
     RagContext,
     ToolExecContext,
     build_tool_specs,
+    execute_tool_calls,
 )
 from app.agent.graph import build_graph
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
 from app.agent.llm import build_llm
 from app.agent.memory import (
+    FORGET_TOOL_NAME,
     FORGET_TOOL_SPEC,
     MEMORY_SEARCH_TOOL_NAME,
     MEMORY_SEARCH_TOOL_SPEC,
     REMEMBER_TOOL_NAME,
     REMEMBER_TOOL_SPEC,
 )
+from app.agent.orchestration_tools import FIND_CAPABILITIES_TOOL_SPEC
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
@@ -40,7 +51,9 @@ from app.config import Settings
 from app.ingest.retrieve import render_rag_block, retrieve_context
 from app.logging import get_logger
 from app.models.chat import GenerateRequest
+from app.models.execution import hash_args
 from app.models.tools import SideEffect, ToolFilters
+from app.orchestrator.capabilities import CapabilityResolver
 from app.runtime.writer import DeltaWriter
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
@@ -119,13 +132,24 @@ async def run_generation(
         if latest is None:
             raise ValueError("no user message to respond to")
 
-        # Bound the newest turn BEFORE assembling it. trim() below only bounds
-        # `prior`; the latest turn is where every user-controlled byte lives, so
-        # leaving it unbounded means the token budget controls the wrong half of
-        # the request. See Settings.ai_max_turn_chars.
-        if len(latest.content) > settings.ai_max_turn_chars:
+        # Phase 6: the central per-turn window accounting. Every component below
+        # is measured against this so the assembled input never exceeds the model's
+        # REAL window (req.contextWindow from Convex).
+        cb = ContextBudget(
+            model=req.model,
+            context_window=req.contextWindow,
+            max_output=settings.ai_max_output_tokens,
+            safety_factor=settings.ai_token_safety_factor,
+            base_history_budget=settings.ai_context_budget_tokens,
+        )
+        # Bound the newest turn's message text to a WINDOW-AWARE cap: the flat
+        # ai_max_turn_chars on a large window, but shrunk on a small one so the
+        # latest turn cannot alone overrun the window. trim() below bounds only
+        # `prior`, so the latest turn must be capped here.
+        latest_char_cap = min(settings.ai_max_turn_chars, cb.latest_char_budget())
+        if len(latest.content) > latest_char_cap:
             latest = latest.model_copy(
-                update={"content": latest.content[: settings.ai_max_turn_chars]}
+                update={"content": latest.content[:latest_char_cap]}
             )
 
         # Phase 5: when the RAG tool is enabled AND the user has files, the AGENT
@@ -155,7 +179,17 @@ async def run_generation(
 
         try:
             content, n_images = await build_user_content(
-                latest, convex, settings, model=req.model, stream_id=req.streamId
+                latest,
+                convex,
+                settings,
+                model=req.model,
+                stream_id=req.streamId,
+                # Phase 6: window-aware — on a small window the shared document
+                # budget shrinks so the whole latest turn fits (48k on a large one).
+                doc_budget=min(
+                    settings.ai_max_turn_chars,
+                    max(0, latest_char_cap - len(latest.content)),
+                ),
             )
         except AttachmentError as e:
             error = {"code": ERR_ATTACHMENT, "message": str(e), "retryable": False}
@@ -191,18 +225,12 @@ async def run_generation(
             except Exception:  # noqa: BLE001 - retrieval is non-critical
                 log.warning("rag_skipped", extra={"stream": req.streamId})
 
-        # RAG DISPLACES history 1:1 against the budget (it does not add on top),
-        # so the per-turn cost ceiling and the rolling summary both hold.
-        rag_reserve = int(rag_tokens * settings.ai_token_safety_factor)
-        prior = trim(
-            to_lc_messages(history),
-            model=req.model,
-            n_images=n_images,
-            max_output=settings.ai_max_output_tokens,
-            base_budget=settings.ai_context_budget_tokens - rag_reserve,
-            safety_factor=settings.ai_token_safety_factor,
-            context_window=req.contextWindow,
-        )
+        # Phase 6: the history trim MOVED below (after the system prompt + tool
+        # schemas + latest turn are assembled and measured), so it can be sized
+        # against the TRUE remaining window. `rag_tokens` no longer displaces
+        # history via a hack — the RAG block is part of the system prompt and is
+        # counted directly in `system_tokens`.
+        _ = rag_tokens  # (kept for the observability log above)
 
         system = build_system_prompt(
             custom=req.systemPrompt,
@@ -247,6 +275,17 @@ async def run_generation(
         adapter = None
         rag_ctx = None
         mem_ctx = None
+        # Phase 5: the per-turn authorization scope — the shared READ_SCOPE/
+        # WRITE_SCOPE permission template stamped with the AUTHORITATIVE caller
+        # identity from the authenticated request (never the model). Single source
+        # for the selection permission prefilter (F) AND the execution scope /
+        # outbound tenant headers (B).
+        agent_scope = replace(
+            WRITE_SCOPE if settings.ai_agent_side_effect_enabled else READ_SCOPE,
+            user_id=req.userId,
+            workspace_id=req.workspaceId,
+            tenant_id=req.workspaceId,
+        )
         web_active = (
             settings.agent_enabled
             and tool_registry is not None
@@ -268,19 +307,38 @@ async def run_generation(
                 candidates = tool_selector.select(
                     latest.content,
                     top_k=settings.ai_agent_discovery_top_k,
-                    filters=ToolFilters(max_side_effect=se_ceiling),
+                    filters=ToolFilters(
+                        max_side_effect=se_ceiling,
+                        # Phase 5 (F): don't even rank a tool the caller can't run.
+                        granted_permissions=agent_scope.granted_permissions,
+                    ),
                     min_score=settings.tool_discovery_min_score,
                 ).candidates
                 if candidates:
+                    _reserved = {
+                        KNOWLEDGE_TOOL_NAME,
+                        MEMORY_SEARCH_TOOL_NAME,
+                        REMEMBER_TOOL_NAME,
+                        FORGET_TOOL_NAME,
+                    }
                     web_specs, name_to_id = build_tool_specs(
-                        candidates,
-                        tool_registry,
-                        reserved={
-                            KNOWLEDGE_TOOL_NAME,
-                            MEMORY_SEARCH_TOOL_NAME,
-                            REMEMBER_TOOL_NAME,
-                        },
+                        candidates, tool_registry, reserved=_reserved
                     )
+                    # Phase 6 (B2): bound the bound-schema TOKEN cost. Candidates
+                    # are score-sorted, so drop the lowest-ranked until the specs
+                    # fit the schema budget — a few verbose nested schemas can't
+                    # blow the window, and this is the seam that keeps a 40-50-skill
+                    # future from loading every schema. (Schemas are also counted
+                    # in fixed_tokens by B1; this caps them at the source.)
+                    _schema_budget = cb.input_ceiling // 4
+                    while (
+                        len(candidates) > 1
+                        and spec_tokens(web_specs) > _schema_budget
+                    ):
+                        candidates = candidates[:-1]
+                        web_specs, name_to_id = build_tool_specs(
+                            candidates, tool_registry, reserved=_reserved
+                        )
                     specs += web_specs
                     adapter = OllagraphAdapter(settings, ollagraph_http)
             except Exception:  # noqa: BLE001 — web tools are optional
@@ -332,16 +390,17 @@ async def run_generation(
                     registry=tool_registry,
                     adapter=adapter,
                     writer=writer,
-                    scope=(
-                        WRITE_SCOPE
-                        if settings.ai_agent_side_effect_enabled
-                        else READ_SCOPE
-                    ),
+                    # Phase 5: the per-turn scope carries the authoritative caller
+                    # identity (built above), feeding check_tool_policy + the
+                    # outbound Ollagraph tenant/user headers. Never the model.
+                    scope=agent_scope,
                     name_to_tool_id=name_to_id,
                     result_max_chars=settings.ai_agent_tool_result_max_chars,
                     default_timeout_s=settings.ollagraph_default_tool_timeout_s,
                     tool_max_retries=settings.ai_agent_tool_max_retries,
                     tool_retry_base_s=settings.ai_agent_tool_retry_base_s,
+                    max_tool_calls_per_step=settings.ai_agent_max_tool_calls_per_step,
+                    max_concurrent_tools=settings.ai_agent_max_concurrent_tools,
                     rag=rag_ctx,
                     memory=mem_ctx,
                     approvals={
@@ -350,7 +409,55 @@ async def run_generation(
                     },
                     force_approval_ids=settings.ai_agent_approval_test_tool_ids,
                     approval_ttl_ms=int(settings.ai_agent_approval_ttl_s * 1000),
+                    # Phase 1: durable execution identity. run_id = streamId;
+                    # run_attempt = the resume attempt so a resumed run's step ids
+                    # don't collide with the original attempt's.
+                    run_id=req.streamId,
+                    run_attempt=req.attempt,
+                    # Phase 2: at-most-once policy for ambiguous side-effect outcomes.
+                    retry_ambiguous_side_effects=(
+                        settings.ai_agent_retry_ambiguous_side_effects
+                    ),
                 )
+                # Phase 12b (Stage 1): attach DYNAMIC CAPABILITY DISCOVERY to the
+                # live agent path. The model gains `find_capabilities` to reach ANY
+                # registered tool (no Top-K reachability ceiling); matches are
+                # dynamically loaded by the Phase-10 executor/graph (which update
+                # BOTH the allowlist + bound specs, authorization still enforced per
+                # call). `rebind` targets the NON-streaming `llm_for_tools`, so the
+                # final answer still streams via `llm`. OFF by default → skipped, and
+                # the runner is byte-identical (top-K stays the initial inline set).
+                if (
+                    settings.ai_orchestrated_runtime_enabled
+                    and tool_registry is not None
+                    and tool_selector is not None
+                ):
+                    specs.append(FIND_CAPABILITIES_TOOL_SPEC)
+                    tools_ctx.capabilities = CapabilityResolver(
+                        tool_registry, tool_selector
+                    )
+                    tools_ctx.rebind = llm_for_tools.bind_tools
+                    tools_ctx.pending_capabilities = []
+
+        # Phase 6 (B1): measure the FIXED costs (system prompt + bound tool schemas
+        # + latest turn) now that all are assembled, and trim PRIOR history against
+        # the TRUE remaining window — replacing the old flat-4k system reservation.
+        system_tokens = tokens(system)
+        schema_tokens = spec_tokens(specs)
+        latest_tokens = content_tokens(content)
+        prior = trim(
+            to_lc_messages(history),
+            model=req.model,
+            n_images=n_images,
+            max_output=settings.ai_max_output_tokens,
+            base_budget=settings.ai_context_budget_tokens,
+            safety_factor=settings.ai_token_safety_factor,
+            context_window=req.contextWindow,
+            fixed_tokens=system_tokens + schema_tokens + latest_tokens,
+        )
+        fit_budget = cb.message_fit_budget(
+            system_tokens=system_tokens, schema_tokens=schema_tokens
+        )
 
         graph = build_graph(llm, llm_tools=llm_tools, tools_ctx=tools_ctx)
 
@@ -381,14 +488,81 @@ async def run_generation(
                     tools_ctx.seen_calls[ct.toolId] = json.dumps(
                         ct.args, sort_keys=True, default=str
                     )
+                    tools_ctx.seen_call_set.add(f"{ct.toolId}:{hash_args(ct.args)}")
             completed_steps = len(req.completedTools)
+        # Phase 2: side-effecting tools ATTEMPTED with an UNKNOWN outcome (crash /
+        # INDETERMINATE). Inject an "outcome unknown; not retried" observation and
+        # seed BOTH dedup guards so a re-emit is DEDUPED and never re-executed — the
+        # seed is load-bearing: dedup precedes the approval gate, so it also stops an
+        # approved tool's token from re-authorizing the same call on resume.
+        if req.attemptedTools:
+            for j, at in enumerate(req.attemptedTools):
+                cid = f"resume_attempt_{j}"
+                messages.append(
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": at.toolId, "args": at.args, "id": cid}],
+                    )
+                )
+                messages.append(
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "status": "indeterminate",
+                                "message": "Outcome unknown; not retried.",
+                            }
+                        ),
+                        tool_call_id=cid,
+                    )
+                )
+                if tools_ctx is not None:
+                    tools_ctx.seen_calls[at.toolId] = json.dumps(
+                        at.args, sort_keys=True, default=str
+                    )
+                    tools_ctx.seen_call_set.add(f"{at.toolId}:{hash_args(at.args)}")
+            completed_steps += len(req.attemptedTools)
         # Continue the typed-event seq space whenever events survived (a parked
         # approval with no prior tool still has a surviving APPROVAL_REQUEST), so
         # resumed events don't collide on the (messageId, seq) probe. Independent
         # of completedTools for exactly that case.
         if req.eventSeqBaseline:
             writer.set_event_seq(req.eventSeqBaseline)
-        if req.completedTools or req.eventSeqBaseline:
+        # Phase 3: DIRECTLY execute approved-but-not-yet-run parked tools from their
+        # DURABLE args — deterministic continuation, no model re-emission. Reuses the
+        # full _run_one (write-ahead, terminal record, dedup seed), so the token is
+        # single-use by the state machine and a later model re-emit of the same call
+        # is DEDUPED (no double-fire). Needs tools_ctx (adapter + full registry); if
+        # it could not be rebuilt (rare discovery failure), the tool cannot run here
+        # and the turn continues in text (degraded but safe).
+        if req.approvedPending and tools_ctx is not None:
+            for j, ap in enumerate(req.approvedPending):
+                tools_ctx.approvals[ap.approvalId] = {
+                    "decision": "approved",
+                    "token": ap.token,
+                }
+                cid = f"approved_{j}"
+                out = await execute_tool_calls(
+                    [{"name": ap.toolId, "args": ap.args, "id": cid}], tools_ctx
+                )
+                messages.append(
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": ap.toolId, "args": ap.args, "id": cid}],
+                    )
+                )
+                messages.extend(out)
+            completed_steps += len(req.approvedPending)
+        elif req.approvedPending:
+            log.warning(
+                "approved_pending_unrunnable",
+                extra={"stream_id": req.streamId, "n": len(req.approvedPending)},
+            )
+        if (
+            req.completedTools
+            or req.attemptedTools
+            or req.approvedPending
+            or req.eventSeqBaseline
+        ):
             log.info(
                 "generation_resumed",
                 extra={
@@ -398,11 +572,24 @@ async def run_generation(
                 },
             )
 
+        # Phase 6 (B4): re-fit the assembled list (latest + prior + resumed
+        # completed/attempted/approved tool messages) so a resume with many large
+        # results cannot overrun the window — the oldest raw results compact to
+        # references (the durable checkpoint is untouched, only the in-context copy).
+        messages = fit_messages(messages, fit_budget)
+
         state = {"messages": messages, "system_prompt": system}
         if tools_ctx is not None:
             state["tool_budget"] = max(
                 0, settings.ai_agent_max_steps - completed_steps
             )
+            # Phase 6 (B3): the per-step re-fit budget for the in-graph model node.
+            state["fit_budget"] = fit_budget
+            # Phase 12b (Stage 1): seed the dynamic working set so the model node
+            # re-binds (from bound_specs) + the executor node drains discoveries into
+            # it. Only when dynamic discovery is attached (flag on); else untouched.
+            if tools_ctx.capabilities is not None:
+                state["bound_specs"] = specs
 
         # Phase 7: the total-execution deadline (durable across resume). Convex's
         # `deadlineAt` (epoch ms) is authoritative when present so a crash-loop

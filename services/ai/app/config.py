@@ -90,11 +90,44 @@ class Settings(BaseSettings):
     # Hard ceiling on model<->tool round-trips per turn. At the cap the model is
     # re-invoked WITHOUT tools so it must produce a final text answer.
     ai_agent_max_steps: int = 4
+    # Phase 6: max tool calls executed in ONE step (assistant message). A model
+    # that emits more gets the first N run and the rest refused with a paired
+    # error — bounds a degenerate 50-fan-out (duration/ledger/memory). Generous:
+    # real turns emit a handful. 0 = unlimited.
+    ai_agent_max_tool_calls_per_step: int = 8
+    # Phase 7: max tool calls that run SIMULTANEOUSLY within one step. The batched
+    # (independent) calls of one assistant message run concurrently, bounded by
+    # this semaphore — a typical 3-5 search fan-out runs at once while a burst is
+    # capped (the adapter pool is 16 conns). 0/1 = sequential (no concurrency).
+    ai_agent_max_concurrent_tools: int = 4
     # Per-tool result is truncated to this many chars of serialized JSON before
     # it re-enters the context as a ToolMessage (bounds runaway tool output).
     ai_agent_tool_result_max_chars: int = 8000
     # How many discovered candidates are bound to the model per turn (never 223).
     ai_agent_discovery_top_k: int = 5
+    # Phase 10 — orchestrator + dynamic capability routing. `capability_working_set`
+    # is how many capabilities are INLINED per step (the render limit); it is NOT a
+    # reachability ceiling — `find_capabilities` reaches the rest of the registry on
+    # demand and dynamically loads them. The others bound the orchestrator loop.
+    ai_capability_working_set: int = 8
+    ai_orchestrator_max_steps: int = 6
+    ai_orchestrator_max_delegation_depth: int = 2
+    ai_orchestrator_max_parallel_branches: int = 4
+    # Phase 11 — skills (reusable trusted guidance). `max_active` bounds how many
+    # skills' full instructions compose into ONE request (never all registered);
+    # `min_score` is the tag-anchored activation threshold; `budget_chars` caps the
+    # composed guidance block so the prompt is bounded at 5 or 500 skills.
+    ai_skill_max_active: int = 3
+    ai_skill_min_score: float = 0.2
+    ai_skill_instructions_budget_chars: int = 6000
+    # Phase 12b (Stage 1) — wire the orchestrated runtime's DYNAMIC CAPABILITY
+    # DISCOVERY into the LIVE agent path. OFF by default → the runner is
+    # byte-identical (top-K remains the initial inline set). When on (and the agent
+    # is enabled with a tool registry), the runner binds `find_capabilities` +
+    # attaches the CapabilityResolver, so the model can reach ANY registered tool
+    # (no Top-K reachability ceiling) — streaming preserved (the non-streaming
+    # `llm_for_tools` is rebound; the final answer still streams).
+    ai_orchestrated_runtime_enabled: bool = False
     # Phase 5: expose the EXISTING RAG as an agent-decided `search_knowledge`
     # tool instead of the always-on pre-run injection. OFF by default → the
     # pre-run RAG path (below) runs byte-identically. When on (and the user has
@@ -117,6 +150,12 @@ class Settings(BaseSettings):
     # unavailable). Non-retryable errors (auth/invalid/schema) never retry.
     ai_agent_tool_max_retries: int = 2
     ai_agent_tool_retry_base_s: float = 0.5
+    # Phase 2: at-most-once for side effects. When FALSE (default), an AMBIGUOUS
+    # outcome (timeout/5xx/transport/2xx-unreadable) on a non-idempotent
+    # SIDE-EFFECTING tool is NOT auto-retried — it is recorded INDETERMINATE, so
+    # the effect count stays 0-or-1. Read-only tools always retry. Set true only
+    # if a provider's retries are known safe (it is not, for Ollagraph).
+    ai_agent_retry_ambiguous_side_effects: bool = False
     # Phase 8: durable approval round-trip. TTL for a parked approval — a human
     # deliberation window, kept well above the 300s execution deadline so the two
     # never collide. `approval_test_tool_ids` promotes otherwise READ_ONLY tools

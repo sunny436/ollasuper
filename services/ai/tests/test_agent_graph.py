@@ -43,7 +43,16 @@ class FakeAdapter:
         self.calls = 0
         self._data = data if data is not None else {"ok": True}
 
-    async def call_tool(self, tool, payload, *, input_schema=None) -> dict:
+    async def call_tool(
+        self,
+        tool,
+        payload,
+        *,
+        input_schema=None,
+        idempotency_key=None,
+        user_id="",
+        workspace_id="",
+    ) -> dict:
         self.calls += 1
         return {"ok": True, "tool_id": tool.tool_id, "data": self._data}
 

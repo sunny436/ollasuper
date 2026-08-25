@@ -40,6 +40,20 @@ def redact_text(text: str, secrets: tuple[str, ...] = ()) -> str:
     return _SK.sub("sk-***", text)
 
 
+def redact_obj(obj: Any, secrets: tuple[str, ...] = ()) -> Any:
+    """Phase 8: recursively scrub secret SHAPES from the string leaves of a
+    dict/list/scalar. Used to redact tool arguments/results before they cross into
+    the durable ledger. Shape-based (data-URI/bearer/sk-), so a legit arg
+    (query/url/id) is inert; only an accidental secret leak is masked."""
+    if isinstance(obj, str):
+        return redact_text(obj, secrets)
+    if isinstance(obj, dict):
+        return {k: redact_obj(v, secrets) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_obj(v, secrets) for v in obj]
+    return obj
+
+
 class RedactFilter(logging.Filter):
     def __init__(self, secrets: tuple[str, ...] = ()) -> None:
         super().__init__()

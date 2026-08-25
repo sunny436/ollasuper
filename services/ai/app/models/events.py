@@ -21,6 +21,20 @@ from pydantic import BaseModel, ConfigDict, Field
 EVENT_SCHEMA_VERSION = 1
 
 
+# Phase 8 — the identity contract for the execution ledger. Every record links by
+# these; they are NEVER collapsed. request & run = streamId (one generation) ·
+# step_id = f"{run}:a{attempt}:s{n}" (one executor pass) · model_call_id (uuid4,
+# per model invocation) · execution_id (uuid4, per tool execution) · attempt_id =
+# f"{execution_id}:a{n}" (per retry) · tool_call_id (the model's, correlation only)
+# · provider_request_id (per outbound provider call: the model's from
+# response_metadata, the tool's from the Ollagraph response header) · agent_id /
+# skill_id (RESERVED — no agents/skills yet; PolicyScope.agent_id is the placeholder).
+# Metrics on the ledger: model + tool duration_ms, input/output tokens, retry
+# attempt, terminal state, result_size, provider_request_id, finish_reason;
+# latency/TTFT/tokens/cost-basis aggregate on the chatMessages record; approval
+# wait is derivable from chatApprovals createdAt->resolvedAt.
+
+
 class EventType(StrEnum):
     TEXT_DELTA = "TEXT_DELTA"
     TOOL_CALL = "TOOL_CALL"
@@ -29,6 +43,8 @@ class EventType(StrEnum):
     CITATION = "CITATION"
     APPROVAL_REQUEST = "APPROVAL_REQUEST"
     ARTIFACT = "ARTIFACT"
+    # Phase 8: the model's decision at one orchestration step (observability).
+    MODEL_CALL = "MODEL_CALL"
     FINAL = "FINAL"
     ERROR = "ERROR"
 
@@ -42,7 +58,21 @@ class TextDeltaPayload(_Payload):
     delta: str
 
 
-class ToolCallPayload(_Payload):
+# Phase 1: the app-authoritative execution identity + lifecycle state, carried
+# additively on the two tool events. All optional (older/absent producers omit
+# them) and default None, so this is a backward-compatible schema-v1 addition;
+# Convex stores the whole payload as an opaque string and ignores these fields,
+# and `collectCompletedTools` keys on the pre-existing call_id/tool_id/status.
+class _ExecutionFields(_Payload):
+    execution_id: str | None = None
+    run_id: str | None = None
+    step_id: str | None = None
+    attempt_id: str | None = None
+    attempt: int | None = None
+    state: str | None = None
+
+
+class ToolCallPayload(_ExecutionFields):
     tool_name: str
     call_id: str
     arguments: dict = Field(default_factory=dict)
@@ -51,9 +81,14 @@ class ToolCallPayload(_Payload):
     # tool_id or a reserved tool name). tool_call_id is model-generated per turn
     # and not resume-stable, so resume reconstruction keys on this instead.
     tool_id: str | None = None
+    # Phase 2: the tool's side-effect class, stamped so the durable event log is
+    # SELF-DESCRIBING — resume classifies a crash-orphan (a TOOL_CALL with no
+    # TOOL_RESULT) without re-discovering the tool. Absent → resume fails safe
+    # (treats it as side-effecting → INDETERMINATE, never re-executes).
+    side_effect: str | None = None
 
 
-class ToolResultPayload(_Payload):
+class ToolResultPayload(_ExecutionFields):
     call_id: str
     status: str = "success"
     result: dict | None = None
@@ -62,6 +97,32 @@ class ToolResultPayload(_Payload):
     # source. Ollagraph omits it (its `result` already IS the content); the RAG/
     # memory branches set it because their `result` is only a summary.
     content: str | None = None
+    # Phase 8 metrics (all optional, additive): the tool's provider request id, the
+    # bounded result size in chars, and the call duration.
+    provider_request_id: str | None = None
+    result_size: int | None = None
+    duration_ms: int | None = None
+
+
+class ModelCallPayload(_Payload):
+    """Phase 8: the model's decision at one orchestration step — the missing
+    model-decision half of the trace. Observability only (re-derived on resume, so
+    not a recovery record). `decision` is 'text' or 'tools:{n}'."""
+
+    model_call_id: str
+    run_id: str | None = None
+    model: str
+    attempt: int | None = None
+    decision: str
+    duration_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    provider_request_id: str | None = None
+    finish_reason: str | None = None
+    # Phase 9: the agent identity this model decision belongs to (present only on
+    # an agent-run MODEL_CALL; None/omitted for the default assistant). Optional +
+    # opaque in Convex, so no schema push.
+    agent_id: str | None = None
 
 
 class ToolProgressPayload(_Payload):
@@ -108,6 +169,7 @@ PAYLOAD_MODELS: dict[EventType, type[_Payload]] = {
     EventType.CITATION: CitationPayload,
     EventType.APPROVAL_REQUEST: ApprovalRequestPayload,
     EventType.ARTIFACT: ArtifactPayload,
+    EventType.MODEL_CALL: ModelCallPayload,
     EventType.FINAL: FinalPayload,
     EventType.ERROR: ErrorPayload,
 }

@@ -89,6 +89,32 @@ class CompletedTool(BaseModel):
     resultContent: str = Field(default="", max_length=16000)
 
 
+class AttemptedTool(BaseModel):
+    """Phase 2 — a side-effecting tool that was ATTEMPTED but whose outcome is
+    unknown (crash-orphan TOOL_CALL, or a recorded INDETERMINATE). On resume the
+    runner injects an 'outcome unknown; not retried' observation and seeds the
+    dedup guards so it is NEVER re-executed (at-most-once)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    toolId: str = Field(max_length=200)
+    args: dict = Field(default_factory=dict)
+
+
+class ApprovedPending(BaseModel):
+    """Phase 3 — an approved tool that was parked WAITING_APPROVAL and never got to
+    run before the crash/suspend. Carries the DURABLE args + the server-minted
+    token, so the runner EXECUTES it directly on resume (no model re-emission).
+    Reconstructed from the durable `toolExecutions` table."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    toolId: str = Field(max_length=200)
+    args: dict = Field(default_factory=dict)
+    token: str = Field(max_length=200)
+    approvalId: str = Field(max_length=200)
+
+
 class ApprovalDecision(BaseModel):
     """Phase 8 — a resolved tool-approval decision, threaded back on the resume
     dispatch. `token` (server-minted on approve, never seen by the model) is the
@@ -98,7 +124,12 @@ class ApprovalDecision(BaseModel):
 
     approvalId: str = Field(max_length=200)
     toolId: str = Field(max_length=200)
-    argsKey: str = Field(default="", max_length=8000)
+    # A5: new approvals send the 16-char args HASH as the key, so this is tiny in
+    # steady state. The ceiling is RAISED (not lowered) to the turn-char budget so
+    # a pre-A5 row whose `argsKey` is a full args JSON — written by the old worker
+    # and threaded across the Python deploy — still validates instead of 422-ing
+    # the resume. `argsKey` is store/observability only; matching is by approvalId.
+    argsKey: str = Field(default="", max_length=48_000)
     decision: str = Field(max_length=20)
     token: str | None = Field(default=None, max_length=200)
 
@@ -117,8 +148,13 @@ class GenerateRequest(BaseModel):
     streamId: str
     threadId: str
     messageId: str
-    userId: str
-    workspaceId: str
+    # Phase 5: the AUTHORITATIVE caller identity threaded into the per-turn scope
+    # + the outbound Ollagraph tenant/user headers. Required non-empty so an empty
+    # identity fails loud at the API boundary and can never silently omit the
+    # isolation scope (dispatchPayload always supplies these from the
+    # authenticated stream).
+    userId: str = Field(min_length=1, max_length=200)
+    workspaceId: str = Field(min_length=1, max_length=200)
     # A plain str, not ModelId: the model list is fetched live from
     # OpenRouter, so an enum here would 422 every model but three. ModelId
     # survives below as the key for the curated per-model tuning tables.
@@ -152,6 +188,16 @@ class GenerateRequest(BaseModel):
     attempt: int = 0
     deadlineAt: int = 0
     completedTools: list[CompletedTool] = Field(default_factory=list, max_length=64)
+    # Phase 2: side-effecting tools attempted with an UNKNOWN outcome (crash /
+    # INDETERMINATE). Replayed as an 'outcome unknown; not retried' observation +
+    # seeded into the dedup guards so they are never re-executed. Default-empty so
+    # extra="forbid" never 400s a pre-Phase-2 caller.
+    attemptedTools: list[AttemptedTool] = Field(default_factory=list, max_length=64)
+    # Phase 3: approved-but-not-yet-run parked tools, reconstructed from the durable
+    # toolExecutions table. The runner executes them DIRECTLY on resume (deterministic
+    # continuation — no model re-emission). Default-empty so a pre-Phase-3 Convex that
+    # omits it is fine, and extra="forbid" never 400s (deploy Python before Convex).
+    approvedPending: list[ApprovedPending] = Field(default_factory=list, max_length=64)
     eventSeqBaseline: int = 0
     # Phase 8: resolved approval decisions for this stream (empty on a normal
     # turn). Default-empty so extra="forbid" never 400s a pre-Phase-8 caller.
