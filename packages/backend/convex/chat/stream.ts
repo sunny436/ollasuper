@@ -14,6 +14,7 @@ import { loadMemoriesForDispatch } from "../memories";
 import { userHasReadyFiles } from "../userFiles";
 import { resolvedApprovalsForStream } from "./approvals";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
+import { deleteExecutions } from "./executions";
 import { buildHistory } from "./messages";
 import { contextWindowFor } from "./models";
 
@@ -179,10 +180,25 @@ export const stop = mutation({
       .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
       .collect();
     for (const e of events) await ctx.db.delete(e._id);
+    // Phase 4: BEFORE retiring the execution checkpoint, detect a side effect that
+    // was still in flight at the stop. The write-ahead invariant guarantees a
+    // RUNNING non-read-only row exists iff the effect MAY have fired; Ollagraph
+    // can't be interrupted, so the tool may complete after this finalize. Mark the
+    // message honestly rather than claim a clean cancel.
+    const execRows = await ctx.db
+      .query("toolExecutions")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .collect();
+    const inflight = execRows.find(
+      (r) => r.state === "running" && r.sideEffect !== "read_only",
+    );
+    // Phase 3: retire the durable execution checkpoint too (aborted is terminal).
+    await deleteExecutions(ctx, messageId);
     await ctx.db.patch(messageId, {
       content: partial,
       status: "aborted",
       updatedAt: now,
+      ...(inflight ? { interruptedSideEffect: { toolId: inflight.toolId } } : {}),
     });
     await ctx.db.patch(thread._id, {
       streamingMessageId: undefined,
@@ -222,8 +238,15 @@ async function collectCompletedTools(
     .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
     .collect();
   let maxSeq = -1;
-  const calls = new Map<string, { toolId: string; args: unknown }>();
-  const results = new Map<string, string>();
+  // Per model call_id: the TOOL_CALL facts, and the TOOL_RESULT facts (if any).
+  const calls = new Map<
+    string,
+    { toolId: string; args: unknown; sideEffect?: string }
+  >();
+  const results = new Map<
+    string,
+    { state?: string; status?: string; content: string }
+  >();
   for (const e of rows) {
     if (e.seq > maxSeq) maxSeq = e.seq;
     let body: Record<string, unknown>;
@@ -235,27 +258,135 @@ async function collectCompletedTools(
     const cid = body.call_id;
     if (typeof cid !== "string") continue;
     if (e.type === "TOOL_CALL" && typeof body.tool_id === "string") {
-      calls.set(cid, { toolId: body.tool_id, args: body.arguments ?? {} });
-    } else if (e.type === "TOOL_RESULT" && body.status === "success") {
+      calls.set(cid, {
+        toolId: body.tool_id,
+        args: body.arguments ?? {},
+        sideEffect:
+          typeof body.side_effect === "string" ? body.side_effect : undefined,
+      });
+    } else if (e.type === "TOOL_RESULT") {
       const content =
         typeof body.content === "string"
           ? body.content
           : JSON.stringify(body.result ?? {});
-      results.set(cid, content.slice(0, 16000));
+      results.set(cid, {
+        state: typeof body.state === "string" ? body.state : undefined,
+        status: typeof body.status === "string" ? body.status : undefined,
+        content: content.slice(0, 16000),
+      });
     }
+  }
+  // Phase 2: classify each op off the durable lifecycle `state`, so resume is
+  // reconstructable from the log alone. SUCCEEDED -> replay the real result;
+  // INDETERMINATE (or a crash-orphan side-effecting TOOL_CALL) -> ATTEMPTED, never
+  // re-run; everything else -> drop (definite non-execution / read-only re-run).
+  const completedTools: { toolId: string; args: unknown; resultContent: string }[] =
+    [];
+  const attemptedTools: { toolId: string; args: unknown }[] = [];
+  for (const [cid, call] of calls) {
+    const res = results.get(cid);
+    if (res === undefined) {
+      // Crash orphan (TOOL_CALL, no TOOL_RESULT). Side-effecting (or an
+      // un-stamped built-in/legacy op -> FAIL SAFE) may have executed -> attempted.
+      if (call.sideEffect !== "read_only") {
+        attemptedTools.push({ toolId: call.toolId, args: call.args });
+      }
+      continue;
+    }
+    if (res.state === "succeeded") {
+      completedTools.push({
+        toolId: call.toolId,
+        args: call.args,
+        resultContent: res.content,
+      });
+    } else if (res.state === "indeterminate") {
+      attemptedTools.push({ toolId: call.toolId, args: call.args });
+    } else if (res.state === undefined && res.status === "success") {
+      // Built-in / legacy event with no lifecycle state: fall back to the
+      // pre-Phase-2 success rule so built-in resume is preserved.
+      completedTools.push({
+        toolId: call.toolId,
+        args: call.args,
+        resultContent: res.content,
+      });
+    }
+    // state in {failed, timed_out, deduped, cancelled} (or no-state non-success)
+    // -> drop; let the model re-decide.
+  }
+  return { completedTools, attemptedTools, eventSeqBaseline: maxSeq + 1 };
+}
+
+/**
+ * Phase 3: classify durable `toolExecutions` rows into the resume packet. Groups
+ * by (toolId, inputHash) and keeps the FURTHEST-PROGRESSED state, so a
+ * continuation's RUNNING/terminal row SUPPRESSES re-firing its own stale
+ * WAITING_APPROVAL row (the one hazard the table introduces, design-closed here).
+ */
+const _EXEC_RANK: Record<string, number> = {
+  pending: 0,
+  cancelled: 1,
+  deduped: 1,
+  failed: 2,
+  timed_out: 2,
+  waiting_approval: 3,
+  running: 4,
+  indeterminate: 5,
+  succeeded: 6,
+};
+function classifyExecutions(
+  rows: Doc<"toolExecutions">[],
+  approvalsByRef: Map<string, { decision: string; token: string | null }>,
+) {
+  const groups = new Map<string, Doc<"toolExecutions">>();
+  for (const r of rows) {
+    const key = `${r.toolId}:${r.inputHash}`;
+    const cur = groups.get(key);
+    const rank = _EXEC_RANK[r.state] ?? 0;
+    const better =
+      !cur ||
+      rank > (_EXEC_RANK[cur.state] ?? 0) ||
+      (rank === (_EXEC_RANK[cur.state] ?? 0) && r.updatedAt > cur.updatedAt);
+    if (better) groups.set(key, r);
   }
   const completedTools: {
     toolId: string;
     args: unknown;
     resultContent: string;
   }[] = [];
-  for (const [cid, call] of calls) {
-    const resultContent = results.get(cid);
-    if (resultContent !== undefined) {
-      completedTools.push({ toolId: call.toolId, args: call.args, resultContent });
+  const attemptedTools: { toolId: string; args: unknown }[] = [];
+  const approvedPending: {
+    toolId: string;
+    args: unknown;
+    token: string;
+    approvalId: string;
+  }[] = [];
+  for (const r of groups.values()) {
+    if (r.state === "succeeded") {
+      completedTools.push({
+        toolId: r.toolId,
+        args: r.args ?? {},
+        resultContent: r.resultContent ?? "",
+      });
+    } else if (r.state === "running" || r.state === "indeterminate") {
+      // running-orphan (crashed mid-flight) or recorded indeterminate → attempted,
+      // never re-run (at-most-once).
+      attemptedTools.push({ toolId: r.toolId, args: r.args ?? {} });
+    } else if (r.state === "waiting_approval" && r.approvalRef) {
+      const ap = approvalsByRef.get(r.approvalRef);
+      if (ap && ap.decision === "approved" && ap.token) {
+        approvedPending.push({
+          toolId: r.toolId,
+          args: r.args ?? {},
+          token: ap.token,
+          approvalId: r.approvalRef,
+        });
+      }
+      // rejected / expired / pending → drop (the existing req.approvals re-emit
+      // path still handles a rejected tool).
     }
+    // failed / timed_out / cancelled / deduped / pending → drop; model re-decides.
   }
-  return { completedTools, eventSeqBaseline: maxSeq + 1 };
+  return { completedTools, attemptedTools, approvedPending };
 }
 
 export const dispatchPayload = internalQuery({
@@ -297,13 +428,38 @@ export const dispatchPayload = internalQuery({
     // on (messageId, seq). A FIRST dispatch always has hasEvents=false (Python
     // hasn't emitted yet), so this is a no-op there.
     const attempt = stream.attempts ?? 0;
-    const resume =
-      attempt > 0 || (stream.hasEvents ?? false)
-        ? await collectCompletedTools(ctx, stream.messageId)
-        : { completedTools: [], eventSeqBaseline: 0 };
+    const doResume = attempt > 0 || (stream.hasEvents ?? false);
     // Phase 8: resolved approval decisions (+token) so the resumed run executes
     // an approved tool / injects a rejection. Empty on a normal turn.
     const approvals = await resolvedApprovalsForStream(ctx, streamId);
+    // Phase 3: the durable `toolExecutions` table is the recovery AUTHORITY — read
+    // it and classify. If it has NO rows for this message (a pre-Phase-3 or
+    // never-recorded stream), FALL BACK to the event-log reconstruction (the
+    // deploy-transition bridge). `eventSeqBaseline` always comes from the event log
+    // (the writer's independent seq space) — so collectCompletedTools still runs.
+    const events = doResume
+      ? await collectCompletedTools(ctx, stream.messageId)
+      : { completedTools: [], attemptedTools: [], eventSeqBaseline: 0 };
+    const execRows = doResume
+      ? await ctx.db
+          .query("toolExecutions")
+          .withIndex("by_message", (q) => q.eq("messageId", stream.messageId))
+          .collect()
+      : [];
+    const approvalsByRef = new Map(
+      approvals.map((a) => [
+        a.approvalId,
+        { decision: a.decision, token: a.token ?? null },
+      ]),
+    );
+    const exec = classifyExecutions(execRows, approvalsByRef);
+    const useTable = execRows.length > 0;
+    const resume = {
+      completedTools: useTable ? exec.completedTools : events.completedTools,
+      attemptedTools: useTable ? exec.attemptedTools : events.attemptedTools,
+      approvedPending: exec.approvedPending, // only the table durably holds parked args
+      eventSeqBaseline: events.eventSeqBaseline,
+    };
 
     return {
       streamId,
@@ -326,6 +482,9 @@ export const dispatchPayload = internalQuery({
       attempt,
       deadlineAt: stream.deadlineAt ?? 0,
       completedTools: resume.completedTools,
+      attemptedTools: resume.attemptedTools,
+      // Phase 3 durable approval CONTINUATION (execute directly, no model re-emit).
+      approvedPending: resume.approvedPending,
       eventSeqBaseline: resume.eventSeqBaseline,
       // Phase 8 durable approval decisions.
       approvals,
@@ -410,7 +569,18 @@ export const dispatch = internalAction({
         },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) {
+      // Phase 4 stop-race: a 409 means the worker still holds this messageId in
+      // its Registry — the OLD generation is unwinding after a stop, and this is
+      // a `retry` that reused the messageId (a fresh streamId, same messageId).
+      // failStreaming here is a FALSE terminal failure; instead resume in ~2s
+      // (by then the old run released the messageId in its `finally`). Backstop:
+      // reapStalled re-dispatches a still-queued stream within the attempts
+      // budget. Other non-2xx (429/5xx) stay terminal — a genuine "can't serve".
+      if (res.status === 409) {
+        await ctx.scheduler.runAfter(2000, internal.chat.stream.redispatch, {
+          streamId,
+        });
+      } else if (!res.ok) {
         await ctx.runMutation(internal.chat.ingest.failStream, {
           streamId,
           error: `Inference service responded ${res.status}`,
