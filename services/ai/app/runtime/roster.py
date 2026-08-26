@@ -15,8 +15,10 @@ read-only tools). Side-effecting work stays with the top agent, approval-gated.
 
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING
 
+from app.agent.orchestration_tools import DELEGATE_TOOL_SPEC
 from app.agent.spec import (
     DEFAULT_AGENT,
     AgentSpec,
@@ -131,6 +133,24 @@ PRODUCTION_SKILLS: list[SkillManifest] = [
         ),
     ),
 ]
+
+
+def build_delegate_spec() -> dict:
+    """A `delegate_to_agent` spec whose `role` is CONSTRAINED (enum) and documented
+    to the ACTUAL roster. The static spec advertises example roles that drift from
+    the roster, so the model delegates to non-existent roles and every delegation
+    fails as 'unknown agent role' (found in Phase-13 prod verification). Deriving the
+    enum from PRODUCTION_AGENTS makes delegation reliable and keeps the tool honest
+    as the roster grows — the name is unchanged, so executor routing is unaffected."""
+    roles = [a.agent_id for a in PRODUCTION_AGENTS]
+    hints = "; ".join(f"'{a.agent_id}' ({a.role})" for a in PRODUCTION_AGENTS)
+    spec = copy.deepcopy(DELEGATE_TOOL_SPEC)
+    role = spec["function"]["parameters"]["properties"]["role"]
+    role["enum"] = roles
+    role["description"] = (
+        f"The specialist to delegate to — MUST be one of: {hints}."
+    )
+    return spec
 
 
 def build_live_runtime(
