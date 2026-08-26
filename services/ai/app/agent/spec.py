@@ -47,6 +47,11 @@ class CapabilityPolicy:
     # None = every shared candidate; a frozenset = an explicit allowlist of
     # tool_ids (an agent-specific / restricted tool set).
     tool_ids: frozenset[str] | None = None
+    # Phase 2: an allowed-CATEGORY set (a coarse companion to `tool_ids`). When set,
+    # a tool is in scope iff its category is here OR its tool_id is in `tool_ids`;
+    # enforced at bind, discovery (find_capabilities) AND execution. None (default)
+    # = no category restriction, byte-identical to today.
+    categories: frozenset[str] | None = None
     include_shared: bool = True
     # A read-only agent (False) drops side-effecting candidates AND runs under
     # READ_SCOPE; a side-effect agent (True) runs under WRITE_SCOPE — still

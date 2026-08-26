@@ -577,7 +577,7 @@ async def run_generation(
                                 tools_ctx.force_approval_ids
                                 | prepared_v2.force_approval_ids
                             )
-                        specs.append(build_delegate_spec())
+                        specs.append(build_delegate_spec(settings))
                     else:
                         # Phase 13 (v2-OFF): byte-identical wiring. Skills + delegation
                         # into the SAME streaming path; delegate_to_agent rides the
@@ -621,7 +621,7 @@ async def run_generation(
                                         ],
                                     },
                                 )
-                        specs.append(build_delegate_spec())
+                        specs.append(build_delegate_spec(settings))
                         tools_ctx.delegator = orchestrator.make_delegator(
                             AgentEnv(
                                 writer=writer,

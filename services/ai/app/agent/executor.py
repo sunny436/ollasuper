@@ -1297,6 +1297,17 @@ async def _run_find_capabilities(
         limit=limit if isinstance(limit, int) and limit > 0 else None,
         scope=ctx.scope,
     )
+    # Phase 2: enforce the running agent's capability scope on DISCOVERY, not just at
+    # execution. A scoped agent (e.g. the SEO specialist) must never load OR even see
+    # a tool outside its read-only allowlist, even if it lexically matched the query.
+    # Unrestricted scopes (existing agents) are byte-identical (the guard is skipped).
+    if (
+        ctx.scope.allowed_categories is not None
+        or ctx.scope.allowed_tool_ids is not None
+    ):
+        resolved = [
+            r for r in resolved if check_tool_policy(r.tool, ctx.scope).allowed
+        ]
     await ctx.writer.emit_event(
         EventType.TOOL_CALL,
         tool_name=FIND_CAPABILITIES_TOOL_NAME,

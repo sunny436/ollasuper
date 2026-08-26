@@ -26,7 +26,11 @@ from app.agent.spec import (
     ContextPolicy,
 )
 from app.orchestrator.capabilities import CapabilityResolver
+from app.orchestrator.intents import register_intents
 from app.orchestrator.orchestrator import AgentRegistry, Orchestrator
+from app.seo.agent import SEO_AGENT
+from app.seo.capabilities import seo_intent_map
+from app.seo.skill import SEO_SKILL
 from app.skills.manifest import SkillManifest
 from app.skills.registry import SkillRegistry
 
@@ -135,15 +139,37 @@ PRODUCTION_SKILLS: list[SkillManifest] = [
 ]
 
 
-def build_delegate_spec() -> dict:
+def effective_agents(settings: Settings | None = None) -> list[AgentSpec]:
+    """The live agent roster for these settings — the static roster plus any
+    flag-gated specialists. `ai_seo_enabled` appends the ONE SEO agent; OFF (or no
+    settings) is byte-identical to `PRODUCTION_AGENTS`."""
+    agents = list(PRODUCTION_AGENTS)
+    if settings is not None and getattr(settings, "ai_seo_enabled", False):
+        agents.append(SEO_AGENT)
+    return agents
+
+
+def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
+    """The live skill roster for these settings — the static roster plus any
+    flag-gated skills. `ai_seo_enabled` appends the ONE SEO skill; OFF (or no
+    settings) is byte-identical to `PRODUCTION_SKILLS`."""
+    skills = list(PRODUCTION_SKILLS)
+    if settings is not None and getattr(settings, "ai_seo_enabled", False):
+        skills.append(SEO_SKILL)
+    return skills
+
+
+def build_delegate_spec(settings: Settings | None = None) -> dict:
     """A `delegate_to_agent` spec whose `role` is CONSTRAINED (enum) and documented
     to the ACTUAL roster. The static spec advertises example roles that drift from
     the roster, so the model delegates to non-existent roles and every delegation
     fails as 'unknown agent role' (found in Phase-13 prod verification). Deriving the
-    enum from PRODUCTION_AGENTS makes delegation reliable and keeps the tool honest
-    as the roster grows — the name is unchanged, so executor routing is unaffected."""
-    roles = [a.agent_id for a in PRODUCTION_AGENTS]
-    hints = "; ".join(f"'{a.agent_id}' ({a.role})" for a in PRODUCTION_AGENTS)
+    enum from the EFFECTIVE roster makes delegation reliable and keeps the tool honest
+    as the roster grows (incl. the flag-gated SEO agent) — the name is unchanged, so
+    executor routing is unaffected."""
+    agents = effective_agents(settings)
+    roles = [a.agent_id for a in agents]
+    hints = "; ".join(f"'{a.agent_id}' ({a.role})" for a in agents)
     spec = copy.deepcopy(DELEGATE_TOOL_SPEC)
     role = spec["function"]["parameters"]["properties"]["role"]
     role["enum"] = roles
@@ -160,8 +186,12 @@ def build_live_runtime(
     the production roster. The orchestrator is used ONLY for `_make_delegator` and
     skill discovery — the live runner keeps its own streaming graph; it never calls
     `orchestrator.run` (which is batch)."""
-    agent_registry = AgentRegistry([DEFAULT_AGENT, *PRODUCTION_AGENTS])
-    skill_registry = SkillRegistry(PRODUCTION_SKILLS)
+    if getattr(settings, "ai_seo_enabled", False):
+        # Additively register the SEO capability intents (never clobbers a core
+        # intent like crawl.run). Idempotent, so repeated builds are safe.
+        register_intents(seo_intent_map())
+    agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
+    skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(
         resolver=resolver,
         registry=agent_registry,
