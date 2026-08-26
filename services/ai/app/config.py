@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     # (no Top-K reachability ceiling) — streaming preserved (the non-streaming
     # `llm_for_tools` is rebound; the final answer still streams).
     ai_orchestrated_runtime_enabled: bool = False
+    # Core capabilities ALWAYS made available to the agent (independent of whether
+    # the user's wording lexically matches them). Each string is a canonical intent;
+    # the top discovery hit for it is unioned into the working set every agent turn.
+    # Fixes the class of bug where "what is the current price of X" surfaced no web
+    # tool (n_scored=0) because the query shares no tokens with the search tool, so
+    # the user had to say "search on web". Verified on the live catalogue: "search
+    # the web" -> search_endpoint_v1_search_post (0.675). Add intents to cover more
+    # core capabilities; the long tail stays reachable via find_capabilities.
+    ai_agent_core_capability_queries: list[str] = ["search the web"]
     # Phase 5: expose the EXISTING RAG as an agent-decided `search_knowledge`
     # tool instead of the always-on pre-run injection. OFF by default → the
     # pre-run RAG path (below) runs byte-identically. When on (and the user has

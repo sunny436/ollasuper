@@ -554,3 +554,56 @@ async def test_orchestrated_on_normal_tool_flow_still_streams(monkeypatch):
     assert "TOOL_CALL" in types and "TOOL_RESULT" in types
     finals = _ops(convex, "finalize")
     assert len(finals) == 1 and finals[0]["status"] == "done"
+
+
+# --- FIX: autonomous capability selection (core-capability seeding + orientation)
+async def test_core_seeding_binds_web_tool_for_keywordless_query(monkeypatch):
+    # The "current macbook price" bug: a natural query with NO lexical overlap with
+    # the web tool. Without seeding the model gets NO tool (n_scored=0) and answers
+    # from memory; with seeding the web capability is ALWAYS bound (flag-independent)
+    # so the model can search — and the system prompt now orients it to.
+    tc = {"name": "search_web", "args": {"q": "macbook air m5 price india"}, "id": "c1"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain"),
+            [AIMessage(content="", tool_calls=[tc]), AIMessage(content="₹1,49,900")],
+        ),
+    )
+    reg = ToolRegistry()
+    reg.register(_read_tool())  # tool_id search_web, name "Search Web", /v1/search
+    selector = ToolSelector(reg)
+    http = _ok_http()
+    convex = RecordingConvex()
+    try:
+        await run_generation(
+            # NO "search"/"web" tokens — lexical discovery alone returns nothing.
+            _req("what is the current macbook air m5 price in india"),
+            _agent_settings(),  # agent on; orchestrated flag OFF (seeding is flagless)
+            convex,
+            tool_registry=reg,
+            tool_selector=selector,
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+    # the web tool was bound + executed despite the query not matching it lexically
+    assert "search_web" in _tool_call_ids(convex)
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"
+
+
+def test_capability_orientation_only_when_agentic():
+    from app.agent.context import CAPABILITY_ORIENTATION, build_system_prompt
+    # agentic -> orientation leads, even when the user set custom instructions.
+    p = build_system_prompt(
+        custom="Talk like a pirate.", about=None, style=None, summary=None,
+        summary_through_seq=0, agentic=True,
+    )
+    assert p.startswith(CAPABILITY_ORIENTATION) and "pirate" in p
+    # not agentic (plain chat, no capabilities) -> orientation absent, unchanged.
+    p2 = build_system_prompt(
+        custom=None, about=None, style=None, summary=None,
+        summary_through_seq=0, agentic=False,
+    )
+    assert CAPABILITY_ORIENTATION not in p2

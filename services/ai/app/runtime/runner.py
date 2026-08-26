@@ -232,6 +232,11 @@ async def run_generation(
         # counted directly in `system_tokens`.
         _ = rag_tokens  # (kept for the observability log above)
 
+        # The agentic capability orientation is included whenever the model will
+        # actually have a capability this turn (web tools, RAG tool, or memory
+        # tools) — so it can autonomously choose the right source and the user
+        # never has to say "search the web" / "use my PDF".
+        agentic = settings.agent_enabled or rag_as_tool or memory_as_tool
         system = build_system_prompt(
             custom=req.systemPrompt,
             about=req.customInstructionsAbout,
@@ -239,6 +244,7 @@ async def run_generation(
             summary=req.summary,
             summary_through_seq=req.summaryThroughSeq,
             rag=rag_text,
+            agentic=agentic,
         )
 
         # User chat -> Ollima (title-gen + OCR keep build_llm's OpenRouter default).
@@ -304,16 +310,34 @@ async def run_generation(
                     if settings.ai_agent_side_effect_enabled
                     else SideEffect.READ_ONLY
                 )
+                _filters = ToolFilters(
+                    max_side_effect=se_ceiling,
+                    # Phase 5 (F): don't even rank a tool the caller can't run.
+                    granted_permissions=agent_scope.granted_permissions,
+                )
                 candidates = tool_selector.select(
                     latest.content,
                     top_k=settings.ai_agent_discovery_top_k,
-                    filters=ToolFilters(
-                        max_side_effect=se_ceiling,
-                        # Phase 5 (F): don't even rank a tool the caller can't run.
-                        granted_permissions=agent_scope.granted_permissions,
-                    ),
+                    filters=_filters,
                     min_score=settings.tool_discovery_min_score,
                 ).candidates
+                # F2: ALWAYS seed the universal core capabilities (e.g. web search)
+                # regardless of whether the user's WORDING lexically matched — the
+                # fix for "what is the current price of X" surfacing no web tool
+                # (n_scored=0) so the user had to say "search on web". Each canonical
+                # intent's top hit is unioned in (deduped), under the SAME
+                # scope/side-effect filters, then re-sorted by score so a real match
+                # still wins and the seed survives the schema-budget trim below.
+                _seen_ids = {c.tool.tool_id for c in candidates}
+                for _q in settings.ai_agent_core_capability_queries:
+                    _hit = tool_selector.select(
+                        _q, top_k=1, filters=_filters,
+                        min_score=settings.tool_discovery_min_score,
+                    ).candidates
+                    if _hit and _hit[0].tool.tool_id not in _seen_ids:
+                        candidates.append(_hit[0])
+                        _seen_ids.add(_hit[0].tool.tool_id)
+                candidates.sort(key=lambda c: -c.score)
                 if candidates:
                     _reserved = {
                         KNOWLEDGE_TOOL_NAME,
