@@ -593,6 +593,33 @@ async def test_core_seeding_binds_web_tool_for_keywordless_query(monkeypatch):
     assert len(finals) == 1 and finals[0]["status"] == "done"
 
 
+async def test_huge_message_truncation_keeps_head_and_tail(monkeypatch):
+    # QA-6 fix: a huge message must keep its TAIL (the user's trailing question),
+    # not just the head — head-only truncation silently dropped a trailing ask.
+    seen = {}
+
+    class RecLLM(FakeLLM):
+        async def ainvoke(self, messages, *a, **k):
+            seen["msgs"] = messages
+            return await super().ainvoke(messages, *a, **k)
+
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: RecLLM(AIMessage(content="ok"), []),
+    )
+    tail = "TAILQUESTION-9c3f what is 2+2"
+    huge = ("filler word " * 9000) + tail  # ~100k chars, well over the 48k cap
+    convex = RecordingConvex()
+    await run_generation(_req(huge), make_settings("http://x"), convex)
+    body = "".join(
+        m.content
+        for m in seen.get("msgs", [])
+        if isinstance(getattr(m, "content", None), str)
+    )
+    assert tail in body, "the trailing question was truncated away (head-only)"
+    assert "truncated to fit" in body, "truncation was not made visible to the model"
+
+
 def test_capability_orientation_only_when_agentic():
     from app.agent.context import CAPABILITY_ORIENTATION, build_system_prompt
     # agentic -> orientation leads, even when the user set custom instructions.
