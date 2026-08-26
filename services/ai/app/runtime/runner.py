@@ -32,6 +32,7 @@ from app.agent.executor import (
     build_tool_specs,
     execute_tool_calls,
 )
+from app.agent.filegen_tool import GENERATE_FILE_TOOL_SPEC
 from app.agent.graph import build_graph
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
 from app.agent.llm import build_llm
@@ -189,6 +190,9 @@ async def run_generation(
         # `remember` is bound whenever memory is on (to create the first memory);
         # `search_memory` only when the user actually has memories to recall.
         memory_as_tool = settings.ai_agent_memory_tool_enabled and req.memoryEnabled
+        # File Generation System — bind `generate_file` when the flag is on. Off by
+        # default → the tool is not offered and the runner is byte-identical.
+        file_gen = settings.ai_file_generation_enabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -260,7 +264,7 @@ async def run_generation(
         # actually have a capability this turn (web tools, RAG tool, or memory
         # tools) — so it can autonomously choose the right source and the user
         # never has to say "search the web" / "use my PDF".
-        agentic = settings.agent_enabled or rag_as_tool or memory_as_tool
+        agentic = settings.agent_enabled or rag_as_tool or memory_as_tool or file_gen
         system = build_system_prompt(
             custom=req.systemPrompt,
             about=req.customInstructionsAbout,
@@ -406,6 +410,8 @@ async def run_generation(
                 specs.append(MEMORY_SEARCH_TOOL_SPEC)
                 specs.append(FORGET_TOOL_SPEC)
             mem_ctx = MemoryContext(memories=req.memories, settings=settings)
+        if file_gen:
+            specs.append(GENERATE_FILE_TOOL_SPEC)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -417,6 +423,8 @@ async def run_generation(
             if req.memories:
                 reserved_specs.append(MEMORY_SEARCH_TOOL_SPEC)
                 reserved_specs.append(FORGET_TOOL_SPEC)
+        if file_gen:
+            reserved_specs.append(GENERATE_FILE_TOOL_SPEC)
 
         llm_tools = None
         tools_ctx = None
@@ -467,6 +475,11 @@ async def run_generation(
                     retry_ambiguous_side_effects=(
                         settings.ai_agent_retry_ambiguous_side_effects
                     ),
+                    # File Generation System — the `generate_file` handler's config.
+                    file_gen_enabled=file_gen,
+                    file_max_bytes=settings.ai_file_max_bytes,
+                    file_gen_timeout_s=settings.ai_file_gen_timeout_s,
+                    file_gen_pool_workers=settings.ai_ocr_render_workers,
                 )
                 # Phase 12b (Stage 1): attach DYNAMIC CAPABILITY DISCOVERY to the
                 # live agent path. The model gains `find_capabilities` to reach ANY

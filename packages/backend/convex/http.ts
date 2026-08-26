@@ -546,6 +546,77 @@ http.route({
   }),
 });
 
+// File Generation System — STORE a generated file blob (Python → Convex).
+//
+// Dedicated binary endpoint (not the JSON ingress): the rendered bytes are the POST
+// body; format/filename ride headers. Capability-scoped by streamId exactly like
+// /ai/file — the owning user/thread/message is resolved server-side (registerArtifact)
+// and never trusted from Python. A missing stream → the just-stored blob is discarded
+// and a 404 returned (no orphan). storageId never crosses back to Python.
+const MAX_ARTIFACT_BYTES = 30_000_000;
+http.route({
+  path: "/ai/artifact",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!authorizeIngress(req))
+      return new Response("unauthorized", { status: 401 });
+    const streamId = req.headers.get("x-stream-id") ?? "";
+    const format = (req.headers.get("x-artifact-format") ?? "").slice(0, 12);
+    const filename = (req.headers.get("x-artifact-filename") ?? "file").slice(0, 200);
+    const mime = req.headers.get("content-type") ?? "application/octet-stream";
+    if (!streamId || !format) return aiJson({ error: "bad request" }, 400);
+    const blob = await req.blob();
+    if (blob.size === 0 || blob.size > MAX_ARTIFACT_BYTES) {
+      return aiJson({ error: "bad size" }, 400);
+    }
+    const storageId = await ctx.storage.store(blob);
+    const res = await ctx.runMutation(internal.chat.artifacts.registerArtifact, {
+      streamId,
+      storageId,
+      filename,
+      format,
+      mime,
+      size: blob.size,
+    });
+    if (!res.ok || !res.artifactId) {
+      await ctx.storage.delete(storageId).catch(() => {});
+      return new Response("not found", { status: 404 });
+    }
+    return aiJson({ artifactId: res.artifactId, size: blob.size });
+  }),
+});
+
+// File Generation System — DOWNLOAD a generated file (browser → Convex).
+//
+// GET with a short-TTL one-time token minted by the AUTHENTICATED chat.artifacts
+// .mintDownload (ownership already enforced there). Public route like /share/file:
+// access is gated by the unguessable, expiring token + the resolve query; storageId
+// never leaves the server, and Content-Disposition forces a download with the
+// server-slugified filename.
+http.route({
+  path: "/artifact/file",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const token = new URL(req.url).searchParams.get("t");
+    if (!token) return new Response("not found", { status: 404 });
+    const allowed = await ctx.runQuery(
+      internal.chat.artifacts.resolveDownload,
+      { token },
+    );
+    if (!allowed) return new Response("not found", { status: 404 });
+    const blob = await ctx.storage.get(allowed.storageId);
+    if (!blob) return new Response("not found", { status: 404 });
+    const safe = allowed.filename.replace(/["\\\r\n]/g, "_");
+    return new Response(blob, {
+      headers: {
+        "content-type": allowed.mime,
+        "content-disposition": `attachment; filename="${safe}"`,
+        "cache-control": "private, max-age=60",
+      },
+    });
+  }),
+});
+
 // --- API key verification (programmatic access) ---
 http.route({
   path: "/api/verify-key",

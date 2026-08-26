@@ -1,7 +1,9 @@
 "use client";
 
+import { api } from "@v1/backend/convex/_generated/api";
+import { useMutation } from "convex/react";
 import { Download, FileText } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   buildTimeline,
   type ParsedArtifact,
@@ -11,6 +13,20 @@ import {
 } from "../_lib/agent-events";
 import { safeUrl } from "../_lib/url-guard";
 import { Badge, Disclosure } from "./agent-primitives";
+
+/** Browser-reachable Convex SITE origin (where the /artifact/file proxy lives) —
+ *  mirrors the share page: NEXT_PUBLIC_CONVEX_URL is the /__cvx path form. */
+function convexSite(): string {
+  const u = process.env.NEXT_PUBLIC_CONVEX_URL ?? "";
+  return u.includes("/__cvx") ? u.replace("/__cvx", "/__cvx-site") : u;
+}
+
+function formatBytes(n?: number): string {
+  if (!n || n <= 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1_048_576) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1_048_576).toFixed(1)} MB`;
+}
 
 /**
  * Sources / citations / artifacts, rendered BELOW the answer. Derived from the
@@ -111,32 +127,68 @@ function CitationCard({
 }
 
 /**
- * An assistant-produced artifact. Download is offered ONLY when the artifact
- * carries a capability url (minted server-side, ownership-checked). No tool
- * emits a downloadable artifact today (only `artifact_type:"memory"`), so the
- * download affordance is presentation-ready but not yet exercised end-to-end.
+ * An assistant-generated file (File Generation System). Download is OWNERSHIP-
+ * enforced: the event carries only the artifact id; clicking Download calls the
+ * authenticated `mintDownload` (which checks the caller owns it) to get a short-TTL
+ * token URL, then triggers the download. A memory-style artifact (no id/format) still
+ * renders as a plain note. `url` is honoured if a tool ever bakes one directly.
  */
 function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
-  const href = artifact.url ? safeUrl(artifact.url) : "";
+  const mintDownload = useMutation(api.chat.artifacts.mintDownload);
+  const [busy, setBusy] = useState(false);
   const title =
+    artifact.filename ||
     (typeof artifact.metadata.title === "string" && artifact.metadata.title) ||
     artifact.artifactType;
+  const badge = (artifact.format || artifact.artifactType || "").toUpperCase();
+  const size = formatBytes(artifact.size);
+  const downloadable = Boolean(artifact.url) || Boolean(artifact.artifactId);
+
+  const onDownload = async () => {
+    if (busy) return;
+    // A pre-minted url (legacy path) downloads directly; otherwise mint on demand.
+    let url = artifact.url ? safeUrl(artifact.url) : "";
+    if (!url && artifact.artifactId) {
+      setBusy(true);
+      try {
+        const { token } = await mintDownload({ artifactId: artifact.artifactId });
+        url = safeUrl(`${convexSite()}/artifact/file?t=${token}`);
+      } catch {
+        // ownership/expiry → keep the card, no navigation
+      } finally {
+        setBusy(false);
+      }
+    }
+    if (!url) return;
+    const a = document.createElement("a");
+    a.href = url;
+    a.rel = "noopener";
+    a.target = "_blank";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
 
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-2.5 py-1.5 text-xs">
+    <div
+      data-artifact-card
+      className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-2.5 py-1.5 text-xs"
+    >
       <FileText className="h-4 w-4 shrink-0 text-brand-ink" aria-hidden />
       <span className="min-w-0 flex-1 truncate text-primary/80">{title}</span>
-      <Badge>{artifact.artifactType}</Badge>
-      {href && (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-brand-ink outline-none hover:bg-primary/5 focus-visible:ring-2 focus-visible:ring-brand/40"
+      {size && <span className="shrink-0 text-primary/40 tabular-nums">{size}</span>}
+      {badge && <Badge>{badge}</Badge>}
+      {downloadable && (
+        <button
+          type="button"
+          data-artifact-download
+          onClick={onDownload}
+          disabled={busy}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-brand-ink outline-none hover:bg-primary/5 focus-visible:ring-2 focus-visible:ring-brand/40 disabled:opacity-50"
         >
           <Download className="h-3.5 w-3.5" aria-hidden />
-          Download
-        </a>
+          {busy ? "Preparing…" : "Download"}
+        </button>
       )}
     </div>
   );

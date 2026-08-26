@@ -360,6 +360,16 @@ class DeltaWriter:
             return {"disabled": 0, "reason": "stream_closed"}
         return {"disabled": int(resp.get("disabled") or 0)}
 
+    async def store_artifact(
+        self, blob: bytes, *, filename: str, fmt: str, mime: str
+    ) -> dict:
+        """File Generation System: persist a generated file blob through Convex
+        (streamId-scoped, owner derived server-side). Returns `{artifactId, size}`
+        or raises (the tool then reports the failure honestly)."""
+        return await self._convex.store_artifact(
+            blob, stream_id=self._stream_id, filename=filename, fmt=fmt, mime=mime
+        )
+
     async def record_execution(
         self,
         execution,

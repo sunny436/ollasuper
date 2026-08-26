@@ -492,6 +492,33 @@ export default defineSchema({
     .index("by_message", ["messageId"])
     .index("by_state_updated", ["state", "updatedAt"]),
 
+  // File Generation System — a PERSISTENT downloadable file the assistant generated
+  // (PDF/DOCX/XLSX/…). Owner ids are DERIVED from the stream (never client-sent), like
+  // toolExecutions — but UNLIKE the ledger this is NOT deleted at finalize: the download
+  // must keep working after the turn. The Convex `_id` is the artifact identifier
+  // carried in the ARTIFACT event. `downloadToken`/`…ExpiresAt` hold a single short-TTL
+  // token overwritten per authenticated mint — ownership is enforced by `mintDownload`
+  // (getAuthUserId), the token is only browser-reachability. Additive table (no
+  // pre-migration rows), so required fields are safe.
+  chatArtifacts: defineTable({
+    streamId: v.string(),
+    messageId: v.id("chatMessages"),
+    threadId: v.id("chatThreads"),
+    workspaceId: v.id("workspaces"),
+    userId: v.id("users"),
+    storageId: v.id("_storage"),
+    filename: v.string(),
+    format: v.string(),
+    mime: v.string(),
+    size: v.number(),
+    createdAt: v.number(),
+    downloadToken: v.optional(v.string()),
+    downloadTokenExpiresAt: v.optional(v.number()),
+  })
+    .index("by_downloadToken", ["downloadToken"])
+    .index("by_message", ["messageId"])
+    .index("by_thread", ["threadId"]),
+
   chatSettings: defineTable({
     workspaceId: v.id("workspaces"),
     userId: v.id("users"),

@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     # (no Top-K reachability ceiling) — streaming preserved (the non-streaming
     # `llm_for_tools` is rebound; the final answer still streams).
     ai_orchestrated_runtime_enabled: bool = False
+    # File Generation System — when on (+ agent enabled), the model gains a
+    # `generate_file` tool that renders a downloadable file (PDF/DOCX/XLSX/PPTX/…)
+    # from a structured spec via deterministic Python renderers. OFF by default →
+    # the tool is not bound and the runner is byte-identical. `max_bytes` is an
+    # INFRA safety cap on the rendered blob (configurable, NOT a page/row/slide
+    # limit); `timeout_s` bounds one render in the process pool.
+    ai_file_generation_enabled: bool = False
+    ai_file_max_bytes: int = 25_000_000
+    ai_file_gen_timeout_s: float = 60.0
     # Core capabilities ALWAYS made available to the agent (independent of whether
     # the user's wording lexically matches them). Each string is a canonical intent;
     # the top discovery hit for it is unioned into the working set every agent turn.
@@ -379,6 +388,11 @@ class Settings(BaseSettings):
     def ingest_file_url(self) -> str:
         # Sibling of /ai/file, scoped by an ingestId capability (not streamId).
         return f"{self.convex_internal_url.rstrip('/')}/ai/ingest-file"
+
+    @property
+    def artifact_url(self) -> str:
+        # Generated-file store: Python POSTs the rendered blob here (streamId-scoped).
+        return f"{self.convex_internal_url.rstrip('/')}/ai/artifact"
 
     @property
     def rag_enabled(self) -> bool:

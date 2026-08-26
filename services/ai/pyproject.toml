@@ -52,6 +52,15 @@ dependencies = [
     # hood (XXE / billion-laughs) for untrusted uploads.
     "defusedxml>=0.7,<1",
     "rapidocr-onnxruntime>=1.4.4",
+    # --- File Generation System ---
+    # python-docx/openpyxl/python-pptx (above, for RAG parsing) also WRITE those
+    # formats, so only these are new. All pure-Python or self-contained wheels — no
+    # system binaries (reportlab has no poppler/cairo dep, unlike weasyprint), keeping
+    # the "self-contained wheels" discipline. matplotlib ships DejaVuSans, which
+    # reportlab embeds for Unicode/CJK/emoji.
+    "reportlab>=4.2,<5",
+    "matplotlib>=3.9,<4",
+    "pyyaml>=6,<7",
 ]
 
 # Deliberately NOT langchain-anthropic: it speaks the native Anthropic Messages

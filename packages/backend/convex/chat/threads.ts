@@ -359,6 +359,23 @@ export const purge = internalMutation({
       return;
     }
 
+    // File Generation System — generated files are persistent (not deleted at
+    // finalize), so a purged thread must reclaim their blobs too.
+    const artifacts = await ctx.db
+      .query("chatArtifacts")
+      .withIndex("by_thread", (q) => q.eq("threadId", threadId))
+      .take(PURGE_BATCH);
+    for (const a of artifacts) {
+      await ctx.storage.delete(a.storageId).catch(() => {});
+      await ctx.db.delete(a._id);
+    }
+    if (artifacts.length === PURGE_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.chat.threads.purge, {
+        threadId,
+      });
+      return;
+    }
+
     await ctx.db.delete(threadId);
   },
 });
