@@ -13,6 +13,7 @@ itself opt-in via AI_LOG_CONTENT.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
@@ -54,6 +55,49 @@ def redact_obj(obj: Any, secrets: tuple[str, ...] = ()) -> Any:
     return obj
 
 
+# Per-generation correlation, task-isolated: contextvars are COPIED per asyncio
+# task (run_generation runs inside its own task), so concurrent generations on the
+# single event loop never clobber each other's ids. Injected onto every LogRecord by
+# ContextFilter so the thin per-tool log lines (agent.tool_cost / agent.tool_retry /
+# tool.provider_error / ...), which do NOT themselves hold the ids, stay attributable
+# to their run/user without timestamp-guessing.
+_stream_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "log_stream_id", default=None
+)
+_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "log_user_id", default=None
+)
+
+
+def bind_log_context(
+    stream_id: str | None = None, user_id: str | None = None
+) -> None:
+    """Bind the current generation's ids to the logging context for THIS asyncio
+    task. Every subsequent LogRecord in the task then gains stream_id/user_id via
+    ContextFilter. Called once at the top of run_generation; no-ops a None arg."""
+    if stream_id is not None:
+        _stream_id.set(stream_id)
+    if user_id is not None:
+        _user_id.set(user_id)
+
+
+class ContextFilter(logging.Filter):
+    """Inject the bound per-generation stream_id/user_id onto every record, without
+    overwriting an explicit `extra` of the same name (e.g. generation_finished sets
+    stream_id itself — same value, left as-is)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not hasattr(record, "stream_id"):
+            sid = _stream_id.get()
+            if sid is not None:
+                record.stream_id = sid
+        if not hasattr(record, "user_id"):
+            uid = _user_id.get()
+            if uid is not None:
+                record.user_id = uid
+        return True
+
+
 class RedactFilter(logging.Filter):
     def __init__(self, secrets: tuple[str, ...] = ()) -> None:
         super().__init__()
@@ -91,6 +135,8 @@ def configure(level: str = "INFO", secrets: tuple[str, ...] = ()) -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
     handler.addFilter(RedactFilter(secrets))
+    # After redaction: the injected ids are correlation values, not secrets.
+    handler.addFilter(ContextFilter())
 
     root = logging.getLogger()
     root.handlers.clear()

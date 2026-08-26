@@ -49,7 +49,7 @@ from app.clients.convex import ConvexClient, ConvexUnavailable
 from app.clients.ollagraph import OllagraphAdapter
 from app.config import Settings
 from app.ingest.retrieve import render_rag_block, retrieve_context
-from app.logging import get_logger
+from app.logging import bind_log_context, get_logger
 from app.models.chat import GenerateRequest
 from app.models.execution import hash_args
 from app.models.tools import SideEffect, ToolFilters
@@ -116,6 +116,11 @@ async def run_generation(
     cancellation that triggered the unwind from also killing the write that
     records it.
     """
+    # Bind the run/user ids to this task's logging context so every log line in the
+    # generation — including the thin per-tool ones emitted deep in the executor /
+    # adapter, which don't hold these ids — is attributable to its run without
+    # timestamp-guessing. Task-isolated (see app/logging.bind_log_context).
+    bind_log_context(req.streamId, req.userId)
     writer = DeltaWriter(convex, req.streamId, settings)
     status = "error"
     usage: dict | None = None

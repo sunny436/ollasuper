@@ -816,7 +816,11 @@ async def _run_one(
             await asyncio.sleep(backoff * (0.75 + 0.5 * random.random()))  # noqa: S311
             log.info(
                 "agent.tool_retry",
-                extra={"tool_id": tool_id, "attempt": attempt + 1},
+                extra={
+                    "tool_id": tool_id,
+                    "attempt": attempt + 1,
+                    "execution_id": execution.execution_id,
+                },
             )
 
     if result is None:
@@ -841,7 +845,12 @@ async def _run_one(
     cost = result.get("cost")
     if isinstance(cost, dict) and cost.get("credits") is not None:
         log.info(
-            "agent.tool_cost", extra={"tool_id": tool_id, "credits": cost["credits"]}
+            "agent.tool_cost",
+            extra={
+                "tool_id": tool_id,
+                "credits": cost["credits"],
+                "execution_id": execution.execution_id,
+            },
         )
     body, truncated = _bounded(result.get("data"), ctx.result_max_chars)
     execution.result = body
@@ -887,7 +896,11 @@ async def _run_one(
     if truncated:
         log.info(
             "agent.tool_result_truncated",
-            extra={"tool_id": tool_id, "cap": ctx.result_max_chars},
+            extra={
+                "tool_id": tool_id,
+                "cap": ctx.result_max_chars,
+                "execution_id": execution.execution_id,
+            },
         )
     return result_msg
 
