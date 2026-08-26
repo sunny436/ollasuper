@@ -148,8 +148,24 @@ async def run_generation(
         # `prior`, so the latest turn must be capped here.
         latest_char_cap = min(settings.ai_max_turn_chars, cb.latest_char_budget())
         if len(latest.content) > latest_char_cap:
+            # HEAD+TAIL, not head-only: the user's actual ask is often a short
+            # instruction/question placed AFTER a large pasted document — head-only
+            # truncation silently dropped it and the model answered the wrong thing
+            # (QA-6). Keep the leading content AND the trailing turn, and make the
+            # cut VISIBLE so neither the model nor the user is misled into thinking
+            # the whole message was seen.
+            marker = "\n\n[… middle of this message truncated to fit the limit …]\n\n"
+            keep = max(0, latest_char_cap - len(marker))
+            head = (keep * 3) // 4
+            tail = keep - head
             latest = latest.model_copy(
-                update={"content": latest.content[:latest_char_cap]}
+                update={
+                    "content": (
+                        latest.content[:head] + marker + latest.content[-tail:]
+                        if tail
+                        else latest.content[:latest_char_cap]
+                    )
+                }
             )
 
         # Phase 5: when the RAG tool is enabled AND the user has files, the AGENT
