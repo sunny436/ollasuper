@@ -83,6 +83,7 @@ open_router_key.txt
 ollima.txt
 ollagraph_details.txt
 google_auth.txt
+seo_endpoint.txt
 convex.txt
 *_auth*.txt
 *.client_secret*.json

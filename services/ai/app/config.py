@@ -146,6 +146,13 @@ class Settings(BaseSettings):
     ai_file_generation_enabled: bool = False
     ai_file_max_bytes: int = 25_000_000
     ai_file_gen_timeout_s: float = 60.0
+    # Phase 2 (SEO) — opt-in gate for the ONE read-only SEO skill + ONE SEO
+    # specialist agent (app/seo/). OFF by default => neither is registered, the SEO
+    # intents stay dormant, and the roster/delegate enum are byte-identical. When on
+    # (and the orchestrated v2 runtime is enabled, which is what actually delegates),
+    # the SEO skill activates by tags and delegate_to_agent('seo', ...) becomes
+    # available. Read-only end to end; no VM deploy until phase 7.
+    ai_seo_enabled: bool = False
     # Core capabilities ALWAYS made available to the agent (independent of whether
     # the user's wording lexically matches them). Each string is a canonical intent;
     # the top discovery hit for it is unioned into the working set every agent turn.

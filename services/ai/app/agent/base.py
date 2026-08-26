@@ -141,6 +141,11 @@ class Agent:
                 base.granted_permissions | spec.capability.granted_permissions
             ),
             capabilities=spec.capability.capabilities,
+            # Phase 2: carry the agent's category/tool_id allowlist onto the scope so
+            # check_tool_policy hard-DENYs out-of-scope tools at execution (the third,
+            # backstop gate). None on both (existing agents) => unrestricted.
+            allowed_categories=spec.capability.categories,
+            allowed_tool_ids=spec.capability.tool_ids,
         )
 
     @staticmethod
@@ -152,11 +157,19 @@ class Agent:
         agent never even offers a side-effecting tool). This is the first of the
         two existing gates; `check_tool_policy` is the second."""
         out = []
-        allow = spec.capability.tool_ids
+        allow_ids = spec.capability.tool_ids
+        allow_cats = spec.capability.categories
+        restricted = allow_ids is not None or allow_cats is not None
         for c in candidates:
             tool = c.tool
-            if allow is not None and tool.tool_id not in allow:
-                continue
+            # Allowlist: category ∈ categories OR tool_id ∈ tool_ids. Unrestricted
+            # (both None) keeps every shared candidate — byte-identical to before.
+            if restricted:
+                in_scope = (
+                    allow_cats is not None and tool.category in allow_cats
+                ) or (allow_ids is not None and tool.tool_id in allow_ids)
+                if not in_scope:
+                    continue
             if (
                 not spec.capability.side_effects_allowed
                 and tool.side_effect is not SideEffect.READ_ONLY

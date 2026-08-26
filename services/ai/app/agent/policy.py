@@ -65,6 +65,14 @@ class PolicyScope:
     tenant_id: str = ""
     agent_id: str | None = None
     capabilities: frozenset[str] = frozenset()
+    # Phase 2: generic agent capability scoping. When EITHER is non-None, a tool is
+    # in scope iff `tool.category in allowed_categories` OR `tool.tool_id in
+    # allowed_tool_ids`; anything else is hard-DENIED here — the single execution
+    # choke point — so a scoped agent can never run an out-of-scope tool even after
+    # discovering it via find_capabilities. Both None (the default, and every
+    # existing scope) => unrestricted, byte-identical.
+    allowed_categories: frozenset[str] | None = None
+    allowed_tool_ids: frozenset[str] | None = None
 
 
 # The default scope for an ordinary authenticated chat turn.
@@ -114,6 +122,17 @@ def check_tool_policy(tool: ToolDefinition, scope: PolicyScope) -> PolicyResult:
     required = set(tool.permissions.required_permissions)
     if required and not required <= scope.granted_permissions:
         return PolicyResult(PolicyDecision.DENY, "missing required permission")
+    # Phase 2: agent capability scope — hard DENY an out-of-scope tool BEFORE the
+    # side-effect ceiling, so a scoped agent (e.g. SEO) can never reach an
+    # out-of-category tool even if it discovered one via find_capabilities.
+    if scope.allowed_categories is not None or scope.allowed_tool_ids is not None:
+        in_scope = tool.category in (scope.allowed_categories or frozenset()) or (
+            tool.tool_id in (scope.allowed_tool_ids or frozenset())
+        )
+        if not in_scope:
+            return PolicyResult(
+                PolicyDecision.DENY, "tool outside the agent's capability scope"
+            )
     ceiling = _SIDE_EFFECT_RANK.get(scope.max_side_effect, 0)
     if _SIDE_EFFECT_RANK.get(tool.side_effect, 2) > ceiling:
         return PolicyResult(

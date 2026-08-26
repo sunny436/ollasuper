@@ -29,6 +29,20 @@ INTENT_MAP: dict[str, dict] = {
 }
 
 
+def register_intents(mapping: dict[str, dict]) -> int:
+    """ADDITIVELY merge a feature's intents into the global map (used by the SEO
+    roster when `ai_seo_enabled`). Existing keys are NEVER overwritten — a feature
+    can add `metadata.audit` but must not silently redefine a core intent like
+    `crawl.run`. Idempotent: re-registering the same map is a no-op. Returns the
+    number of NEW keys added."""
+    added = 0
+    for name, spec in mapping.items():
+        if name not in INTENT_MAP:
+            INTENT_MAP[name] = spec
+            added += 1
+    return added
+
+
 def is_intent(name: str) -> bool:
     """An intent has the `noun.verb` shape and is in the map; anything else is
     treated as a literal tool_id (backward compatible)."""
