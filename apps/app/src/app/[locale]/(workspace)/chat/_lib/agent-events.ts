@@ -250,6 +250,9 @@ export interface ParsedArtifact {
   artifactId: string;
   artifactType: string;
   url?: string;
+  filename?: string;
+  format?: string;
+  size?: number;
   metadata: Record<string, unknown>;
 }
 
@@ -370,6 +373,9 @@ export function buildTimeline(events: TypedEvent[] | undefined): TimelineModel {
           artifactId: e.artifactId,
           artifactType: e.artifactType,
           url: str(e.metadata, "url"),
+          filename: str(e.metadata, "filename"),
+          format: str(e.metadata, "format"),
+          size: num(e.metadata.size),
           metadata: e.metadata,
         });
         break;

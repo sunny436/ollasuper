@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 
 from langchain_core.messages import ToolMessage
 
+from app.agent.filegen_tool import FILE_GEN_TOOL_NAME
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, retrieve_knowledge
 from app.agent.memory import (
     FORGET_TOOL_NAME,
@@ -81,6 +82,7 @@ _RESERVED_BUILTINS = frozenset(
         MEMORY_SEARCH_TOOL_NAME,
         REMEMBER_TOOL_NAME,
         FORGET_TOOL_NAME,
+        FILE_GEN_TOOL_NAME,
     }
     | ORCHESTRATION_BUILTIN_NAMES
 )
@@ -183,6 +185,13 @@ class ToolExecContext:
     rebind: object | None = None
     pending_capabilities: list[dict] = field(default_factory=list)
     clarification: str | None = None
+    # File Generation System — set when `generate_file` is bound (flag on). All
+    # default off so a non-filegen ctx is byte-identical. `pool_workers` matches the
+    # shared ingest/OCR pool (a singleton, so the value is only used on first spawn).
+    file_gen_enabled: bool = False
+    file_max_bytes: int = 25_000_000
+    file_gen_timeout_s: float = 60.0
+    file_gen_pool_workers: int = 2
 
 
 # --- OpenAI function-spec construction (runner-side) ----------------------
@@ -588,6 +597,15 @@ async def _run_one(
             execution,
             _run_clarification(ctx, call_id, args),
             side_effect="read_only",
+        )
+
+    # File Generation System — render a downloadable file (routed before registry).
+    if ctx.file_gen_enabled and bound_name == FILE_GEN_TOOL_NAME:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_generate_file(ctx, call_id, args),
+            side_effect="external_side_effect",
         )
 
     # Tools-only turn (no registry/Ollagraph): any unmatched tool is unknown.
@@ -1357,6 +1375,129 @@ async def _run_clarification(
     return _tool_message(
         call_id,
         {"status": "clarification_requested", "question": question},
+        status="success",
+    )
+
+
+async def _run_generate_file(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """File Generation System: render a downloadable file from a STRUCTURED spec.
+
+    The model never emits bytes — it fills a `FileSpec`; deterministic renderers
+    produce the file. Binary/chart formats render in the shared process pool (off the
+    event loop, crash-isolated); trivial text formats render inline. On success a
+    persistent artifact is stored and an ARTIFACT event carries its id, so the chat
+    download card renders. Every failure returns a safe error (chat never crashes)."""
+    from app.filegen.generate import (
+        artifact_filename,
+        needs_pool,
+        render_and_validate,
+    )
+    from app.filegen.spec import FileSpec
+
+    try:
+        spec = FileSpec.model_validate(args if isinstance(args, dict) else {})
+    except Exception:  # noqa: BLE001 — a bad spec is a user-facing error, not a crash
+        return _tool_message(
+            call_id,
+            {"status": "error", "message": "Invalid file specification."},
+            status="error",
+        )
+
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=FILE_GEN_TOOL_NAME,
+        tool_id=FILE_GEN_TOOL_NAME,
+        call_id=call_id,
+        arguments={"format": spec.format, "title": spec.title[:120]},
+        status="running",
+        side_effect="external_side_effect",
+    )
+
+    async def _fail(message: str) -> ToolMessage:
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT, call_id=call_id, status="error",
+            result={"status": "error", "format": spec.format},
+        )
+        return _tool_message(
+            call_id, {"status": "error", "message": message}, status="error"
+        )
+
+    spec_dict = spec.model_dump()
+    try:
+        if needs_pool(spec):
+            from app.ingest.pool import run_in_pool
+
+            result = await asyncio.wait_for(
+                run_in_pool(
+                    render_and_validate, spec_dict,
+                    workers=ctx.file_gen_pool_workers, label="filegen",
+                ),
+                timeout=ctx.file_gen_timeout_s,
+            )
+        else:
+            result = await asyncio.to_thread(render_and_validate, spec_dict)
+    except TimeoutError:
+        log.warning("agent.filegen_timeout", extra={"format": spec.format})
+        return await _fail("The file took too long to generate. Try a smaller request.")
+    except Exception:  # noqa: BLE001 — never surface raw renderer internals
+        log.exception("agent.filegen_render_failed")
+        return await _fail("The file could not be generated.")
+
+    if result is None:  # pool worker crashed or the render raised inside it
+        return await _fail("The file could not be generated.")
+    data, mime, report = result
+    if not report.get("ok"):
+        return await _fail("The generated file failed validation and was discarded.")
+    if len(data) > ctx.file_max_bytes:
+        return await _fail("The generated file is too large.")
+
+    filename = artifact_filename(spec)
+    try:
+        stored = await ctx.writer.store_artifact(
+            data, filename=filename, fmt=spec.format, mime=mime
+        )
+    except Exception:  # noqa: BLE001 — storage failure must not crash the turn
+        log.exception("agent.filegen_store_failed")
+        return await _fail("The file was generated but could not be saved.")
+    artifact_id = stored.get("artifactId")
+    if not artifact_id:
+        return await _fail("The file was generated but could not be saved.")
+
+    size = len(data)
+    # The download card renders from this ARTIFACT event; `artifact_id` is the
+    # chatArtifacts id the UI passes to the (authenticated) mintDownload.
+    await ctx.writer.emit_event(
+        EventType.ARTIFACT,
+        artifact_id=str(artifact_id),
+        artifact_type=spec.format,
+        metadata={
+            "title": spec.title or filename,
+            "filename": filename,
+            "format": spec.format,
+            "size": size,
+        },
+    )
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="success",
+        result={"filename": filename, "format": spec.format, "size": size},
+    )
+    log.info(
+        "agent.filegen_created",
+        extra={"format": spec.format, "size": size, "execution_id": None},
+    )
+    return _tool_message(
+        call_id,
+        {
+            "status": "generated",
+            "filename": filename,
+            "format": spec.format,
+            "size": size,
+            "note": "The file is attached to the chat and ready to download.",
+        },
         status="success",
     )
 

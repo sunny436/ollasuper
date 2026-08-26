@@ -145,6 +145,39 @@ class ConvexClient:
             raise ConvexUnavailable(f"ingest file fetch failed: {r.status_code}")
         return r.content, r.headers.get("content-type", "application/octet-stream")
 
+    async def store_artifact(
+        self, blob: bytes, *, stream_id: str, filename: str, fmt: str, mime: str
+    ) -> dict:
+        """Store a GENERATED file blob and register it (File Generation System).
+
+        POSTs the raw bytes to /ai/artifact (a dedicated binary endpoint, not the
+        JSON ingress) with the metadata in headers. Capability-scoped by streamId
+        exactly like /ai/file: Convex derives the owning user/thread/message from the
+        stream and never trusts a client-sent owner. Returns `{artifactId, size}`;
+        the download URL is minted later, owner-checked, so no bearer token is issued
+        here. Raises on failure so the tool reports honestly, never a fake file."""
+        r = await self._c.post(
+            self._s.artifact_url,
+            content=blob,
+            headers={
+                "content-type": mime,
+                "x-ai-key": self._s.ai_ingress_secret,
+                "x-stream-id": stream_id,
+                "x-artifact-format": fmt,
+                # RFC 5987 not needed: filename is server-slugified to ASCII already.
+                "x-artifact-filename": filename,
+            },
+            timeout=httpx.Timeout(connect=2.0, read=30.0, write=30.0, pool=2.0),
+        )
+        if r.status_code == 404:
+            raise ConvexRejected("artifact stream not available")
+        if r.status_code >= 400:
+            raise ConvexUnavailable(f"artifact store failed: {r.status_code}")
+        try:
+            return r.json()
+        except ValueError:
+            return {}
+
     async def set_file_status(
         self,
         ingest_id: str,
