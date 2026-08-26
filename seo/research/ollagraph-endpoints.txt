@@ -1,0 +1,191 @@
+==============================
+TECHNICAL SEO
+==============================
+
+/v1/seo/meta-audit
+→ Audits page title, meta description, H1, canonical, robots, viewport, Open Graph, indexability, and soft-404 signals.
+
+/v1/seo/redirect-chain-map
+→ Analyzes URL redirect chains and redirect hops.
+
+/v1/seo/broken-links-audit
+→ Finds broken links and checks their HTTP status and final URL.
+
+/v1/seo/mixed-content
+→ Finds HTTP resources loaded by HTTPS pages.
+
+/v1/intel/headers
+→ Analyzes HTTP response headers relevant to technical SEO.
+
+/v1/intel/ssl
+→ Checks SSL/HTTPS information for a domain.
+
+/v1/intel/uptime
+→ Checks website availability and uptime-related information.
+
+
+==============================
+ON-PAGE SEO
+==============================
+
+/v1/seo/meta-audit
+→ Audits page metadata and key on-page SEO signals.
+
+/v1/seo/anchor-text-audit
+→ Analyzes anchor text for internal-link and on-page SEO issues.
+
+/v1/seo/readability
+→ Measures content readability for editorial/content quality analysis.
+
+/v1/seo/keyword-extract
+→ Extracts important keywords and phrases from a page or text.
+
+/v1/aeo/heading-hierarchy-score
+→ Analyzes H1–H6 heading hierarchy.
+
+
+==============================
+CRAWLING / INDEXABILITY
+==============================
+
+/v1/crawl
+→ Crawls a website to discover pages and URLs for site-wide SEO analysis.
+
+/v1/intel/robots
+→ Analyzes robots.txt rules and crawler access.
+
+/v1/intel/sitemap
+→ Inspects XML sitemap information.
+
+/v1/intel/headers
+→ Analyzes HTTP headers affecting crawling and indexability.
+
+/v1/intel/redirects
+→ Analyzes URL redirects.
+
+/v1/scrape/batch
+→ Fetches multiple URLs for bulk SEO analysis.
+
+
+==============================
+STRUCTURED DATA
+==============================
+
+/v1/extract/structured
+→ Extracts JSON-LD, Microdata, RDFa, Open Graph, Twitter Cards, meta and product data.
+
+/v1/seo/schema-validate
+→ Validates structured data against SEO/schema validation rules.
+
+/v1/aeo/schema-coverage
+→ Detects and analyzes structured-data coverage.
+
+
+==============================
+CONTENT SEO
+==============================
+
+/v1/extract/clean
+→ Extracts clean page content, title, word count and reading-time information.
+
+/v1/seo/keyword-extract
+→ Extracts important keywords and phrases.
+
+/v1/seo/readability
+→ Measures content readability.
+
+/v1/lang/detect
+→ Detects the language of content.
+
+/v1/text/similarity
+→ Compares text similarity to identify potentially similar or duplicate content.
+
+/v1/text/diff
+→ Compares two versions of text to identify content changes.
+
+
+==============================
+SERP / SEARCH RESEARCH
+==============================
+
+/v1/search
+→ Performs current search-result/SERP research.
+
+
+==============================
+PERFORMANCE / TECHNICAL
+==============================
+
+/v1/intel/http-versions
+→ Checks HTTP protocol/version information.
+
+/v1/intel/uptime
+→ Checks website availability and uptime information.
+
+/v1/screenshot
+→ Captures a page screenshot for visual/SEO inspection.
+
+/v1/snapshot
+→ Captures page DOM/accessibility/visual state for deeper page analysis.
+
+
+==============================
+KEYWORD INTELLIGENCE
+==============================
+
+/v1/seo/keyword-extract
+→ Extracts keywords and phrases from page content.
+
+/v1/search
+→ Performs current search-result research for queries.
+
+
+==============================
+LOCAL SEO
+==============================
+
+/v1/search
+→ Searches for local/business-related search results.
+
+/v1/enrich/company
+→ Enriches company information for business/company research.
+
+/v1/extract/structured
+→ Extracts structured business/product/entity information from pages.
+
+
+==============================
+ECOMMERCE SEO
+==============================
+
+/v1/crawl
+→ Crawls ecommerce websites and discovers pages.
+
+/v1/extract/structured
+→ Extracts product and structured-data information.
+
+/v1/seo/schema-validate
+→ Validates ecommerce structured data/schema.
+
+/v1/seo/meta-audit
+→ Audits ecommerce page metadata and indexability signals.
+
+/v1/extract/tables
+→ Extracts structured table data from pages.
+
+
+==============================
+INTERNATIONAL SEO
+==============================
+
+/v1/lang/detect
+→ Detects page/content language.
+
+/v1/crawl
+→ Crawls pages across a multilingual/international website.
+
+/v1/search
+→ Performs search research for different markets/languages.
+
+/v1/intel/geoip
+→ Provides geographic/IP information useful for regional delivery analysis.
