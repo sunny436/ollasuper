@@ -170,7 +170,10 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
   };
 
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-2.5 py-1.5 text-xs">
+    <div
+      data-artifact-card
+      className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-2.5 py-1.5 text-xs"
+    >
       <FileText className="h-4 w-4 shrink-0 text-brand-ink" aria-hidden />
       <span className="min-w-0 flex-1 truncate text-primary/80">{title}</span>
       {size && <span className="shrink-0 text-primary/40 tabular-nums">{size}</span>}
@@ -178,6 +181,7 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
       {downloadable && (
         <button
           type="button"
+          data-artifact-download
           onClick={onDownload}
           disabled={busy}
           className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-brand-ink outline-none hover:bg-primary/5 focus-visible:ring-2 focus-visible:ring-brand/40 disabled:opacity-50"
