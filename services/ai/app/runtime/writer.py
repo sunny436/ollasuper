@@ -361,14 +361,48 @@ class DeltaWriter:
         return {"disabled": int(resp.get("disabled") or 0)}
 
     async def store_artifact(
-        self, blob: bytes, *, filename: str, fmt: str, mime: str
+        self,
+        blob: bytes,
+        *,
+        filename: str,
+        fmt: str,
+        mime: str,
+        sha256: str | None = None,
+        artifact_key: str | None = None,
     ) -> dict:
         """File Generation System: persist a generated file blob through Convex
         (streamId-scoped, owner derived server-side). Returns `{artifactId, size}`
-        or raises (the tool then reports the failure honestly)."""
+        or raises (the tool then reports the failure honestly).
+
+        Phase 3 (optional, additive): `sha256` declares the content hash — Convex
+        recomputes + rejects a mismatch (integrity verification). `artifact_key`
+        makes the store IDEMPOTENT: a re-store with the same (stream, key) returns
+        the existing artifactId instead of a duplicate blob (safe on crash-resume).
+        Filegen passes neither, so its behavior is byte-identical."""
         return await self._convex.store_artifact(
-            blob, stream_id=self._stream_id, filename=filename, fmt=fmt, mime=mime
+            blob,
+            stream_id=self._stream_id,
+            filename=filename,
+            fmt=fmt,
+            mime=mime,
+            sha256=sha256,
+            artifact_key=artifact_key,
         )
+
+    async def store_report(self, envelope: dict) -> dict:
+        """Phase 3: persist a structured SEO report row (`op:"report"`), streamId-
+        scoped with the owner derived server-side (mirrors store_artifact). Idempotent
+        on (sourceRunId, reportId). Returns the ingress response or a soft failure."""
+        body = {"op": "report", "streamId": self._stream_id, "report": envelope}
+        try:
+            resp = await self._convex.ingress(body)
+        except ConvexUnavailable:
+            return {"ok": False, "reason": "unavailable"}
+        except ConvexRejected:
+            return {"ok": False, "reason": "rejected"}
+        if resp.get("cancel"):
+            self._cancel_requested = True
+        return resp
 
     async def record_execution(
         self,

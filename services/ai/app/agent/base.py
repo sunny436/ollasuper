@@ -80,6 +80,10 @@ class AgentEnv:
     # `delegate_to_agent`. Both None (the Phase-9 default) => unchanged.
     capabilities: Any = None
     delegator: Any = None
+    # Phase 3: an async report emitter `emit(kind, data, run_meta, failure_reason="")`
+    # the delegate seam calls for a report-emitting spec (e.g. the SEO agent), while
+    # `result.data` still exists. None (the default) => no report (byte-identical).
+    report_emitter: Callable[..., Any] | None = None
     # Phase 1 (v2) execution lineage — correlates records across delegation.
     # All defaulted so existing call sites are unaffected; a top-level run leaves
     # `delegation_id` empty, so its step key is byte-identical to today.

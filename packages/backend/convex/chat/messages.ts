@@ -6,6 +6,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { internalMutation, mutation, query } from "../_generated/server";
 import { bump } from "../counters";
 import { recordUsage } from "../usage";
+import { deleteArtifactsForMessage } from "./artifacts";
 import { bindAttachments } from "./attachments";
 import {
   assertAllowedModel,
@@ -15,6 +16,7 @@ import {
   requireThreadAccess,
   requireUserId,
 } from "./authz";
+import { deleteReportsForMessage } from "./reports";
 import { titleFromText } from "./threads";
 
 const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
@@ -628,6 +630,10 @@ async function deleteFromSeq(
         }
       }
     }
+    // Phase 3 — reclaim this message's generated artifacts (blobs) + SEO report rows.
+    // Regenerate/edit previously left these until thread deletion; clean them here.
+    await deleteArtifactsForMessage(ctx, m._id);
+    await deleteReportsForMessage(ctx, m._id);
     await ctx.db.delete(m._id);
   }
   return doomed.length;

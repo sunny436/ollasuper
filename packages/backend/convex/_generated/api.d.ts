@@ -28,6 +28,7 @@ import type * as chat_executions from "../chat/executions.js";
 import type * as chat_ingest from "../chat/ingest.js";
 import type * as chat_messages from "../chat/messages.js";
 import type * as chat_models from "../chat/models.js";
+import type * as chat_reports from "../chat/reports.js";
 import type * as chat_search from "../chat/search.js";
 import type * as chat_settings from "../chat/settings.js";
 import type * as chat_shares from "../chat/shares.js";
@@ -91,6 +92,7 @@ declare const fullApi: ApiFromModules<{
   "chat/ingest": typeof chat_ingest;
   "chat/messages": typeof chat_messages;
   "chat/models": typeof chat_models;
+  "chat/reports": typeof chat_reports;
   "chat/search": typeof chat_search;
   "chat/settings": typeof chat_settings;
   "chat/shares": typeof chat_shares;

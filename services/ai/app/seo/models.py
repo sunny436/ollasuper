@@ -93,3 +93,127 @@ class SEOReport(BaseModel):
 # The JSON-schema dict the SEO agent's OutputContract.schema uses. Pydantic v2 emits
 # Draft 2020-12 with $defs/$ref, resolved natively by the Phase-1 jsonschema.validate.
 OUTPUT_SCHEMA: dict = SEOReport.model_json_schema()
+
+
+# --- Phase 3: the persisted, downloadable REPORT ENVELOPE ------------------
+# The agent's SEOReport (above) is the CORE. The envelope WRAPS it with metadata
+# the agent must not self-claim — run identity, timestamps, methodology version,
+# provider provenance — all added server-side by the emission layer. The agent's
+# OUTPUT_SCHEMA is deliberately NOT extended, so the Phase-2 contract is unchanged.
+
+
+class ReportStatus(StrEnum):
+    COMPLETED = "completed"  # every applicable, supported check ran
+    PARTIAL = "partial"  # some checks NOT_TESTED (tool failure/timeout)
+    FAILED = "failed"  # the agent produced no valid report
+
+
+class ConfidenceLevel(StrEnum):
+    """QUALITATIVE audit confidence, derived from coverage + data-quality flags.
+    Deliberately NOT a 0-100 number (Google warns against arbitrary scores)."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class Methodology(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = "OllaSuper SEO Methodology"
+    version: str = ""
+
+
+class AuditScope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = "page"  # "page" | "site"
+    target: str = ""
+    pages_analyzed: int | None = None  # populated only when a crawl ran
+    notes: str = ""
+
+
+class ProviderProvenance(BaseModel):
+    """Which provider + tools produced the evidence — the audit's supply chain."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = "ollagraph"
+    tool_ids: list[str] = Field(default_factory=list)
+    freshness: str = "live"
+    permissions: list[str] = Field(default_factory=list)
+
+
+class CategoryRollup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: str
+    passed: int = 0
+    warned: int = 0
+    failed: int = 0
+    findings: int = 0
+
+
+class ReportSummary(BaseModel):
+    """Evidence-grounded counts ONLY — no composite score."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_findings: int = 0
+    by_severity: dict[str, int] = Field(default_factory=dict)
+    checks_performed: int = 0
+    passed: int = 0
+    failed: int = 0
+    warnings: int = 0
+    not_tested: int = 0
+    categories: list[CategoryRollup] = Field(default_factory=list)
+
+
+class ReportArtifactRef(BaseModel):
+    """One downloadable rendering of the report (md/json/pdf) + its integrity hash.
+    `artifact_id` is the `chatArtifacts` row id (safe to expose; NOT a storageId)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    format: str
+    mime: str
+    size: int = 0
+    sha256: str = ""
+    artifact_id: str = ""
+
+
+class ReportManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifacts: list[ReportArtifactRef] = Field(default_factory=list)
+    methodology_version: str = ""
+    generated_at: str = ""
+
+
+class ReportEnvelope(BaseModel):
+    """The full persisted report. Server-authoritative metadata + the agent's
+    findings. `extra='forbid'` so a stray key is caught, not silently stored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: str
+    source_run_id: str = ""  # = streamId (the run identity)
+    target: str = ""
+    scope: AuditScope = Field(default_factory=AuditScope)
+    status: ReportStatus = ReportStatus.COMPLETED
+    generated_at: str = ""  # server ISO-8601 UTC
+    methodology: Methodology = Field(default_factory=Methodology)
+    provider_provenance: list[ProviderProvenance] = Field(default_factory=list)
+    coverage: list[str] = Field(default_factory=list)  # intents attempted
+    summary: ReportSummary = Field(default_factory=ReportSummary)
+    findings: list[SEOFinding] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    verification: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    unsupported_areas: list[str] = Field(default_factory=list)
+    evidence_freshness: str = ""
+    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM  # qualitative, not numeric
+    business_exposure: str = ""  # qualitative narrative (NEVER numeric)
+    manifest: ReportManifest | None = None
+    failure_reason: str = ""  # populated only when status == FAILED
+    data_quality_note: str = ""  # e.g. "invalid_evidence_dropped"

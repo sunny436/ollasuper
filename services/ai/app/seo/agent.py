@@ -69,5 +69,8 @@ SEO_AGENT = AgentSpec(
         schema=OUTPUT_SCHEMA,
         expects=frozenset({_Outcome.STRUCTURED_RESULT, _Outcome.FINAL_ANSWER}),
         role_hint="find",
+        # Phase 3: the delegate seam persists the structured result as a secure,
+        # downloadable SEO report artifact + rich card.
+        report_kind="seo_audit",
     ),
 )

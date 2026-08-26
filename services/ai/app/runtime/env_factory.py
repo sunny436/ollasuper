@@ -36,6 +36,7 @@ def build_live_agent_env(
     resume_seen: dict | None = None,
     resume_seen_set: frozenset[str] = frozenset(),
     workflow_id: str = "",
+    report_emitter: Any = None,
 ) -> AgentEnv:
     """Assemble the rich per-request env. Identity comes from `req` (streamId /
     userId / workspaceId / attempt); every context field is passed through so a
@@ -62,4 +63,5 @@ def build_live_agent_env(
         memory=memory,
         capabilities=capabilities,
         workflow_id=workflow_id or req.streamId,
+        report_emitter=report_emitter,
     )

@@ -514,9 +514,60 @@ export default defineSchema({
     createdAt: v.number(),
     downloadToken: v.optional(v.string()),
     downloadTokenExpiresAt: v.optional(v.number()),
+    // Phase 3 (additive, optional): `contentHash` = the SHA-256 verified at upload
+    // (integrity); `artifactKey` = a stable per-(stream) idempotency key so a
+    // crash-resume re-store returns the existing row instead of a duplicate blob.
+    // Filegen sets neither ⇒ existing rows/behavior are unchanged.
+    contentHash: v.optional(v.string()),
+    artifactKey: v.optional(v.string()),
   })
     .index("by_downloadToken", ["downloadToken"])
     .index("by_message", ["messageId"])
+    .index("by_thread", ["threadId"])
+    .index("by_stream_key", ["streamId", "artifactKey"]),
+
+  // Phase 3 — a persisted SEO audit REPORT: the reactive source for the rich report
+  // card + the download manifest. Owner ids DERIVED from the stream (like
+  // chatArtifacts), PERSISTENT (survives finalize). `report` is a bounded JSON string
+  // (the chatShares.snapshot pattern — keeps Convex free of v.any(), no payload-shape
+  // push). `sourceRunId` (=streamId) + `inReplyToMessageId` (=messageId) link the
+  // report to its run/message WITHOUT patching the finalized assistant content.
+  // Additive table (no pre-migration rows), so required fields are safe.
+  seoReports: defineTable({
+    sourceRunId: v.string(), // = streamId (the run identity)
+    reportId: v.string(), // app-minted, deterministic (resume-idempotent)
+    inReplyToMessageId: v.id("chatMessages"),
+    threadId: v.id("chatThreads"),
+    workspaceId: v.id("workspaces"),
+    userId: v.id("users"),
+    status: v.string(), // completed | partial | failed
+    target: v.string(),
+    scope: v.string(),
+    methodologyName: v.string(),
+    methodologyVersion: v.string(),
+    generatedAt: v.string(),
+    summary: v.object({
+      totalFindings: v.number(),
+      passed: v.number(),
+      failed: v.number(),
+      warnings: v.number(),
+      notTested: v.number(),
+    }),
+    report: v.string(), // bounded envelope JSON (the card's data)
+    manifest: v.array(
+      v.object({
+        artifactId: v.string(),
+        format: v.string(),
+        mime: v.string(),
+        size: v.number(),
+        sha256: v.string(),
+      }),
+    ),
+    createdAt: v.number(),
+  })
+    .index("by_report", ["sourceRunId", "reportId"])
+    .index("by_report_id", ["reportId"])
+    .index("by_message", ["inReplyToMessageId"])
     .index("by_thread", ["threadId"]),
 
   chatSettings: defineTable({

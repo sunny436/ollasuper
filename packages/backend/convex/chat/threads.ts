@@ -376,6 +376,20 @@ export const purge = internalMutation({
       return;
     }
 
+    // Phase 3 — SEO report rows are persistent too (their downloadable blobs are the
+    // chatArtifacts reclaimed just above); reclaim the rows here.
+    const reports = await ctx.db
+      .query("seoReports")
+      .withIndex("by_thread", (q) => q.eq("threadId", threadId))
+      .take(PURGE_BATCH);
+    for (const r of reports) await ctx.db.delete(r._id);
+    if (reports.length === PURGE_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.chat.threads.purge, {
+        threadId,
+      });
+      return;
+    }
+
     await ctx.db.delete(threadId);
   },
 });

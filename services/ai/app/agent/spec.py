@@ -96,6 +96,10 @@ class OutputContract:
     expects: frozenset[AgentOutcome] = frozenset({AgentOutcome.FINAL_ANSWER})
     schema: dict | None = None
     role_hint: str = "answer"  # "answer" | "find"
+    # Phase 3: when non-empty, a report-emitting spec — the delegate seam persists a
+    # structured report artifact from `result.data` for this `report_kind` (e.g.
+    # "seo_audit"). Default "" ⇒ no report (byte-identical for every existing spec).
+    report_kind: str = ""
 
 
 @dataclass(frozen=True, slots=True)
