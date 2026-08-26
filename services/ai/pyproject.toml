@@ -61,6 +61,11 @@ dependencies = [
     "reportlab>=4.2,<5",
     "matplotlib>=3.9,<4",
     "pyyaml>=6,<7",
+    # --- Runtime v2 (Phase 1) ---
+    # Real OutputContract validation: validate a structured agent result against
+    # its declared JSON-schema (Pydantic cannot validate an arbitrary schema dict).
+    # Pure-python, no system deps. Dormant until an AgentSpec sets output.schema.
+    "jsonschema>=4.20,<5",
 ]
 
 # Deliberately NOT langchain-anthropic: it speaks the native Anthropic Messages

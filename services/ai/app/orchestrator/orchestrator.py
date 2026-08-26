@@ -23,6 +23,7 @@ still passes the Phase 1-8 gates.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -32,8 +33,16 @@ from langchain_core.messages import HumanMessage
 
 from app.agent.base import Agent, AgentEnv, AgentResult
 from app.agent.graph import build_graph
+from app.agent.handoff import HandoffResult
 from app.agent.spec import DEFAULT_AGENT, AgentOutcome, AgentSpec
 from app.logging import get_logger
+from app.orchestrator.intents import is_intent
+from app.orchestrator.prepare import (
+    CapabilityGap,
+    PreparedRun,
+    ProviderReadiness,
+    RouteHint,
+)
 from app.skills.registry import render_skills_block
 
 if TYPE_CHECKING:
@@ -133,24 +142,22 @@ class Orchestrator:
                 OrchestratorRoute.AGENT, AgentOutcome.FAILURE,
                 error={"status": "cancelled"},
             )
-        # Phase 11: skill discovery + capability seeding (shared with delegation).
-        candidates, skill_prompt, skill_approvals, active_skills = self._prepare_run(
-            request
-        )
-        sys = self._compose(system_prompt, skill_prompt)
+        # Phase 11/1: one shared preparation (skill discovery + capability seeding).
+        prepared = self.prepare(request)
+        sys = self._compose(system_prompt, prepared.rendered_skills)
         # ROUTE: no capability (from request OR skill) -> answer directly (NO agent),
         # still carrying any skill guidance (skill -> direct answer).
-        if not candidates:
+        if not prepared.candidates:
             return await self._direct_answer(
-                request, env, sys, active_skills, history=history
+                request, env, sys, prepared.skill_records, history=history
             )
 
         # else -> engage a skill-guided agent with dynamic resolution + delegation.
         base_spec = self._registry.get(agent_role) or DEFAULT_AGENT
-        spec = self._tighten(base_spec, skill_approvals)
+        spec = self._tighten(base_spec, prepared.force_approval_ids)
         agent_env = replace(
             env,
-            candidates=candidates,
+            candidates=list(prepared.candidates),
             capabilities=self._resolver,
             delegator=self._make_delegator(env, 0),
         )
@@ -158,17 +165,19 @@ class Orchestrator:
             spec, request, agent_env, system_prefix=sys, history=history
         )
         return self._to_result(
-            OrchestratorRoute.AGENT, result, steps=1, active_skills=active_skills
+            OrchestratorRoute.AGENT, result, steps=1,
+            active_skills=prepared.skill_records,
         )
 
-    def _prepare_run(
-        self, task: str
-    ) -> tuple[list, str, frozenset[str], list[dict]]:
-        """Phase 11: skill discovery + capability seeding for one task. Shared by
-        `run` and the delegator so skills compose through delegation. Returns the
-        bounded working-set candidates (skill hints first, then request matches,
-        deduped + capped), the composed TRUSTED guidance block, the skills'
-        tighten-only approvals, and the active-skill (id, version) records."""
+    def prepare(
+        self, task: str, *, scope=None, readiness: tuple[ProviderReadiness, ...] = ()
+    ) -> PreparedRun:
+        """One shared preparation path (Phase 1 v2): skill discovery (UNCONDITIONAL
+        — no tool/Ollagraph dependency) + capability seeding + honest gaps + route
+        hint. Consumed by BOTH `run` (batch) and the live streaming runner, so the
+        two never drift. `scope` only ANNOTATES auth_status (no permission prefilter
+        — discovery stays separate from authorization); for `scope=None` the result
+        is byte-identical to the old `_prepare_run` tuple."""
         active = (
             self._skills.discover(
                 task,
@@ -178,26 +187,53 @@ class Orchestrator:
             if self._skills is not None
             else []
         )
-        skill_prompt = (
+        rendered = (
             render_skills_block(active, char_budget=self._skill_budget)
             if active
             else ""
         )
-        skill_ids: set[str] = set()
         approvals: set[str] = set()
+        intent_names: list[str] = []
+        id_names: list[str] = []
         for a in active:
-            skill_ids |= set(a.manifest.preferred_capabilities)
             approvals |= set(a.manifest.require_approval)
-        skill_caps = self._resolver.by_ids(skill_ids) if skill_ids else []
-        request_caps = self._resolver.resolve(
-            task, limit=self._working_set, scope=None, min_score=self._min_score
+            for cap in a.manifest.preferred_capabilities:
+                (intent_names if is_intent(cap) else id_names).append(cap)
+        # Skill-seeded capabilities: intents (via the intent map) then literal ids.
+        intent_caps, unresolved_intents = (
+            self._resolver.by_intents(intent_names, scope=scope)
+            if intent_names
+            else ([], [])
         )
-        deduped = self._dedupe(list(skill_caps) + list(request_caps))
-        candidates = [r.candidate for r in deduped[: self._working_set]]
-        active_meta = [
-            {"id": a.manifest.skill_id, "version": a.manifest.version} for a in active
-        ]
-        return candidates, skill_prompt, frozenset(approvals), active_meta
+        id_caps = (
+            self._resolver.by_ids(id_names, scope=scope) if id_names else []
+        )
+        resolved_ids = {c.tool.tool_id for c in id_caps}
+        gaps = tuple(
+            CapabilityGap(n, "no_tool") for n in unresolved_intents
+        ) + tuple(
+            CapabilityGap(n, "no_tool") for n in id_names if n not in resolved_ids
+        )
+        request_caps = self._resolver.resolve(
+            task, limit=self._working_set, scope=scope, min_score=self._min_score
+        )
+        deduped = self._dedupe(
+            list(intent_caps) + list(id_caps) + list(request_caps)
+        )
+        candidates = tuple(r.candidate for r in deduped[: self._working_set])
+        return PreparedRun(
+            active_skills=tuple(active),
+            rendered_skills=rendered,
+            candidates=candidates,
+            force_approval_ids=frozenset(approvals),
+            capability_gaps=gaps,
+            readiness=tuple(readiness),
+            route_hint=(
+                RouteHint.INTERACTIVE_TOOLS
+                if candidates
+                else RouteHint.KNOWLEDGE_ONLY
+            ),
+        )
 
     @staticmethod
     def _dedupe(caps: list[ResolvedCapability]) -> list[ResolvedCapability]:
@@ -325,15 +361,31 @@ class Orchestrator:
                     "ok": False, "outcome": str(AgentOutcome.NEEDS_CAPABILITY),
                     "text": f"unknown agent role: {role}",
                 }
-            candidates, skill_prompt, skill_approvals, _ = self._prepare_run(task)
-            spec = self._tighten(spec, skill_approvals)
-            sub_env = replace(
-                env,
-                candidates=candidates,
-                capabilities=self._resolver,
-                delegator=self._make_delegator(env, depth + 1),
+            prepared = self.prepare(task)
+            spec = self._tighten(spec, prepared.force_approval_ids)
+            v2 = getattr(self._settings, "ai_runtime_v2_enabled", False)
+            overrides: dict[str, Any] = {
+                "candidates": list(prepared.candidates),
+                "capabilities": self._resolver,
+                "delegator": self._make_delegator(env, depth + 1),
+            }
+            if v2:
+                # Lineage: a stable, unique delegation id (parent + depth + role +
+                # task) so nested/sibling sub-agents never collide step keys.
+                did = hashlib.sha1(  # noqa: S324 — non-crypto id, collision-tolerant
+                    f"{env.delegation_id}|{depth}|{role}|{task}".encode()
+                ).hexdigest()[:10]
+                overrides["delegation_id"] = did
+                overrides["parent_execution_id"] = env.delegation_id
+                overrides["agent_id"] = role
+            sub_env = replace(env, **overrides)
+            result = await Agent.run(
+                spec, task, sub_env, system_prefix=prepared.rendered_skills
             )
-            result = await Agent.run(spec, task, sub_env, system_prefix=skill_prompt)
+            if v2:
+                # Bounded, structured handoff back (carries metrics for cross-agent
+                # usage aggregation + data/error instead of raw-text-only).
+                return HandoffResult.from_agent_result(result).to_observation()
             return {
                 "ok": result.outcome != AgentOutcome.FAILURE,
                 "outcome": str(result.outcome),

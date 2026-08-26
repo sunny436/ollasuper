@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 
 from langchain_core.messages import ToolMessage
 
+from app.agent.adapters import ToolAdapter
 from app.agent.filegen_tool import FILE_GEN_TOOL_NAME
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, retrieve_knowledge
 from app.agent.memory import (
@@ -49,7 +50,6 @@ from app.agent.orchestration_tools import (
     ORCHESTRATION_BUILTIN_NAMES,
 )
 from app.agent.policy import PolicyScope, check_tool_policy
-from app.clients.ollagraph import OllagraphAdapter
 from app.logging import get_logger
 from app.models.events import EventType
 from app.models.execution import (
@@ -121,7 +121,10 @@ class ToolExecContext:
     # Optional so a RAG-only turn (no Ollagraph configured) still works: the
     # Ollagraph path is guarded on `registry is None`.
     registry: ToolRegistry | None
-    adapter: OllagraphAdapter | None
+    # Provider-neutral execution: `adapter` is the single/default adapter (back-compat
+    # slot, Ollagraph today); when multiple providers are registered the executor
+    # prefers `adapters[tool.provider]` and falls back to `adapter`.
+    adapter: ToolAdapter | None
     writer: DeltaWriter
     scope: PolicyScope
     # OpenAI-legal bound name -> real tool_id (the model calls by bound name).
@@ -158,6 +161,9 @@ class ToolExecContext:
     rag: RagContext | None = None
     # Phase 6: set when the memory tools (search_memory/remember) are bound.
     memory: MemoryContext | None = None
+    # Provider-neutral adapter map (empty => use the single `adapter` slot above,
+    # preserving every existing single-provider call site + test byte-for-byte).
+    adapters: dict[str, ToolAdapter] = field(default_factory=dict)
     # Phase 8: durable approval round-trip. `approvals` = resolved decisions
     # keyed by the STABLE approval id (threaded from the resume dispatch);
     # `force_approval_ids` promotes read-only tools to approval-gated for testing
@@ -171,6 +177,17 @@ class ToolExecContext:
     # per-execution records. All defaulted so existing call sites are unaffected.
     run_id: str = ""
     run_attempt: int = 0
+    # Phase 1 (v2) lineage. Empty on a top-level run => step key byte-identical to
+    # today; a delegated sub-agent sets `delegation_id` so its keys never collide
+    # with the parent's or a sibling's (all still under the same run_id/attempt).
+    agent_id: str = ""
+    delegation_id: str = ""
+    workflow_id: str = ""
+    parent_execution_id: str = ""
+    # Phase 1 (v2) cross-agent usage: batch sub-agent tokens accumulate here so the
+    # runner can fold them into the turn's reported usage (they never pass through
+    # the top model stream). Empty/unused when no delegation happens.
+    delegated_usage: dict = field(default_factory=dict)
     step_counter: int = 0
     ledger: ExecutionLedger = field(default_factory=ExecutionLedger)
     # Phase 10: dynamic capability resolution + orchestration built-ins. All
@@ -256,7 +273,10 @@ def build_tool_specs(
         if name is None:
             continue
         try:
-            resolved = _deref_schema(tool.input_schema or {}, components)
+            resolved = _deref_schema(
+                tool.input_schema or {},
+                registry.components_for(tool.provider) or components,
+            )
         except Exception:  # noqa: BLE001 — a bad schema must not break the turn
             resolved = {"type": "object"}
         if not isinstance(resolved, dict) or resolved.get("type") != "object":
@@ -346,6 +366,14 @@ def _step_id(ctx: ToolExecContext) -> str:
     """Identity of the current orchestration step (one executor pass). Embeds
     `run_attempt` so a resumed run's steps never numerically collide with the
     original attempt's under the same run_id."""
+    if ctx.delegation_id:
+        # Delegated sub-agent: add the delegation segment so nested/sibling subs
+        # (which share run_id/attempt and each restart step_counter at 0) never
+        # collide. Top-level runs (empty delegation_id) stay byte-identical.
+        return (
+            f"{ctx.run_id}:a{ctx.run_attempt}"
+            f":d{ctx.delegation_id}:s{ctx.step_counter}"
+        )
     return f"{ctx.run_id}:a{ctx.run_attempt}:s{ctx.step_counter}"
 
 
@@ -733,7 +761,10 @@ async def _run_one(
     # can check nested objects/enums/bounds (top-level resolve_schema leaves
     # nested $refs as stubs). _deref_schema is cycle-guarded; fall back safely.
     try:
-        input_schema = _deref_schema(tool.input_schema or {}, ctx.registry.components)
+        input_schema = _deref_schema(
+            tool.input_schema or {},
+            ctx.registry.components_for(tool.provider) or ctx.registry.components,
+        )
     except Exception:  # noqa: BLE001 — a bad schema must never break the call
         input_schema = ctx.registry.resolve_schema(tool.input_schema or {})
     if not isinstance(input_schema, dict):
@@ -799,8 +830,11 @@ async def _run_one(
             return await _cancelled()
         execution.begin_attempt()
         try:
+            # Provider-neutral dispatch: prefer the per-provider adapter, fall back
+            # to the single `adapter` slot (identical for the single-provider config).
+            _adapter = ctx.adapters.get(tool.provider) or ctx.adapter
             result = await asyncio.wait_for(
-                ctx.adapter.call_tool(
+                _adapter.call_tool(
                     tool,
                     args,
                     input_schema=input_schema,
@@ -1339,7 +1373,14 @@ async def _run_delegate(ctx: ToolExecContext, call_id: str, args: dict) -> ToolM
         status="running",
         side_effect="read_only",
     )
-    result = await delegator(role, task)  # -> {"ok", "outcome", "text"}
+    result = await delegator(role, task)  # -> {"ok", "outcome", "text", "metrics"?}
+    # Phase 1 (v2): fold the batch sub-agent's tokens into the turn aggregate.
+    if isinstance(result, dict):
+        _m = result.get("metrics")
+        if isinstance(_m, dict) and _m.get("tokens"):
+            ctx.delegated_usage["tokens"] = ctx.delegated_usage.get(
+                "tokens", 0
+            ) + int(_m.get("tokens") or 0)
     ok = bool(result.get("ok", True)) if isinstance(result, dict) else True
     outcome = result.get("outcome") if isinstance(result, dict) else None
     text = result.get("text") if isinstance(result, dict) else str(result)

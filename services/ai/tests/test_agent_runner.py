@@ -634,3 +634,58 @@ def test_capability_orientation_only_when_agentic():
         summary_through_seq=0, agentic=False,
     )
     assert CAPABILITY_ORIENTATION not in p2
+
+
+# --- Phase 1 (v2) runner smoke tests ----------------------------------------
+async def test_v2_orchestrated_tool_flow_finalizes(monkeypatch):
+    # v2 ON + tools: the corrected runner path (shared prepare + factory delegator
+    # + find_capabilities) still streams tool events and finalizes cleanly.
+    tc = {"name": "search_web", "args": {"q": "cats"}, "id": "c1"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain-final"),
+            [AIMessage(content="", tool_calls=[tc]), AIMessage(content="answer")],
+        ),
+    )
+    reg = ToolRegistry()
+    reg.register(_read_tool())
+    http = _ok_http()
+    convex = RecordingConvex()
+    try:
+        await run_generation(
+            _req("search the web for cats"),
+            _agent_settings(
+                ai_orchestrated_runtime_enabled=True, ai_runtime_v2_enabled=True
+            ),
+            convex,
+            tool_registry=reg,
+            tool_selector=ToolSelector(reg),
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+    types = _event_types(convex)
+    assert "TOOL_CALL" in types and "TOOL_RESULT" in types
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"
+
+
+async def test_v2_skills_decoupled_finalize_without_tools(monkeypatch):
+    # Item 2: with Ollagraph OFF (no registry passed), a knowledge skill still
+    # activates under v2 and the turn finalizes via the plain graph — proving skill
+    # activation is decoupled from tool availability.
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(AIMessage(content="researched answer"), []),
+    )
+    convex = RecordingConvex()
+    await run_generation(
+        _req("research and verify sources about cats"),
+        _agent_settings(
+            ai_orchestrated_runtime_enabled=True, ai_runtime_v2_enabled=True
+        ),
+        convex,  # NO tool_registry/selector/http -> Ollagraph off
+    )
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"

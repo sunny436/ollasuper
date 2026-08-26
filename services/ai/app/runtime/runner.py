@@ -56,6 +56,8 @@ from app.models.chat import GenerateRequest
 from app.models.execution import hash_args
 from app.models.tools import SideEffect, ToolFilters
 from app.orchestrator.capabilities import CapabilityResolver
+from app.orchestrator.prepare import ProviderReadiness
+from app.runtime.env_factory import build_live_agent_env
 from app.runtime.roster import build_delegate_spec, build_live_runtime
 from app.runtime.writer import DeltaWriter
 from app.skills.registry import render_skills_block
@@ -71,6 +73,17 @@ ERR_ATTACHMENT = "attachment_failed"
 ERR_INGRESS = "ingress_unavailable"
 ERR_INTERNAL = "internal"
 ERR_DEADLINE = "deadline_exceeded"  # Phase 7: total execution deadline hit
+
+
+def _compute_deadline_mono(
+    req: GenerateRequest, started: float, settings: Settings
+) -> float:
+    """The total-execution deadline as a monotonic timestamp. Convex `deadlineAt`
+    (epoch ms) is authoritative when present so a crash-loop can't extend it; else
+    fall back to `started + ai_agent_total_deadline_s`."""
+    if req.deadlineAt > 0:
+        return time.monotonic() + max(0.0, req.deadlineAt / 1000 - time.time())
+    return started + settings.ai_agent_total_deadline_s
 
 
 async def _background_heartbeat(
@@ -133,8 +146,25 @@ async def run_generation(
     started = time.monotonic()
     hb_task: asyncio.Task | None = None
     deadline_flag = {"hit": False}
+    tools_ctx: ToolExecContext | None = None  # defined pre-try for the finally
 
     try:
+        # Phase 1 (v2): arm the total-execution deadline BEFORE preparation, so a
+        # hang during attachment/RAG/discovery/skill prep is also cancelled (the
+        # function-level try above already converts that CancelledError to
+        # ERR_DEADLINE). v2-OFF leaves this None -> armed just before the stream
+        # exactly as before (byte-identical).
+        if settings.ai_runtime_v2_enabled:
+            hb_task = asyncio.create_task(
+                _background_heartbeat(
+                    writer,
+                    settings.ai_heartbeat_ms,
+                    _compute_deadline_mono(req, started, settings),
+                    asyncio.current_task(),
+                    deadline_flag,
+                )
+            )
+
         # --- assemble ------------------------------------------------------
         history = list(req.history)
         latest = history.pop() if history and history[-1].role == "user" else None
@@ -321,6 +351,44 @@ async def run_generation(
             workspace_id=req.workspaceId,
             tenant_id=req.workspaceId,
         )
+        # Phase 1 (v2): SKILL activation DECOUPLED from tool availability — a
+        # knowledge-only skill activates even with Ollagraph off/empty. Run the ONE
+        # shared prepare() here (before tools bind) and compose its guidance into the
+        # system prompt; the tools block below REUSES these objects for
+        # find_capabilities/delegation. v2-OFF: skipped entirely (byte-identical).
+        candidates: list = []
+        prepared_v2 = None
+        orchestrator_v2 = None
+        resolver_v2 = None
+        if (
+            settings.ai_runtime_v2_enabled
+            and settings.ai_orchestrated_runtime_enabled
+            and latest is not None
+        ):
+            _reg = tool_registry if tool_registry is not None else ToolRegistry()
+            _sel = tool_selector if tool_selector is not None else ToolSelector(_reg)
+            resolver_v2 = CapabilityResolver(_reg, _sel)
+            orchestrator_v2, _ = build_live_runtime(settings, resolver_v2)
+            prepared_v2 = orchestrator_v2.prepare(
+                latest.content,
+                scope=agent_scope,
+                readiness=(
+                    ProviderReadiness(
+                        provider="ollagraph",
+                        available=bool(tool_registry and tool_registry.count),
+                        user_ready=settings.agent_enabled,
+                    ),
+                ),
+            )
+            if prepared_v2.rendered_skills:
+                system = f"{system}\n\n{prepared_v2.rendered_skills}"
+                log.info(
+                    "agent.skills_active",
+                    extra={
+                        "stream_id": req.streamId,
+                        "skills": [r["id"] for r in prepared_v2.skill_records],
+                    },
+                )
         web_active = (
             settings.agent_enabled
             and tool_registry is not None
@@ -494,67 +562,80 @@ async def run_generation(
                     and tool_registry is not None
                     and tool_selector is not None
                 ):
-                    resolver = CapabilityResolver(tool_registry, tool_selector)
-                    specs.append(FIND_CAPABILITIES_TOOL_SPEC)
-                    tools_ctx.capabilities = resolver
-                    tools_ctx.rebind = llm_for_tools.bind_tools
-                    tools_ctx.pending_capabilities = []
-                    # Phase 13: wire SKILLS (trusted guidance) + DELEGATION (specialist
-                    # sub-agents) into the SAME streaming path. Skills compose into the
-                    # system prompt and may only TIGHTEN approvals; delegate_to_agent
-                    # rides the bound_specs re-bind (like find_capabilities) and its
-                    # sub-agent runs as a batch tool observation, so the top agent's
-                    # answer still streams. All strictly behind the flag → flag-off is
-                    # byte-identical to the pre-Phase-13 runner.
-                    orchestrator, skill_reg = build_live_runtime(settings, resolver)
-                    if latest is not None:
-                        active_skills = skill_reg.discover(
-                            latest.content,
-                            limit=settings.ai_skill_max_active,
-                            min_score=settings.ai_skill_min_score,
-                        )
-                        if active_skills:
-                            system = (
-                                f"{system}\n\n"
-                                + render_skills_block(
-                                    active_skills,
-                                    char_budget=(
-                                        settings.ai_skill_instructions_budget_chars
-                                    ),
-                                )
+                    if settings.ai_runtime_v2_enabled and orchestrator_v2 is not None:
+                        # v2: reuse the resolver + skills already prepared above
+                        # (decoupled from tools). The delegator env is built AFTER
+                        # resume/budget state is known (below) so sub-agents inherit
+                        # approvals/RAG/memory/resume/budget — not just role+task.
+                        resolver = resolver_v2
+                        specs.append(FIND_CAPABILITIES_TOOL_SPEC)
+                        tools_ctx.capabilities = resolver
+                        tools_ctx.rebind = llm_for_tools.bind_tools
+                        tools_ctx.pending_capabilities = []
+                        if prepared_v2 is not None and prepared_v2.force_approval_ids:
+                            tools_ctx.force_approval_ids = (
+                                tools_ctx.force_approval_ids
+                                | prepared_v2.force_approval_ids
                             )
-                            skill_approvals: set[str] = set()
-                            for a in active_skills:
-                                skill_approvals |= set(a.manifest.require_approval)
-                            if skill_approvals:
-                                tools_ctx.force_approval_ids = (
-                                    tools_ctx.force_approval_ids
-                                    | frozenset(skill_approvals)
-                                )
-                            log.info(
-                                "agent.skills_active",
-                                extra={
-                                    "stream_id": req.streamId,
-                                    "skills": [
-                                        a.manifest.skill_id for a in active_skills
-                                    ],
-                                },
+                        specs.append(build_delegate_spec())
+                    else:
+                        # Phase 13 (v2-OFF): byte-identical wiring. Skills + delegation
+                        # into the SAME streaming path; delegate_to_agent rides the
+                        # bound_specs re-bind, sub-agent runs as a batch observation.
+                        resolver = CapabilityResolver(tool_registry, tool_selector)
+                        specs.append(FIND_CAPABILITIES_TOOL_SPEC)
+                        tools_ctx.capabilities = resolver
+                        tools_ctx.rebind = llm_for_tools.bind_tools
+                        tools_ctx.pending_capabilities = []
+                        orchestrator, skill_reg = build_live_runtime(settings, resolver)
+                        if latest is not None:
+                            active_skills = skill_reg.discover(
+                                latest.content,
+                                limit=settings.ai_skill_max_active,
+                                min_score=settings.ai_skill_min_score,
                             )
-                    specs.append(build_delegate_spec())
-                    tools_ctx.delegator = orchestrator.make_delegator(
-                        AgentEnv(
-                            writer=writer,
-                            llm=llm,
-                            run_id=req.streamId,
-                            user_id=req.userId,
-                            workspace_id=req.workspaceId,
-                            registry=tool_registry,
-                            adapter=adapter,
-                            candidates=candidates,
-                            bind=llm_for_tools.bind_tools,
-                            capabilities=resolver,
+                            if active_skills:
+                                system = (
+                                    f"{system}\n\n"
+                                    + render_skills_block(
+                                        active_skills,
+                                        char_budget=(
+                                            settings.ai_skill_instructions_budget_chars
+                                        ),
+                                    )
+                                )
+                                skill_approvals: set[str] = set()
+                                for a in active_skills:
+                                    skill_approvals |= set(a.manifest.require_approval)
+                                if skill_approvals:
+                                    tools_ctx.force_approval_ids = (
+                                        tools_ctx.force_approval_ids
+                                        | frozenset(skill_approvals)
+                                    )
+                                log.info(
+                                    "agent.skills_active",
+                                    extra={
+                                        "stream_id": req.streamId,
+                                        "skills": [
+                                            a.manifest.skill_id for a in active_skills
+                                        ],
+                                    },
+                                )
+                        specs.append(build_delegate_spec())
+                        tools_ctx.delegator = orchestrator.make_delegator(
+                            AgentEnv(
+                                writer=writer,
+                                llm=llm,
+                                run_id=req.streamId,
+                                user_id=req.userId,
+                                workspace_id=req.workspaceId,
+                                registry=tool_registry,
+                                adapter=adapter,
+                                candidates=candidates,
+                                bind=llm_for_tools.bind_tools,
+                                capabilities=resolver,
+                            )
                         )
-                    )
 
         # Phase 6 (B1): measure the FIXED costs (system prompt + bound tool schemas
         # + latest turn) now that all are assembled, and trim PRIOR history against
@@ -689,6 +770,35 @@ async def run_generation(
                 },
             )
 
+        # Phase 1 (v2): build the delegator env HERE — after approvals + resume
+        # state are populated on tools_ctx — via the ONE env factory, so a delegated
+        # sub-agent inherits approvals/RAG/memory/resume/budget (not just role+task).
+        # The delegate spec was already bound above; attaching the callable before
+        # the graph runs is sufficient. v2-OFF used the thin env in the block above.
+        if (
+            settings.ai_runtime_v2_enabled
+            and orchestrator_v2 is not None
+            and tools_ctx is not None
+        ):
+            tools_ctx.delegator = orchestrator_v2.make_delegator(
+                build_live_agent_env(
+                    writer=writer,
+                    llm=llm,
+                    req=req,
+                    registry=tool_registry,
+                    adapter=adapter,
+                    candidates=candidates,
+                    bind=llm_for_tools.bind_tools,
+                    capabilities=resolver_v2,
+                    rag=rag_ctx,
+                    memory=mem_ctx,
+                    fit_budget=fit_budget,
+                    approvals=dict(tools_ctx.approvals),
+                    resume_seen=dict(tools_ctx.seen_calls),
+                    resume_seen_set=frozenset(tools_ctx.seen_call_set),
+                )
+            )
+
         # Phase 6 (B4): re-fit the assembled list (latest + prior + resumed
         # completed/attempted/approved tool messages) so a resume with many large
         # results cannot overrun the window — the oldest raw results compact to
@@ -708,15 +818,11 @@ async def run_generation(
             if tools_ctx.capabilities is not None:
                 state["bound_specs"] = specs
 
-        # Phase 7: the total-execution deadline (durable across resume). Convex's
-        # `deadlineAt` (epoch ms) is authoritative when present so a crash-loop
-        # can't extend it; else fall back to now + the configured budget.
-        if req.deadlineAt > 0:
-            deadline_mono = time.monotonic() + max(
-                0.0, req.deadlineAt / 1000 - time.time()
-            )
-        else:
-            deadline_mono = started + settings.ai_agent_total_deadline_s
+        # Phase 7: the total-execution deadline (durable across resume). Under v2
+        # it was already computed + armed before prep (so a prep-time hang is
+        # guarded); here it stands in for the v2-off path (armed just before the
+        # stream, byte-identical to before).
+        deadline_mono = _compute_deadline_mono(req, started, settings)
 
         # --- stream --------------------------------------------------------
         #
@@ -728,15 +834,16 @@ async def run_generation(
         # Observed against the real OpenRouter endpoint. Every early exit below
         # is exactly that case, so this wraps the whole iteration.
         last_beat = time.monotonic()
-        hb_task = asyncio.create_task(
-            _background_heartbeat(
-                writer,
-                settings.ai_heartbeat_ms,
-                deadline_mono,
-                asyncio.current_task(),
-                deadline_flag,
+        if hb_task is None:  # v2 arms it earlier (before prep); else arm it here.
+            hb_task = asyncio.create_task(
+                _background_heartbeat(
+                    writer,
+                    settings.ai_heartbeat_ms,
+                    deadline_mono,
+                    asyncio.current_task(),
+                    deadline_flag,
+                )
             )
-        )
         async with aclosing(graph.astream(state, stream_mode="messages")) as stream:
             async for chunk, metadata in stream:
                 # Only the model node's output is user-visible. Tool nodes added
@@ -842,6 +949,15 @@ async def run_generation(
                 "total_ms": round((time.monotonic() - started) * 1000),
             },
         )
+        # Phase 1 (v2): fold batch sub-agent tokens into the turn's reported usage
+        # (they never pass through the top model stream that fills `usage`).
+        if (
+            settings.ai_runtime_v2_enabled
+            and tools_ctx is not None
+            and tools_ctx.delegated_usage.get("tokens")
+        ):
+            usage = usage or {"promptTokens": 0, "completionTokens": 0}
+            usage["completionTokens"] += int(tools_ctx.delegated_usage["tokens"])
         # Phase 8: a suspended turn's durable park is already recorded; a
         # finalize here would drive waiting_approval -> done and destroy it. Skip
         # the terminal write. (Guarded, not `return`-in-finally, which would

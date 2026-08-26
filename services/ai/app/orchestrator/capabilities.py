@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from app.agent.policy import PolicyScope, check_tool_policy
 from app.models.tools import ToolCandidate, ToolDefinition, ToolFilters
+from app.orchestrator.intents import intent_spec
 
 if TYPE_CHECKING:
     from app.tools.registry import ToolRegistry
@@ -103,6 +104,47 @@ class CapabilityResolver:
                 )
             )
         return out
+
+    def by_intents(
+        self, intents, *, scope: PolicyScope | None = None, limit_per: int = 3
+    ) -> tuple[list[ResolvedCapability], list[str]]:
+        """Resolve capability INTENTS (e.g. `page.fetch`) to annotated candidates
+        via the intent map + the deterministic selector. Returns
+        `(resolved, unresolved_intents)` so the caller can report capability gaps.
+        Unknown intents / intents that match no tool go to `unresolved`."""
+        out: list[ResolvedCapability] = []
+        unresolved: list[str] = []
+        seen: set[str] = set()
+        for name in intents:
+            spec = intent_spec(name)
+            if spec is None:
+                unresolved.append(name)
+                continue
+            mse = spec.get("max_side_effect")
+            filters = (
+                ToolFilters(max_side_effect=mse)
+                if mse is not None
+                else ToolFilters()
+            )
+            result = self._selector.select(
+                spec["query"], top_k=limit_per, filters=filters, min_score=None
+            )
+            hit = False
+            for c in result.candidates:
+                if c.tool.tool_id in seen:
+                    continue
+                seen.add(c.tool.tool_id)
+                out.append(
+                    ResolvedCapability(
+                        candidate=c,
+                        score=c.score,
+                        auth_status=self._auth(c.tool, scope),
+                    )
+                )
+                hit = True
+            if not hit:
+                unresolved.append(name)
+        return out, unresolved
 
     @staticmethod
     def _auth(tool: ToolDefinition, scope: PolicyScope | None) -> str:
