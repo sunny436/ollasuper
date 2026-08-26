@@ -4,9 +4,12 @@
  * Two kinds of token, and the split is load-bearing for legibility:
  *
  *  SURFACES / fills interpolate continuously through 4 stops
- *  [day, amber, dusk, night] (dusk = a deep warm mid so the amber->night journey
- *  is a deliberate warm dusk, not muddy grey). day/night are VERBATIM the current
- *  light/.dark literals in globals.css so intensity 0/100 match the var() fallbacks.
+ *  [day, amber, dusk, night] (dusk = a genuine deep warm MID, ~L30, not near-black:
+ *  this eases the amber->night darkening into a gradual curve instead of a cliff, so
+ *  dragging the slider through the top half reads as a smooth dusk rather than a
+ *  sudden washout/jump — see the velocity note on the dusk stops below). day/night are
+ *  VERBATIM the current light/.dark literals in globals.css so intensity 0/100 match
+ *  the var() fallbacks.
  *
  *  TEXT / on-surface tokens NEVER lerp through grey (that is what washes out
  *  mid-transition). Each has two inks — `onLight` (interpolated day->amber, dark)
@@ -42,29 +45,37 @@ export const DARK_ON_LUM = 0.22;
 export const DARK_OFF_LUM = 0.25;
 
 // ── Surfaces (4-stop) ────────────────────────────────────────────────────────
+// Dusk (stop index 2) is a genuine deep warm MID (~L30), not near-black. The
+// amber(0.5)->night(1) darkening used to plunge amber(L~97)->dusk(L~14) across the
+// 50-75 range — a velocity CLIFF (peak ~4.2 dL*/step) that reads as a sudden
+// mid-slider washout/jump. Lifting every neutral dusk stop by a uniform ~+18 L (hue,
+// saturation and elevation ORDER preserved) spreads the darkening evenly across the
+// top half (peak ~2.9), so the settle points stay crisp and only brief transients dim.
+// Non-neutral accents (destructive/brand/ring) are unchanged — they are not part of
+// the light<->dark surface field. day/night endpoints are untouched.
 export const ROOT_SURFACE: Record<string, Ramp> = {
-  background: ["0 0% 100%", "38 60% 96%", "25 35% 14%", "0 0% 0%"],
-  card: ["0 0% 100%", "40 55% 98%", "26 34% 16%", "0 0% 3%"],
-  popover: ["0 0% 100%", "40 55% 98%", "26 32% 18%", "0 0% 3%"],
-  secondary: ["210 40% 96.1%", "38 45% 90%", "25 25% 20%", "0 0% 10%"],
-  muted: ["210 40% 96.1%", "38 45% 90%", "25 25% 20%", "0 0% 10%"],
-  accent: ["210 40% 96.1%", "38 40% 88%", "25 24% 24%", "0 0% 15%"],
-  border: ["214.3 31.8% 91.4%", "36 40% 82%", "25 20% 28%", "0 0% 20%"],
-  input: ["214.3 31.8% 91.4%", "36 40% 82%", "25 20% 28%", "0 0% 20%"],
+  background: ["0 0% 100%", "38 60% 96%", "25 35% 32%", "0 0% 0%"],
+  card: ["0 0% 100%", "40 55% 98%", "26 34% 34%", "0 0% 3%"],
+  popover: ["0 0% 100%", "40 55% 98%", "26 32% 36%", "0 0% 3%"],
+  secondary: ["210 40% 96.1%", "38 45% 90%", "25 25% 38%", "0 0% 10%"],
+  muted: ["210 40% 96.1%", "38 45% 90%", "25 25% 38%", "0 0% 10%"],
+  accent: ["210 40% 96.1%", "38 40% 88%", "25 24% 42%", "0 0% 15%"],
+  border: ["214.3 31.8% 91.4%", "36 40% 82%", "25 20% 46%", "0 0% 20%"],
+  input: ["214.3 31.8% 91.4%", "36 40% 82%", "25 20% 46%", "0 0% 20%"],
   destructive: ["0 84.2% 60.2%", "8 75% 50%", "4 68% 42%", "0 100% 30%"],
   brand: ["224 76% 50%", "28 80% 30%", "215 70% 46%", "204 94% 62%"],
   ring: ["222.2 84% 4.9%", "35 85% 44%", "30 70% 40%", "0 0% 80%"],
 };
 
 export const WS_SURFACE: Record<string, Ramp> = {
-  background: ["220 43% 98%", "40 55% 97.5%", "25 28% 12%", "228 27% 4%"],
-  card: ["0 0% 100%", "44 60% 99%", "26 30% 15%", "230 30% 7%"],
-  popover: ["0 0% 100%", "44 60% 99%", "26 28% 18%", "231 28% 10%"],
-  secondary: ["220 33% 96%", "40 45% 92%", "25 22% 18%", "230 26% 9%"],
-  muted: ["220 33% 96%", "40 45% 92%", "25 22% 18%", "230 26% 9%"],
-  accent: ["220 33% 94%", "38 42% 90%", "25 22% 22%", "228 25% 14%"],
-  border: ["220 25% 90%", "36 38% 84%", "25 18% 26%", "225 20% 17%"],
-  input: ["220 25% 90%", "36 38% 84%", "25 18% 26%", "225 20% 17%"],
+  background: ["220 43% 98%", "40 55% 97.5%", "25 28% 30%", "228 27% 4%"],
+  card: ["0 0% 100%", "44 60% 99%", "26 30% 33%", "230 30% 7%"],
+  popover: ["0 0% 100%", "44 60% 99%", "26 28% 36%", "231 28% 10%"],
+  secondary: ["220 33% 96%", "40 45% 92%", "25 22% 36%", "230 26% 9%"],
+  muted: ["220 33% 96%", "40 45% 92%", "25 22% 36%", "230 26% 9%"],
+  accent: ["220 33% 94%", "38 42% 90%", "25 22% 40%", "228 25% 14%"],
+  border: ["220 25% 90%", "36 38% 84%", "25 18% 44%", "225 20% 17%"],
+  input: ["220 25% 90%", "36 38% 84%", "25 18% 44%", "225 20% 17%"],
 };
 
 // ── Text / on-surface (contrast-picked, never lerp through grey) ──────────────
