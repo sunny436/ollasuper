@@ -12,6 +12,7 @@ import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.agent.base import AgentEnv
 from app.agent.budget import (
     ContextBudget,
     content_tokens,
@@ -42,7 +43,10 @@ from app.agent.memory import (
     REMEMBER_TOOL_NAME,
     REMEMBER_TOOL_SPEC,
 )
-from app.agent.orchestration_tools import FIND_CAPABILITIES_TOOL_SPEC
+from app.agent.orchestration_tools import (
+    DELEGATE_TOOL_SPEC,
+    FIND_CAPABILITIES_TOOL_SPEC,
+)
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
@@ -54,7 +58,9 @@ from app.models.chat import GenerateRequest
 from app.models.execution import hash_args
 from app.models.tools import SideEffect, ToolFilters
 from app.orchestrator.capabilities import CapabilityResolver
+from app.runtime.roster import build_live_runtime
 from app.runtime.writer import DeltaWriter
+from app.skills.registry import render_skills_block
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
 
@@ -299,6 +305,7 @@ async def run_generation(
         # a total failure falls back to the plain graph — chat never breaks.
         specs: list[dict] = []
         name_to_id: dict[str, str] = {}
+        candidates: list = []  # web candidates; stays [] when web tools are inactive
         adapter = None
         rag_ctx = None
         mem_ctx = None
@@ -477,12 +484,67 @@ async def run_generation(
                     and tool_registry is not None
                     and tool_selector is not None
                 ):
+                    resolver = CapabilityResolver(tool_registry, tool_selector)
                     specs.append(FIND_CAPABILITIES_TOOL_SPEC)
-                    tools_ctx.capabilities = CapabilityResolver(
-                        tool_registry, tool_selector
-                    )
+                    tools_ctx.capabilities = resolver
                     tools_ctx.rebind = llm_for_tools.bind_tools
                     tools_ctx.pending_capabilities = []
+                    # Phase 13: wire SKILLS (trusted guidance) + DELEGATION (specialist
+                    # sub-agents) into the SAME streaming path. Skills compose into the
+                    # system prompt and may only TIGHTEN approvals; delegate_to_agent
+                    # rides the bound_specs re-bind (like find_capabilities) and its
+                    # sub-agent runs as a batch tool observation, so the top agent's
+                    # answer still streams. All strictly behind the flag → flag-off is
+                    # byte-identical to the pre-Phase-13 runner.
+                    orchestrator, skill_reg = build_live_runtime(settings, resolver)
+                    if latest is not None:
+                        active_skills = skill_reg.discover(
+                            latest.content,
+                            limit=settings.ai_skill_max_active,
+                            min_score=settings.ai_skill_min_score,
+                        )
+                        if active_skills:
+                            system = (
+                                f"{system}\n\n"
+                                + render_skills_block(
+                                    active_skills,
+                                    char_budget=(
+                                        settings.ai_skill_instructions_budget_chars
+                                    ),
+                                )
+                            )
+                            skill_approvals: set[str] = set()
+                            for a in active_skills:
+                                skill_approvals |= set(a.manifest.require_approval)
+                            if skill_approvals:
+                                tools_ctx.force_approval_ids = (
+                                    tools_ctx.force_approval_ids
+                                    | frozenset(skill_approvals)
+                                )
+                            log.info(
+                                "agent.skills_active",
+                                extra={
+                                    "stream_id": req.streamId,
+                                    "skills": [
+                                        a.manifest.skill_id for a in active_skills
+                                    ],
+                                },
+                            )
+                    specs.append(DELEGATE_TOOL_SPEC)
+                    tools_ctx.delegator = orchestrator.make_delegator(
+                        AgentEnv(
+                            writer=writer,
+                            llm=llm,
+                            run_id=req.streamId,
+                            user_id=req.userId,
+                            workspace_id=req.workspaceId,
+                            registry=tool_registry,
+                            adapter=adapter,
+                            candidates=candidates,
+                            bind=llm_for_tools.bind_tools,
+                            capabilities=resolver,
+                        )
+                    )
 
         # Phase 6 (B1): measure the FIXED costs (system prompt + bound tool schemas
         # + latest turn) now that all are assembled, and trim PRIOR history against

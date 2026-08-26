@@ -295,6 +295,13 @@ class Orchestrator:
             active_skills=active_skills or [],
         )
 
+    def make_delegator(self, env: AgentEnv) -> Callable[[str, str], Any]:
+        """Public entry to the tested delegator (Phase 13): the live streaming runner
+        injects this into the top agent's executor as `delegate_to_agent`, so a
+        specialist sub-agent runs as a batch tool observation while the top agent's
+        answer keeps streaming."""
+        return self._make_delegator(env, 0)
+
     def _make_delegator(
         self, env: AgentEnv, depth: int
     ) -> Callable[[str, str], Any]:
