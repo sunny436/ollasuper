@@ -21,6 +21,9 @@ export const EVENT_TYPES = [
   "CITATION",
   "APPROVAL_REQUEST",
   "ARTIFACT",
+  // Phase 8: the MODEL's decision at one step (observability trace only — the UI
+  // timeline skips it as an unknown kind, so tool-activity rendering is unchanged).
+  "MODEL_CALL",
   "FINAL",
   "ERROR",
 ] as const;
@@ -33,6 +36,7 @@ export const eventType = v.union(
   v.literal("CITATION"),
   v.literal("APPROVAL_REQUEST"),
   v.literal("ARTIFACT"),
+  v.literal("MODEL_CALL"),
   v.literal("FINAL"),
   v.literal("ERROR"),
 );

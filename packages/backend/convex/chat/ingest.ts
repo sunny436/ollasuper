@@ -6,6 +6,7 @@ import { internalMutation } from "../_generated/server";
 import { audit } from "../auditLog";
 import { recordUsage } from "../usage";
 import { eventObject } from "./events";
+import { deleteExecutions } from "./executions";
 
 /**
  * Server-to-server ingress mutations. Called only from http.ts, which has
@@ -88,6 +89,22 @@ async function deleteEvents(ctx: MutationCtx, messageId: Id<"chatMessages">) {
   const rows = await ctx.db
     .query("chatStreamEvents")
     .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+    .collect();
+  for (const r of rows) await ctx.db.delete(r._id);
+}
+
+/**
+ * Phase 4 hygiene: retire this stream's approval rows at a terminal finalize, so
+ * an unresolved `pending` row (e.g. the model didn't re-emit a deferred sibling
+ * under all-or-pause) leaves no orphan. NOT load-bearing — the UI reads the
+ * pending approval only from `stream.active` (gated on `waiting_approval`), and
+ * `reapExpired` self-heals it after the TTL — but it keeps the table clean.
+ * Called ONLY after the `waiting_approval` early-return, so a live park survives.
+ */
+async function deleteApprovals(ctx: MutationCtx, streamId: string) {
+  const rows = await ctx.db
+    .query("chatApprovals")
+    .withIndex("by_stream_approval", (q) => q.eq("streamId", streamId))
     .collect();
   for (const r of rows) await ctx.db.delete(r._id);
 }
@@ -273,9 +290,15 @@ export const appendEvent = internalMutation({
   },
   handler: async (ctx, { streamId, events }) => {
     const stream = await loadStream(ctx, streamId);
-    if (!stream) return { ok: false, cancel: true, unknown: true };
-    if (isTerminal(stream.status)) return { ok: true, cancel: true };
-    if (stream.status === "waiting_approval") return { ok: true, cancel: true };
+    // Phase 2: `persisted` is the write-ahead signal — TRUE only when the event
+    // row is actually durable. The three early-returns below do NOT insert, so a
+    // side-effecting TOOL_CALL that gets one of them must ABORT (a stopped or
+    // finalized stream must not fire a fresh side effect).
+    if (!stream) return { ok: false, cancel: true, unknown: true, persisted: false };
+    if (isTerminal(stream.status))
+      return { ok: true, cancel: true, persisted: false };
+    if (stream.status === "waiting_approval")
+      return { ok: true, cancel: true, persisted: false };
 
     const now = Date.now();
     for (const e of events.slice(0, MAX_EVENTS_PER_BATCH)) {
@@ -309,7 +332,7 @@ export const appendEvent = internalMutation({
         updatedAt: now,
       });
     }
-    return { ok: true, cancel: stream.cancelRequested };
+    return { ok: true, cancel: stream.cancelRequested, persisted: true };
   },
 });
 
@@ -343,6 +366,11 @@ export const finishStream = internalMutation({
 
     const now = Date.now();
     await deleteChunks(ctx, stream.messageId);
+    // Phase 3: the durable execution records are the recovery checkpoint; a terminal
+    // finalize retires them (mirrors deleteEvents). Suspend returned above, so a
+    // parked WAITING_APPROVAL row survives for the approval resume.
+    await deleteExecutions(ctx, stream.messageId);
+    await deleteApprovals(ctx, stream.streamId); // Phase 4: retire any orphan approvals
     // Fold typed events into the message ONLY when the generation emitted any
     // (the "second write"). A pure text turn writes no `events` field → renders
     // exactly as before. The seq arg is a placeholder; foldEvents assigns it.
@@ -447,6 +475,10 @@ export async function finalizeError(
 
   const now = Date.now();
   await deleteChunks(ctx, stream.messageId);
+  await deleteExecutions(ctx, stream.messageId); // Phase 3: retire the checkpoint
+  // NB: deliberately do NOT deleteApprovals here — finalizeError is the expiry /
+  // error terminal, where the "expired"/"rejected" row is a kept audit record
+  // (reapExpired asserts it survives). Orphan cleanup rides finishStream only.
   const events = stream.hasEvents
     ? await foldEvents(
         ctx,

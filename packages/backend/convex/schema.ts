@@ -322,6 +322,11 @@ export default defineSchema({
     // and only for generations that actually emitted structured events — a
     // pure text turn leaves this absent, so it renders exactly as before.
     events: v.optional(v.array(eventObject)),
+    // Phase 4: set by `stop` when the turn was cancelled while a SIDE-EFFECTING
+    // tool was still RUNNING (a durable RUNNING execution row existed at the
+    // stop). The external effect may have completed after we finalized, so the
+    // message carries an honest marker rather than claiming a clean cancel.
+    interruptedSideEffect: v.optional(v.object({ toolId: v.string() })),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -436,7 +441,56 @@ export default defineSchema({
     .index("by_status_expiresAt", ["status", "expiresAt"])
     .index("by_thread_status", ["threadId", "status"]),
 
-
+  // Phase 3 — durable per-execution record; the crash-recovery AUTHORITY for one
+  // tool run. A superset of the in-memory ToolExecution (services/ai app/models/
+  // execution.py): written write-ahead (RUNNING before a side effect), advanced
+  // along the same state machine, read on resume by dispatchPayload, and DELETED
+  // at finalize (mirrors chatStreamEvents). Ownership ids are DERIVED from the
+  // stream, never client-sent. Idempotent by (streamId, executionId) — executionId
+  // is the app uuid4 (resume-stable), never the model's per-turn tool_call id. A
+  // brand-new table with no pre-migration rows may carry required fields.
+  toolExecutions: defineTable({
+    executionId: v.string(),
+    streamId: v.string(),
+    messageId: v.id("chatMessages"),
+    threadId: v.id("chatThreads"),
+    workspaceId: v.id("workspaces"),
+    userId: v.id("users"),
+    stepId: v.string(),
+    toolCallId: v.string(),
+    toolId: v.string(),
+    attemptId: v.string(),
+    attempt: v.number(),
+    actionType: v.string(),
+    sideEffect: v.string(),
+    state: v.union(
+      v.literal("pending"),
+      v.literal("running"),
+      v.literal("waiting_approval"),
+      v.literal("succeeded"),
+      v.literal("failed"),
+      v.literal("cancelled"),
+      v.literal("timed_out"),
+      v.literal("indeterminate"),
+      v.literal("deduped"),
+    ),
+    inputHash: v.string(),
+    // The DURABLE args (enables direct approval continuation without model re-emit).
+    args: v.optional(v.any()),
+    resultContent: v.optional(v.string()),
+    resultReference: v.optional(v.string()), // reserved (large-result pointer)
+    error: v.optional(v.string()),
+    approvalRef: v.optional(v.string()),
+    parentStep: v.optional(v.string()), // reserved (step graph)
+    dependencies: v.optional(v.array(v.string())), // reserved (DAG)
+    createdAt: v.number(),
+    startedAt: v.optional(v.number()),
+    endedAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    .index("by_stream_execution", ["streamId", "executionId"])
+    .index("by_message", ["messageId"])
+    .index("by_state_updated", ["state", "updatedAt"]),
 
   chatSettings: defineTable({
     workspaceId: v.id("workspaces"),

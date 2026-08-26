@@ -19,9 +19,10 @@ from app.agent.executor import (
     build_tool_specs,
     execute_tool_calls,
 )
-from app.agent.policy import READ_SCOPE
+from app.agent.policy import READ_SCOPE, WRITE_SCOPE
 from app.clients.ollagraph import OllagraphAdapter
 from app.config import Settings
+from app.models.execution import ExecutionState
 from app.models.tools import (
     Availability,
     SideEffect,
@@ -122,8 +123,12 @@ async def test_oversized_result_is_bounded():
         msgs = await execute_tool_calls([_tc("search_web", {"q": "x"}, "c1")], ctx)
     finally:
         await client.aclose()
-    body = json.loads(msgs[0].content)
-    assert body["truncated"] is True and len(msgs[0].content) < 3000
+    # Phase 5: the model-facing content is injection-framed; the bounded body
+    # (truncated) rides inside the frame, and the 50k blob never reaches it.
+    content = msgs[0].content
+    assert content.startswith("<tool_output>")
+    assert '"truncated": true' in content
+    assert len(content) < 3000
 
 
 # --- safety / failure branches (each still pairs the tool_call) -----------
@@ -310,3 +315,130 @@ def test_build_tool_specs_shapes_openai_functions():
     fn = specs[0]["function"]
     assert fn["name"] == "search_web" and fn["parameters"]["type"] == "object"
     assert name_map["search_web"] == "search_web"
+
+
+# --- Phase 1: execution identity + lifecycle on the executor --------------
+async def test_execution_identity_on_events_distinct_from_model_call_id():
+    def handler(req):
+        return httpx.Response(200, json={"hits": ["a"]})
+
+    ctx, convex, client = _ctx(handler, [_read_tool()])
+    ctx.run_id = "run1"
+    try:
+        # The model's call_id is "model_c1"; the app must mint its own id.
+        await execute_tool_calls([_tc("search_web", {"q": "x"}, "model_c1")], ctx)
+    finally:
+        await client.aclose()
+    call_ev = _events(convex, "TOOL_CALL")[0]
+    res_ev = _events(convex, "TOOL_RESULT")[0]
+    assert call_ev["execution_id"] and call_ev["execution_id"] != "model_c1"
+    assert call_ev["run_id"] == "run1" and call_ev["step_id"] == "run1:a0:s1"
+    assert res_ev["execution_id"] == call_ev["execution_id"]  # one execution
+    assert res_ev["state"] == "succeeded"
+
+
+async def test_state_failed_on_exhausted_rate_limit():
+    def handler(req):
+        return httpx.Response(429, json={"e": "rate"})
+
+    ctx, convex, client = _ctx(handler, [_read_tool()])
+    try:
+        await execute_tool_calls([_tc("search_web", {"q": "x"}, "c1")], ctx)
+    finally:
+        await client.aclose()
+    assert _events(convex, "TOOL_RESULT")[0]["state"] == "failed"
+
+
+async def test_state_timed_out_on_readonly_timeout():
+    def handler(req):
+        raise httpx.ReadTimeout("slow", request=req)
+
+    ctx, convex, client = _ctx(handler, [_read_tool()])
+    try:
+        await execute_tool_calls([_tc("search_web", {"q": "x"}, "c1")], ctx)
+    finally:
+        await client.aclose()
+    assert _events(convex, "TOOL_RESULT")[0]["state"] == "timed_out"
+
+
+async def test_state_indeterminate_on_side_effecting_timeout():
+    # A timeout on a SIDE-EFFECTING tool is ambiguous (the effect may have landed).
+    def handler(req):
+        raise httpx.ReadTimeout("slow", request=req)
+
+    tool = _read_tool(side_effect=SideEffect.EXTERNAL_SIDE_EFFECT)
+    ctx, convex, client = _ctx(handler, [tool])
+    ctx.scope = WRITE_SCOPE  # so the side-effecting tool actually executes (not gated)
+    try:
+        await execute_tool_calls([_tc("search_web", {"q": "x"}, "c1")], ctx)
+    finally:
+        await client.aclose()
+    assert _events(convex, "TOOL_RESULT")[0]["state"] == "indeterminate"
+
+
+async def test_duplicate_is_deduped_and_emits_no_second_event():
+    def handler(req):
+        return httpx.Response(200, json={"ok": True})
+
+    ctx, convex, client = _ctx(handler, [_read_tool()])
+    try:
+        await execute_tool_calls(
+            [_tc("search_web", {"q": "x"}, "c1"), _tc("search_web", {"q": "x"}, "c2")],
+            ctx,
+        )
+    finally:
+        await client.aclose()
+    # The dup emits no events: exactly one TOOL_CALL/TOOL_RESULT pair.
+    assert len(_events(convex, "TOOL_CALL")) == 1
+    assert len(_events(convex, "TOOL_RESULT")) == 1
+    states = {e.state for e in ctx.ledger.all()}
+    assert ExecutionState.SUCCEEDED in states and ExecutionState.DEDUPED in states
+
+
+async def test_deny_emits_no_tool_events_and_records_failed():
+    ctx, convex, client = _ctx(
+        lambda req: httpx.Response(200, json={}), [_read_tool(enabled=False)]
+    )
+    try:
+        await execute_tool_calls([_tc("search_web", {"q": "x"}, "c1")], ctx)
+    finally:
+        await client.aclose()
+    assert not _events(convex, "TOOL_CALL") and not _events(convex, "TOOL_RESULT")
+    assert ctx.ledger.all()[0].state is ExecutionState.FAILED
+
+
+async def test_cancel_records_cancelled():
+    ctx, convex, client = _ctx(
+        lambda req: httpx.Response(200, json={}), [_read_tool()]
+    )
+    ctx.writer._cancel_requested = True
+    try:
+        await execute_tool_calls([_tc("search_web", {"q": "x"}, "c1")], ctx)
+    finally:
+        await client.aclose()
+    assert ctx.ledger.all()[0].state is ExecutionState.CANCELLED
+
+
+async def test_approval_park_records_waiting_approval():
+    high = _read_tool(
+        side_effect=SideEffect.HIGH_IMPACT, permissions=ToolPermissions()
+    )
+    ctx, convex, client = _ctx(lambda req: httpx.Response(200, json={}), [high])
+    try:
+        await execute_tool_calls([_tc("search_web", {"q": "x"}, "c1")], ctx)
+    finally:
+        await client.aclose()
+    assert ctx.ledger.all()[0].state is ExecutionState.WAITING_APPROVAL
+
+
+async def test_run_attempt_is_embedded_in_step_id():
+    ctx, convex, client = _ctx(
+        lambda req: httpx.Response(200, json={"ok": 1}), [_read_tool()]
+    )
+    ctx.run_id = "run1"
+    ctx.run_attempt = 2  # a resumed run
+    try:
+        await execute_tool_calls([_tc("search_web", {"q": "x"}, "c1")], ctx)
+    finally:
+        await client.aclose()
+    assert _events(convex, "TOOL_CALL")[0]["step_id"] == "run1:a2:s1"

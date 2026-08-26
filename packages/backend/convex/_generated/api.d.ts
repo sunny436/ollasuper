@@ -23,6 +23,7 @@ import type * as backend from "../backend.js";
 import type * as chat_approvals from "../chat/approvals.js";
 import type * as chat_attachments from "../chat/attachments.js";
 import type * as chat_authz from "../chat/authz.js";
+import type * as chat_executions from "../chat/executions.js";
 import type * as chat_ingest from "../chat/ingest.js";
 import type * as chat_messages from "../chat/messages.js";
 import type * as chat_models from "../chat/models.js";
@@ -84,6 +85,7 @@ declare const fullApi: ApiFromModules<{
   "chat/approvals": typeof chat_approvals;
   "chat/attachments": typeof chat_attachments;
   "chat/authz": typeof chat_authz;
+  "chat/executions": typeof chat_executions;
   "chat/ingest": typeof chat_ingest;
   "chat/messages": typeof chat_messages;
   "chat/models": typeof chat_models;

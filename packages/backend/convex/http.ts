@@ -251,6 +251,72 @@ http.route({
           return aiJson({ error: "unknown stream" }, 404);
         return aiJson(r);
       }
+      case "execution": {
+        // Phase 3: durable per-execution record (crash-recovery authority). Coerce
+        // + validate the state literal at the edge (mirrors the "event" filter) so
+        // the mutation validator never sees bad data.
+        const EXEC_STATES = [
+          "pending",
+          "running",
+          "waiting_approval",
+          "succeeded",
+          "failed",
+          "cancelled",
+          "timed_out",
+          "indeterminate",
+          "deduped",
+        ] as const;
+        if (
+          !streamId ||
+          typeof body.executionId !== "string" ||
+          typeof body.state !== "string" ||
+          !(EXEC_STATES as readonly string[]).includes(body.state)
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        const r = await ctx.runMutation(
+          internal.chat.executions.upsertExecution,
+          {
+            streamId,
+            executionId: body.executionId,
+            stepId: typeof body.stepId === "string" ? body.stepId : "",
+            toolCallId:
+              typeof body.toolCallId === "string" ? body.toolCallId : "",
+            toolId: typeof body.toolId === "string" ? body.toolId : "",
+            attemptId:
+              typeof body.attemptId === "string" ? body.attemptId : "",
+            attempt: typeof body.attempt === "number" ? body.attempt : 0,
+            actionType:
+              typeof body.actionType === "string" ? body.actionType : "tool",
+            sideEffect:
+              typeof body.sideEffect === "string"
+                ? body.sideEffect
+                : "read_only",
+            state: body.state as (typeof EXEC_STATES)[number],
+            inputHash:
+              typeof body.inputHash === "string" ? body.inputHash : "",
+            args: body.args,
+            resultContent:
+              typeof body.resultContent === "string"
+                ? body.resultContent
+                : undefined,
+            error: typeof body.error === "string" ? body.error : undefined,
+            approvalRef:
+              typeof body.approvalRef === "string"
+                ? body.approvalRef
+                : undefined,
+            createdAt:
+              typeof body.createdAt === "number" ? body.createdAt : Date.now(),
+            startedAt:
+              typeof body.startedAt === "number" ? body.startedAt : undefined,
+            endedAt:
+              typeof body.endedAt === "number" ? body.endedAt : undefined,
+          },
+        );
+        if ("unknown" in r && r.unknown)
+          return aiJson({ error: "unknown stream" }, 404);
+        return aiJson(r);
+      }
       case "approval": {
         // Phase 8: a tool parked awaiting user approval. Carries the stable
         // approvalId + the embedded APPROVAL_REQUEST event (filtered like
