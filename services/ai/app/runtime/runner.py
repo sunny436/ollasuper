@@ -43,10 +43,7 @@ from app.agent.memory import (
     REMEMBER_TOOL_NAME,
     REMEMBER_TOOL_SPEC,
 )
-from app.agent.orchestration_tools import (
-    DELEGATE_TOOL_SPEC,
-    FIND_CAPABILITIES_TOOL_SPEC,
-)
+from app.agent.orchestration_tools import FIND_CAPABILITIES_TOOL_SPEC
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
@@ -58,7 +55,7 @@ from app.models.chat import GenerateRequest
 from app.models.execution import hash_args
 from app.models.tools import SideEffect, ToolFilters
 from app.orchestrator.capabilities import CapabilityResolver
-from app.runtime.roster import build_live_runtime
+from app.runtime.roster import build_delegate_spec, build_live_runtime
 from app.runtime.writer import DeltaWriter
 from app.skills.registry import render_skills_block
 from app.tools.registry import ToolRegistry
@@ -530,7 +527,7 @@ async def run_generation(
                                     ],
                                 },
                             )
-                    specs.append(DELEGATE_TOOL_SPEC)
+                    specs.append(build_delegate_spec())
                     tools_ctx.delegator = orchestrator.make_delegator(
                         AgentEnv(
                             writer=writer,

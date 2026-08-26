@@ -18,6 +18,7 @@ from app.orchestrator.capabilities import CapabilityResolver
 from app.runtime.roster import (
     PRODUCTION_AGENTS,
     PRODUCTION_SKILLS,
+    build_delegate_spec,
     build_live_runtime,
 )
 from app.runtime.runner import run_generation
@@ -100,6 +101,12 @@ async def test_flag_on_binds_delegation_discovery_and_composes_skill(monkeypatch
     names = [s["function"]["name"] for s in (bound or [])]
     assert "delegate_to_agent" in names, names
     assert "find_capabilities" in names, names
+    # The delegate role is CONSTRAINED to the roster (Phase-13 prod fix): the model
+    # can only delegate to roles that actually exist, so delegation never fails as
+    # "unknown agent role".
+    delegate = next(s for s in bound if s["function"]["name"] == "delegate_to_agent")
+    role_enum = delegate["function"]["parameters"]["properties"]["role"].get("enum")
+    assert role_enum and set(role_enum) == {a.agent_id for a in PRODUCTION_AGENTS}
 
     # The research skill's TRUSTED guidance was composed into the system prompt.
     sys_text = ""
@@ -168,6 +175,13 @@ def test_live_roster_and_delegator():
     assert len(PRODUCTION_SKILLS) >= 4
     top = skill_reg.discover("analyze this data and compute the statistics")
     assert top and top[0].manifest.skill_id == "data-analysis"
+    # delegate spec constrains role to the exact roster (no drift, no failed calls).
+    spec = build_delegate_spec()
+    assert spec["function"]["name"] == "delegate_to_agent"  # name unchanged (routing)
+    enum = spec["function"]["parameters"]["properties"]["role"]["enum"]
+    assert enum == [a.agent_id for a in PRODUCTION_AGENTS]
+    for role in enum:
+        assert orch._registry.get(role) is not None  # every offered role resolves
     # the public delegator entry returns a callable.
     from app.agent.base import AgentEnv
     from app.runtime.writer import DeltaWriter
