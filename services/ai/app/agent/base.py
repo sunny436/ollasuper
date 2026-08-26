@@ -56,7 +56,8 @@ class AgentEnv:
     workspace_id: str = ""
     attempt: int = 0
     registry: Any = None  # ToolRegistry | None
-    adapter: Any = None  # OllagraphAdapter | None
+    adapter: Any = None  # the single/default ToolAdapter (Ollagraph today)
+    adapters: dict = field(default_factory=dict)  # provider -> ToolAdapter (v2)
     candidates: list = field(default_factory=list)  # list[ToolCandidate]
     # bind(specs) -> a tools-bound Runnable. Defaults to `llm.bind_tools`;
     # injectable for tests. A None return -> the runtime falls back to the plain
@@ -79,6 +80,13 @@ class AgentEnv:
     # `delegate_to_agent`. Both None (the Phase-9 default) => unchanged.
     capabilities: Any = None
     delegator: Any = None
+    # Phase 1 (v2) execution lineage — correlates records across delegation.
+    # All defaulted so existing call sites are unaffected; a top-level run leaves
+    # `delegation_id` empty, so its step key is byte-identical to today.
+    agent_id: str = ""
+    delegation_id: str = ""
+    workflow_id: str = ""
+    parent_execution_id: str = ""
 
 
 @dataclass(slots=True)
@@ -198,6 +206,7 @@ class Agent:
         ctx = ToolExecContext(
             registry=env.registry,
             adapter=env.adapter,
+            adapters=dict(env.adapters),
             writer=env.writer,
             scope=scope,
             name_to_tool_id=name_to_id,
@@ -214,6 +223,12 @@ class Agent:
             memory=env.memory,
             run_id=env.run_id,
             run_attempt=env.attempt,
+            # Phase 1 (v2) lineage — empty defaults keep the top-level step key
+            # byte-identical; a delegated env sets delegation_id/parent/workflow.
+            agent_id=env.agent_id or spec.agent_id,
+            delegation_id=env.delegation_id,
+            workflow_id=env.workflow_id,
+            parent_execution_id=env.parent_execution_id,
             # Phase-3 resume state: honor the runner's re-seeded seen-sets so a
             # completed execution is deduped, never re-run.
             seen_calls=dict(env.resume_seen),
@@ -283,7 +298,38 @@ class Agent:
                 AgentOutcome.FAILURE,
                 error={"error": "agent_run_failed", "detail": str(e)[:200]},
             )
-        return Agent._finalize(spec, env, ctx, state, out.get("messages", []))
+        result = Agent._finalize(spec, env, ctx, state, out.get("messages", []))
+        # Phase 1 (v2): ONE bounded schema repair. Dormant unless output.schema is
+        # set (so byte-identical for every current spec). On a schema-invalid
+        # result, re-invoke once with a correction; keep the honest failure if the
+        # repair still fails or crashes.
+        if (
+            spec.output.schema is not None
+            and result.error is not None
+            and result.error.get("code") == "schema_invalid"
+        ):
+            correction = HumanMessage(
+                content=(
+                    "Your previous reply did not satisfy the required JSON schema: "
+                    f"{result.error.get('detail', '')}. Return ONLY a JSON object "
+                    "matching the schema, with no prose or code fences."
+                )
+            )
+            repair_init = {
+                **init,
+                "messages": [*out.get("messages", []), correction],
+            }
+            try:
+                out = await graph.ainvoke(repair_init)
+                result = Agent._finalize(
+                    spec, env, ctx, state, out.get("messages", [])
+                )
+            except Exception:  # noqa: BLE001 — repair failure keeps the honest result
+                log.warning(
+                    "agent.schema_repair_failed",
+                    extra={"agent_id": spec.agent_id},
+                )
+        return result
 
     # -- terminal state -> structured outcome ------------------------------
     @staticmethod
@@ -334,11 +380,19 @@ class Agent:
         state.completion = "done"
         if spec.output.schema is not None:
             data = Agent._try_parse(text)
-            if data is not None:
+            ok, detail = Agent._validate_output(data, spec.output.schema)
+            if ok:
                 return AgentResult(
                     spec.agent_id, env.run_id, AgentOutcome.STRUCTURED_RESULT,
                     text=text, data=data, metrics=metrics,
                 )
+            # Invalid: a repairable marker — Agent.run may retry ONCE, else this
+            # stands as an honest failure (never a silently-wrong structured result).
+            return AgentResult(
+                spec.agent_id, env.run_id, AgentOutcome.FAILURE,
+                text=text, metrics=metrics,
+                error={"code": "schema_invalid", "detail": detail},
+            )
         if spec.output.role_hint == "find":
             return AgentResult(
                 spec.agent_id, env.run_id, AgentOutcome.FINDINGS,
@@ -385,3 +439,20 @@ class Agent:
         except (ValueError, TypeError):
             return None
         return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _validate_output(data: dict | None, schema: dict) -> tuple[bool, str]:
+        """Validate a parsed structured result against its declared JSON-schema.
+        Returns (ok, detail). Dormant until an AgentSpec sets `output.schema`, so
+        every existing spec (schema=None) never reaches here."""
+        if not isinstance(data, dict):
+            return False, "output was not a JSON object"
+        try:
+            import jsonschema
+
+            jsonschema.validate(instance=data, schema=schema)
+            return True, ""
+        except jsonschema.ValidationError as e:
+            return False, str(getattr(e, "message", e))[:300]
+        except Exception as e:  # noqa: BLE001 — a bad schema fails closed, not crashes
+            return False, f"schema validation error: {type(e).__name__}"

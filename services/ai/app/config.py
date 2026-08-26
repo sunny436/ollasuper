@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     # (no Top-K reachability ceiling) — streaming preserved (the non-streaming
     # `llm_for_tools` is rebound; the final answer still streams).
     ai_orchestrated_runtime_enabled: bool = False
+    # Phase 1 (runtime v2) — opt-in gate for the corrected generic runtime: one
+    # shared `Orchestrator.prepare`, skills decoupled from Ollagraph readiness, a
+    # single `build_live_agent_env` factory feeding the delegator (so sub-agents keep
+    # approvals/RAG/memory/resume/budget), execution lineage, cross-agent usage
+    # aggregation, the total-deadline armed before prep, and capability-intent
+    # resolution. OFF by default => runtime is byte-identical to today. Provider-
+    # neutral tool machinery is byte-identical for the single-provider config and
+    # is NOT gated by this flag.
+    ai_runtime_v2_enabled: bool = False
     # File Generation System — when on (+ agent enabled), the model gains a
     # `generate_file` tool that renders a downloadable file (PDF/DOCX/XLSX/PPTX/…)
     # from a structured spec via deterministic Python renderers. OFF by default →
