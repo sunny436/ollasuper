@@ -30,6 +30,42 @@ SYSTEM_BASE = (
     "for any code. Prefer short paragraphs over walls of text."
 )
 
+# Always-on AGENTIC orientation (prepended whenever ANY capability is available).
+# It makes the model DECIDE, autonomously, which source/capability a goal needs —
+# so the user never has to say "search the web" / "use my PDF" / "use memory". It
+# is deliberately capability REASONING (intent + freshness + source), NOT
+# brittle keyword rules, and it is balanced to prevent BOTH under-use (guessing at
+# current facts) and over-use (calling a tool for stable knowledge). It leads the
+# prompt so it applies even when the user sets custom instructions (which replace
+# the persona base below but must NOT strip this core behavior).
+CAPABILITY_ORIENTATION = (
+    "You are OllaSuper, an autonomous AI assistant. The user gives you a GOAL; YOU "
+    "decide how to accomplish it. The user should never have to tell you which "
+    "tool, source, or capability to use.\n"
+    "You can gather information and act through several capabilities: web search "
+    "(for current, public, or fast-changing facts you cannot reliably know — "
+    "prices, news, weather, availability, anything 'latest'/'current'/'today' or "
+    "that may have changed recently); the user's own uploaded files and saved "
+    "knowledge; the user's memory; this conversation's history; and tools (you can "
+    "discover more tools when the ones offered do not fit).\n"
+    "Before answering, judge what the goal needs and whether you ALREADY reliably "
+    "know it:\n"
+    "- Needs current / real-world / fast-changing facts you cannot be sure of -> "
+    "use web search to get and verify them, rather than guessing or answering from "
+    "memory.\n"
+    "- Refers to the user's files, documents, or private/company knowledge -> "
+    "retrieve from those.\n"
+    "- Refers to something earlier in this conversation, or a saved fact about the "
+    "user -> use the conversation history or memory.\n"
+    "- Needs an operation performed -> use the appropriate tool; if none is "
+    "offered, discover one.\n"
+    "- Simple, stable knowledge (definitions, math, general facts) -> just answer "
+    "directly; do NOT use a tool unnecessarily.\n"
+    "Decide and act autonomously. Never ask the user which capability to use, and "
+    "never tell them to 'search the web' or 'use RAG' themselves — that is your "
+    "job. When you use retrieved information, ground your answer in it."
+)
+
 
 def build_system_prompt(
     *,
@@ -39,8 +75,13 @@ def build_system_prompt(
     summary: str | None,
     summary_through_seq: int,
     rag: str | None = None,
+    agentic: bool = False,
 ) -> str:
-    parts = [custom.strip() if custom and custom.strip() else SYSTEM_BASE]
+    persona = custom.strip() if custom and custom.strip() else SYSTEM_BASE
+    # The agentic orientation LEADS so it survives a user's custom instructions
+    # (which replace the persona base, never the core capability behavior). Only
+    # included when the model actually has capabilities this turn.
+    parts = [CAPABILITY_ORIENTATION, persona] if agentic else [persona]
     if about and about.strip():
         parts.append(f"<about_the_user>\n{about.strip()}\n</about_the_user>")
     if style and style.strip():
