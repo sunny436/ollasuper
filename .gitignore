@@ -92,3 +92,6 @@ convex.txt
 *.credentials.json
 # perf harness output (measurements, not source)
 e2e/.perf/
+
+# File-gen QA download artifacts (ephemeral)
+e2e/filegen-downloads/
