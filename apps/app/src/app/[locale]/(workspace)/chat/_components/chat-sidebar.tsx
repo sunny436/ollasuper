@@ -22,7 +22,6 @@ import {
   Pencil,
   Pin,
   PinOff,
-  PlugZap,
   Plus,
   Settings,
   Share2,
@@ -133,12 +132,6 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
               href="/settings"
               icon={Settings}
               label="Settings"
-              onNavigate={onNavigate}
-            />
-            <ProfileMenuItem
-              href="/settings/connections"
-              icon={PlugZap}
-              label="Connections"
               onNavigate={onNavigate}
             />
             <ProfileMenuItem

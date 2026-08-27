@@ -73,21 +73,6 @@ crons.interval(
   {},
 );
 
-// Phase 4 — reap expired pending OAuth requests (short-TTL, one-time) and retry any
-// connector disconnects whose Google revoke transiently failed.
-crons.interval(
-  "reap expired connector auth requests",
-  { minutes: 5 },
-  internal.connectors.reapAuthRequests,
-  {},
-);
-crons.interval(
-  "retry pending connector revokes",
-  { minutes: 5 },
-  internal.connectors.retryPendingRevoke,
-  {},
-);
-
 // Phase 5 — recover durable SEO runs whose worker died (the only thing that resumes a
 // SIGKILLed run: no in-process finally runs, and the seo_registry restarts empty).
 // Scans EVERY non-terminal state (running/queued/retry_wait) so a lost redispatch is
@@ -105,24 +90,6 @@ crons.interval(
   "gc abandoned seo run artifacts",
   { minutes: 5 },
   internal.seoRuns.gcTerminalArtifacts,
-  {},
-);
-
-// Phase 6 — enqueue monitoring runs for schedules whose window has arrived. Advances
-// each schedule in the same mutation, so a missed window catches up once (never N times).
-crons.interval(
-  "seo schedule scanner",
-  { minutes: 5 },
-  internal.seoSchedules.dueScanner,
-  {},
-);
-
-// Phase 6 — retention: purge monitoring runs (+ reports/diffs/artifacts) older than each
-// project's retentionDays, never the baseline.
-crons.interval(
-  "seo monitor retention",
-  { hours: 24 },
-  internal.seoMonitor.reapOld,
   {},
 );
 

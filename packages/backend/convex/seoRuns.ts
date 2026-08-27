@@ -227,100 +227,6 @@ export const enqueueRun = internalMutation({
   },
 });
 
-/**
- * Phase 6 — enqueue a MONITORING run for a project (no chat stream). Owner + target from
- * the seoProject; same per-user caps as a chat run; DEDUP by a per-project inputHash so a
- * schedule + a manual rerun can't run two audits of the same project at once. Reuses the
- * whole Phase-5 dispatch/reap/finalize engine (the run is run-owned).
- */
-export async function enqueueScheduledRun(
-  ctx: MutationCtx,
-  projectId: Id<"seoProjects">,
-  origin: "schedule" | "manual",
-): Promise<
-  | { ok: true; runId: string; deduped?: true }
-  | { ok: false; reason: string }
-> {
-  {
-    const project = await ctx.db.get(projectId);
-    if (!project) return { ok: false as const, reason: "no_project" };
-    if (project.status !== "active")
-      return { ok: false as const, reason: "paused" };
-
-    const now = Date.now();
-    const inputHash = `proj:${projectId}:${project.target}:${project.scope}:${WORKFLOW_VERSION}`;
-    // Concurrency cap + per-project dedup: an active run for this project ⇒ reuse it
-    // (never stack two audits of the same site).
-    let active = 0;
-    for (const s of ["queued", "retry_wait", "running"] as const) {
-      const rows = await ctx.db
-        .query("seoRuns")
-        .withIndex("by_user_status", (q) =>
-          q.eq("userId", project.userId).eq("status", s),
-        )
-        .take(MAX_CONCURRENT_RUNS + 1);
-      for (const r of rows) {
-        if (r.inputHash === inputHash)
-          return { ok: true as const, runId: r.runId, deduped: true as const };
-      }
-      active += rows.length;
-    }
-    if (active >= MAX_CONCURRENT_RUNS)
-      return { ok: false as const, reason: "too_many_active" };
-
-    // Per-user hourly rate cap (best-effort; a user with no settings row is bounded by
-    // the concurrency cap instead — a daily/weekly schedule never approaches 10/hour).
-    const settings = await ctx.db
-      .query("chatSettings")
-      .withIndex("by_user_workspace", (q) =>
-        q.eq("userId", project.userId).eq("workspaceId", project.workspaceId),
-      )
-      .unique();
-    const start = settings?.seoRunWindowStart ?? 0;
-    const fresh = now - start >= RATE_WINDOW_MS;
-    const count = fresh ? 0 : (settings?.seoRunWindowCount ?? 0);
-    if (count >= MAX_RUNS_PER_HOUR)
-      return { ok: false as const, reason: "rate_limited" };
-    if (settings)
-      await ctx.db.patch(settings._id, {
-        seoRunWindowStart: fresh ? now : start,
-        seoRunWindowCount: count + 1,
-      });
-
-    const runId = crypto.randomUUID();
-    const maxUrls = Math.max(1, Math.min(project.maxUrls, 5000));
-    await ctx.db.insert("seoRuns", {
-      runId,
-      projectId,
-      origin,
-      userId: project.userId,
-      workspaceId: project.workspaceId,
-      target: project.target,
-      scope: project.scope,
-      maxUrls,
-      status: "queued",
-      heartbeatAt: now,
-      attempts: 0,
-      deadlineAt: now + SEO_RUN_DEADLINE_MS,
-      cancelRequested: false,
-      workflowVersion: WORKFLOW_VERSION,
-      schemaVersion: SCHEMA_VERSION,
-      inputHash,
-      costBudget: maxUrls,
-      costSpent: 0,
-      processedCount: 0,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await ctx.scheduler.runAfter(0, internal.seoRuns.dispatchRun, { runId });
-    await ctx.db.patch(projectId, {
-      lastRunId: runId,
-      lastRunAt: now,
-      updatedAt: now,
-    });
-    return { ok: true as const, runId };
-  }
-}
 
 // ── Dispatch (Convex → Python) ─────────────────────────────────────────────────
 
@@ -674,13 +580,6 @@ export const finalizeRun = internalMutation({
         ? { summary: a.summary }
         : {}),
     });
-    // Phase 6: a monitoring run belongs to a project → deterministically diff it against
-    // the baseline (LLM-free) and notify only on meaningful changes. Chat runs skip this.
-    if (run.projectId) {
-      await ctx.scheduler.runAfter(0, internal.seoMonitor.runDiff, {
-        runId: a.runId,
-      });
-    }
     return { ok: true as const, stale: false as const };
   },
 });
@@ -1115,55 +1014,12 @@ async function purgeRun(ctx: MutationCtx, run: Doc<"seoRuns">): Promise<void> {
     .withIndex("by_run_step", (q) => q.eq("runId", run.runId))
     .collect();
   for (const st of steps) await ctx.db.delete(st._id);
-  // Phase 6: the run's report + its diff. Chat runs also reclaim the report via the
-  // message/thread cascade; a project run has neither, so reclaim by runId here.
+  // The run's report. Chat runs also reclaim it via the message/thread cascade; this
+  // by-runId reclaim is the belt-and-suspenders path.
   const reports = await ctx.db
     .query("seoReports")
     .withIndex("by_report", (q) => q.eq("sourceRunId", run.runId))
     .collect();
   for (const r of reports) await ctx.db.delete(r._id);
-  const diffs = await ctx.db
-    .query("seoRunDiffs")
-    .withIndex("by_run", (q) => q.eq("runId", run.runId))
-    .collect();
-  for (const d of diffs) await ctx.db.delete(d._id);
   await ctx.db.delete(run._id);
-}
-
-/** Phase 6 — cancel + delete a bounded batch of a project's runs (+ steps / artifact
- *  blobs / reports / diffs). Returns the count so the project-delete fan-out reschedules. */
-export async function deleteSeoRunsForProject(
-  ctx: MutationCtx,
-  projectId: Id<"seoProjects">,
-): Promise<number> {
-  const runs = await ctx.db
-    .query("seoRuns")
-    .withIndex("by_project", (q) => q.eq("projectId", projectId))
-    .take(SEO_RUN_PURGE_BATCH);
-  for (const run of runs) await purgeRun(ctx, run);
-  return runs.length;
-}
-
-/** Phase 6 — purge runs older than a keep-set for retention (never the baseline). Used by
- *  the retention cron; returns the count purged. `keepRunIds` are always preserved. */
-export async function purgeOldProjectRuns(
-  ctx: MutationCtx,
-  projectId: Id<"seoProjects">,
-  keepRunIds: Set<string>,
-  olderThan: number,
-): Promise<number> {
-  const runs = await ctx.db
-    .query("seoRuns")
-    .withIndex("by_project", (q) => q.eq("projectId", projectId))
-    .collect();
-  let purged = 0;
-  for (const run of runs) {
-    if (keepRunIds.has(run.runId)) continue;
-    if (run.createdAt >= olderThan) continue;
-    if (!isTerminalRun(run.status)) continue; // never purge an in-flight run
-    await purgeRun(ctx, run);
-    purged++;
-    if (purged >= SEO_RUN_PURGE_BATCH) break;
-  }
-  return purged;
 }

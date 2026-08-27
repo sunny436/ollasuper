@@ -589,12 +589,6 @@ export default defineSchema({
     streamId: v.optional(v.string()),
     threadId: v.optional(v.id("chatThreads")),
     inReplyToMessageId: v.optional(v.id("chatMessages")),
-    // Phase 6: the monitored project this run belongs to (absent for a chat audit) and
-    // where it came from. `origin` absent ⇒ "chat" (back-compat with Phase-5 rows).
-    projectId: v.optional(v.id("seoProjects")),
-    origin: v.optional(
-      v.union(v.literal("chat"), v.literal("schedule"), v.literal("manual")),
-    ),
     userId: v.id("users"),
     workspaceId: v.id("workspaces"),
     target: v.string(),
@@ -640,8 +634,7 @@ export default defineSchema({
     .index("by_status_heartbeat", ["status", "heartbeatAt"])
     .index("by_user_status", ["userId", "status"])
     .index("by_thread", ["threadId"])
-    .index("by_message", ["inReplyToMessageId"])
-    .index("by_project", ["projectId"]),
+    .index("by_message", ["inReplyToMessageId"]),
 
   // Phase 5 — the durable STEP LEDGER for one run. Stable identity
   // (runId, workflowVersion, stepKey, inputHash); idempotent UPSERT by (runId, stepKey)
@@ -708,90 +701,6 @@ export default defineSchema({
     .index("by_run_key", ["runId", "artifactKey"])
     .index("by_run", ["runId"])
     .index("by_downloadToken", ["downloadToken"]),
-
-  // Phase 6 — a MONITORED SITE. A seoRun (chat/manual) becomes the baseline; scheduled
-  // runs are diffed against it deterministically. USER-private (the chat trust model).
-  // Additive table (no pre-migration rows), so required fields are safe.
-  seoProjects: defineTable({
-    userId: v.id("users"),
-    workspaceId: v.id("workspaces"),
-    target: v.string(),
-    scope: v.string(),
-    maxUrls: v.number(),
-    status: v.union(v.literal("active"), v.literal("paused")),
-    // The baseline run + its report (the comparison anchor). Set from the seeding run.
-    baselineRunId: v.optional(v.string()),
-    baselineReportId: v.optional(v.string()),
-    methodologyVersion: v.optional(v.string()),
-    retentionDays: v.number(), // history older than this (beyond the baseline) is purged
-    lastRunId: v.optional(v.string()),
-    lastRunAt: v.optional(v.number()),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_user_status", ["userId", "status"])
-    .index("by_user", ["userId"]),
-
-  // Phase 6 — a recurring cadence for a project. The due-scanner cron enqueues a
-  // monitoring run when `nextRunAt <= now`, then advances `nextRunAt` to the next FUTURE
-  // occurrence (a missed run catches up ONCE, never N times).
-  seoSchedules: defineTable({
-    userId: v.id("users"),
-    projectId: v.id("seoProjects"),
-    cadence: v.union(
-      v.literal("daily"),
-      v.literal("weekly"),
-      v.literal("custom"),
-    ),
-    timezone: v.string(), // IANA tz, e.g. "America/New_York"
-    minuteOfDay: v.number(), // local minutes past midnight (0..1439)
-    dayOfWeek: v.optional(v.number()), // 0=Sun..6=Sat (weekly)
-    intervalDays: v.optional(v.number()), // custom cadence (>=1)
-    status: v.union(v.literal("active"), v.literal("paused")),
-    nextRunAt: v.number(), // epoch ms; the scanner's due key
-    lastRunAt: v.optional(v.number()),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_status_nextRun", ["status", "nextRunAt"])
-    .index("by_project", ["projectId"])
-    .index("by_user", ["userId"]),
-
-  // Phase 6 — the first-party data a project monitors (which GSC site / GA4 property /
-  // PSI target). References the Phase-4 connectorAccounts; the run pulls these sources.
-  seoConnections: defineTable({
-    userId: v.id("users"),
-    projectId: v.id("seoProjects"),
-    provider: v.union(v.literal("gsc"), v.literal("ga4"), v.literal("psi")),
-    propertyId: v.string(),
-    connectorAccountId: v.optional(v.id("connectorAccounts")),
-    createdAt: v.number(),
-  })
-    .index("by_project", ["projectId"])
-    .index("by_user", ["userId"]),
-
-  // Phase 6 — the DETERMINISTIC diff of one monitoring run vs the project baseline. No
-  // LLM. `changes` is a bounded JSON array of {checkId,category,kind,severity,…}.
-  seoRunDiffs: defineTable({
-    runId: v.string(),
-    projectId: v.id("seoProjects"),
-    userId: v.id("users"),
-    baselineReportId: v.optional(v.string()),
-    currentReportId: v.string(),
-    counts: v.object({
-      newIssues: v.number(),
-      resolved: v.number(),
-      regressed: v.number(),
-      changed: v.number(),
-    }),
-    changes: v.string(), // bounded JSON [{checkId,category,kind,severity,before,after}]
-    meaningful: v.boolean(),
-    degraded: v.boolean(), // change rode provisional/sampled data ⇒ low-confidence
-    notified: v.boolean(),
-    createdAt: v.number(),
-  })
-    .index("by_run", ["runId"])
-    .index("by_project", ["projectId"]),
 
   // Phase 7 — the durable, owner-scoped SEO MUTATION ledger: the auditable RESULT
   // record for one approved site change (update metadata / structured data / redirect /
@@ -1004,65 +913,4 @@ export default defineSchema({
     .index("by_user_ws_created", ["userId", "workspaceId", "createdAt"])
     .index("by_chat", ["chatId"]),
 
-  // Phase 4 — first-party Google connector (GSC/GA4). USER-scoped: a connection is
-  // PRIVATE to the connecting user (like chat), never shared with workspace peers.
-  // The refresh token is the single most sensitive row-set in the DB — AES-256-GCM
-  // encrypted at rest (connectors/crypto.ts); tokens NEVER leave the server plaintext
-  // and never reach the model/logs/events/dispatch. Owner ids are the CONNECTING
-  // user's; `workspaceId` is tenancy only. Additive table (no pre-migration rows).
-  connectorAccounts: defineTable({
-    userId: v.id("users"),
-    workspaceId: v.id("workspaces"),
-    provider: v.string(), // "google"
-    googleSub: v.string(), // the Google account's stable id (reconnect reconcile)
-    email: v.string(),
-    scopes: v.array(v.string()),
-    // unconfirmed → active requires an authenticated confirm by the INITIATOR (the
-    // account-linking-CSRF fix); needs_reauth on invalid_grant/decrypt/scope loss;
-    // pending_revoke when Google revoke failed but the row must not be blind-deleted.
-    status: v.string(),
-    encRefreshToken: v.string(), // AES-GCM blob (keyVersion‖iv‖ct+tag), base64
-    encAccessToken: v.optional(v.string()), // short-lived cache
-    accessExpiresAt: v.optional(v.number()),
-    refreshLockUntil: v.optional(v.number()), // single-flight refresh lease
-    refreshLockToken: v.optional(v.string()), // lease holder id (stale-store guard)
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  })
-    .index("by_user", ["userId"])
-    .index("by_user_provider", ["userId", "provider"])
-    .index("by_status", ["status"]),
-
-  // A selectable Google property under a connected account (a GSC site or GA4
-  // property). Populated ONLY from the user's own Google grant; ownership is
-  // re-validated on select and on every use.
-  connectorProperties: defineTable({
-    userId: v.id("users"),
-    accountId: v.id("connectorAccounts"),
-    kind: v.string(), // "gsc_site" | "ga4_property"
-    propertyId: v.string(), // a GSC siteUrl or a GA4 numeric property id
-    displayName: v.string(),
-    permission: v.string(), // Google-reported permission level
-    selected: v.boolean(),
-  })
-    .index("by_user_kind", ["userId", "kind"])
-    .index("by_account", ["accountId"]),
-
-  // A pending OAuth authorization (the PKCE/state/nonce for one in-flight connect).
-  // One-time, short-TTL, CONSUMED atomically by state in the callback. Owned by the
-  // INITIATING user so the callback attributes the grant correctly.
-  connectorAuthRequests: defineTable({
-    userId: v.id("users"),
-    workspaceId: v.id("workspaces"),
-    provider: v.string(),
-    pkceVerifier: v.string(),
-    state: v.string(), // CSPRNG >=256-bit
-    nonce: v.string(),
-    scopes: v.array(v.string()),
-    createdAt: v.number(),
-    expiresAt: v.number(),
-  })
-    .index("by_state", ["state"])
-    .index("by_user", ["userId"])
-    .index("by_expires", ["expiresAt"]),
 });

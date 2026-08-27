@@ -153,14 +153,6 @@ class Settings(BaseSettings):
     # the SEO skill activates by tags and delegate_to_agent('seo', ...) becomes
     # available. Read-only end to end; no VM deploy until phase 7.
     ai_seo_enabled: bool = False
-    # Phase 4 (SEO connectors) — opt-in gate for the first-party GSC/GA4/PSI
-    # providers + capabilities. OFF => no gsc/ga4/psi tools are registered and
-    # AgentEnv.adapters stays empty (byte-identical). When on, the runner registers
-    # the providers and constructs the per-request adapters. GSC/GA4 need a connected
-    # Google account (fetched out-of-band, streamId-scoped); PSI/CrUX uses the server
-    # `pagespeed_api_key`. Read-only end to end; no VM deploy until phase 7.
-    ai_connectors_enabled: bool = False
-    pagespeed_api_key: str = ""
     # Phase 5 (SEO durable runs) — opt-in gate for the durable background audit
     # subsystem: the dedicated seo_registry pool, the /v1/seo-run-step worker, and the
     # enqueue_seo_audit tool. OFF by default => the pool + tool are not built and the
@@ -450,11 +442,6 @@ class Settings(BaseSettings):
         # Phase 5: durable-run crawl artifact store (runId + leaseToken scoped; owner
         # derived from the seoRuns row, so it does NOT depend on the enqueuing stream).
         return f"{self.convex_internal_url.rstrip('/')}/ai/seo-artifact"
-
-    @property
-    def connector_token_url(self) -> str:
-        # Fresh first-party access token (streamId-scoped; owner derived server-side).
-        return f"{self.convex_internal_url.rstrip('/')}/ai/connector-token"
 
     @property
     def rag_enabled(self) -> bool:
