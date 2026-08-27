@@ -318,6 +318,193 @@ http.route({
           return aiJson({ error: "unknown stream" }, 404);
         return aiJson(res);
       }
+      // ── Phase 5: durable SEO runs (runId + leaseToken scoped, NOT streamId) ──
+      case "seo-run-enqueue": {
+        const runStreamId =
+          typeof body.streamId === "string" ? body.streamId : null;
+        if (
+          !runStreamId ||
+          typeof body.target !== "string" ||
+          typeof body.scope !== "string" ||
+          typeof body.inputHash !== "string"
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        return aiJson(
+          await ctx.runMutation(internal.seoRuns.enqueueRun, {
+            streamId: runStreamId,
+            target: body.target,
+            scope: body.scope,
+            inputHash: body.inputHash,
+            ...(typeof body.maxUrls === "number"
+              ? { maxUrls: body.maxUrls }
+              : {}),
+          }),
+        );
+      }
+      case "seo-run-progress": {
+        if (
+          typeof body.runId !== "string" ||
+          typeof body.leaseToken !== "string" ||
+          typeof body.stepKey !== "string" ||
+          typeof body.inputHash !== "string" ||
+          typeof body.processedCount !== "number" ||
+          typeof body.cost !== "number"
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        const fc = body.findingsCounts as Record<string, unknown> | undefined;
+        const n = (x: unknown) => (typeof x === "number" ? x : 0);
+        const artifactKeys = Array.isArray(body.artifactKeys)
+          ? body.artifactKeys.filter((k): k is string => typeof k === "string")
+          : undefined;
+        return aiJson(
+          await ctx.runMutation(internal.seoRuns.recordProgress, {
+            runId: body.runId,
+            leaseToken: body.leaseToken,
+            stepKey: body.stepKey,
+            inputHash: body.inputHash,
+            processedCount: body.processedCount,
+            cost: body.cost,
+            ...(fc && typeof fc === "object"
+              ? {
+                  findingsCounts: {
+                    totalFindings: n(fc.totalFindings),
+                    passed: n(fc.passed),
+                    failed: n(fc.failed),
+                    warnings: n(fc.warnings),
+                    notTested: n(fc.notTested),
+                  },
+                }
+              : {}),
+            ...(artifactKeys ? { artifactKeys } : {}),
+            ...(typeof body.checkpoint === "string"
+              ? { checkpoint: body.checkpoint }
+              : {}),
+            ...(typeof body.summary === "string"
+              ? { summary: body.summary }
+              : {}),
+          }),
+        );
+      }
+      case "seo-run-heartbeat": {
+        if (
+          typeof body.runId !== "string" ||
+          typeof body.leaseToken !== "string"
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        return aiJson(
+          await ctx.runMutation(internal.seoRuns.recordHeartbeat, {
+            runId: body.runId,
+            leaseToken: body.leaseToken,
+          }),
+        );
+      }
+      case "seo-run-park": {
+        if (
+          typeof body.runId !== "string" ||
+          typeof body.leaseToken !== "string"
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        return aiJson(
+          await ctx.runMutation(internal.seoRuns.parkRun, {
+            runId: body.runId,
+            leaseToken: body.leaseToken,
+            ...(typeof body.checkpoint === "string"
+              ? { checkpoint: body.checkpoint }
+              : {}),
+            ...(typeof body.summary === "string"
+              ? { summary: body.summary }
+              : {}),
+          }),
+        );
+      }
+      case "seo-run-finalize": {
+        const st = body.status;
+        if (
+          typeof body.runId !== "string" ||
+          typeof body.leaseToken !== "string" ||
+          (st !== "succeeded" && st !== "partial" && st !== "failed")
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        return aiJson(
+          await ctx.runMutation(internal.seoRuns.finalizeRun, {
+            runId: body.runId,
+            leaseToken: body.leaseToken,
+            status: st,
+            ...(typeof body.reportId === "string"
+              ? { reportId: body.reportId }
+              : {}),
+            ...(typeof body.errorCode === "string"
+              ? { errorCode: body.errorCode }
+              : {}),
+            ...(typeof body.summary === "string"
+              ? { summary: body.summary }
+              : {}),
+          }),
+        );
+      }
+      case "seo-run-report": {
+        // Owner DERIVED from the run (NOT a stream). Envelope edge-extraction mirrors
+        // op:"report"; the run report is written by upsertRunReport (first-committed-wins).
+        const rep = body.report;
+        if (
+          typeof body.runId !== "string" ||
+          typeof body.leaseToken !== "string" ||
+          typeof rep !== "object" ||
+          rep === null
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        const r = rep as Record<string, unknown>;
+        const num = (x: unknown) => (typeof x === "number" ? x : 0);
+        const reportId = String(r.report_id ?? "");
+        if (!reportId) return aiJson({ error: "bad request" }, 400);
+        const meth = (r.methodology as Record<string, unknown>) ?? {};
+        const sum = (r.summary as Record<string, unknown>) ?? {};
+        const scope = (r.scope as Record<string, unknown>) ?? {};
+        const rawArtifacts =
+          ((r.manifest as Record<string, unknown>)?.artifacts as unknown[]) ??
+          [];
+        const manifest = rawArtifacts
+          .filter(
+            (m): m is Record<string, unknown> =>
+              typeof m === "object" && m !== null,
+          )
+          .map((m) => ({
+            artifactId: String(m.artifact_id ?? ""),
+            format: String(m.format ?? ""),
+            mime: String(m.mime ?? ""),
+            size: num(m.size),
+            sha256: String(m.sha256 ?? ""),
+          }))
+          .filter((m) => m.artifactId);
+        return aiJson(
+          await ctx.runMutation(internal.seoRuns.upsertRunReport, {
+            runId: body.runId,
+            leaseToken: body.leaseToken,
+            reportId,
+            status: String(r.status ?? "completed"),
+            target: String(r.target ?? ""),
+            scope: String(scope.type ?? "site"),
+            methodologyName: String(meth.name ?? ""),
+            methodologyVersion: String(meth.version ?? ""),
+            generatedAt: String(r.generated_at ?? ""),
+            summary: {
+              totalFindings: num(sum.total_findings),
+              passed: num(sum.passed),
+              failed: num(sum.failed),
+              warnings: num(sum.warnings),
+              notTested: num(sum.not_tested),
+            },
+            report: JSON.stringify(rep),
+            manifest,
+          }),
+        );
+      }
       case "execution": {
         // Phase 3: durable per-execution record (crash-recovery authority). Coerce
         // + validate the state literal at the edge (mirrors the "event" filter) so
@@ -688,6 +875,93 @@ http.route({
       internal.chat.artifacts.resolveDownload,
       { token },
     );
+    if (!allowed) return new Response("not found", { status: 404 });
+    const blob = await ctx.storage.get(allowed.storageId);
+    if (!blob) return new Response("not found", { status: 404 });
+    const safe = allowed.filename.replace(/["\\\r\n]/g, "_");
+    return new Response(blob, {
+      headers: {
+        "content-type": allowed.mime,
+        "content-disposition": `attachment; filename="${safe}"`,
+        "cache-control": "private, max-age=60",
+      },
+    });
+  }),
+});
+
+// Phase 5 — STORE a run's compressed crawl artifact (Python → Convex).
+//
+// Like /ai/artifact but RUN-owned: scoped by runId + leaseToken (not streamId), so a
+// run's artifacts never depend on the enqueuing stream surviving. The SHA-256 is always
+// recomputed over the received bytes and returned as the authoritative stored hash; a
+// declared mismatch is rejected 422 before storing. A missing/terminal run or a stale
+// lease → the just-stored blob is discarded and 404 returned (no orphan).
+http.route({
+  path: "/ai/seo-artifact",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!authorizeIngress(req))
+      return new Response("unauthorized", { status: 401 });
+    const runId = req.headers.get("x-run-id") ?? "";
+    const leaseToken = req.headers.get("x-lease-token") ?? "";
+    const artifactKey = req.headers.get("x-artifact-key") ?? "";
+    const stepKey = (req.headers.get("x-artifact-step") ?? "").slice(0, 128);
+    const format = (req.headers.get("x-artifact-format") ?? "jsonl.gz").slice(0, 12);
+    const filename = (req.headers.get("x-artifact-filename") ?? "crawl.jsonl.gz").slice(0, 200);
+    const rowCount = Number(req.headers.get("x-artifact-rowcount") ?? "0") || 0;
+    const mime = req.headers.get("content-type") ?? "application/gzip";
+    if (!runId || !leaseToken || !artifactKey)
+      return aiJson({ error: "bad request" }, 400);
+    const blob = await req.blob();
+    if (blob.size === 0 || blob.size > MAX_ARTIFACT_BYTES)
+      return aiJson({ error: "bad size" }, 400);
+    // Always compute the stored hash; verify a declared one before storing.
+    const buf = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+    const contentHash = Array.from(new Uint8Array(buf), (b) =>
+      b.toString(16).padStart(2, "0"),
+    ).join("");
+    const declaredHash = req.headers.get("x-artifact-sha256");
+    if (declaredHash && contentHash !== declaredHash.toLowerCase())
+      return aiJson({ error: "checksum mismatch" }, 422);
+    const storageId = await ctx.storage.store(blob);
+    const res = await ctx.runMutation(internal.seoRuns.registerSeoArtifact, {
+      runId,
+      leaseToken,
+      stepKey,
+      artifactKey,
+      storageId,
+      filename,
+      format,
+      mime,
+      size: blob.size,
+      rowCount,
+      contentHash,
+    });
+    if (!res.ok || !res.artifactId) {
+      await ctx.storage.delete(storageId).catch(() => {});
+      return new Response("not found", { status: 404 });
+    }
+    // Return the authoritative stored hash so the manifest can never disagree with the
+    // bytes (on a dedup hit this is the EXISTING blob's hash, not the caller's).
+    return aiJson({
+      artifactId: res.artifactId,
+      size: blob.size,
+      contentHash: res.contentHash,
+    });
+  }),
+});
+
+// Phase 5 — DOWNLOAD a run's crawl artifact (browser → Convex), via a short-TTL
+// one-time token minted by the AUTHENTICATED seoRuns.mintSeoDownload.
+http.route({
+  path: "/seo-artifact/file",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const token = new URL(req.url).searchParams.get("t");
+    if (!token) return new Response("not found", { status: 404 });
+    const allowed = await ctx.runQuery(internal.seoRuns.resolveSeoDownload, {
+      token,
+    });
     if (!allowed) return new Response("not found", { status: 404 });
     const blob = await ctx.storage.get(allowed.storageId);
     if (!blob) return new Response("not found", { status: 404 });

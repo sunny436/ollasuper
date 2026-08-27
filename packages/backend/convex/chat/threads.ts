@@ -6,6 +6,7 @@ import { internalMutation, mutation, query } from "../_generated/server";
 import { audit } from "../auditLog";
 import { bump } from "../counters";
 import { requireMember } from "../orgs";
+import { deleteSeoRunsForThread, SEO_RUN_PURGE_BATCH } from "../seoRuns";
 import {
   DEFAULT_MODEL,
   assertAllowedModel,
@@ -384,6 +385,17 @@ export const purge = internalMutation({
       .take(PURGE_BATCH);
     for (const r of reports) await ctx.db.delete(r._id);
     if (reports.length === PURGE_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.chat.threads.purge, {
+        threadId,
+      });
+      return;
+    }
+
+    // Phase 5 — durable SEO runs (+ their steps and compressed artifact blobs) are
+    // persistent; cancel + reclaim them here. Bounded per tick since each run drags
+    // its own children.
+    const runsPurged = await deleteSeoRunsForThread(ctx, threadId);
+    if (runsPurged === SEO_RUN_PURGE_BATCH) {
       await ctx.scheduler.runAfter(0, internal.chat.threads.purge, {
         threadId,
       });

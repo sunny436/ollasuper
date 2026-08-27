@@ -14,6 +14,7 @@ import {
 import { safeUrl } from "../_lib/url-guard";
 import { Badge, Disclosure } from "./agent-primitives";
 import { SeoReportCard } from "./seo-report-card";
+import { SeoRunCard } from "./seo-run-card";
 
 /** Browser-reachable Convex SITE origin (where the /artifact/file proxy lives) —
  *  mirrors the share page: NEXT_PUBLIC_CONVEX_URL is the /__cvx path form. */
@@ -51,7 +52,11 @@ export function AgentSources({ events }: { events?: TypedEvent[] }) {
       {artifacts.length > 0 && (
         <div className="flex flex-col gap-1.5">
           {artifacts.map((a) =>
-            a.artifactType === "seo_report" ? (
+            a.artifactType === "seo_run" ? (
+              // Phase 5: a durable background audit — a live run card (queries getRun)
+              // that becomes the rich report card on completion.
+              <SeoRunCard key={a.artifactId} artifact={a} />
+            ) : a.artifactType === "seo_report" ? (
               // A rich, evidence-grounded report card (queries the persisted report);
               // intercepts BEFORE the generic download card, which assumes a plain file.
               <SeoReportCard key={a.artifactId} artifact={a} />

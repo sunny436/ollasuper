@@ -570,6 +570,132 @@ export default defineSchema({
     .index("by_message", ["inReplyToMessageId"])
     .index("by_thread", ["threadId"]),
 
+  // Phase 5 — the DURABLE SEO RUN (the crash/retry/cancel-safe authority for one
+  // large audit). Mirrors chatStreams (state machine + lease + reap) but for work
+  // that OUTLIVES a chat turn. `runId` is the app-minted capability + identity; the
+  // enqueuing turn's `streamId` is kept for surfacing/owner-derivation AT ENQUEUE
+  // only — all post-turn writeback is run-owned (owner from THIS row), so a deleted
+  // stream never silently drops a run write. `costSpent`/`summary` are RECOMPUTED
+  // from the step ledger (never an additive delta). `deadlineAt` is NEVER reset on
+  // re-dispatch. Additive table (no pre-migration rows), so required fields are safe.
+  seoRuns: defineTable({
+    runId: v.string(),
+    streamId: v.string(), // the enqueuing turn's stream (surfacing + enqueue-time owner)
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    threadId: v.id("chatThreads"),
+    inReplyToMessageId: v.id("chatMessages"),
+    target: v.string(),
+    scope: v.string(),
+    maxUrls: v.number(),
+    status: v.union(
+      v.literal("queued"),
+      v.literal("running"),
+      v.literal("retry_wait"),
+      v.literal("succeeded"),
+      v.literal("partial"),
+      v.literal("failed"),
+      v.literal("cancelled"),
+      v.literal("expired"),
+    ),
+    // Server-minted holder token: only the current holder may write (progress /
+    // heartbeat / finalize). The reaper rotates it on requeue so a stale worker's
+    // late write is rejected. Never trusted from Python (Python only echoes it).
+    leaseToken: v.optional(v.string()),
+    heartbeatAt: v.number(),
+    attempts: v.number(), // bumped ONLY by the reaper; caps no-progress loops
+    deadlineAt: v.number(), // NEVER reset; caps slow-but-expensive loops
+    cancelRequested: v.boolean(),
+    // Bounded resume cursor: an opaque frontier cursor + integer counts ONLY (never
+    // a growing visited-URL set). Enforced < MAX_CHECKPOINT_BYTES.
+    checkpoint: v.optional(v.string()),
+    workflowVersion: v.number(),
+    schemaVersion: v.number(),
+    inputHash: v.string(), // f(target, scope, workflowVersion) — stable run identity
+    costBudget: v.number(),
+    costSpent: v.number(), // = Σ cost over succeeded steps (recomputed, idempotent)
+    processedCount: v.number(), // = Σ processed URLs over succeeded steps (materialized)
+    // Bounded accumulated FINDINGS (merged by finding id — idempotent) the report is
+    // built from; NOT one doc per URL, NO verbatim page content (that stays in the
+    // JSONL artifacts). Enforced < MAX_SUMMARY_BYTES.
+    summary: v.optional(v.string()),
+    reportId: v.optional(v.string()), // deterministic (resume-stable)
+    terminalErrorCode: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_run", ["runId"])
+    .index("by_status_heartbeat", ["status", "heartbeatAt"])
+    .index("by_user_status", ["userId", "status"])
+    .index("by_thread", ["threadId"])
+    .index("by_message", ["inReplyToMessageId"]),
+
+  // Phase 5 — the durable STEP LEDGER for one run. Stable identity
+  // (runId, workflowVersion, stepKey, inputHash); idempotent UPSERT by (runId, stepKey)
+  // like toolExecutions. One row per PHASE/BATCH ("discover" | "batch:N" | "report"),
+  // NEVER one per URL. The per-batch snapshot (processedCount/cost/findingsCounts) is
+  // written in the SAME transition that marks the step `succeeded`, so it always
+  // reflects the same crawl as the stored artifact. The run aggregate recomputes from
+  // these rows, so a re-recorded batch never double-counts.
+  seoRunSteps: defineTable({
+    runId: v.string(),
+    workflowVersion: v.number(),
+    stepKey: v.string(),
+    inputHash: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("running"),
+      v.literal("succeeded"),
+      v.literal("failed"),
+      v.literal("skipped"),
+    ),
+    processedCount: v.number(),
+    cost: v.number(),
+    findingsCounts: v.optional(
+      v.object({
+        totalFindings: v.number(),
+        passed: v.number(),
+        failed: v.number(),
+        warnings: v.number(),
+        notTested: v.number(),
+      }),
+    ),
+    artifactKeys: v.optional(v.array(v.string())), // the byte-split blob parts
+    attempts: v.number(),
+    errorCode: v.optional(v.string()),
+    startedAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_run_step", ["runId", "stepKey"])
+    .index("by_run_status", ["runId", "status"]),
+
+  // Phase 5 — run-owned compressed crawl artifacts (gzipped JSONL parts, each <= 30MB).
+  // The high-cardinality per-URL evidence lives HERE (downloadable), never as Convex
+  // rows. Owner (userId/workspaceId) DERIVED from the seoRuns row, never from Python —
+  // so a run's artifacts do NOT depend on the enqueuing stream surviving. Idempotent by
+  // (runId, artifactKey); download via the ownership-checked mintSeoDownload (a faithful
+  // copy of chatArtifacts.mintDownload). Additive table, so required fields are safe.
+  seoArtifacts: defineTable({
+    runId: v.string(),
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    stepKey: v.string(),
+    storageId: v.id("_storage"),
+    artifactKey: v.string(), // runId:stepKey[:part]
+    filename: v.string(),
+    format: v.string(),
+    mime: v.string(),
+    size: v.number(),
+    rowCount: v.number(),
+    contentHash: v.string(),
+    downloadToken: v.optional(v.string()),
+    downloadTokenExpiresAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_run_key", ["runId", "artifactKey"])
+    .index("by_run", ["runId"])
+    .index("by_downloadToken", ["downloadToken"]),
+
   chatSettings: defineTable({
     workspaceId: v.id("workspaces"),
     userId: v.id("users"),
@@ -587,6 +713,11 @@ export default defineSchema({
     // costs one read that was happening anyway.
     rateWindowStart: v.optional(v.number()),
     rateWindowCount: v.optional(v.number()),
+    // Phase 5: a SEPARATE fixed-window counter for durable SEO runs (a run is far
+    // costlier than a chat turn, so it gets its own hourly cap). Same row/index as
+    // the chat rate window; optional + additive so pre-migration rows validate.
+    seoRunWindowStart: v.optional(v.number()),
+    seoRunWindowCount: v.optional(v.number()),
     // Phase 6: long-term memory master switch (per-user-per-workspace). Optional
     // + additive so pre-migration rows validate; absent is treated as ENABLED at
     // read time (dispatchPayload). A user can turn memory off entirely here.

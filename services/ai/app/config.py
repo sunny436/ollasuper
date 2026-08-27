@@ -161,6 +161,26 @@ class Settings(BaseSettings):
     # `pagespeed_api_key`. Read-only end to end; no VM deploy until phase 7.
     ai_connectors_enabled: bool = False
     pagespeed_api_key: str = ""
+    # Phase 5 (SEO durable runs) — opt-in gate for the durable background audit
+    # subsystem: the dedicated seo_registry pool, the /v1/seo-run-step worker, and the
+    # enqueue_seo_audit tool. OFF by default => the pool + tool are not built and the
+    # agent never enqueues (byte-identical). The /v1/seo-run-step route stays mounted
+    # (service-key-gated, dormant) like /v1/ingest, since no run is ever dispatched.
+    ai_seo_runs_enabled: bool = False
+    # Dedicated pool sizing (SEO crawling must never starve chat — its own Registry).
+    ai_seo_max_concurrent_per_user: int = 1
+    ai_seo_max_concurrent_global: int = 4
+    # One /v1/seo-run-step dispatch does a bounded WINDOW of crawl batches then parks
+    # (retry_wait) and lets Convex re-dispatch — kept «« the Convex SEO_STALL_MS (10m)
+    # so a legitimately-working window is never false-reaped. Heartbeats DURING batches.
+    ai_seo_run_step_window_s: float = 240.0
+    ai_seo_run_heartbeat_ms: int = 15_000
+    # One batch crawls up to this many URLs, and its gzipped JSONL artifact is bounded
+    # well under the 30MB single-POST cap (split into :part:M if it would exceed).
+    ai_seo_batch_urls: int = 25
+    ai_seo_batch_max_bytes: int = 20_000_000
+    # Default per-run crawl breadth (Convex clamps; real bound is maxUrls/costBudget).
+    ai_seo_run_max_urls: int = 500
     # Core capabilities ALWAYS made available to the agent (independent of whether
     # the user's wording lexically matches them). Each string is a canonical intent;
     # the top discovery hit for it is unioned into the working set every agent turn.
@@ -417,6 +437,12 @@ class Settings(BaseSettings):
     def artifact_url(self) -> str:
         # Generated-file store: Python POSTs the rendered blob here (streamId-scoped).
         return f"{self.convex_internal_url.rstrip('/')}/ai/artifact"
+
+    @property
+    def seo_artifact_url(self) -> str:
+        # Phase 5: durable-run crawl artifact store (runId + leaseToken scoped; owner
+        # derived from the seoRuns row, so it does NOT depend on the enqueuing stream).
+        return f"{self.convex_internal_url.rstrip('/')}/ai/seo-artifact"
 
     @property
     def connector_token_url(self) -> str:

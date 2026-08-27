@@ -47,9 +47,20 @@ class FakeConvex:
     connections_opened: int = 0
     started_at: float = field(default_factory=time.monotonic)
 
+    # Phase 5 durable SEO runs (keyed by runId).
+    seo_enqueued: list[dict] = field(default_factory=list)
+    seo_progress: list[dict] = field(default_factory=list)
+    seo_parks: list[dict] = field(default_factory=list)
+    seo_heartbeats: dict[str, int] = field(default_factory=dict)
+    seo_finalized: dict[str, dict] = field(default_factory=dict)
+    seo_reports: dict[str, dict] = field(default_factory=dict)
+    seo_artifacts: list[dict] = field(default_factory=list)
+
     # test knobs
     cancel_streams: set[str] = field(default_factory=set)
     unknown_streams: set[str] = field(default_factory=set)
+    seo_stale: set[str] = field(default_factory=set)  # runIds whose writes return stale
+    seo_cancel: set[str] = field(default_factory=set)  # runIds whose writes get cancel
     fail_next: int = 0
     fail_status: int = 500
     attempts: int = 0
@@ -131,6 +142,31 @@ def build(state: FakeConvex) -> FastAPI:
             state.titles[sid] = body.get("title", "")
             return _json({"ok": True})
 
+        # Phase 5 — durable SEO run ops (keyed by runId, not streamId).
+        if op and op.startswith("seo-run-"):
+            rid = body.get("runId", "")
+            stale = {"stale": rid in state.seo_stale, "cancel": rid in state.seo_cancel}
+            if op == "seo-run-enqueue":
+                state.seo_enqueued.append(body)
+                return _json({"ok": True, "runId": f"run_{len(state.seo_enqueued)}"})
+            if op == "seo-run-progress":
+                state.seo_progress.append(body)
+                return _json(stale)
+            if op == "seo-run-heartbeat":
+                state.seo_heartbeats[rid] = state.seo_heartbeats.get(rid, 0) + 1
+                return _json(stale)
+            if op == "seo-run-park":
+                state.seo_parks.append(body)
+                return _json(stale)
+            if op == "seo-run-finalize":
+                state.seo_finalized[rid] = body
+                return _json({"ok": True})
+            if op == "seo-run-report":
+                state.seo_reports[rid] = body
+                return _json({"ok": True, "reportId": body.get("report", {}).get(
+                    "report_id", "rpt_x"
+                )})
+
         return _json({"error": f"unknown op {op}"}, 400)
 
     @app.post("/ai/file")
@@ -146,6 +182,22 @@ def build(state: FakeConvex) -> FastAPI:
         if blob is None:
             return _json({"error": "not found"}, 404)
         return Response(blob, media_type="application/octet-stream")
+
+    @app.post("/ai/seo-artifact")
+    async def seo_artifact(request: Request):
+        blob = await request.body()
+        rid = request.headers.get("x-run-id", "")
+        key = request.headers.get("x-artifact-key", "")
+        state.seo_artifacts.append(
+            {"runId": rid, "artifactKey": key, "size": len(blob)}
+        )
+        return _json(
+            {
+                "artifactId": f"art_{len(state.seo_artifacts)}",
+                "size": len(blob),
+                "contentHash": request.headers.get("x-artifact-sha256", ""),
+            }
+        )
 
     @app.get("/version")
     async def version():

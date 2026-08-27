@@ -22,7 +22,7 @@ from app.clients.ollagraph import OllagraphAdapter
 from app.config import Settings, get_settings
 from app.db.engine import create_knowledge_engine
 from app.logging import configure, get_logger
-from app.routers import files, generate, health, tools
+from app.routers import files, generate, health, seo_runs, tools
 from app.runtime.registry import Registry
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
@@ -78,6 +78,17 @@ async def lifespan(app: FastAPI):
         max_per_user=settings.ai_ingest_max_concurrent_per_user,
         max_global=settings.ai_ingest_max_concurrent_global,
     )
+    # Phase 5: durable SEO runs crawl on their OWN pool (flag-gated) so a large audit
+    # can't starve chat OR uploads. None when the flag is off → /v1/seo-run-step 503s
+    # (dormant), and no run is ever enqueued, so the whole subsystem is byte-identical.
+    app.state.seo_registry = (
+        Registry(
+            max_per_user=settings.ai_seo_max_concurrent_per_user,
+            max_global=settings.ai_seo_max_concurrent_global,
+        )
+        if settings.ai_seo_runs_enabled
+        else None
+    )
     # Knowledge DB (pgvector). None when unconfigured — RAG then degrades to off
     # and /v1/ingest returns 503, but chat is unaffected.
     app.state.db = (
@@ -131,6 +142,8 @@ async def lifespan(app: FastAPI):
         # until the Convex reaper fires 90s later.
         await app.state.registry.shutdown()
         await app.state.ingest_registry.shutdown()
+        if app.state.seo_registry is not None:
+            await app.state.seo_registry.shutdown()
         from app.ingest.pool import shutdown_pool
 
         shutdown_pool()
@@ -189,6 +202,10 @@ def create_app() -> FastAPI:
     app.include_router(generate.router)
     app.include_router(files.router)
     app.include_router(tools.router)
+    # Mounted unconditionally but service-key-gated + dormant when the flag is off
+    # (the pool is None → 503), exactly like /v1/ingest. No run is ever dispatched
+    # unless ai_seo_runs_enabled, so this is byte-identical in the default config.
+    app.include_router(seo_runs.router)
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:

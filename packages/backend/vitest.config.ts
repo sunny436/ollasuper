@@ -3,6 +3,12 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "edge-runtime",
+    // The FIRST t.fetch in a file loads http.ts → @convex-dev/polar (the polyfill
+    // resolution below), which is slow. Under the full parallel suite that one-time
+    // cost is load-sensitive and can exceed vitest's default 5s per-test timeout even
+    // though the test itself is fast (each such file also warms it in a beforeAll).
+    // A generous ceiling absorbs the warm-up without masking a real hang.
+    testTimeout: 20_000,
     server: {
       deps: {
         // convex-test must be inlined so it shares the same module instances.

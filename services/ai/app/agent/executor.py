@@ -60,6 +60,7 @@ from app.models.execution import (
 )
 from app.models.tools import SideEffect, ToolCandidate, ToolDefinition
 from app.runtime.writer import DeltaWriter
+from app.seo.enqueue_tool import ENQUEUE_SEO_AUDIT_TOOL_NAME
 from app.tools.errors import ToolError, ToolErrorKind
 from app.tools.registry import ToolRegistry
 
@@ -83,6 +84,7 @@ _RESERVED_BUILTINS = frozenset(
         REMEMBER_TOOL_NAME,
         FORGET_TOOL_NAME,
         FILE_GEN_TOOL_NAME,
+        ENQUEUE_SEO_AUDIT_TOOL_NAME,
     }
     | ORCHESTRATION_BUILTIN_NAMES
 )
@@ -209,6 +211,9 @@ class ToolExecContext:
     file_max_bytes: int = 25_000_000
     file_gen_timeout_s: float = 60.0
     file_gen_pool_workers: int = 2
+    # Phase 5 — set when `enqueue_seo_audit` is bound (ai_seo_runs_enabled). Default off
+    # so a non-SEO ctx is byte-identical.
+    seo_runs_enabled: bool = False
 
 
 # --- OpenAI function-spec construction (runner-side) ----------------------
@@ -633,6 +638,15 @@ async def _run_one(
             ctx,
             execution,
             _run_generate_file(ctx, call_id, args),
+            side_effect="external_side_effect",
+        )
+
+    # Phase 5 — hand a large audit to the durable SEO run subsystem.
+    if ctx.seo_runs_enabled and bound_name == ENQUEUE_SEO_AUDIT_TOOL_NAME:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_enqueue_seo_audit(ctx, call_id, args),
             side_effect="external_side_effect",
         )
 
@@ -1549,6 +1563,110 @@ async def _run_generate_file(
             "format": spec.format,
             "size": size,
             "note": "The file is attached to the chat and ready to download.",
+        },
+        status="success",
+    )
+
+
+_ENQUEUE_REASONS = {
+    "too_many_active": "You already have the maximum number of audits running. "
+    "Wait for one to finish, then try again.",
+    "rate_limited": "You've reached the hourly limit for starting audits. "
+    "Please try again a little later.",
+    "not_live": "The audit could not be started for this conversation.",
+    "unknown_stream": "The audit could not be started for this conversation.",
+}
+
+
+async def _run_enqueue_seo_audit(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """Phase 5: hand a LARGE site-wide audit to the durable run subsystem.
+
+    Creates a durable seoRun (bound to THIS live turn, per-user-capped, owner derived in
+    Convex — never trusted from the model), emits a `seo_run` ARTIFACT event the chat
+    renders as a live run card, and returns a tracking handle. The crawl then runs in
+    the background, surviving crashes/retries/cancellation. Every failure returns a safe
+    error (the chat never crashes)."""
+    a = args if isinstance(args, dict) else {}
+    target = str(a.get("target") or "").strip()
+    scope = str(a.get("scope") or "site").strip() or "site"
+    raw_max = a.get("max_urls")
+    max_urls = (
+        int(raw_max) if isinstance(raw_max, (int, float)) and raw_max > 0 else None
+    )
+    if not target:
+        return _tool_message(
+            call_id,
+            {"status": "error", "message": "A target URL is required for an audit."},
+            status="error",
+        )
+
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=ENQUEUE_SEO_AUDIT_TOOL_NAME,
+        tool_id=ENQUEUE_SEO_AUDIT_TOOL_NAME,
+        call_id=call_id,
+        arguments={"target": target[:200], "scope": scope},
+        status="running",
+        side_effect="external_side_effect",
+    )
+
+    async def _fail(message: str) -> ToolMessage:
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="error",
+            result={"status": "error"},
+        )
+        return _tool_message(
+            call_id, {"status": "error", "message": message}, status="error"
+        )
+
+    input_hash = hashlib.sha1(  # noqa: S324 — non-crypto dedup id
+        f"{target}|{scope}".encode("utf-8", "replace")
+    ).hexdigest()[:20]
+    try:
+        res = await ctx.writer.enqueue_seo_run(
+            target=target, scope=scope, input_hash=input_hash, max_urls=max_urls
+        )
+    except Exception:  # noqa: BLE001 — enqueue failure is user-facing, never a crash
+        log.exception("agent.seo_enqueue_failed")
+        res = {}
+
+    if not (isinstance(res, dict) and res.get("ok")):
+        reason = str(res.get("reason") or "") if isinstance(res, dict) else ""
+        return await _fail(
+            _ENQUEUE_REASONS.get(reason, "The audit could not be started right now.")
+        )
+    run_id = str(res.get("runId") or "")
+    if not run_id:
+        return await _fail("The audit could not be started right now.")
+
+    # The run card renders from this ARTIFACT event; artifact_id = runId (non-empty so
+    # parseEvent keeps it) and getRun(runId) drives the live progress + final report.
+    await ctx.writer.emit_event(
+        EventType.ARTIFACT,
+        artifact_id=run_id,
+        artifact_type="seo_run",
+        metadata={"run_id": run_id, "target": target, "scope": scope},
+    )
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="success",
+        result={"run_id": run_id, "status": "queued"},
+    )
+    log.info("agent.seo_run_enqueued", extra={"run": run_id})
+    return _tool_message(
+        call_id,
+        {
+            "status": "started",
+            "run_id": run_id,
+            "note": (
+                f"A full SEO audit of {target} has started in the background. Its live "
+                "progress and the final report will appear in this chat on their own."
+            ),
         },
         status="success",
     )
