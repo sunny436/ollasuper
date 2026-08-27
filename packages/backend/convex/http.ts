@@ -865,8 +865,14 @@ http.route({
     const filename = (req.headers.get("x-artifact-filename") ?? "file").slice(0, 200);
     const mime = req.headers.get("content-type") ?? "application/octet-stream";
     if (!streamId || !format) return aiJson({ error: "bad request" }, 400);
-    const blob = await req.blob();
-    if (blob.size === 0 || blob.size > MAX_ARTIFACT_BYTES) {
+    // Read the streaming request body ONCE. A streaming Blob (`req.blob()`) cannot be
+    // re-read, so hashing it (below) and THEN `ctx.storage.store(blob)` throws "Can't
+    // re-read streaming Blob" — the SAME trap fixed in /ai/seo-artifact. Filegen sends
+    // no checksum so the old code only read once and worked, but the SEO report emitter
+    // ALWAYS declares a SHA-256, so its artifact store 500'd and the report card never
+    // rendered (report.emit_failed). Materialize the bytes and reuse them for both.
+    const ab = await req.arrayBuffer();
+    if (ab.byteLength === 0 || ab.byteLength > MAX_ARTIFACT_BYTES) {
       return aiJson({ error: "bad size" }, 400);
     }
     // Phase 3 (optional, additive): integrity verification. If the worker declared a
@@ -876,7 +882,7 @@ http.route({
     const declaredHash = req.headers.get("x-artifact-sha256");
     let contentHash: string | undefined;
     if (declaredHash) {
-      const buf = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+      const buf = await crypto.subtle.digest("SHA-256", ab);
       contentHash = Array.from(new Uint8Array(buf), (b) =>
         b.toString(16).padStart(2, "0"),
       ).join("");
@@ -885,14 +891,14 @@ http.route({
       }
     }
     const artifactKey = req.headers.get("x-artifact-key") ?? undefined;
-    const storageId = await ctx.storage.store(blob);
+    const storageId = await ctx.storage.store(new Blob([ab], { type: mime }));
     const res = await ctx.runMutation(internal.chat.artifacts.registerArtifact, {
       streamId,
       storageId,
       filename,
       format,
       mime,
-      size: blob.size,
+      size: ab.byteLength,
       ...(contentHash ? { contentHash } : {}),
       ...(artifactKey ? { artifactKey } : {}),
     });
@@ -900,7 +906,7 @@ http.route({
       await ctx.storage.delete(storageId).catch(() => {});
       return new Response("not found", { status: 404 });
     }
-    return aiJson({ artifactId: res.artifactId, size: blob.size });
+    return aiJson({ artifactId: res.artifactId, size: ab.byteLength });
   }),
 });
 
