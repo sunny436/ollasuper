@@ -1,20 +1,24 @@
 """Phase 5 (post-phase-7) — the REAL Ollagraph-backed crawl backend for durable runs.
 
-Replaces the unwired seam in `routers/seo_runs.py`. It is DETERMINISTIC (no LLM): the
-frontier comes from the live sitemap tool, and each URL is audited by Ollagraph's
-`seo/meta-audit` tool whose STRUCTURED response is mapped to typed `SEOFinding`s by
-fixed rules here. Ollagraph does the fetch/parse; this module only classifies output —
-so the large site-wide audit costs no model tokens per page.
+DETERMINISTIC (no LLM): the frontier comes from the live sitemap tool; a per-run
+SITE-LEVEL audit (TLS, robots.txt, homepage broken-links, response headers,
+sitemap) runs once, and every URL gets an on-page audit (meta + structured data).
+Each tool's STRUCTURED response is mapped to typed `SEOFinding`s by fixed rules
+here — so a large site-wide audit costs no model tokens per page.
 
-The tool response shape (verified live) drives the mapper:
-  {status,title,title_length,meta_description,meta_description_length,canonical,
-   robots_directive,is_indexable,h1_count,is_likely_404,bot_blocked_at_origin,
-   og_image,issues:[...]}
+Tool contracts + interpretation are handled deliberately (a senior-auditor bar):
+  * `intel/ssl` takes {"domain": host}, NOT {"url": ...}.
+  * `intel/robots` `is_allowed` is treated CAUTIOUSLY — some parsers false-positive
+    on wildcard `Disallow: /*?s=*` rules, so a "homepage disallowed" signal is a low
+    WARN to verify, never a fabricated CRITICAL.
+  * meta-audit is the RETRIED core (429s recover); structured data is best-effort
+    enrichment (single-shot, skipped on error) so it never amplifies rate-limit backoff.
 """
 
 from __future__ import annotations
 
 import asyncio
+from urllib.parse import urlsplit
 
 from app.clients.ollagraph import ToolError
 from app.config import Settings
@@ -25,6 +29,11 @@ log = get_logger(__name__)
 
 SITEMAP_TOOL = "intel_sitemap_endpoint_v1_intel_sitemap_post"
 META_AUDIT_TOOL = "seo_meta_audit_endpoint_v1_seo_meta_audit_post"
+SSL_TOOL = "intel_ssl_endpoint_v1_intel_ssl_post"
+ROBOTS_TOOL = "intel_robots_endpoint_v1_intel_robots_post"
+HEADERS_TOOL = "intel_headers_endpoint_v1_intel_headers_post"
+BROKEN_LINKS_TOOL = "seo_broken_links_endpoint_v1_seo_broken_links_audit_post"
+STRUCTURED_TOOL = "extract_structured_endpoint_v1_extract_structured_post"
 
 _AUDIT_RETRIES = 3  # bounded retries on a retryable audit error (429/timeout/upstream)
 _RETRY_BASE_S = 0.5  # exponential backoff base
@@ -45,6 +54,7 @@ def _finding(
     severity: str,
     observation: str,
     expected: str = "",
+    intent: str = "metadata.audit",
 ) -> dict:
     return {
         "check_id": check_id,
@@ -53,13 +63,12 @@ def _finding(
         "observation": observation[:500],
         "expected": expected,
         "affected": [url],
-        "intent": "metadata.audit",
+        "intent": intent,
     }
 
 
 def meta_audit_to_findings(url: str, r: dict) -> list[dict]:
-    """Classify one `seo/meta-audit` response into typed findings, using the existing
-    check_id taxonomy so Phase-6 monitoring diffs line up."""
+    """Classify one `seo/meta-audit` response into typed findings."""
     if not isinstance(r, dict) or r.get("status") != "success":
         st = r.get("status") if isinstance(r, dict) else "none"
         return [
@@ -139,6 +148,34 @@ def meta_audit_to_findings(url: str, r: dict) -> list[dict]:
     return out
 
 
+def structured_to_findings(url: str, r: dict) -> list[dict]:
+    """Classify one `extract/structured` response. Best-effort enrichment: a tool error
+    (no `json_ld` key) yields NO finding — meta-audit already covers the page, so a
+    missing structured probe must not become a false 'no structured data' claim."""
+    if not isinstance(r, dict) or "json_ld" not in r:
+        return []
+    jsonld = r.get("json_ld") if isinstance(r.get("json_ld"), list) else []
+    micro = r.get("microdata") if isinstance(r.get("microdata"), list) else []
+    if jsonld or micro:
+        types: list[str] = []
+        for x in jsonld[:5]:
+            t = x.get("@type") if isinstance(x, dict) else None
+            if isinstance(t, str):
+                types.append(t)
+            elif isinstance(t, list) and t:
+                types.append(str(t[0]))
+        label = f" ({', '.join(types)})" if types else ""
+        f = _finding("onpage.structured_data_valid", url, "PASS", "info",
+                     f"{len(jsonld)} JSON-LD block(s){label}.",
+                     intent="structured_data.extract")
+    else:
+        f = _finding("onpage.structured_data_valid", url, "WARN", "low",
+                     "No structured data (JSON-LD/microdata) detected.",
+                     "Add relevant schema.org structured data.",
+                     intent="structured_data.extract")
+    return [f]
+
+
 class OllagraphSeoBackend:
     """Calls the live Ollagraph tools for the durable worker (in-process)."""
 
@@ -151,17 +188,29 @@ class OllagraphSeoBackend:
     async def _call(self, tool_id: str, payload: dict) -> dict:
         tool = self._registry.get(tool_id)
         if tool is None:
-            # Tool not discovered (misconfig) — treat as an empty result, never crash.
-            return {}
+            return {}  # tool not discovered (misconfig) — empty result, never crash
         resp = await self._adapter.call_tool(
             tool, payload, input_schema=None, user_id=self._user_id, workspace_id=""
         )
         data = resp.get("data") if isinstance(resp, dict) else None
         return data if isinstance(data, dict) else {}
 
+    async def _call_retry(self, tool_id: str, payload: dict) -> dict:
+        """Call with bounded backoff on a RETRYABLE error (429/timeout/upstream) — the
+        provider rate-limits bursts, so a transient 429 recovers into a real finding."""
+        for attempt in range(_AUDIT_RETRIES):
+            try:
+                return await self._call(tool_id, payload)
+            except ToolError as e:
+                if not e.retryable or attempt == _AUDIT_RETRIES - 1:
+                    raise
+                await asyncio.sleep(_RETRY_BASE_S * (2**attempt))
+        return {}  # unreachable
+
     async def discover(self, target: str, scope: str, max_urls: int) -> list[str]:
-        """Frontier = the site's sitemap URLs (bounded). A single-page scope, an empty
-        sitemap, or a sitemap failure all fall back to auditing just the target."""
+        """Frontier = the site's sitemap URLs (bounded), with the target lead so the
+        site-level audit runs in the first batch. Page scope / empty sitemap / failure
+        all fall back to auditing just the target."""
         if scope == "page":
             return [target]
         try:
@@ -170,31 +219,127 @@ class OllagraphSeoBackend:
             log.info("seo_crawl.sitemap_failed", extra={"err": type(e).__name__})
             return [target]
         urls = [u for u in (data.get("urls") or []) if isinstance(u, str)]
-        return urls[:max_urls] if urls else [target]
+        if not urls:
+            return [target]
+        frontier = [target, *[u for u in urls if u != target]]
+        return frontier[:max_urls]
 
-    async def _audit(self, url: str) -> dict:
-        """Meta-audit one URL with bounded backoff on a RETRYABLE error (429/timeout/
-        upstream) — the provider rate-limits bursts, so a transient 429 must recover
-        into a real finding instead of a NOT_TESTED coverage gap."""
-        for attempt in range(_AUDIT_RETRIES):
-            try:
-                return await self._call(META_AUDIT_TOOL, {"url": url})
-            except ToolError as e:
-                if not e.retryable or attempt == _AUDIT_RETRIES - 1:
-                    raise
-                await asyncio.sleep(_RETRY_BASE_S * (2**attempt))
-        return {}  # unreachable
+    async def _site_audit(self, target: str) -> list[dict]:
+        """Site-level technical checks that run ONCE per audit (the batch containing the
+        target). Wrong input contracts + naive interpretation are handled here."""
+        host = urlsplit(target).netloc or target
+        out: list[dict] = []
+
+        def push(cid, status, sev, obs, exp="", intent="site.audit"):
+            out.append(_finding(cid, target, status, sev, obs, exp, intent))
+
+        # TLS certificate — contract is {"domain": host}, not {"url": ...}.
+        ssl = await self._safe(SSL_TOOL, {"domain": host})
+        if ssl.get("status") == "success":
+            days = ssl.get("days_remaining")
+            issuer = ssl.get("issuer") or "unknown issuer"
+            if ssl.get("is_valid") is False:
+                push("technical.https_ssl", "FAIL", "critical",
+                     f"TLS certificate is not valid ({issuer}).",
+                     "A valid TLS certificate.")
+            elif isinstance(days, int) and days < 14:
+                push("technical.https_ssl", "FAIL", "high",
+                     f"TLS certificate expires in {days} days.", "Renew before expiry.")
+            elif isinstance(days, int) and days < 30:
+                push("technical.https_ssl", "WARN", "medium",
+                     f"TLS certificate expires in {days} days.", "Renew before expiry.")
+            else:
+                push("technical.https_ssl", "PASS", "info",
+                     f"Valid TLS certificate ({issuer}, {days} days remaining).")
+
+        # robots.txt — report presence; interpret is_allowed CAUTIOUSLY.
+        rob = await self._safe(ROBOTS_TOOL, {"url": target})
+        if rob.get("status") == "success":
+            push("crawl_index.robots_txt", "PASS", "info",
+                 f"robots.txt present ({rob.get('robots_url')}).")
+            if rob.get("is_allowed") is False:
+                push("crawl_index.robots_home_allowed", "WARN", "low",
+                     "The robots checker reports the homepage as disallowed — VERIFY "
+                     "manually; wildcard rules (e.g. /*?s=*) false-positive in some "
+                     "parsers, so this is not treated as a confirmed block.",
+                     "Confirm the homepage is crawlable for Googlebot.")
+
+        # Broken links on the homepage.
+        bl = await self._safe(BROKEN_LINKS_TOOL, {"url": target})
+        if bl.get("status") == "success":
+            broken = int(bl.get("broken_count") or 0)
+            ib = int(bl.get("internal_broken") or 0)
+            eb = int(bl.get("external_broken") or 0)
+            if ib > 0:
+                push("crawl_index.broken_links", "FAIL", "high",
+                     f"{broken} broken link(s) on the homepage ({ib} internal, {eb} "
+                     "external).", "No broken internal links.")
+            elif broken > 0:
+                push("crawl_index.broken_links", "WARN", "low",
+                     f"{broken} broken external link(s) on the homepage.",
+                     "Fix or remove dead outbound links.")
+            else:
+                push("crawl_index.broken_links", "PASS", "info",
+                     "No broken links detected on the homepage.")
+
+        # Response headers — header-level noindex + HSTS.
+        hd = await self._safe(HEADERS_TOOL, {"url": target})
+        if hd.get("status") == "success":
+            headers = {
+                str(k).lower(): v
+                for k, v in (hd.get("headers") or [])
+                if isinstance(k, str)
+            }
+            xr = str(headers.get("x-robots-tag") or "")
+            if "noindex" in xr.lower():
+                push("crawl_index.x_robots_tag", "FAIL", "critical",
+                     f"X-Robots-Tag header sets noindex: {xr!r}.",
+                     "No header-level noindex on indexable pages.")
+            if headers.get("strict-transport-security"):
+                push("technical.hsts", "PASS", "info", "HSTS enabled.")
+            else:
+                push("technical.hsts", "WARN", "low", "No HSTS header.",
+                     "Enable Strict-Transport-Security.")
+
+        # Sitemap presence + size.
+        sm = await self._safe(SITEMAP_TOOL, {"url": target})
+        urls = sm.get("urls") if isinstance(sm.get("urls"), list) else []
+        if sm.get("status") == "success" and (urls or sm.get("url_count")):
+            n = int(sm.get("url_count") or len(urls))
+            push("crawl_index.sitemap_quality", "PASS", "info",
+                 f"XML sitemap found ({n} URLs).")
+        else:
+            push("crawl_index.sitemap_quality", "WARN", "medium",
+                 "No XML sitemap found.", "Publish + submit an XML sitemap.")
+        return out
+
+    async def _safe(self, tool_id: str, payload: dict) -> dict:
+        """Retry-with-backoff, but never raise: a site check that fails yields no
+        finding (honest coverage gap) rather than aborting the whole site audit."""
+        try:
+            return await self._call_retry(tool_id, payload)
+        except ToolError as e:
+            log.info("seo_crawl.site_tool_failed",
+                     extra={"tool": tool_id, "err": type(e).__name__})
+            return {}
 
     async def crawl(self, urls: list[str], step: SeoRunStep) -> BatchResult:
-        """Audit each URL via meta-audit, classify deterministically. A failed page is a
-        NOT_TESTED finding (coverage gap), never a silent drop or batch failure."""
+        """Site-level audit once (the batch with the target) + per-URL on-page audit
+        (meta + structured). A failed page is a NOT_TESTED finding, never dropped."""
         rows: list[dict] = []
         findings: list[dict] = []
+
+        if step.target in urls:
+            try:
+                findings.extend(await self._site_audit(step.target))
+            except Exception:  # noqa: BLE001 — site audit is best-effort, never fatal
+                log.warning("seo_crawl.site_audit_failed")
+
         for i, url in enumerate(urls):
             if i:
                 await asyncio.sleep(_THROTTLE_S)  # gentle spacing to avoid tripping 429
             try:
-                data = await self._audit(url)
+                data = await self._call_retry(META_AUDIT_TOOL, {"url": url})
             except ToolError as e:
                 findings.append(
                     _finding("crawl_index.fetch", url, "NOT_TESTED", "medium",
@@ -204,6 +349,14 @@ class OllagraphSeoBackend:
                 continue
             rows.append({"url": url, "audit": {k: data.get(k) for k in _EVIDENCE_KEYS}})
             findings.extend(meta_audit_to_findings(url, data))
+            # Structured data — best-effort enrichment (single-shot; skip on any error
+            # so it never amplifies rate-limit backoff for the retried core meta-audit).
+            try:
+                sd = await self._call(STRUCTURED_TOOL, {"url": url})
+                findings.extend(structured_to_findings(url, sd))
+            except ToolError:
+                pass
+
         counts: dict[str, int] = {}
         for f in findings:
             counts[f["status"]] = counts.get(f["status"], 0) + 1
@@ -220,11 +373,16 @@ def build_ollagraph_crawl_backend(
     return backend.discover, backend.crawl
 
 
-# Re-export so callers need one import site.
 __all__ = [
+    "BROKEN_LINKS_TOOL",
+    "HEADERS_TOOL",
     "META_AUDIT_TOOL",
+    "ROBOTS_TOOL",
     "SITEMAP_TOOL",
+    "SSL_TOOL",
+    "STRUCTURED_TOOL",
     "OllagraphSeoBackend",
     "build_ollagraph_crawl_backend",
     "meta_audit_to_findings",
+    "structured_to_findings",
 ]

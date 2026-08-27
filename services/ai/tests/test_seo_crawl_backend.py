@@ -10,10 +10,16 @@ from app.config import Settings
 from app.models.tools import ToolDefinition
 from app.runtime.seo_run import SeoRunStep
 from app.seo.crawl_backend import (
+    BROKEN_LINKS_TOOL,
+    HEADERS_TOOL,
     META_AUDIT_TOOL,
+    ROBOTS_TOOL,
     SITEMAP_TOOL,
+    SSL_TOOL,
+    STRUCTURED_TOOL,
     OllagraphSeoBackend,
     meta_audit_to_findings,
+    structured_to_findings,
 )
 
 CLEAN = {
@@ -112,11 +118,21 @@ def _step() -> SeoRunStep:
                       deadlineAt=0, workflowVersion=1, createdAt=0)
 
 
-async def test_discover_uses_sitemap_bounded():
+async def test_discover_uses_sitemap_bounded_with_target_lead():
+    # The target leads the frontier so the once-per-run site audit lands in batch 0;
+    # the remaining slots are sitemap URLs, bounded to max_urls.
     urls = [f"https://x/{i}" for i in range(10)]
     b = _backend(_FakeAdapter(sitemap={"status": "success", "urls": urls}))
     got = await b.discover("https://x/", "site", 4)
-    assert got == urls[:4]
+    assert got == ["https://x/", *urls[:3]]
+
+
+async def test_discover_does_not_duplicate_target_in_frontier():
+    urls = ["https://x/", "https://x/a", "https://x/b"]
+    b = _backend(_FakeAdapter(sitemap={"status": "success", "urls": urls}))
+    got = await b.discover("https://x/", "site", 100)
+    assert got == ["https://x/", "https://x/a", "https://x/b"]
+    assert got.count("https://x/") == 1
 
 
 async def test_discover_page_scope_is_target_only():
@@ -163,7 +179,8 @@ async def test_crawl_retries_on_rate_limit_then_succeeds(monkeypatch):
     )
     b = _backend(adapter)
     res = await b.crawl(["https://x/a"], _step())
-    assert adapter.calls == 3  # 2 failures + 1 success
+    # 2 meta-audit failures + 1 meta-audit success, then 1 structured enrichment call.
+    assert adapter.calls == 4
     assert len(res.rows) == 1
     assert not any(f["status"] == "NOT_TESTED" for f in res.findings)
 
@@ -182,3 +199,155 @@ async def test_crawl_gives_up_after_max_retries(monkeypatch):
 def test_h1_count_classification(h1, expected):
     fs = _by_id(meta_audit_to_findings("https://x/", {**CLEAN, "h1_count": h1}))
     assert fs["onpage.h1"]["status"] == expected
+
+
+# --- structured data (best-effort enrichment, never fabricated) ---------------
+
+
+def test_structured_findings_pass_when_jsonld_present():
+    fs = structured_to_findings(
+        "https://x/",
+        {"json_ld": [{"@type": "Organization"}, {"@type": ["Product", "Thing"]}]},
+    )
+    assert len(fs) == 1
+    assert fs[0]["status"] == "PASS"
+    assert fs[0]["check_id"] == "onpage.structured_data_valid"
+    assert fs[0]["intent"] == "structured_data.extract"
+    assert "Organization" in fs[0]["observation"]
+
+
+def test_structured_findings_warn_when_present_but_empty():
+    fs = structured_to_findings("https://x/", {"json_ld": [], "microdata": []})
+    assert len(fs) == 1 and fs[0]["status"] == "WARN"
+
+
+def test_structured_findings_no_probe_is_no_finding():
+    # A tool error / missing `json_ld` key must NOT become a fabricated
+    # "no structured data" claim — meta-audit already covered the page.
+    assert structured_to_findings("https://x/", {"error": "boom"}) == []
+    assert structured_to_findings("https://x/", {}) == []
+    assert structured_to_findings("https://x/", None) == []
+
+
+# --- site-level technical audit -----------------------------------------------
+
+
+class _RecordingAdapter:
+    """Dispatches canned per-tool responses and records (tool_id, payload), so a test
+    can assert the exact input contract (e.g. SSL takes {"domain": host})."""
+
+    def __init__(self, responses: dict[str, dict]) -> None:
+        self._responses = responses
+        self.calls: list[tuple[str, dict]] = []
+
+    async def call_tool(self, tool, payload, *, input_schema=None, user_id="",
+                        workspace_id="", idempotency_key=None):
+        self.calls.append((tool.tool_id, payload))
+        return {"ok": True, "tool_id": tool.tool_id,
+                "data": self._responses.get(tool.tool_id, {})}
+
+
+def _site_responses(**over) -> dict[str, dict]:
+    base = {
+        SSL_TOOL: {"status": "success", "is_valid": True, "days_remaining": 200,
+                   "issuer": "Let's Encrypt R3"},
+        ROBOTS_TOOL: {"status": "success", "robots_url": "https://x/robots.txt",
+                      "is_allowed": True},
+        BROKEN_LINKS_TOOL: {"status": "success", "broken_count": 0,
+                            "internal_broken": 0, "external_broken": 0},
+        HEADERS_TOOL: {"status": "success",
+                       "headers": [["Strict-Transport-Security", "max-age=63072000"]]},
+        SITEMAP_TOOL: {"status": "success", "url_count": 12},
+        META_AUDIT_TOOL: CLEAN,
+        STRUCTURED_TOOL: {"json_ld": [{"@type": "WebSite"}]},
+    }
+    base.update(over)
+    return base
+
+
+async def test_site_audit_full_pass_and_ssl_domain_contract():
+    a = _RecordingAdapter(_site_responses())
+    res = await _backend(a).crawl(["https://x/"], _step())  # target IS in batch
+    fs = _by_id(res.findings)
+    for cid in ("technical.https_ssl", "crawl_index.robots_txt",
+                "crawl_index.broken_links", "technical.hsts",
+                "crawl_index.sitemap_quality", "onpage.structured_data_valid"):
+        assert fs[cid]["status"] == "PASS", cid
+    # The 422-fix contract: SSL is called with {"domain": host}, never {"url": ...}.
+    assert [p for t, p in a.calls if t == SSL_TOOL] == [{"domain": "x"}]
+
+
+async def test_site_audit_runs_once_across_batch():
+    a = _RecordingAdapter(_site_responses())
+    await _backend(a).crawl(["https://x/", "https://x/a", "https://x/b"], _step())
+    assert sum(1 for t, _ in a.calls if t == SSL_TOOL) == 1
+
+
+async def test_site_audit_skipped_when_target_absent():
+    a = _RecordingAdapter(_site_responses())
+    await _backend(a).crawl(["https://x/a"], _step())  # target https://x/ not present
+    assert not any(t == SSL_TOOL for t, _ in a.calls)
+
+
+async def test_site_audit_robots_disallow_is_cautious_low_warn():
+    # A homepage-disallowed signal is a low WARN to VERIFY — never a fabricated
+    # CRITICAL (some parsers false-positive on wildcard Disallow rules).
+    a = _RecordingAdapter(_site_responses(**{
+        ROBOTS_TOOL: {"status": "success", "robots_url": "https://x/robots.txt",
+                      "is_allowed": False}}))
+    res = await _backend(a).crawl(["https://x/"], _step())
+    warn = _by_id(res.findings)["crawl_index.robots_home_allowed"]
+    assert warn["status"] == "WARN" and warn["severity"] == "low"
+    assert not any(f["severity"] == "critical"
+                   and f["check_id"].startswith("crawl_index.robots")
+                   for f in res.findings)
+
+
+async def test_site_audit_internal_broken_links_and_header_noindex_fail():
+    a = _RecordingAdapter(_site_responses(**{
+        BROKEN_LINKS_TOOL: {"status": "success", "broken_count": 3,
+                            "internal_broken": 2, "external_broken": 1},
+        HEADERS_TOOL: {"status": "success",
+                       "headers": [["X-Robots-Tag", "noindex, nofollow"]]}}))
+    fs = _by_id((await _backend(a).crawl(["https://x/"], _step())).findings)
+    assert fs["crawl_index.broken_links"]["status"] == "FAIL"
+    assert fs["crawl_index.x_robots_tag"]["status"] == "FAIL"
+    assert fs["crawl_index.x_robots_tag"]["severity"] == "critical"
+    assert fs["technical.hsts"]["status"] == "WARN"  # HSTS header now absent
+
+
+async def test_site_audit_missing_sitemap_warns():
+    a = _RecordingAdapter(_site_responses(**{SITEMAP_TOOL: {"status": "error"}}))
+    fs = _by_id((await _backend(a).crawl(["https://x/"], _step())).findings)
+    assert fs["crawl_index.sitemap_quality"]["status"] == "WARN"
+
+
+@pytest.mark.parametrize("ssl,expect", [
+    ({"status": "success", "is_valid": True, "days_remaining": 200}, "PASS"),
+    ({"status": "success", "is_valid": True, "days_remaining": 20}, "WARN"),
+    ({"status": "success", "is_valid": True, "days_remaining": 5}, "FAIL"),
+    ({"status": "success", "is_valid": False, "days_remaining": 200}, "FAIL"),
+])
+async def test_site_audit_ssl_severity(ssl, expect):
+    a = _RecordingAdapter(_site_responses(**{SSL_TOOL: ssl}))
+    fs = _by_id((await _backend(a).crawl(["https://x/"], _step())).findings)
+    assert fs["technical.https_ssl"]["status"] == expect
+
+
+async def test_site_audit_tool_failure_is_coverage_gap_not_fatal(monkeypatch):
+    # A site check that keeps failing yields NO finding (honest gap), and never
+    # aborts the rest of the site audit.
+    monkeypatch.setattr("app.seo.crawl_backend._RETRY_BASE_S", 0.0)
+
+    class _SslAlwaysFails(_RecordingAdapter):
+        async def call_tool(self, tool, payload, **kw):
+            if tool.tool_id == SSL_TOOL:
+                raise ToolError(
+                    ToolErrorKind.RATE_LIMITED, "boom", tool_id=tool.tool_id
+                )
+            return await super().call_tool(tool, payload, **kw)
+
+    a = _SslAlwaysFails(_site_responses())
+    fs = _by_id((await _backend(a).crawl(["https://x/"], _step())).findings)
+    assert "technical.https_ssl" not in fs  # no fabrication on failure
+    assert fs["crawl_index.robots_txt"]["status"] == "PASS"  # audit continued
