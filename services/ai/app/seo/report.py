@@ -141,15 +141,16 @@ _SEVERITY_ALIASES = {
     "low": Severity.LOW, "minor": Severity.LOW,
     "info": Severity.INFO, "informational": Severity.INFO, "notice": Severity.INFO,
 }
-_OBSERVATION_KEYS = ("observation", "description", "issue", "finding", "detail",
-                     "details", "message", "summary", "note", "text", "title")
+_OBSERVATION_KEYS = ("observation", "observed", "observed_value", "description",
+                     "issue", "finding", "detail", "details", "message", "summary",
+                     "note", "text", "title")
 _CHECK_ID_KEYS = ("check_id", "checkid", "id", "check", "name", "category", "key")
 _EXPECTED_KEYS = ("expected", "expectation", "expected_value", "should", "target_state")
 _RECOMMENDATION_KEYS = ("recommendation", "recommended_action", "fix", "remediation",
                         "action", "suggestion", "resolution")
 _VERIFICATION_KEYS = ("verification", "verify", "how_to_verify", "validation")
 _AFFECTED_KEYS = ("affected", "affected_urls", "urls", "pages", "affected_pages",
-                  "locations", "url")
+                  "locations", "url", "scope")
 
 
 def _pick(item: dict, keys: tuple[str, ...]) -> object:

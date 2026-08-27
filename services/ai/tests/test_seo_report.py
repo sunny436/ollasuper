@@ -209,6 +209,35 @@ def test_llm_shaped_finding_is_normalized_not_lost():
     assert "normalized_finding" in f.data_quality_flags
 
 
+def test_normalizes_the_live_llm_finding_shape_cleanly():
+    # The exact per-finding shape observed from the delegated SEO agent on prod:
+    # `observed`/`scope`/`check` rather than observation/affected/check_id.
+    rd = _report(
+        coverage=["metadata.audit"],
+        checks_performed=[
+            {
+                "check": "Contact page response and soft-404 signals",
+                "status": "FAIL",
+                "severity": "High",
+                "scope": "https://www.networkershome.com/contactus/",
+                "observed": "The page returned apparent HTTP 200 soft-404 signals.",
+                "expected": "A contact page should return 200 with unique content.",
+                "confidence": "Medium",
+                "recommendation": "Restore unique contact content.",
+                "verification": "Manually inspect the rendered page.",
+            }
+        ],
+    )
+    f = build_envelope(rd, stream_id="s", delegation_id="d").findings[0]
+    # The observation is the clean `observed` value — NOT a dump of every key.
+    assert f.observation == "The page returned apparent HTTP 200 soft-404 signals."
+    assert "status:" not in f.observation and "recommendation:" not in f.observation
+    assert f.status is FindingStatus.FAIL and f.severity is Severity.HIGH
+    assert f.affected == ["https://www.networkershome.com/contactus/"]
+    assert f.recommendation == "Restore unique contact content."
+    assert f.verification == "Manually inspect the rendered page."
+
+
 def test_descriptionless_finding_keeps_its_raw_content():
     rd = _report(
         coverage=["metadata.audit"],
