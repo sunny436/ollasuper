@@ -16,7 +16,7 @@ import pytest
 
 from app.agent.spec import AgentOutcome
 from app.orchestrator.orchestrator import Orchestrator
-from app.seo.models import ConfidenceLevel, ReportStatus
+from app.seo.models import ConfidenceLevel, FindingStatus, ReportStatus, Severity
 from app.seo.report import (
     bound_for_row,
     build_envelope,
@@ -182,6 +182,52 @@ def test_missing_evidence_is_flagged_not_dropped():
         f for f in env.findings if f.check_id == "onpage.title_unique_descriptive"
     )
     assert "missing_evidence" in warn.data_quality_flags
+
+
+def test_llm_shaped_finding_is_normalized_not_lost():
+    # A delegated LLM audit that uses its own finding vocabulary must still yield real
+    # findings, not opaque "could not be parsed" stubs.
+    rd = _report(
+        coverage=["metadata.audit"],
+        checks_performed=[
+            {
+                "id": "title-too-long",
+                "description": "The homepage title exceeds 60 characters.",
+                "priority": "high",
+                "result": "fail",
+                "recommended_action": "Shorten the title to 50-60 chars.",
+                "affected_urls": ["https://x/", "https://x/a"],
+            }
+        ],
+    )
+    env = build_envelope(rd, stream_id="s", delegation_id="d")
+    f = env.findings[0]
+    assert f.observation == "The homepage title exceeds 60 characters."
+    assert f.status is FindingStatus.FAIL and f.severity is Severity.HIGH
+    assert f.recommendation.startswith("Shorten")
+    assert f.affected == ["https://x/", "https://x/a"]
+    assert "normalized_finding" in f.data_quality_flags
+
+
+def test_descriptionless_finding_keeps_its_raw_content():
+    rd = _report(
+        coverage=["metadata.audit"],
+        checks_performed=[{"foo": "bar", "widget_count": 3}],
+    )
+    env = build_envelope(rd, stream_id="s", delegation_id="d")
+    obs = env.findings[0].observation
+    assert obs and obs != "finding could not be parsed"
+    assert "foo: bar" in obs  # raw content surfaced, never lost
+
+
+def test_normalized_finding_status_defaults_to_not_tested_never_fail():
+    # An unrecognised status must degrade to the HONEST NOT_TESTED, never a FAIL.
+    rd = _report(
+        coverage=["metadata.audit"],
+        checks_performed=[{"description": "something", "status": "mysterious"}],
+    )
+    env = build_envelope(rd, stream_id="s", delegation_id="d")
+    assert env.findings[0].status is FindingStatus.NOT_TESTED
 
 
 def test_invalid_evidence_degrades_without_crashing():

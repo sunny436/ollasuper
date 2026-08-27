@@ -114,9 +114,107 @@ def _filename(env: ReportEnvelope, fmt: str) -> str:
 
 
 # --- finding coercion (invalid / missing evidence are handled, never raised) -
+#
+# The durable run emits EXACT SEOFinding dicts (the fast path below). A delegated LLM
+# audit, though, tends to use its own finding vocabulary (`description`/`issue` for the
+# observation, `priority` for severity, a bare `id` for the check) plus extra keys that
+# trip `extra='forbid'`. Rather than lose a real finding to a "could not be parsed"
+# stub, an item that will not validate is NORMALISED onto the known fields: unknown
+# keys are dropped, and a description-less finding keeps its raw content as the
+# observation so it is always legible.
+_STATUS_ALIASES = {
+    "pass": FindingStatus.PASS, "passed": FindingStatus.PASS,
+    "ok": FindingStatus.PASS, "success": FindingStatus.PASS, "good": FindingStatus.PASS,
+    "fail": FindingStatus.FAIL, "failed": FindingStatus.FAIL,
+    "error": FindingStatus.FAIL,
+    "warn": FindingStatus.WARN, "warning": FindingStatus.WARN,
+    "not_tested": FindingStatus.NOT_TESTED, "untested": FindingStatus.NOT_TESTED,
+    "skipped": FindingStatus.NOT_TESTED, "unknown": FindingStatus.NOT_TESTED,
+    "unsupported": FindingStatus.UNSUPPORTED,
+    "not_applicable": FindingStatus.UNSUPPORTED,
+    "n/a": FindingStatus.UNSUPPORTED, "na": FindingStatus.UNSUPPORTED,
+}
+_SEVERITY_ALIASES = {
+    "critical": Severity.CRITICAL, "blocker": Severity.CRITICAL,
+    "high": Severity.HIGH, "major": Severity.HIGH,
+    "medium": Severity.MEDIUM, "moderate": Severity.MEDIUM,
+    "low": Severity.LOW, "minor": Severity.LOW,
+    "info": Severity.INFO, "informational": Severity.INFO, "notice": Severity.INFO,
+}
+_OBSERVATION_KEYS = ("observation", "description", "issue", "finding", "detail",
+                     "details", "message", "summary", "note", "text", "title")
+_CHECK_ID_KEYS = ("check_id", "checkid", "id", "check", "name", "category", "key")
+_EXPECTED_KEYS = ("expected", "expectation", "expected_value", "should", "target_state")
+_RECOMMENDATION_KEYS = ("recommendation", "recommended_action", "fix", "remediation",
+                        "action", "suggestion", "resolution")
+_VERIFICATION_KEYS = ("verification", "verify", "how_to_verify", "validation")
+_AFFECTED_KEYS = ("affected", "affected_urls", "urls", "pages", "affected_pages",
+                  "locations", "url")
+
+
+def _pick(item: dict, keys: tuple[str, ...]) -> object:
+    for k in keys:
+        v = item.get(k)
+        if v not in (None, "", [], {}):
+            return v
+    return None
+
+
+def _as_str_list(v: object) -> list[str]:
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, list):
+        return [str(x) for x in v if x not in (None, "")]
+    return []
+
+
+def _normalize_finding(item: dict) -> SEOFinding:
+    """Best-effort projection of an arbitrarily-shaped finding onto SEOFinding. Never
+    raises: unknown keys are dropped, status defaults to the HONEST NOT_TESTED (never
+    a fabricated FAIL), and a finding with no recognisable description keeps its raw
+    content as the observation, so a real finding is never rendered as an opaque
+    stub."""
+    flags = _as_str_list(item.get("data_quality_flags"))
+    status_raw = str(_pick(item, ("status", "result", "state", "outcome")) or "")
+    status = _STATUS_ALIASES.get(status_raw.strip().lower(), FindingStatus.NOT_TESTED)
+    severity = _SEVERITY_ALIASES.get(
+        str(_pick(item, ("severity", "priority", "impact")) or "").strip().lower(),
+        Severity.INFO,
+    )
+    obs = _pick(item, _OBSERVATION_KEYS)
+    observation = str(obs) if obs is not None else ""
+    if not observation:
+        observation = "; ".join(
+            f"{k}: {item[k]}"
+            for k in item
+            if k not in ("data_quality_flags", "evidence")
+            and item[k] not in (None, "", [], {})
+        ) or "finding reported without a description"
+    if "normalized_finding" not in flags:
+        flags.append("normalized_finding")
+    if item.get("evidence"):
+        flags.append("invalid_evidence_dropped")
+    conf = item.get("confidence")
+    ok_conf = isinstance(conf, int | float) and 0 <= conf <= 1
+    return SEOFinding(
+        check_id=str(_pick(item, _CHECK_ID_KEYS) or "audit.finding"),
+        intent=str(item.get("intent") or ""),
+        status=status,
+        severity=severity,
+        observation=observation[:500],
+        expected=str(_pick(item, _EXPECTED_KEYS) or ""),
+        affected=_as_str_list(_pick(item, _AFFECTED_KEYS)),
+        recommendation=str(_pick(item, _RECOMMENDATION_KEYS) or ""),
+        verification=str(_pick(item, _VERIFICATION_KEYS) or ""),
+        confidence=float(conf) if ok_conf else 1.0,
+        data_quality_flags=flags,
+    )
+
+
 def _coerce_findings(raw: object) -> tuple[list[SEOFinding], bool]:
     """Validate each finding, salvaging on failure. Malformed evidence is dropped +
-    flagged (never raises); an unsalvageable finding degrades to a flagged stub."""
+    flagged; an otherwise mis-shaped (LLM) finding is normalised onto SEOFinding —
+    never raised, never lost to an opaque stub."""
     findings: list[SEOFinding] = []
     had_invalid = False
     for item in raw if isinstance(raw, list) else []:
@@ -124,26 +222,25 @@ def _coerce_findings(raw: object) -> tuple[list[SEOFinding], bool]:
             had_invalid = True
             continue
         try:
-            findings.append(SEOFinding.model_validate(item))
+            findings.append(SEOFinding.model_validate(item))  # fast path: exact shape
             continue
         except Exception:  # noqa: BLE001 — try to salvage before giving up
             had_invalid = True
+        # Salvage 1: exact-but-for-evidence (the most common single offender).
         salvaged = dict(item)
-        salvaged["evidence"] = []  # the most likely offender (extra='forbid')
-        flags = list(salvaged.get("data_quality_flags") or [])
+        salvaged["evidence"] = []
+        flags = _as_str_list(salvaged.get("data_quality_flags"))
         flags.append("invalid_evidence_dropped")
         salvaged["data_quality_flags"] = flags
         try:
             findings.append(SEOFinding.model_validate(salvaged))
-        except Exception:  # noqa: BLE001 — last resort: a minimal flagged stub
-            findings.append(
-                SEOFinding(
-                    check_id=str(item.get("check_id") or "unknown"),
-                    status=FindingStatus.NOT_TESTED,
-                    observation="finding could not be parsed",
-                    data_quality_flags=["unparseable_finding"],
-                )
+        except Exception:  # noqa: BLE001 — normalise an arbitrarily-shaped finding
+            # Salvage 2: project it onto the known fields (never an opaque stub).
+            log.info(
+                "seo.report_finding_normalized",
+                extra={"keys": sorted(item.keys())[:24]},
             )
+            findings.append(_normalize_finding(item))
     return findings, had_invalid
 
 
