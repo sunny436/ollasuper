@@ -23,6 +23,12 @@ from typing import Any
 _DATA_URI = re.compile(r"data:[a-zA-Z0-9.+/-]+;base64,[A-Za-z0-9+/=]{16,}")
 _BEARER = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{12,}")
 _SK = re.compile(r"sk-[A-Za-z0-9._\-]{12,}")
+# Phase 4 (defense-in-depth): a bare Google OAuth token has no `bearer `/`sk-`
+# prefix, so it evades the shapes above. The load-bearing guarantee is that the
+# connector token is injected only in the outbound header and never enters
+# args/results/events — these catch an accidental leak into a logged string.
+_GOOGLE_ACCESS = re.compile(r"ya29\.[A-Za-z0-9._\-]{10,}")
+_GOOGLE_REFRESH = re.compile(r"1//[A-Za-z0-9._\-]{10,}")
 
 _RESERVED = frozenset(
     logging.LogRecord("", 0, "", 0, "", None, None).__dict__.keys()
@@ -38,7 +44,9 @@ def redact_text(text: str, secrets: tuple[str, ...] = ()) -> str:
             text = text.replace(s, "***")
     text = _DATA_URI.sub("data:***", text)
     text = _BEARER.sub(r"\1***", text)
-    return _SK.sub("sk-***", text)
+    text = _SK.sub("sk-***", text)
+    text = _GOOGLE_ACCESS.sub("ya29.***", text)
+    return _GOOGLE_REFRESH.sub("1//***", text)
 
 
 def redact_obj(obj: Any, secrets: tuple[str, ...] = ()) -> Any:
