@@ -1,9 +1,5 @@
 /// <reference types="vite/client" />
-import { convexTest, type TestConvex } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api, internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
-import schema from "./schema";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   _clearForTest,
   challengeS256,
@@ -14,14 +10,8 @@ import {
   UndecryptableError,
 } from "./connectors/crypto";
 
-const modules = import.meta.glob(["./**/*.*s", "!./**/*.test.*"]);
-type TestT = TestConvex<typeof schema>;
-const as = (userId: string) => ({ subject: `${userId}|sess_${userId}` });
-
 // A deterministic 32-byte base64 key for the tests.
 const KEY = btoa(String.fromCharCode(...new Array(32).fill(42)));
-const CLIENT_ID = "test-connector-client.apps.googleusercontent.com";
-const INGRESS = "test-ingress-secret-0123456789ab";
 
 describe("connector crypto — AES-256-GCM vault (the Phase-4 gate)", () => {
   let prev: string | undefined;
