@@ -227,17 +227,42 @@ def _confidence(findings: list[SEOFinding], not_tested: int) -> ConfidenceLevel:
 
 
 def _sev_sort(findings: list[SEOFinding]) -> list[SEOFinding]:
-    return sorted(findings, key=lambda f: _SEVERITY_ORDER.get(f.severity, 9))
+    # TOTAL order, not severity-only: Python's sort is stable, so a severity-only key
+    # leaves within-severity order = accumulation order, which DIFFERS across a durable
+    # run's resume (a re-crawled batch reorders) → different rendered bytes → a churning
+    # manifest hash. Break ties by (check_id, observation) so identical findings always
+    # render byte-identically regardless of the order they were gathered in.
+    return sorted(
+        findings,
+        key=lambda f: (
+            _SEVERITY_ORDER.get(f.severity, 9),
+            f.check_id or "",
+            f.observation or "",
+        ),
+    )
 
 
 def build_envelope(
-    report_dict: dict, *, stream_id: str, delegation_id: str
+    report_dict: dict,
+    *,
+    stream_id: str,
+    delegation_id: str,
+    generated_at: str | None = None,
 ) -> ReportEnvelope:
-    """Wrap the agent's SEOReport dict in the server-authoritative envelope."""
+    """Wrap the agent's SEOReport dict in the server-authoritative envelope.
+
+    `generated_at` is normally the wall clock, but a DURABLE run passes a fixed value
+    (its run createdAt) so a resume re-emit renders byte-identical bytes — otherwise a
+    fresh timestamp changes the JSON/MD/PDF, the dedup keeps the first blob, and the
+    manifest records a hash that no longer matches it."""
     target = str(report_dict.get("target") or "")
     coverage = [str(c) for c in (report_dict.get("coverage") or [])]
     findings, had_invalid = _coerce_findings(report_dict.get("checks_performed"))
     _flag_missing_evidence(findings)
+    # Store findings in a TOTAL, deterministic order (severity, check_id, observation)
+    # so render_json/markdown/pdf are byte-identical across a durable run's resume — a
+    # re-crawled batch must not reorder the report and churn the manifest hash.
+    findings = _sev_sort(findings)
     summary = _summarize(findings)
 
     # completed unless a check that COULD run didn't (NOT_TESTED). UNSUPPORTED is a
@@ -272,7 +297,7 @@ def build_envelope(
             type="site" if "crawl.run" in coverage else "page", target=target
         ),
         status=status,
-        generated_at=_now_iso(),
+        generated_at=generated_at or _now_iso(),
         methodology=Methodology(name=METHODOLOGY_NAME, version=METHODOLOGY_VERSION),
         provider_provenance=_provenance(coverage),
         coverage=coverage,
@@ -290,14 +315,18 @@ def build_envelope(
 
 
 def failed_envelope(
-    stream_id: str, delegation_id: str, reason: str, target: str = ""
+    stream_id: str,
+    delegation_id: str,
+    reason: str,
+    target: str = "",
+    generated_at: str | None = None,
 ) -> ReportEnvelope:
     return ReportEnvelope(
         report_id=report_id_for(stream_id, delegation_id, target),
         source_run_id=stream_id,
         target=target,
         status=ReportStatus.FAILED,
-        generated_at=_now_iso(),
+        generated_at=generated_at or _now_iso(),
         methodology=Methodology(name=METHODOLOGY_NAME, version=METHODOLOGY_VERSION),
         confidence=ConfidenceLevel.LOW,
         failure_reason=(reason or "the audit did not complete")[:500],
@@ -515,10 +544,19 @@ def build_seo_report_emitter(writer, settings) -> ReportEmitter:
             return
         stream_id = str(run_meta.get("stream_id") or "")
         deleg = str(run_meta.get("delegation_id") or "")
+        # A durable run passes a fixed generated_at so re-emit on resume is idempotent.
+        gen_at = run_meta.get("generated_at") or None
         if isinstance(report_dict, dict):
-            env = build_envelope(report_dict, stream_id=stream_id, delegation_id=deleg)
+            env = build_envelope(
+                report_dict,
+                stream_id=stream_id,
+                delegation_id=deleg,
+                generated_at=gen_at,
+            )
         else:
-            env = failed_envelope(stream_id, deleg, failure_reason)
+            env = failed_envelope(
+                stream_id, deleg, failure_reason, generated_at=gen_at
+            )
 
         refs: list[ReportArtifactRef] = []
         # JSON is ALWAYS produced — so the ARTIFACT event has a real, non-empty

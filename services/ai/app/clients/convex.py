@@ -198,6 +198,171 @@ class ConvexClient:
         except ValueError:
             return {}
 
+    # ── Phase 5: durable SEO runs (runId + leaseToken scoped) ──────────────────
+    # All go through the retrying ingress(); the mutations always answer 200 with a
+    # {stale}/{cancel}/{ok} envelope (a stale lease or a terminal run → {stale:true},
+    # never a 404), so a transient Convex blip is retried, not treated as gone.
+
+    async def seo_run_enqueue(
+        self,
+        *,
+        stream_id: str,
+        target: str,
+        scope: str,
+        input_hash: str,
+        max_urls: int | None = None,
+    ) -> dict:
+        body: dict = {
+            "op": "seo-run-enqueue",
+            "streamId": stream_id,
+            "target": target,
+            "scope": scope,
+            "inputHash": input_hash,
+        }
+        if max_urls is not None:
+            body["maxUrls"] = max_urls
+        return await self.ingress(body)
+
+    async def seo_run_progress(
+        self,
+        *,
+        run_id: str,
+        lease_token: str,
+        step_key: str,
+        input_hash: str,
+        processed_count: int,
+        cost: float,
+        findings_counts: dict | None = None,
+        artifact_keys: list[str] | None = None,
+        checkpoint: str | None = None,
+        summary: str | None = None,
+    ) -> dict:
+        body: dict = {
+            "op": "seo-run-progress",
+            "runId": run_id,
+            "leaseToken": lease_token,
+            "stepKey": step_key,
+            "inputHash": input_hash,
+            "processedCount": processed_count,
+            "cost": cost,
+        }
+        if findings_counts is not None:
+            body["findingsCounts"] = findings_counts
+        if artifact_keys is not None:
+            body["artifactKeys"] = artifact_keys
+        if checkpoint is not None:
+            body["checkpoint"] = checkpoint
+        if summary is not None:
+            body["summary"] = summary
+        return await self.ingress(body)
+
+    async def seo_run_heartbeat(self, *, run_id: str, lease_token: str) -> dict:
+        return await self.ingress(
+            {"op": "seo-run-heartbeat", "runId": run_id, "leaseToken": lease_token}
+        )
+
+    async def seo_run_park(
+        self,
+        *,
+        run_id: str,
+        lease_token: str,
+        checkpoint: str | None = None,
+        summary: str | None = None,
+    ) -> dict:
+        body: dict = {"op": "seo-run-park", "runId": run_id, "leaseToken": lease_token}
+        if checkpoint is not None:
+            body["checkpoint"] = checkpoint
+        if summary is not None:
+            body["summary"] = summary
+        return await self.ingress(body)
+
+    async def seo_run_finalize(
+        self,
+        *,
+        run_id: str,
+        lease_token: str,
+        status: str,
+        report_id: str | None = None,
+        error_code: str | None = None,
+        summary: str | None = None,
+    ) -> dict:
+        body: dict = {
+            "op": "seo-run-finalize",
+            "runId": run_id,
+            "leaseToken": lease_token,
+            "status": status,
+        }
+        if report_id is not None:
+            body["reportId"] = report_id
+        if error_code is not None:
+            body["errorCode"] = error_code
+        if summary is not None:
+            body["summary"] = summary
+        return await self.ingress(body)
+
+    async def seo_run_report(
+        self, *, run_id: str, lease_token: str, report: dict
+    ) -> dict:
+        return await self.ingress(
+            {
+                "op": "seo-run-report",
+                "runId": run_id,
+                "leaseToken": lease_token,
+                "report": report,
+            }
+        )
+
+    async def store_seo_artifact(
+        self,
+        blob: bytes,
+        *,
+        run_id: str,
+        lease_token: str,
+        step_key: str,
+        artifact_key: str,
+        filename: str,
+        fmt: str,
+        mime: str,
+        row_count: int,
+        sha256: str | None = None,
+    ) -> dict:
+        """Store a run's compressed crawl artifact (POST /ai/seo-artifact).
+
+        Run-owned (runId + leaseToken headers): Convex derives the owner from the
+        seoRuns row and validates the lease, so it does not depend on the enqueuing
+        stream. The server always recomputes the SHA-256 and returns the authoritative
+        stored `contentHash` (on a dedup hit that is the EXISTING blob's hash). Raises
+        on failure so the worker records the batch honestly."""
+        headers = {
+            "content-type": mime,
+            "x-ai-key": self._s.ai_ingress_secret,
+            "x-run-id": run_id,
+            "x-lease-token": lease_token,
+            "x-artifact-key": artifact_key,
+            "x-artifact-step": step_key,
+            "x-artifact-format": fmt,
+            "x-artifact-filename": filename,
+            "x-artifact-rowcount": str(row_count),
+        }
+        if sha256:
+            headers["x-artifact-sha256"] = sha256
+        r = await self._c.post(
+            self._s.seo_artifact_url,
+            content=blob,
+            headers=headers,
+            timeout=httpx.Timeout(connect=2.0, read=30.0, write=30.0, pool=2.0),
+        )
+        if r.status_code == 422:
+            raise ConvexRejected("seo artifact checksum mismatch")
+        if r.status_code == 404:
+            raise ConvexRejected("seo run not available")
+        if r.status_code >= 400:
+            raise ConvexUnavailable(f"seo artifact store failed: {r.status_code}")
+        try:
+            return r.json()
+        except ValueError:
+            return {}
+
     async def set_file_status(
         self,
         ingest_id: str,

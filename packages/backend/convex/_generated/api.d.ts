@@ -54,6 +54,7 @@ import type * as notifications from "../notifications.js";
 import type * as orgs from "../orgs.js";
 import type * as passwordProviders from "../passwordProviders.js";
 import type * as seed from "../seed.js";
+import type * as seoRuns from "../seoRuns.js";
 import type * as subscriptions from "../subscriptions.js";
 import type * as usage from "../usage.js";
 import type * as users from "../users.js";
@@ -121,6 +122,7 @@ declare const fullApi: ApiFromModules<{
   orgs: typeof orgs;
   passwordProviders: typeof passwordProviders;
   seed: typeof seed;
+  seoRuns: typeof seoRuns;
   subscriptions: typeof subscriptions;
   usage: typeof usage;
   users: typeof users;
