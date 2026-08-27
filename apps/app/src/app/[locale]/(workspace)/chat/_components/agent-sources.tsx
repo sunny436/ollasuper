@@ -13,6 +13,7 @@ import {
 } from "../_lib/agent-events";
 import { safeUrl } from "../_lib/url-guard";
 import { Badge, Disclosure } from "./agent-primitives";
+import { SeoReportCard } from "./seo-report-card";
 
 /** Browser-reachable Convex SITE origin (where the /artifact/file proxy lives) —
  *  mirrors the share page: NEXT_PUBLIC_CONVEX_URL is the /__cvx path form. */
@@ -49,9 +50,15 @@ export function AgentSources({ events }: { events?: TypedEvent[] }) {
       {citations.length > 0 && <SourceList citations={citations} />}
       {artifacts.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          {artifacts.map((a) => (
-            <ArtifactCard key={a.artifactId} artifact={a} />
-          ))}
+          {artifacts.map((a) =>
+            a.artifactType === "seo_report" ? (
+              // A rich, evidence-grounded report card (queries the persisted report);
+              // intercepts BEFORE the generic download card, which assumes a plain file.
+              <SeoReportCard key={a.artifactId} artifact={a} />
+            ) : (
+              <ArtifactCard key={a.artifactId} artifact={a} />
+            ),
+          )}
         </div>
       )}
     </div>

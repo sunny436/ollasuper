@@ -146,7 +146,15 @@ class ConvexClient:
         return r.content, r.headers.get("content-type", "application/octet-stream")
 
     async def store_artifact(
-        self, blob: bytes, *, stream_id: str, filename: str, fmt: str, mime: str
+        self,
+        blob: bytes,
+        *,
+        stream_id: str,
+        filename: str,
+        fmt: str,
+        mime: str,
+        sha256: str | None = None,
+        artifact_key: str | None = None,
     ) -> dict:
         """Store a GENERATED file blob and register it (File Generation System).
 
@@ -155,20 +163,32 @@ class ConvexClient:
         exactly like /ai/file: Convex derives the owning user/thread/message from the
         stream and never trusts a client-sent owner. Returns `{artifactId, size}`;
         the download URL is minted later, owner-checked, so no bearer token is issued
-        here. Raises on failure so the tool reports honestly, never a fake file."""
+        here. Raises on failure so the tool reports honestly, never a fake file.
+
+        Phase 3 (additive): `x-artifact-sha256` declares the content hash for
+        server-side integrity verification (mismatch → 400); `x-artifact-key` makes
+        the store idempotent (a re-store with the same stream+key returns the existing
+        artifactId). Both omitted for filegen ⇒ byte-identical."""
+        headers = {
+            "content-type": mime,
+            "x-ai-key": self._s.ai_ingress_secret,
+            "x-stream-id": stream_id,
+            "x-artifact-format": fmt,
+            # RFC 5987 not needed: filename is server-slugified to ASCII already.
+            "x-artifact-filename": filename,
+        }
+        if sha256:
+            headers["x-artifact-sha256"] = sha256
+        if artifact_key:
+            headers["x-artifact-key"] = artifact_key
         r = await self._c.post(
             self._s.artifact_url,
             content=blob,
-            headers={
-                "content-type": mime,
-                "x-ai-key": self._s.ai_ingress_secret,
-                "x-stream-id": stream_id,
-                "x-artifact-format": fmt,
-                # RFC 5987 not needed: filename is server-slugified to ASCII already.
-                "x-artifact-filename": filename,
-            },
+            headers=headers,
             timeout=httpx.Timeout(connect=2.0, read=30.0, write=30.0, pool=2.0),
         )
+        if r.status_code == 422:
+            raise ConvexRejected("artifact checksum mismatch")
         if r.status_code == 404:
             raise ConvexRejected("artifact stream not available")
         if r.status_code >= 400:

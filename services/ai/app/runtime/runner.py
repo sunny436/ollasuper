@@ -60,6 +60,7 @@ from app.orchestrator.prepare import ProviderReadiness
 from app.runtime.env_factory import build_live_agent_env
 from app.runtime.roster import build_delegate_spec, build_live_runtime
 from app.runtime.writer import DeltaWriter
+from app.seo.report import build_seo_report_emitter
 from app.skills.registry import render_skills_block
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
@@ -634,6 +635,11 @@ async def run_generation(
                                 candidates=candidates,
                                 bind=llm_for_tools.bind_tools,
                                 capabilities=resolver,
+                                report_emitter=(
+                                    build_seo_report_emitter(writer, settings)
+                                    if settings.ai_seo_enabled
+                                    else None
+                                ),
                             )
                         )
 
@@ -796,6 +802,11 @@ async def run_generation(
                     approvals=dict(tools_ctx.approvals),
                     resume_seen=dict(tools_ctx.seen_calls),
                     resume_seen_set=frozenset(tools_ctx.seen_call_set),
+                    report_emitter=(
+                        build_seo_report_emitter(writer, settings)
+                        if settings.ai_seo_enabled
+                        else None
+                    ),
                 )
             )
 

@@ -251,6 +251,60 @@ http.route({
           return aiJson({ error: "unknown stream" }, 404);
         return aiJson(r);
       }
+      case "report": {
+        // Phase 3: persist a structured SEO report (streamId-scoped; owner derived
+        // server-side in upsertReport). The envelope rides `body.report` as an object;
+        // we extract the typed row fields at the edge (no v.any() reaches the mutation)
+        // and stringify the full envelope for the card's `report` field.
+        const rep = body.report;
+        if (!streamId || typeof rep !== "object" || rep === null) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        const r = rep as Record<string, unknown>;
+        const num = (x: unknown) => (typeof x === "number" ? x : 0);
+        const reportId = String(r.report_id ?? "");
+        if (!reportId) return aiJson({ error: "bad request" }, 400);
+        const meth = (r.methodology as Record<string, unknown>) ?? {};
+        const sum = (r.summary as Record<string, unknown>) ?? {};
+        const scope = (r.scope as Record<string, unknown>) ?? {};
+        const rawArtifacts =
+          ((r.manifest as Record<string, unknown>)?.artifacts as unknown[]) ?? [];
+        const manifest = rawArtifacts
+          .filter(
+            (m): m is Record<string, unknown> =>
+              typeof m === "object" && m !== null,
+          )
+          .map((m) => ({
+            artifactId: String(m.artifact_id ?? ""),
+            format: String(m.format ?? ""),
+            mime: String(m.mime ?? ""),
+            size: num(m.size),
+            sha256: String(m.sha256 ?? ""),
+          }))
+          .filter((m) => m.artifactId);
+        const res = await ctx.runMutation(internal.chat.reports.upsertReport, {
+          streamId,
+          reportId,
+          status: String(r.status ?? "completed"),
+          target: String(r.target ?? ""),
+          scope: String(scope.type ?? "page"),
+          methodologyName: String(meth.name ?? ""),
+          methodologyVersion: String(meth.version ?? ""),
+          generatedAt: String(r.generated_at ?? ""),
+          summary: {
+            totalFindings: num(sum.total_findings),
+            passed: num(sum.passed),
+            failed: num(sum.failed),
+            warnings: num(sum.warnings),
+            notTested: num(sum.not_tested),
+          },
+          report: JSON.stringify(rep),
+          manifest,
+        });
+        if ("unknown" in res && res.unknown)
+          return aiJson({ error: "unknown stream" }, 404);
+        return aiJson(res);
+      }
       case "execution": {
         // Phase 3: durable per-execution record (crash-recovery authority). Coerce
         // + validate the state literal at the edge (mirrors the "event" filter) so
@@ -569,6 +623,22 @@ http.route({
     if (blob.size === 0 || blob.size > MAX_ARTIFACT_BYTES) {
       return aiJson({ error: "bad size" }, 400);
     }
+    // Phase 3 (optional, additive): integrity verification. If the worker declared a
+    // SHA-256, recompute it over the received bytes and REJECT a mismatch BEFORE
+    // storing (a corrupted/tampered upload never becomes an artifact). Filegen sends
+    // no header ⇒ this block is skipped ⇒ byte-identical.
+    const declaredHash = req.headers.get("x-artifact-sha256");
+    let contentHash: string | undefined;
+    if (declaredHash) {
+      const buf = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+      contentHash = Array.from(new Uint8Array(buf), (b) =>
+        b.toString(16).padStart(2, "0"),
+      ).join("");
+      if (contentHash !== declaredHash.toLowerCase()) {
+        return aiJson({ error: "checksum mismatch" }, 422);
+      }
+    }
+    const artifactKey = req.headers.get("x-artifact-key") ?? undefined;
     const storageId = await ctx.storage.store(blob);
     const res = await ctx.runMutation(internal.chat.artifacts.registerArtifact, {
       streamId,
@@ -577,6 +647,8 @@ http.route({
       format,
       mime,
       size: blob.size,
+      ...(contentHash ? { contentHash } : {}),
+      ...(artifactKey ? { artifactKey } : {}),
     });
     if (!res.ok || !res.artifactId) {
       await ctx.storage.delete(storageId).catch(() => {});

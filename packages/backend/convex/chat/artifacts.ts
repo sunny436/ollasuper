@@ -42,10 +42,29 @@ export const registerArtifact = internalMutation({
     format: v.string(),
     mime: v.string(),
     size: v.number(),
+    // Phase 3 (additive): integrity hash + idempotency key. Both optional so filegen
+    // is byte-identical.
+    contentHash: v.optional(v.string()),
+    artifactKey: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
     const stream = await loadStream(ctx, a.streamId);
     if (!stream) return { ok: false as const, artifactId: null };
+    // Idempotent re-store: if this (stream, key) was already registered (e.g. the
+    // turn crash-resumed and re-ran the report emission), delete the just-stored
+    // duplicate blob and return the EXISTING artifact — at-most-once, no orphan.
+    if (a.artifactKey) {
+      const existing = await ctx.db
+        .query("chatArtifacts")
+        .withIndex("by_stream_key", (q) =>
+          q.eq("streamId", a.streamId).eq("artifactKey", a.artifactKey),
+        )
+        .first();
+      if (existing) {
+        await ctx.storage.delete(a.storageId).catch(() => {});
+        return { ok: true as const, artifactId: existing._id };
+      }
+    }
     const artifactId = await ctx.db.insert("chatArtifacts", {
       streamId: a.streamId,
       messageId: stream.messageId,
@@ -58,6 +77,8 @@ export const registerArtifact = internalMutation({
       mime: a.mime,
       size: a.size,
       createdAt: Date.now(),
+      ...(a.contentHash ? { contentHash: a.contentHash } : {}),
+      ...(a.artifactKey ? { artifactKey: a.artifactKey } : {}),
     });
     return { ok: true as const, artifactId };
   },
