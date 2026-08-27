@@ -38,14 +38,6 @@ ALLOWED_TOOL_IDS: frozenset[str] = frozenset(
         "search_endpoint_v1_search_post",
         "text_similarity_endpoint_v1_text_similarity_post",
         "text_diff_endpoint_v1_text_diff_post",
-        # Phase 4 — first-party connector tools (distinct providers, read-only).
-        "gsc.search_analytics",
-        "gsc.url_inspection",
-        "gsc.sitemaps",
-        "gsc.sites",
-        "ga4.report",
-        "psi.field",
-        "psi.lab",
     }
 )
 
@@ -236,83 +228,6 @@ SEO_CAPABILITIES: tuple[SEOCapability, ...] = (
         outputs="SERP results",
         evidence_value="visibility/competitor context (NOT the site's own ranking)",
         limitations="not GSC ranking data for the audited site",
-    ),
-    # --- Phase 4: FIRST-PARTY connector capabilities (distinct providers) -----
-    # These require a connected Google account (GSC/GA4) or the server PSI key. When
-    # not connected the adapter returns an explicit NOT_CONNECTED gap → UNSUPPORTED.
-    SEOCapability(
-        "gsc.search_analytics",
-        "First-party Google Search performance (clicks/impressions/CTR/position) by "
-        "query/page/country/device — the site's OWN ranking data from Search Console.",
-        ("gsc.search_analytics",),
-        "google search console search analytics clicks impressions position ranking",
-        provider="gsc",
-        permissions=("google:read",),
-        evidence_value="the site's real Google Search clicks/impressions/positions",
-        limitations="anonymized queries omitted; last ~3 days provisional",
-    ),
-    SEOCapability(
-        "gsc.url_inspection",
-        "First-party index status for a specific URL (coverage/indexing state, "
-        "Google-chosen canonical, last crawl) from Search Console URL Inspection.",
-        ("gsc.url_inspection",),
-        "google search console url inspection index status coverage canonical crawl",
-        provider="gsc",
-        permissions=("google:read",),
-        evidence_value="whether Google has actually indexed a URL (authoritative)",
-        limitations="indexed snapshot only (no live test); daily quota per site",
-    ),
-    SEOCapability(
-        "gsc.sitemaps",
-        "Sitemaps submitted to Search Console and their processing status.",
-        ("gsc.sitemaps",),
-        "google search console submitted sitemaps status errors",
-        provider="gsc",
-        permissions=("google:read",),
-        evidence_value="which sitemaps Google received + processed",
-    ),
-    SEOCapability(
-        "gsc.sites",
-        "The verified Search Console properties the connected user can access.",
-        ("gsc.sites",),
-        "google search console verified sites properties access",
-        provider="gsc",
-        permissions=("google:read",),
-        evidence_value="the connected user's available GSC properties",
-    ),
-    SEOCapability(
-        "ga4.report",
-        "First-party GA4 analytics (sessions/users/conversions/revenue by dimension) "
-        "with sampling/thresholding/quota metadata.",
-        ("ga4.report",),
-        "google analytics ga4 sessions users conversions traffic report",
-        provider="ga4",
-        permissions=("google:read",),
-        evidence_value="the site's real analytics (sessions/conversions) from GA4",
-        limitations="sampling/thresholding/other-row loss; approximate unique counts",
-    ),
-    SEOCapability(
-        "psi.field",
-        "Real-user Core Web Vitals (LCP/INP/CLS at the 75th percentile) from the "
-        "Chrome UX Report FIELD data via PageSpeed Insights.",
-        ("psi.field",),
-        "core web vitals crux field data lcp inp cls pagespeed real user",
-        provider="psi",
-        permissions=("psi:read",),
-        freshness="28-day trailing (CrUX)",
-        evidence_value="real-user field Core Web Vitals (the ranking-relevant signal)",
-        limitations="absent for low-traffic URLs → fall back to lab (labeled)",
-    ),
-    SEOCapability(
-        "psi.lab",
-        "Synthetic Lighthouse LAB performance metrics from PageSpeed Insights.",
-        ("psi.lab",),
-        "lighthouse lab performance synthetic pagespeed audit",
-        provider="psi",
-        permissions=("psi:read",),
-        freshness="synthetic (single run)",
-        evidence_value="a diagnostic lab view (NOT a substitute for field CWV)",
-        limitations="lab data — never present as field Core Web Vitals",
     ),
 )
 

@@ -57,10 +57,6 @@ from app.models.execution import hash_args
 from app.models.tools import SideEffect, ToolFilters
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.prepare import ProviderReadiness
-from app.runtime.connectors import (
-    build_connector_adapters,
-    register_connector_providers,
-)
 from app.runtime.env_factory import build_live_agent_env
 from app.runtime.roster import build_delegate_spec, build_live_runtime
 from app.runtime.writer import DeltaWriter
@@ -533,15 +529,8 @@ async def run_generation(
                         name_to_id, adapter = {}, None
                     except Exception:  # noqa: BLE001
                         llm_tools = None
-            # Phase 4: register the first-party providers (idempotent, additive) +
-            # build the PER-REQUEST adapters with the turn's stream_id (for the
-            # streamId-scoped connector-token fetch). Empty ⇒ byte-identical when off.
+            # Per-request adapters keyed by tool.provider for the executor dispatch map.
             connector_adapters: dict = {}
-            if settings.ai_connectors_enabled and tool_registry is not None:
-                register_connector_providers(tool_registry)
-                connector_adapters = build_connector_adapters(
-                    settings, ollagraph_http, req.streamId
-                )
             # Phase 7: register the SEO write provider + its adapter (keyed by provider
             # "seo_write" for the executor dispatch map). The real site-write is an
             # injected seam — StubSeoWriteProvider until a GSC/CMS provider is dropped

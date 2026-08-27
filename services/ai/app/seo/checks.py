@@ -292,47 +292,13 @@ SEO_CHECKS: tuple[SEOCheck, ...] = (
         "Google Search Central: spam-policies",
         Severity.MEDIUM,
     ),
-    # ---- FIRST-PARTY checks (Phase 4) — SUPPORTED only when Google is connected ---
-    SEOCheck(
-        "firstparty.index_status",
-        "crawl_index", "gsc.url_inspection",
-        "A URL's ACTUAL Google index status (coverageState / indexingState / chosen "
-        "canonical / last crawl) from Search Console URL Inspection.",
-        "gsc.url_inspection on the URL; canonical mismatch = googleCanonical != "
-        "userCanonical (indexed snapshot only, no live test).",
-        "Google Search Central: URL Inspection API",
-        Severity.HIGH,
-        applicability="requires a connected GSC property; else UNSUPPORTED",
-    ),
-    SEOCheck(
-        "firstparty.cwv_field",
-        "technical", "psi.field",
-        "Real-user Core Web Vitals (LCP<=2.5s, INP<200ms, CLS<0.1 at the CrUX 75th "
-        "percentile). Page experience is a tiebreaker, not a primary factor.",
-        "psi.field (CrUX); if absent for the URL, fall back to psi.lab labeled LAB.",
-        "web.dev/vitals; PageSpeed Insights (CrUX field)",
-        Severity.MEDIUM,
-        applicability="requires PSI/CrUX coverage; else UNSUPPORTED",
-    ),
-    SEOCheck(
-        "firstparty.traffic_diagnosis",
-        "crawl_index", "gsc.search_analytics",
-        "Traffic-drop diagnosis from the site's OWN Search clicks/impressions/position "
-        "(GSC) + sessions/conversions (GA4) — provenance-separated, not row-joined.",
-        "gsc.search_analytics + ga4.report over a 16-month/YoY baseline; distinguish a "
-        "small position slip (2->4) from a real drop (4->29).",
-        "Google Search Central: Search Analytics; GA4 Data API",
-        Severity.HIGH,
-        applicability="requires connected GSC + GA4; else UNSUPPORTED",
-    ),
-    # ---- KNOWN GAPS -> status UNSUPPORTED when the connector isn't connected ----
+    # ---- KNOWN GAPS -> reported as UNSUPPORTED (no first-party data source) ----
     SEOCheck(
         "gap.index_coverage",
         "crawl_index", "",
-        "Actual indexation/index-coverage status needs a CONNECTED Google Search "
-        "Console (see firstparty.index_status / gsc.url_inspection); UNSUPPORTED when "
-        "the user hasn't connected Google.",
-        "Connect Google in Settings -> Connections, then gsc.url_inspection.",
+        "Actual indexation/index-coverage status needs first-party Google Search "
+        "Console data, which this audit does not have — UNSUPPORTED.",
+        "Not verifiable without first-party Search Console access.",
         "Google Search Central: URL Inspection API",
         Severity.INFO,
         applicability="reported as UNSUPPORTED",
@@ -341,9 +307,9 @@ SEO_CHECKS: tuple[SEOCheck, ...] = (
     SEOCheck(
         "gap.core_web_vitals",
         "technical", "",
-        "Core Web Vitals FIELD data needs CrUX/PageSpeed (see firstparty.cwv_field / "
-        "psi.field); UNSUPPORTED when PSI/CrUX is unavailable.",
-        "Use psi.field (server key); page experience is a tiebreaker.",
+        "Core Web Vitals FIELD data needs CrUX / PageSpeed field data, which this "
+        "audit does not have — UNSUPPORTED.",
+        "Not verifiable without CrUX/PSI field data.",
         "web.dev/vitals; PageSpeed Insights",
         Severity.INFO,
         applicability="reported as UNSUPPORTED",
@@ -352,10 +318,10 @@ SEO_CHECKS: tuple[SEOCheck, ...] = (
     SEOCheck(
         "gap.ranking_traffic",
         "crawl_index", "",
-        "Actual rankings/organic traffic need a CONNECTED Search Console + Analytics "
-        "(see firstparty.traffic_diagnosis); manual actions & security issues remain "
-        "unavailable. UNSUPPORTED when not connected.",
-        "Connect Google, then gsc.search_analytics + ga4.report.",
+        "Actual rankings/organic traffic need first-party Search Console + Analytics "
+        "data, which this audit does not have; manual actions & security issues remain "
+        "unavailable — UNSUPPORTED.",
+        "Not verifiable without first-party Search Console + Analytics access.",
         "Google Search Central: Search Console",
         Severity.INFO,
         applicability="reported as UNSUPPORTED",
