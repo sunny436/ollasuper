@@ -62,9 +62,27 @@ async def _unwired_crawler(urls: list[str], step: SeoRunStep) -> BatchResult:
     return BatchResult()
 
 
-def build_crawl_backend(app_state: object) -> tuple[Discoverer, Crawler]:
-    """Build the (discoverer, crawler) for a dispatch. A wired Ollagraph backend
-    replaces these post-phase-7; the default is the honest unwired seam above."""
+def build_crawl_backend(app_state: object, user_id: str) -> tuple[Discoverer, Crawler]:
+    """Build the (discoverer, crawler) for a dispatch. When Ollagraph is enabled the
+    REAL sitemap+meta-audit backend runs (deterministic, no LLM); otherwise the honest
+    unwired seam above (empty frontier -> empty report) keeps durability testable."""
+    settings = getattr(app_state, "settings", None)
+    registry = getattr(app_state, "tool_registry", None)
+    http = getattr(app_state, "ollagraph_http", None)
+    if (
+        settings is not None
+        and registry is not None
+        and http is not None
+        and getattr(settings, "ollagraph_enabled", False)
+    ):
+        # Imported lazily so the unwired path (and its tests) need no Ollagraph client.
+        from app.clients.ollagraph import OllagraphAdapter
+        from app.seo.crawl_backend import build_ollagraph_crawl_backend
+
+        adapter = OllagraphAdapter(settings, http)
+        return build_ollagraph_crawl_backend(
+            adapter, registry, settings, user_id=user_id
+        )
     return _unwired_discoverer, _unwired_crawler
 
 
@@ -89,7 +107,7 @@ async def seo_run_step(body: SeoRunStepBody, request: Request) -> dict:
         ) from e
 
     step = SeoRunStep(**body.model_dump())
-    discoverer, crawler = build_crawl_backend(app)
+    discoverer, crawler = build_crawl_backend(app, body.userId)
 
     async def _run() -> None:
         try:
