@@ -534,10 +534,12 @@ export default defineSchema({
   // report to its run/message WITHOUT patching the finalized assistant content.
   // Additive table (no pre-migration rows), so required fields are safe.
   seoReports: defineTable({
-    sourceRunId: v.string(), // = streamId (the run identity)
+    sourceRunId: v.string(), // = streamId or (Phase 6) a runId (the run identity)
     reportId: v.string(), // app-minted, deterministic (resume-idempotent)
-    inReplyToMessageId: v.id("chatMessages"),
-    threadId: v.id("chatThreads"),
+    // Chat-run reports link back to their message/thread; a Phase-6 PROJECT run has
+    // neither (owned by a seoProject), so both are optional.
+    inReplyToMessageId: v.optional(v.id("chatMessages")),
+    threadId: v.optional(v.id("chatThreads")),
     workspaceId: v.id("workspaces"),
     userId: v.id("users"),
     status: v.string(), // completed | partial | failed
@@ -580,11 +582,21 @@ export default defineSchema({
   // re-dispatch. Additive table (no pre-migration rows), so required fields are safe.
   seoRuns: defineTable({
     runId: v.string(),
-    streamId: v.string(), // the enqueuing turn's stream (surfacing + enqueue-time owner)
+    // Chat-run only (Phase 5): the enqueuing turn's stream + message (surfacing +
+    // enqueue-time owner). A SCHEDULED/MANUAL monitoring run (Phase 6) has none — it is
+    // owned by its seoProject. All writeback is run-owned (runId+leaseToken), so these
+    // are surfacing-only; optional so a project run needs no chat turn.
+    streamId: v.optional(v.string()),
+    threadId: v.optional(v.id("chatThreads")),
+    inReplyToMessageId: v.optional(v.id("chatMessages")),
+    // Phase 6: the monitored project this run belongs to (absent for a chat audit) and
+    // where it came from. `origin` absent ⇒ "chat" (back-compat with Phase-5 rows).
+    projectId: v.optional(v.id("seoProjects")),
+    origin: v.optional(
+      v.union(v.literal("chat"), v.literal("schedule"), v.literal("manual")),
+    ),
     userId: v.id("users"),
     workspaceId: v.id("workspaces"),
-    threadId: v.id("chatThreads"),
-    inReplyToMessageId: v.id("chatMessages"),
     target: v.string(),
     scope: v.string(),
     maxUrls: v.number(),
@@ -628,7 +640,8 @@ export default defineSchema({
     .index("by_status_heartbeat", ["status", "heartbeatAt"])
     .index("by_user_status", ["userId", "status"])
     .index("by_thread", ["threadId"])
-    .index("by_message", ["inReplyToMessageId"]),
+    .index("by_message", ["inReplyToMessageId"])
+    .index("by_project", ["projectId"]),
 
   // Phase 5 — the durable STEP LEDGER for one run. Stable identity
   // (runId, workflowVersion, stepKey, inputHash); idempotent UPSERT by (runId, stepKey)
@@ -695,6 +708,90 @@ export default defineSchema({
     .index("by_run_key", ["runId", "artifactKey"])
     .index("by_run", ["runId"])
     .index("by_downloadToken", ["downloadToken"]),
+
+  // Phase 6 — a MONITORED SITE. A seoRun (chat/manual) becomes the baseline; scheduled
+  // runs are diffed against it deterministically. USER-private (the chat trust model).
+  // Additive table (no pre-migration rows), so required fields are safe.
+  seoProjects: defineTable({
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    target: v.string(),
+    scope: v.string(),
+    maxUrls: v.number(),
+    status: v.union(v.literal("active"), v.literal("paused")),
+    // The baseline run + its report (the comparison anchor). Set from the seeding run.
+    baselineRunId: v.optional(v.string()),
+    baselineReportId: v.optional(v.string()),
+    methodologyVersion: v.optional(v.string()),
+    retentionDays: v.number(), // history older than this (beyond the baseline) is purged
+    lastRunId: v.optional(v.string()),
+    lastRunAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user_status", ["userId", "status"])
+    .index("by_user", ["userId"]),
+
+  // Phase 6 — a recurring cadence for a project. The due-scanner cron enqueues a
+  // monitoring run when `nextRunAt <= now`, then advances `nextRunAt` to the next FUTURE
+  // occurrence (a missed run catches up ONCE, never N times).
+  seoSchedules: defineTable({
+    userId: v.id("users"),
+    projectId: v.id("seoProjects"),
+    cadence: v.union(
+      v.literal("daily"),
+      v.literal("weekly"),
+      v.literal("custom"),
+    ),
+    timezone: v.string(), // IANA tz, e.g. "America/New_York"
+    minuteOfDay: v.number(), // local minutes past midnight (0..1439)
+    dayOfWeek: v.optional(v.number()), // 0=Sun..6=Sat (weekly)
+    intervalDays: v.optional(v.number()), // custom cadence (>=1)
+    status: v.union(v.literal("active"), v.literal("paused")),
+    nextRunAt: v.number(), // epoch ms; the scanner's due key
+    lastRunAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_status_nextRun", ["status", "nextRunAt"])
+    .index("by_project", ["projectId"])
+    .index("by_user", ["userId"]),
+
+  // Phase 6 — the first-party data a project monitors (which GSC site / GA4 property /
+  // PSI target). References the Phase-4 connectorAccounts; the run pulls these sources.
+  seoConnections: defineTable({
+    userId: v.id("users"),
+    projectId: v.id("seoProjects"),
+    provider: v.union(v.literal("gsc"), v.literal("ga4"), v.literal("psi")),
+    propertyId: v.string(),
+    connectorAccountId: v.optional(v.id("connectorAccounts")),
+    createdAt: v.number(),
+  })
+    .index("by_project", ["projectId"])
+    .index("by_user", ["userId"]),
+
+  // Phase 6 — the DETERMINISTIC diff of one monitoring run vs the project baseline. No
+  // LLM. `changes` is a bounded JSON array of {checkId,category,kind,severity,…}.
+  seoRunDiffs: defineTable({
+    runId: v.string(),
+    projectId: v.id("seoProjects"),
+    userId: v.id("users"),
+    baselineReportId: v.optional(v.string()),
+    currentReportId: v.string(),
+    counts: v.object({
+      newIssues: v.number(),
+      resolved: v.number(),
+      regressed: v.number(),
+      changed: v.number(),
+    }),
+    changes: v.string(), // bounded JSON [{checkId,category,kind,severity,before,after}]
+    meaningful: v.boolean(),
+    degraded: v.boolean(), // change rode provisional/sampled data ⇒ low-confidence
+    notified: v.boolean(),
+    createdAt: v.number(),
+  })
+    .index("by_run", ["runId"])
+    .index("by_project", ["projectId"]),
 
   chatSettings: defineTable({
     workspaceId: v.id("workspaces"),
