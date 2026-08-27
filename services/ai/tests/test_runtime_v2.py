@@ -130,6 +130,34 @@ async def test_schema_invalid_then_repaired_once():
     assert res.data == {"ok": False}
 
 
+class _RecordingLLM(ScriptedLLM):
+    """ScriptedLLM that also captures the messages of each ainvoke, so a test can
+    assert what correction the bounded-repair pass fed back to the model."""
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.seen: list[list] = []
+
+    async def ainvoke(self, messages, *a, **k):
+        self.seen.append(list(messages))
+        return await super().ainvoke(messages, *a, **k)
+
+
+async def test_repair_correction_names_the_allowed_keys():
+    # The bounded-repair correction must tell the model the EXACT permitted keys,
+    # not just that its own were rejected — otherwise a model with a strong prior
+    # for wrong field names cannot self-correct.
+    spec = AgentSpec(agent_id="s", output=OutputContract(schema=_SCHEMA))
+    llm = _RecordingLLM(
+        [AIMessage(content='{"nope": 1}'), AIMessage(content='{"ok": true}')]
+    )
+    res = await Agent.run(spec, "emit json", _agent_env(llm))
+    assert res.outcome == AgentOutcome.STRUCTURED_RESULT
+    # The 2nd (repair) invocation's last message is the correction.
+    correction = llm.seen[1][-1].content
+    assert "permitted top-level keys are: ok" in correction
+
+
 async def test_schema_invalid_fails_honestly_after_repair():
     spec = AgentSpec(agent_id="s", output=OutputContract(schema=_SCHEMA))
     env = _agent_env(

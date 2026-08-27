@@ -325,11 +325,25 @@ class Agent:
             and result.error is not None
             and result.error.get("code") == "schema_invalid"
         ):
+            # Name the EXACT allowed top-level keys in the correction. The bare error
+            # ("additional properties are not allowed ('findings', …)") says what is
+            # wrong but not what is right, so a model with a strong prior for its own
+            # field names (e.g. `findings` instead of `checks_performed`) cannot
+            # self-correct from it. Listing the schema's keys makes the one repair
+            # attempt actually land. General: any schema-carrying spec benefits.
+            props = spec.output.schema.get("properties")
+            allowed = ", ".join(props.keys()) if isinstance(props, dict) else ""
+            keys_hint = (
+                f" The ONLY permitted top-level keys are: {allowed} — use these exact "
+                "names (omit any you cannot fill) and include NO other keys."
+                if allowed
+                else ""
+            )
             correction = HumanMessage(
                 content=(
                     "Your previous reply did not satisfy the required JSON schema: "
-                    f"{result.error.get('detail', '')}. Return ONLY a JSON object "
-                    "matching the schema, with no prose or code fences."
+                    f"{result.error.get('detail', '')}.{keys_hint} Return ONLY a JSON "
+                    "object matching the schema, with no prose or code fences."
                 )
             )
             repair_init = {
