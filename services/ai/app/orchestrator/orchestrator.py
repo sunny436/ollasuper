@@ -424,8 +424,18 @@ class Orchestrator:
                         result.error.get("detail") or result.error.get("code") or ""
                     )
                 await emitter(kind, None, run_meta, reason)
-        except Exception:  # noqa: BLE001 — a report emission must never fail the turn
-            log.warning("report.emit_failed", extra={"agent_id": spec.agent_id})
+        except Exception as e:  # noqa: BLE001 — a report emission must never fail the turn
+            # Capture the normalized cause (class + bounded message) — a bare
+            # "emit_failed" with no detail is undiagnosable in prod. ConvexRejected/
+            # ToolError messages are already user-safe (no provider text/creds).
+            log.warning(
+                "report.emit_failed",
+                extra={
+                    "agent_id": spec.agent_id,
+                    "err": type(e).__name__,
+                    "detail": str(e)[:200],
+                },
+            )
 
     @staticmethod
     def _to_result(
