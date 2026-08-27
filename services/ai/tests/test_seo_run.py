@@ -24,6 +24,7 @@ from app.runtime.seo_run import (
     BatchResult,
     SeoRunStep,
     _gzip_jsonl,
+    _merge_findings,
     run_seo_step,
 )
 from app.runtime.writer import DeltaWriter
@@ -350,6 +351,51 @@ def test_generated_at_is_deterministic_when_supplied():
     )
     assert a == b  # byte-identical re-emit (no fresh timestamp)
     assert FIXED_AT.encode() in a
+
+
+def _f(check_id, obs, affected, status="PASS", sev="info"):
+    return {"check_id": check_id, "observation": obs, "severity": sev,
+            "status": status, "affected": affected}
+
+
+def test_merge_unions_affected_for_a_site_wide_finding():
+    # The SAME finding seen on many pages (identical check_id + observation, as a
+    # generic PASS like "Indexable") must ROLL UP its affected pages — not report
+    # only the last page, which under-counted a site-wide result to a single URL.
+    acc = _merge_findings(
+        [],
+        [
+            _f("crawl_index.noindex_mechanism", "Indexable (no noindex).", ["/a"]),
+            _f("crawl_index.noindex_mechanism", "Indexable (no noindex).", ["/b"]),
+            _f("crawl_index.noindex_mechanism", "Indexable (no noindex).", ["/c"]),
+        ],
+    )
+    assert len(acc) == 1
+    assert acc[0]["affected"] == ["/a", "/b", "/c"]  # every page, in crawl order
+
+
+def test_merge_keeps_distinct_observations_separate():
+    # Findings whose observation embeds a per-page value stay separate rows.
+    acc = _merge_findings(
+        [],
+        [
+            _f("crawl_index.canonical_consistency", "Canonical: /a.", ["/a"]),
+            _f("crawl_index.canonical_consistency", "Canonical: /b.", ["/b"]),
+        ],
+    )
+    assert len(acc) == 2
+
+
+def test_merge_resume_re_crawl_is_idempotent_not_duplicated():
+    # A resume that re-crawls an already-accumulated page must not duplicate its
+    # affected URL (the merge key + affected union are both stable).
+    first = _merge_findings(
+        [],
+        [_f("onpage.h1", "Single H1.", ["/a"]), _f("onpage.h1", "Single H1.", ["/b"])],
+    )
+    again = _merge_findings(first, [_f("onpage.h1", "Single H1.", ["/a"])])
+    assert len(again) == 1
+    assert again[0]["affected"] == ["/a", "/b"]  # /a not appended twice
 
 
 def test_findings_render_in_a_total_order_regardless_of_input_order():

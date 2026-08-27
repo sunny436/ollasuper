@@ -149,7 +149,11 @@ def _coerce_findings(raw: object) -> tuple[list[SEOFinding], bool]:
 
 def _category_of(finding: SEOFinding) -> str:
     chk = _CHECK_BY_ID.get(finding.check_id)
-    phase = chk.phase if chk else "technical"
+    # For a check not in the catalogue (e.g. a crawler-emitted site-level finding),
+    # derive the phase from the check_id's `phase.name` prefix rather than dumping
+    # everything under "technical" — so `crawl_index.*`/`onpage.*` land in their true
+    # category. Known checks keep their catalogue phase unchanged.
+    phase = chk.phase if chk else finding.check_id.split(".", 1)[0]
     return _PHASE_CATEGORY.get(phase, "Technical")
 
 
