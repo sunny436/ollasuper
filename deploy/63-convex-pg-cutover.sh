@@ -118,7 +118,11 @@ set_from_cloud() {
   [ "$got" = "$v" ] && printf '  ok    %s (%d chars, read back)\n' "$k" "${#v}" \
                     || printf '  MISMATCH %s\n' "$k"
 }
-for k in JWT_PRIVATE_KEY JWKS SITE_URL AUTH_GOOGLE_ID AUTH_GOOGLE_SECRET AI_SERVICE_KEY AI_INGRESS_SECRET; do
+# SITE_URL is DELIBERATELY not carried from Cloud: it is the browser-facing app origin,
+# and the Cloud dev deployment holds the stale internal IP (http://172.16.70.25:3000).
+# Carrying it clobbers the public https://app.ollasuper.com that 57-ollasuper-domain.sh
+# set, which breaks Google sign-in's post-consent redirect. Set the public value below.
+for k in JWT_PRIVATE_KEY JWKS AUTH_GOOGLE_ID AUTH_GOOGLE_SECRET AI_SERVICE_KEY AI_INGRESS_SECRET; do
   set_from_cloud "$k"
 done
 
@@ -130,6 +134,9 @@ set_local() {
     && printf '  ok    %s=%s\n' "$1" "$2" || printf '  FAIL  %s\n' "$1"
 }
 set_local AI_BASE_URL "http://$GW:8770"
+# The public browser-facing app origin (the OAuth post-login redirect target), NOT the
+# Cloud/internal value — see the carry-over note above.
+set_local SITE_URL    "https://app.ollasuper.com"
 set_local SMTP_HOST   "$GW"
 set_local SMTP_PORT   "1025"
 set_local SMTP_FROM   "auth@myos.local"
