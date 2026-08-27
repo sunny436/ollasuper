@@ -7,8 +7,11 @@ export default defineConfig({
     // resolution below), which is slow. Under the full parallel suite that one-time
     // cost is load-sensitive and can exceed vitest's default 5s per-test timeout even
     // though the test itself is fast (each such file also warms it in a beforeAll).
-    // A generous ceiling absorbs the warm-up without masking a real hang.
-    testTimeout: 20_000,
+    // A generous ceiling absorbs the warm-up without masking a real hang. Phase 6's
+    // cascade tests (deleteUserAccount → scheduled purge fan-out) are scheduled-function
+    // heavy and, under the full parallel suite's CPU contention, run ~10x slower than in
+    // isolation — 30s clears them while a genuine hang still fails.
+    testTimeout: 30_000,
     server: {
       deps: {
         // convex-test must be inlined so it shares the same module instances.
