@@ -90,12 +90,31 @@ def _finding_key(f: dict) -> str:
     return key[:400]
 
 
+def _merge_affected(dst: dict, src: dict) -> dict:
+    """`dst` (latest finding body) with `src`'s affected URLs folded in — so an
+    identical finding seen on many pages ROLLS UP its affected set instead of the
+    later page silently overwriting every earlier one (which under-reported a
+    site-wide PASS/WARN as touching a single page). Order-stable + deduped, so a
+    resume that re-crawls the same page is idempotent."""
+    merged = dict(dst)
+    seen = list(dst.get("affected") or [])
+    for u in src.get("affected") or []:
+        if u not in seen:
+            seen.append(u)
+    merged["affected"] = seen
+    return merged
+
+
 def _merge_findings(acc: list[dict], new: list[dict]) -> list[dict]:
     """Merge a batch's findings into the accumulated set, keyed by a stable id (so a
-    re-crawled batch replaces rather than duplicates), bounded by count + severity."""
-    by_key: dict[str, dict] = {_finding_key(f): f for f in acc}
-    for f in new:
-        by_key[_finding_key(f)] = f
+    re-crawled batch replaces rather than duplicates), bounded by count + severity.
+    On a key collision the affected sets are UNIONED (see `_merge_affected`) so a
+    check that holds across many pages keeps every affected URL, not just the last."""
+    by_key: dict[str, dict] = {}
+    for f in [*acc, *new]:
+        k = _finding_key(f)
+        prev = by_key.get(k)
+        by_key[k] = _merge_affected(prev, f) if prev is not None else f
     merged = list(by_key.values())
     if len(merged) > MAX_SUMMARY_FINDINGS:
         merged.sort(key=lambda f: _SEV_ORDER.get(str(f.get("severity", "info")), 9))

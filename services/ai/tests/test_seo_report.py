@@ -142,6 +142,27 @@ def test_summary_and_category_rollup():
     assert cats["On-Page SEO"].warned == 1
 
 
+def test_uncatalogued_check_ids_categorise_by_prefix_not_all_technical():
+    # Crawler-emitted site-level findings are not in the check catalogue; they must
+    # land in the category their `phase.name` prefix implies, not all under Technical.
+    rd = _report(
+        coverage=["crawl.run"],
+        checks_performed=[
+            {"check_id": "crawl_index.robots_txt", "status": "PASS",
+             "severity": "info", "observation": "robots present"},
+            {"check_id": "onpage.h1", "status": "PASS",
+             "severity": "info", "observation": "single h1"},
+            {"check_id": "technical.https_ssl", "status": "PASS",
+             "severity": "info", "observation": "valid tls"},
+        ],
+    )
+    env = build_envelope(rd, stream_id="s", delegation_id="d")
+    cats = {c.category: c for c in env.summary.categories}
+    assert cats["Crawl & Indexing"].passed == 1  # robots_txt, NOT Technical
+    assert cats["On-Page SEO"].passed == 1  # h1
+    assert cats["Technical"].passed == 1  # https_ssl
+
+
 def test_provenance_from_covered_capabilities():
     env = build_envelope(_report(), stream_id="s", delegation_id="d")
     assert env.provider_provenance
