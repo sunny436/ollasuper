@@ -153,6 +153,14 @@ class Settings(BaseSettings):
     # the SEO skill activates by tags and delegate_to_agent('seo', ...) becomes
     # available. Read-only end to end; no VM deploy until phase 7.
     ai_seo_enabled: bool = False
+    # Phase 4 (SEO connectors) — opt-in gate for the first-party GSC/GA4/PSI
+    # providers + capabilities. OFF => no gsc/ga4/psi tools are registered and
+    # AgentEnv.adapters stays empty (byte-identical). When on, the runner registers
+    # the providers and constructs the per-request adapters. GSC/GA4 need a connected
+    # Google account (fetched out-of-band, streamId-scoped); PSI/CrUX uses the server
+    # `pagespeed_api_key`. Read-only end to end; no VM deploy until phase 7.
+    ai_connectors_enabled: bool = False
+    pagespeed_api_key: str = ""
     # Core capabilities ALWAYS made available to the agent (independent of whether
     # the user's wording lexically matches them). Each string is a canonical intent;
     # the top discovery hit for it is unioned into the working set every agent turn.
@@ -409,6 +417,11 @@ class Settings(BaseSettings):
     def artifact_url(self) -> str:
         # Generated-file store: Python POSTs the rendered blob here (streamId-scoped).
         return f"{self.convex_internal_url.rstrip('/')}/ai/artifact"
+
+    @property
+    def connector_token_url(self) -> str:
+        # Fresh first-party access token (streamId-scoped; owner derived server-side).
+        return f"{self.convex_internal_url.rstrip('/')}/ai/connector-token"
 
     @property
     def rag_enabled(self) -> bool:

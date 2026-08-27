@@ -53,6 +53,12 @@ class EvidenceRecord(BaseModel):
     request: dict = Field(default_factory=dict)
     response_excerpt: dict | None = None  # bounded raw payload
     raw_ref: str = ""  # pointer into the durable execution ledger
+    # Phase 4: structured data-quality metadata for first-party evidence (GA4
+    # sampling counts, GSC quota, CrUX coverage, timezone/currency). Keep BOUNDED —
+    # it counts toward the report row's ~1 MiB cap. Free-form to avoid a per-provider
+    # schema; the named string flags on SEOFinding.data_quality_flags remain the
+    # primary signal (see app/seo/flags.py).
+    quality: dict = Field(default_factory=dict)
 
 
 class SEOFinding(BaseModel):

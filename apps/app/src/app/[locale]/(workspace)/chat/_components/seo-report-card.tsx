@@ -290,6 +290,13 @@ export function SeoReportCard({ artifact }: { artifact: ParsedArtifact }) {
             <div>
               <span className="text-primary/40">Unsupported (needs GSC/GA4/CrUX): </span>
               {unsupported.slice(0, 8).join("; ")}
+              <a
+                href="/settings/connections"
+                className="ml-1 inline-flex items-center gap-0.5 rounded text-brand-ink outline-none hover:underline focus-visible:ring-2 focus-visible:ring-brand/40"
+              >
+                Connect Google
+                <ExternalLink className="h-3 w-3" aria-hidden />
+              </a>
             </div>
           )}
           {limitations.length > 0 && (

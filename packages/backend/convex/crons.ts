@@ -73,4 +73,19 @@ crons.interval(
   {},
 );
 
+// Phase 4 — reap expired pending OAuth requests (short-TTL, one-time) and retry any
+// connector disconnects whose Google revoke transiently failed.
+crons.interval(
+  "reap expired connector auth requests",
+  { minutes: 5 },
+  internal.connectors.reapAuthRequests,
+  {},
+);
+crons.interval(
+  "retry pending connector revokes",
+  { minutes: 5 },
+  internal.connectors.retryPendingRevoke,
+  {},
+);
+
 export default crons;

@@ -4,6 +4,19 @@ import type { Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
 import { auth } from "./auth";
 import { EVENT_TYPES } from "./chat/events";
+import {
+  getFreshAccessToken,
+  NeedsReauthError,
+  RefreshBusyError,
+} from "./connectors";
+import { decryptSecret, encryptSecret } from "./connectors/crypto";
+import {
+  exchangeCode,
+  REQUIRED_SCOPES,
+  revokeToken,
+  validateIdToken,
+} from "./connectors/google";
+import { env } from "./env";
 import { polar } from "./subscriptions";
 
 const http = httpRouter();
@@ -747,6 +760,114 @@ http.route({
         "cache-control": "private, max-age=300",
       },
     });
+  }),
+});
+
+// --- Phase 4: Google connector OAuth callback (PUBLIC, state-validated) ---
+//
+// The FIRST hand-written 302 in the backend. Access is gated by the atomic one-time
+// `state` consume (not the ingress secret). NEVER logs the code/id_token/tokens.
+// Does NOT auto-activate the connection — it stores it UNCONFIRMED and 302s to an
+// authenticated app page where only the INITIATOR can confirm (account-linking-CSRF
+// fix). The redirect_uri is a hardcoded configured constant, never derived from req.
+http.route({
+  path: "/connector/google/callback",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const state = url.searchParams.get("state");
+    const code = url.searchParams.get("code");
+    const oauthErr = url.searchParams.get("error");
+    // Bare path (no locale) → the next-intl middleware re-injects the user's locale.
+    const back = (q: string) =>
+      new Response(null, {
+        status: 302,
+        headers: { Location: `${env.SITE_URL}/settings/connections?${q}` },
+      });
+    if (oauthErr || !state || !code) return back("error=denied");
+    const pending = await ctx.runMutation(internal.connectors.consumeAuthRequest, {
+      state,
+    });
+    if (!pending) return back("error=expired");
+    try {
+      const tok = await exchangeCode(code, pending.pkceVerifier);
+      if (!tok.refreshToken) return back("error=no_offline_access");
+      if (!tok.idToken) return back("error=no_identity");
+      const claims = validateIdToken(tok.idToken, pending.nonce);
+      const granted = new Set(tok.grantedScopes);
+      if (REQUIRED_SCOPES.some((s) => !granted.has(s))) return back("error=scope");
+      const res = await ctx.runMutation(
+        internal.connectors.upsertUnconfirmedAccount,
+        {
+          userId: pending.userId,
+          workspaceId: pending.workspaceId,
+          googleSub: claims.sub,
+          email: claims.email,
+          scopes: tok.grantedScopes,
+          encRefreshToken: await encryptSecret(tok.refreshToken),
+        },
+      );
+      // Reconnecting a DIFFERENT Google account → best-effort revoke the old grant.
+      if (res.staleRefreshEnc) {
+        try {
+          await revokeToken(await decryptSecret(res.staleRefreshEnc));
+        } catch {
+          /* best-effort */
+        }
+      }
+      return back(`confirm=${res.accountId}`);
+    } catch {
+      // Never surface/log the underlying token/id_token/code on failure.
+      return back("error=exchange");
+    }
+  }),
+});
+
+// --- Phase 4: fresh access token for the Python AI plane (out-of-band) ---
+//
+// Ingress-secret-gated + streamId-SCOPED (like /ai/file): Convex derives the owning
+// user from the live stream, refreshes under the single-flight lock if needed, and
+// returns ONLY a short-lived access token — never the refresh token. A `needs_reauth`
+// connector returns 409 so Python degrades honestly to an UNSUPPORTED capability gap.
+http.route({
+  path: "/ai/connector-token",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!authorizeIngress(req))
+      return new Response("unauthorized", { status: 401 });
+    const body = (await req.json().catch(() => null)) as {
+      streamId?: string;
+    } | null;
+    const streamId = body?.streamId;
+    if (typeof streamId !== "string" || !streamId) {
+      return aiJson({ error: "bad request" }, 400);
+    }
+    const info = await ctx.runQuery(internal.connectors.resolveStreamConnector, {
+      streamId,
+    });
+    if (!info.connected) {
+      if (info.status === "needs_reauth")
+        return aiJson({ connected: false, reason: "needs_reauth" }, 409);
+      return aiJson({ connected: false }, 200);
+    }
+    try {
+      const accessToken = await getFreshAccessToken(ctx, info.accountId);
+      return aiJson(
+        {
+          connected: true,
+          accessToken,
+          gscSite: info.gscSite,
+          ga4Property: info.ga4Property,
+          scopes: info.scopes,
+        },
+        200,
+      );
+    } catch (e) {
+      if (e instanceof NeedsReauthError)
+        return aiJson({ connected: false, reason: "needs_reauth" }, 409);
+      if (e instanceof RefreshBusyError) return aiJson({ error: "busy" }, 503);
+      return aiJson({ error: "token unavailable" }, 502);
+    }
   }),
 });
 

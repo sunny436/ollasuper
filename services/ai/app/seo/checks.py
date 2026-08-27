@@ -292,14 +292,48 @@ SEO_CHECKS: tuple[SEOCheck, ...] = (
         "Google Search Central: spam-policies",
         Severity.MEDIUM,
     ),
-    # ---- KNOWN GAPS (Phase 2) -> status UNSUPPORTED, never fabricated -------
+    # ---- FIRST-PARTY checks (Phase 4) — SUPPORTED only when Google is connected ---
+    SEOCheck(
+        "firstparty.index_status",
+        "crawl_index", "gsc.url_inspection",
+        "A URL's ACTUAL Google index status (coverageState / indexingState / chosen "
+        "canonical / last crawl) from Search Console URL Inspection.",
+        "gsc.url_inspection on the URL; canonical mismatch = googleCanonical != "
+        "userCanonical (indexed snapshot only, no live test).",
+        "Google Search Central: URL Inspection API",
+        Severity.HIGH,
+        applicability="requires a connected GSC property; else UNSUPPORTED",
+    ),
+    SEOCheck(
+        "firstparty.cwv_field",
+        "technical", "psi.field",
+        "Real-user Core Web Vitals (LCP<=2.5s, INP<200ms, CLS<0.1 at the CrUX 75th "
+        "percentile). Page experience is a tiebreaker, not a primary factor.",
+        "psi.field (CrUX); if absent for the URL, fall back to psi.lab labeled LAB.",
+        "web.dev/vitals; PageSpeed Insights (CrUX field)",
+        Severity.MEDIUM,
+        applicability="requires PSI/CrUX coverage; else UNSUPPORTED",
+    ),
+    SEOCheck(
+        "firstparty.traffic_diagnosis",
+        "crawl_index", "gsc.search_analytics",
+        "Traffic-drop diagnosis from the site's OWN Search clicks/impressions/position "
+        "(GSC) + sessions/conversions (GA4) — provenance-separated, not row-joined.",
+        "gsc.search_analytics + ga4.report over a 16-month/YoY baseline; distinguish a "
+        "small position slip (2->4) from a real drop (4->29).",
+        "Google Search Central: Search Analytics; GA4 Data API",
+        Severity.HIGH,
+        applicability="requires connected GSC + GA4; else UNSUPPORTED",
+    ),
+    # ---- KNOWN GAPS -> status UNSUPPORTED when the connector isn't connected ----
     SEOCheck(
         "gap.index_coverage",
         "crawl_index", "",
-        "Actual indexation status / index coverage requires Google Search Console "
-        "(URL Inspection / Page Indexing) — not available in Phase 2.",
-        "Would require GSC URL Inspection API.",
-        "Google Search Central: URL Inspection (API gap)",
+        "Actual indexation/index-coverage status needs a CONNECTED Google Search "
+        "Console (see firstparty.index_status / gsc.url_inspection); UNSUPPORTED when "
+        "the user hasn't connected Google.",
+        "Connect Google in Settings -> Connections, then gsc.url_inspection.",
+        "Google Search Central: URL Inspection API",
         Severity.INFO,
         applicability="reported as UNSUPPORTED",
         supported=False,
@@ -307,11 +341,10 @@ SEO_CHECKS: tuple[SEOCheck, ...] = (
     SEOCheck(
         "gap.core_web_vitals",
         "technical", "",
-        "Core Web Vitals (LCP<=2.5s, INP<=200ms, CLS<=0.1 at the 75th pct of CrUX "
-        "FIELD data) require CrUX/PageSpeed Insights — not in the SEO tool set. "
-        "Page experience is a tiebreaker, not a primary factor.",
-        "Would require CrUX/PSI.",
-        "web.dev/vitals; Google page-experience (API gap)",
+        "Core Web Vitals FIELD data needs CrUX/PageSpeed (see firstparty.cwv_field / "
+        "psi.field); UNSUPPORTED when PSI/CrUX is unavailable.",
+        "Use psi.field (server key); page experience is a tiebreaker.",
+        "web.dev/vitals; PageSpeed Insights",
         Severity.INFO,
         applicability="reported as UNSUPPORTED",
         supported=False,
@@ -319,10 +352,11 @@ SEO_CHECKS: tuple[SEOCheck, ...] = (
     SEOCheck(
         "gap.ranking_traffic",
         "crawl_index", "",
-        "Actual rankings / organic traffic / manual actions / security issues require "
-        "Search Console + Analytics — not available in Phase 2.",
-        "Would require GSC + GA4.",
-        "Google Search Central: Search Console (API gap)",
+        "Actual rankings/organic traffic need a CONNECTED Search Console + Analytics "
+        "(see firstparty.traffic_diagnosis); manual actions & security issues remain "
+        "unavailable. UNSUPPORTED when not connected.",
+        "Connect Google, then gsc.search_analytics + ga4.report.",
+        "Google Search Central: Search Console",
         Severity.INFO,
         applicability="reported as UNSUPPORTED",
         supported=False,

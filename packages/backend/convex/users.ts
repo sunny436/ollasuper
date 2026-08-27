@@ -3,6 +3,7 @@ import { asyncMap } from "convex-helpers";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { action, internalMutation, mutation, query } from "./_generated/server";
+import { deleteConnectorsForUser } from "./connectors";
 import { polar } from "./subscriptions";
 import { username } from "./utils/validators";
 
@@ -136,6 +137,8 @@ export const deleteUserAccount = internalMutation({
       for (const m of batch) await ctx.db.delete(m._id);
       if (batch.length < 500) break;
     }
+    // Phase 4: purge the user's connector accounts/properties/pending-auth rows.
+    await deleteConnectorsForUser(ctx, args.userId);
     await ctx.db.delete(args.userId);
   },
 });
