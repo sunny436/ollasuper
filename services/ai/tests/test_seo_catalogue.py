@@ -22,6 +22,7 @@ from app.seo.capabilities import (
 from app.seo.checks import KNOWN_GAPS, SEO_CHECKS, checks_digest
 from app.seo.models import (
     OUTPUT_SCHEMA,
+    SEO_AGENT_OUTPUT_SCHEMA,
     EvidenceRecord,
     FindingStatus,
     SEOFinding,
@@ -131,10 +132,34 @@ def test_report_has_no_numeric_score():
 
 
 def test_output_schema_is_strict():
+    # The STRICT SEOReport schema still governs the deterministic durable-run report.
     assert OUTPUT_SCHEMA.get("additionalProperties") is False
     assert "target" in OUTPUT_SCHEMA.get("properties", {})
-    # The agent carries this exact schema for validation + one bounded repair.
-    assert SEO_AGENT.output.schema is OUTPUT_SCHEMA
+
+
+def test_seo_agent_is_gated_on_the_lenient_schema():
+    # The SUB-AGENT is gated leniently so build_envelope's salvage — not a formatting
+    # technicality — decides the audit. Requires only a `checks_performed` array and
+    # does NOT forbid additional properties.
+    schema = SEO_AGENT.output.schema
+    assert schema is SEO_AGENT_OUTPUT_SCHEMA
+    assert schema.get("additionalProperties") is not False
+    assert schema.get("required") == ["checks_performed"]
+    # A good report with extra keys + a loose scalar type (evidence_freshness as an
+    # object) passes — the strict schema would have failed it and produced FAILED.
+    jsonschema.validate(
+        instance={
+            "target": "https://x",
+            "checks_performed": [],
+            "evidence_freshness": {"note": "an object, not a string"},
+            "prioritised_action_plan": ["do X"],
+        },
+        schema=schema,
+    )
+    # But findings hidden under the wrong key (no checks_performed) still fails, so the
+    # key-naming repair pass is triggered rather than silently emitting an empty report.
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance={"findings": []}, schema=schema)
 
 
 def _valid_report() -> dict:
