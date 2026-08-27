@@ -505,6 +505,64 @@ http.route({
           }),
         );
       }
+      case "seo-mutation-result": {
+        // Phase 7: the auditable RESULT of one APPROVED SEO write (before→write→verify→
+        // rollback already done by the Python SeoWriteAdapter). Owner DERIVED from the
+        // stream (like op:"execution"); idempotent by approvalId. Coerce + validate the
+        // enum literals at the edge so the mutation validator never sees bad data.
+        const ACTIONS = [
+          "update_metadata",
+          "update_structured_data",
+          "propose_redirect",
+          "update_content",
+        ] as const;
+        const STATUSES = [
+          "succeeded",
+          "failed",
+          "verification_failed",
+          "precondition_failed",
+          "rolled_back",
+          "rollback_failed",
+        ] as const;
+        const ROLLBACKS = ["none", "not_needed", "succeeded", "failed"] as const;
+        if (
+          !streamId ||
+          typeof body.approvalId !== "string" ||
+          typeof body.action !== "string" ||
+          !(ACTIONS as readonly string[]).includes(body.action) ||
+          typeof body.status !== "string" ||
+          !(STATUSES as readonly string[]).includes(body.status) ||
+          typeof body.rollbackStatus !== "string" ||
+          !(ROLLBACKS as readonly string[]).includes(body.rollbackStatus)
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        const optStr = (x: unknown) =>
+          typeof x === "string" ? x : undefined;
+        const r = await ctx.runMutation(internal.seoMutations.recordResult, {
+          streamId,
+          approvalId: body.approvalId,
+          executionId: optStr(body.executionId),
+          toolId: typeof body.toolId === "string" ? body.toolId : "",
+          action: body.action as (typeof ACTIONS)[number],
+          target: typeof body.target === "string" ? body.target : "",
+          provider: typeof body.provider === "string" ? body.provider : "",
+          argsHash: typeof body.argsHash === "string" ? body.argsHash : "",
+          reversibility:
+            body.reversibility === "irreversible"
+              ? "irreversible"
+              : "reversible",
+          estimatedCost: optStr(body.estimatedCost),
+          status: body.status as (typeof STATUSES)[number],
+          before: optStr(body.before),
+          after: optStr(body.after),
+          verification: optStr(body.verification),
+          rollbackStatus: body.rollbackStatus as (typeof ROLLBACKS)[number],
+        });
+        if ("unknown" in r && r.unknown)
+          return aiJson({ error: "unknown stream" }, 404);
+        return aiJson(r);
+      }
       case "execution": {
         // Phase 3: durable per-execution record (crash-recovery authority). Coerce
         // + validate the state literal at the edge (mirrors the "event" filter) so

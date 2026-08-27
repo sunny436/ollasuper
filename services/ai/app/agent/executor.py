@@ -415,6 +415,20 @@ async def _park_for_approval(
         args=args,
         approval_ref=approval_id,
     )
+    # Phase 7: for a SEO write tool, build the rich ActionPreview at PARK time
+    # (read-only) via its adapter — the write handler NEVER runs at park time, so the
+    # preview cannot come from the handler. Embedded in the APPROVAL_REQUEST event
+    # payload. A preview failure must never block the approval (user sees plain reason).
+    preview: dict | None = None
+    _adapter = ctx.adapters.get(tool.provider)
+    if _adapter is not None and hasattr(_adapter, "build_preview"):
+        try:
+            preview = await _adapter.build_preview(
+                tool, args, ttl_ms=ctx.approval_ttl_ms
+            )
+        except Exception:  # noqa: BLE001 — a preview is best-effort, never load-bearing
+            preview = None
+
     resp = await ctx.writer.request_approval(
         approval_id=approval_id,
         tool_id=tool_id,
@@ -422,6 +436,7 @@ async def _park_for_approval(
         args_key=execution.args_hash,  # A5: bounded key, never the full args JSON
         reason=reason,
         ttl_ms=ctx.approval_ttl_ms,
+        preview=preview,
     )
     rdec = resp.get("decision")
     if rdec == "approved" and resp.get("token"):

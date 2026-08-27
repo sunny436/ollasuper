@@ -143,6 +143,11 @@ class ApprovalRequestPayload(_Payload):
     tool_name: str
     reason: str = ""
     status: str = "pending"
+    # Phase 7: the rich SEO ActionPreview (targets/diff/before/after/provider/cost/
+    # reversibility/rollback/verification/expiry/args-hash) for a mutation approval.
+    # Rides the opaque payload STRING Convex already stores (chat/events.ts
+    # payload:v.string()) — NO live-schema push, no v.any(). Absent for other approvals.
+    preview: dict | None = None
 
 
 class ArtifactPayload(_Payload):

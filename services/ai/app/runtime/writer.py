@@ -555,6 +555,7 @@ class DeltaWriter:
         args_key: str,
         reason: str,
         ttl_ms: int,
+        preview: dict | None = None,
     ) -> dict:
         """Phase 8: park a tool approval + suspend the stream (`op:"approval"`).
 
@@ -562,7 +563,10 @@ class DeltaWriter:
         the durable `chatApprovals` row atomically. Returns the ingress response:
         `{decision: "pending"|"approved"|"rejected"|"expired", token?}`. A
         "pending" reply means the turn is now suspended; a resolved reply means a
-        prior decision exists and the live run can act on it inline."""
+        prior decision exists and the live run can act on it inline.
+
+        Phase 7: `preview` is the rich SEO ActionPreview, embedded in the event payload
+        STRING (no Convex schema change) so the user sees the diff before approving."""
         envelope = make_event(
             EventType.APPROVAL_REQUEST,
             self._event_seq,
@@ -572,6 +576,7 @@ class DeltaWriter:
             tool_name=tool_name,
             reason=reason,
             status="pending",
+            preview=preview,
         )
         self._event_seq += 1
         body = {

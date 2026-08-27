@@ -98,6 +98,35 @@ describe("parseEvent", () => {
     });
   });
 
+  test("APPROVAL_REQUEST carries the Phase-7 SEO ActionPreview when present", () => {
+    const parsed = parseEvent(
+      ev("APPROVAL_REQUEST", {
+        approval_id: "seo_update_metadata:abc",
+        tool_name: "seo_update_metadata",
+        reason: "Update <title>",
+        preview: {
+          action: "update_metadata",
+          targets: ["https://x/"],
+          provider: "seo_write",
+          reversibility: "reversible",
+          diff: { title: { before: "Old", after: "New" } },
+          verification_plan: "Re-read after the write.",
+        },
+      }),
+    );
+    expect(parsed).toMatchObject({ kind: "approval" });
+    if (parsed.kind !== "approval") throw new Error("expected approval");
+    expect(parsed.preview?.diff.title).toEqual({ before: "Old", after: "New" });
+    expect(parsed.preview?.targets).toEqual(["https://x/"]);
+    expect(parsed.preview?.reversibility).toBe("reversible");
+    // A plain (non-mutation) approval has no preview.
+    const plain = parseEvent(
+      ev("APPROVAL_REQUEST", { approval_id: "a1", tool_name: "delete" }),
+    );
+    if (plain.kind !== "approval") throw new Error("expected approval");
+    expect(plain.preview).toBeUndefined();
+  });
+
   test("unknown type and malformed payload degrade to unknown, never throw", () => {
     expect(parseEvent(ev("FUTURE_TYPE", { x: 1 })).kind).toBe("unknown");
     expect(parseEvent(ev("TOOL_CALL", "{not json")).kind).toBe("unknown"); // missing call_id after parse-fail

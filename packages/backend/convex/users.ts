@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { action, internalMutation, mutation, query } from "./_generated/server";
 import { deleteConnectorsForUser } from "./connectors";
+import { deleteMutationsForUser } from "./seoMutations";
 import { deleteProjectsForUser } from "./seoProjects";
 import { polar } from "./subscriptions";
 import { username } from "./utils/validators";
@@ -143,6 +144,8 @@ export const deleteUserAccount = internalMutation({
     // Phase 6: purge the user's SEO monitoring projects (+ schedules/connections/runs/
     // reports/diffs cascade).
     await deleteProjectsForUser(ctx, args.userId);
+    // Phase 7: purge the user's SEO mutation ledger (user-trust owner-scoped rows).
+    await deleteMutationsForUser(ctx, args.userId);
     await ctx.db.delete(args.userId);
   },
 });

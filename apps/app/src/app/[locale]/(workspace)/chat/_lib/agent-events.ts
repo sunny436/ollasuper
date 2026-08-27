@@ -78,6 +78,7 @@ export type ParsedEvent =
       toolName: string;
       reason: string;
       status: string;
+      preview?: ParsedActionPreview;
     }
   | {
       kind: "artifact";
@@ -122,6 +123,43 @@ const obj = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
     : {};
+
+/** Phase 7 — the rich SEO ActionPreview carried in an APPROVAL_REQUEST payload (absent
+ *  for every other approval). Rendered read-only in the approval card so the user sees the
+ *  exact change before approving. */
+export interface ParsedActionPreview {
+  action: string;
+  targets: string[];
+  provider: string;
+  reversibility: string;
+  diff: Record<string, { before: unknown; after: unknown }>;
+  rollbackPlan: string;
+  verificationPlan: string;
+  estimatedCost: Record<string, unknown>;
+}
+
+function parsePreview(v: unknown): ParsedActionPreview | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const p = v as Record<string, unknown>;
+  const targets = (Array.isArray(p.targets) ? p.targets : []).filter(
+    (t): t is string => typeof t === "string",
+  );
+  const diff: Record<string, { before: unknown; after: unknown }> = {};
+  for (const [k, val] of Object.entries(obj(p.diff))) {
+    const e = obj(val);
+    diff[k] = { before: e.before, after: e.after };
+  }
+  return {
+    action: str(p, "action") ?? "",
+    targets,
+    provider: str(p, "provider") ?? "",
+    reversibility: str(p, "reversibility") ?? "",
+    diff,
+    rollbackPlan: str(p, "rollback_plan") ?? "",
+    verificationPlan: str(p, "verification_plan") ?? "",
+    estimatedCost: obj(p.estimated_cost),
+  };
+}
 
 /** Defensive parse of one wire event into the discriminated union. */
 export function parseEvent(e: TypedEvent): ParsedEvent {
@@ -186,6 +224,7 @@ export function parseEvent(e: TypedEvent): ParsedEvent {
         toolName: str(b, "tool_name") ?? "action",
         reason: str(b, "reason") ?? "",
         status: str(b, "status") ?? "pending",
+        preview: parsePreview(b.preview),
       };
     }
     case "ARTIFACT": {
@@ -261,6 +300,7 @@ export interface ParsedApproval {
   toolName: string;
   reason: string;
   status: string;
+  preview?: ParsedActionPreview;
 }
 
 export interface TimelineModel {
@@ -387,6 +427,7 @@ export function buildTimeline(events: TypedEvent[] | undefined): TimelineModel {
           toolName: e.toolName,
           reason: e.reason,
           status: e.status,
+          preview: e.preview,
         };
         break;
       }
