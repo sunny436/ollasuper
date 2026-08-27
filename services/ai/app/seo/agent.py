@@ -8,9 +8,12 @@ discovery, execution), so the agent can NEVER reach AEO / account / billing /
 automation / actor tools, nor the 36 high-impact tools (already unreachable) —
 even by discovering them via find_capabilities.
 
-Its `OutputContract.schema` is the SEOReport JSON schema, so the sub-agent's
-report is validated (and repaired once) by the Phase-1 runtime before it returns
-as a HandoffResult.
+Its `OutputContract.schema` is the LENIENT `SEO_AGENT_OUTPUT_SCHEMA` (requires only a
+`checks_performed` array), NOT the strict SEOReport schema: the report emitter's
+`build_envelope` already coerces/salvages every field, so gating the LLM on the strict
+schema only failed good audits on formatting technicalities. The sub-agent's result is
+validated (and repaired once, with the allowed keys named) before it returns as a
+HandoffResult; the strict SEOReport schema still governs the deterministic durable run.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from app.agent.spec import (
     OutputContract,
 )
 from app.seo.capabilities import ALLOWED_CATEGORIES, ALLOWED_TOOL_IDS
-from app.seo.models import OUTPUT_SCHEMA
+from app.seo.models import SEO_AGENT_OUTPUT_SCHEMA
 
 _INSTRUCTIONS = (
     "You are an SEO specialist running a READ-ONLY audit. Work adaptively — there is "
@@ -66,7 +69,7 @@ SEO_AGENT = AgentSpec(
     # Audits need several evidence-gathering steps; results are bounded per step.
     context=ContextPolicy(max_steps=8, tool_result_max_chars=8000),
     output=OutputContract(
-        schema=OUTPUT_SCHEMA,
+        schema=SEO_AGENT_OUTPUT_SCHEMA,
         expects=frozenset({_Outcome.STRUCTURED_RESULT, _Outcome.FINAL_ANSWER}),
         role_hint="find",
         # Phase 3: the delegate seam persists the structured result as a secure,

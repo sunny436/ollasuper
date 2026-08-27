@@ -96,9 +96,26 @@ class SEOReport(BaseModel):
     business_exposure: str = ""  # qualitative risk narrative (NEVER numeric)
 
 
-# The JSON-schema dict the SEO agent's OutputContract.schema uses. Pydantic v2 emits
-# Draft 2020-12 with $defs/$ref, resolved natively by the Phase-1 jsonschema.validate.
+# The STRICT SEOReport JSON schema (Pydantic v2, Draft 2020-12). It governs the
+# durable-run report, which is assembled from DETERMINISTIC crawl findings, not an
+# LLM — so strictness is free there.
 OUTPUT_SCHEMA: dict = SEOReport.model_json_schema()
+
+# The LENIENT schema the SEO SUB-AGENT is gated on. Validating an LLM against the
+# strict schema (additionalProperties:false + exact scalar types) turned a perfectly
+# good audit into a FAILED report on a formatting technicality — a stray extra key,
+# or `evidence_freshness` returned as an object instead of a string. `build_envelope`
+# already coerces/salvages EVERY field defensively (findings via `_coerce_findings`,
+# scalars via `str(... or "")`), so the strict gate was redundant AND harmful. Require
+# only that the model returned an object carrying a `checks_performed` array (so the
+# report has findings under the key build_envelope reads); leave everything else to
+# the salvage layer. The `checks_performed` requirement, plus the repair pass naming
+# the allowed keys, keeps a model from hiding its findings under `findings`.
+SEO_AGENT_OUTPUT_SCHEMA: dict = {
+    "type": "object",
+    "required": ["checks_performed"],
+    "properties": {"checks_performed": {"type": "array"}},
+}
 
 
 # --- Phase 3: the persisted, downloadable REPORT ENVELOPE ------------------
