@@ -80,15 +80,24 @@ class _FakeRegistry:
 
 
 class _FakeAdapter:
-    def __init__(self, *, sitemap=None, audit=None, raise_on=None) -> None:
+    def __init__(self, *, sitemap=None, audit=None, raise_on=None,
+                 fail_kind=ToolErrorKind.UNAVAILABLE, fail_times=None) -> None:
         self._sitemap = sitemap or {}
         self._audit = audit or CLEAN
         self._raise_on = raise_on
+        self._fail_kind = fail_kind
+        # None ⇒ always raise on raise_on; int ⇒ raise that many times then succeed.
+        self._fail_times = fail_times
+        self.calls = 0
 
     async def call_tool(self, tool, payload, *, input_schema=None, user_id="",
                         workspace_id="", idempotency_key=None):
+        self.calls += 1
         if self._raise_on and tool.tool_id == self._raise_on:
-            raise ToolError(ToolErrorKind.UNAVAILABLE, "boom", tool_id=tool.tool_id)
+            if self._fail_times is None or self._fail_times > 0:
+                if self._fail_times is not None:
+                    self._fail_times -= 1
+                raise ToolError(self._fail_kind, "boom", tool_id=tool.tool_id)
         data = self._sitemap if tool.tool_id == SITEMAP_TOOL else self._audit
         return {"ok": True, "tool_id": tool.tool_id, "data": data}
 
@@ -135,10 +144,37 @@ async def test_crawl_maps_findings_and_rows():
 
 
 async def test_crawl_tool_error_is_not_tested_not_fatal():
-    b = _backend(_FakeAdapter(raise_on=META_AUDIT_TOOL))
+    # A NON-retryable error (auth) → NOT_TESTED immediately, no retries.
+    b = _backend(_FakeAdapter(
+        raise_on=META_AUDIT_TOOL, fail_kind=ToolErrorKind.AUTH_FAILED
+    ))
     res = await b.crawl(["https://x/a"], _step())
     assert res.rows == []
     assert len(res.findings) == 1
+    assert res.findings[0]["status"] == "NOT_TESTED"
+
+
+async def test_crawl_retries_on_rate_limit_then_succeeds(monkeypatch):
+    # 429 (retryable) twice, then success → a REAL finding, not NOT_TESTED.
+    monkeypatch.setattr("app.seo.crawl_backend._RETRY_BASE_S", 0.0)
+    monkeypatch.setattr("app.seo.crawl_backend._THROTTLE_S", 0.0)
+    adapter = _FakeAdapter(
+        raise_on=META_AUDIT_TOOL, fail_kind=ToolErrorKind.RATE_LIMITED, fail_times=2
+    )
+    b = _backend(adapter)
+    res = await b.crawl(["https://x/a"], _step())
+    assert adapter.calls == 3  # 2 failures + 1 success
+    assert len(res.rows) == 1
+    assert not any(f["status"] == "NOT_TESTED" for f in res.findings)
+
+
+async def test_crawl_gives_up_after_max_retries(monkeypatch):
+    monkeypatch.setattr("app.seo.crawl_backend._RETRY_BASE_S", 0.0)
+    adapter = _FakeAdapter(
+        raise_on=META_AUDIT_TOOL, fail_kind=ToolErrorKind.RATE_LIMITED
+    )
+    res = await _backend(adapter).crawl(["https://x/a"], _step())
+    assert adapter.calls == 3  # exhausted the bounded retries
     assert res.findings[0]["status"] == "NOT_TESTED"
 
 

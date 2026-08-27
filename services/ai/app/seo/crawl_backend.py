@@ -14,6 +14,8 @@ The tool response shape (verified live) drives the mapper:
 
 from __future__ import annotations
 
+import asyncio
+
 from app.clients.ollagraph import ToolError
 from app.config import Settings
 from app.logging import get_logger
@@ -23,6 +25,10 @@ log = get_logger(__name__)
 
 SITEMAP_TOOL = "intel_sitemap_endpoint_v1_intel_sitemap_post"
 META_AUDIT_TOOL = "seo_meta_audit_endpoint_v1_seo_meta_audit_post"
+
+_AUDIT_RETRIES = 3  # bounded retries on a retryable audit error (429/timeout/upstream)
+_RETRY_BASE_S = 0.5  # exponential backoff base
+_THROTTLE_S = 0.1  # spacing between per-URL audits so a burst doesn't trip 429
 
 # The subset of the meta-audit response kept as bounded evidence per URL.
 _EVIDENCE_KEYS = (
@@ -166,14 +172,29 @@ class OllagraphSeoBackend:
         urls = [u for u in (data.get("urls") or []) if isinstance(u, str)]
         return urls[:max_urls] if urls else [target]
 
+    async def _audit(self, url: str) -> dict:
+        """Meta-audit one URL with bounded backoff on a RETRYABLE error (429/timeout/
+        upstream) — the provider rate-limits bursts, so a transient 429 must recover
+        into a real finding instead of a NOT_TESTED coverage gap."""
+        for attempt in range(_AUDIT_RETRIES):
+            try:
+                return await self._call(META_AUDIT_TOOL, {"url": url})
+            except ToolError as e:
+                if not e.retryable or attempt == _AUDIT_RETRIES - 1:
+                    raise
+                await asyncio.sleep(_RETRY_BASE_S * (2**attempt))
+        return {}  # unreachable
+
     async def crawl(self, urls: list[str], step: SeoRunStep) -> BatchResult:
         """Audit each URL via meta-audit, classify deterministically. A failed page is a
         NOT_TESTED finding (coverage gap), never a silent drop or batch failure."""
         rows: list[dict] = []
         findings: list[dict] = []
-        for url in urls:
+        for i, url in enumerate(urls):
+            if i:
+                await asyncio.sleep(_THROTTLE_S)  # gentle spacing to avoid tripping 429
             try:
-                data = await self._call(META_AUDIT_TOOL, {"url": url})
+                data = await self._audit(url)
             except ToolError as e:
                 findings.append(
                     _finding("crawl_index.fetch", url, "NOT_TESTED", "medium",
