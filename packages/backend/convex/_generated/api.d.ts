@@ -55,6 +55,7 @@ import type * as orgs from "../orgs.js";
 import type * as passwordProviders from "../passwordProviders.js";
 import type * as seed from "../seed.js";
 import type * as seoMonitor from "../seoMonitor.js";
+import type * as seoMutations from "../seoMutations.js";
 import type * as seoProjects from "../seoProjects.js";
 import type * as seoRuns from "../seoRuns.js";
 import type * as seoSchedules from "../seoSchedules.js";
@@ -126,6 +127,7 @@ declare const fullApi: ApiFromModules<{
   passwordProviders: typeof passwordProviders;
   seed: typeof seed;
   seoMonitor: typeof seoMonitor;
+  seoMutations: typeof seoMutations;
   seoProjects: typeof seoProjects;
   seoRuns: typeof seoRuns;
   seoSchedules: typeof seoSchedules;

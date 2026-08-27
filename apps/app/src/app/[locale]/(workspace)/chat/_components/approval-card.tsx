@@ -1,7 +1,57 @@
 "use client";
 
 import { Check, ShieldAlert, X } from "lucide-react";
-import type { ParsedApproval } from "../_lib/agent-events";
+import type { ParsedActionPreview, ParsedApproval } from "../_lib/agent-events";
+
+function fmt(v: unknown): string {
+  if (v === undefined || v === null || v === "") return "—";
+  return typeof v === "string" ? v : JSON.stringify(v);
+}
+
+/**
+ * Phase 7 — the read-only SEO ActionPreview: exactly what a mutation will change, shown
+ * BEFORE approval. The buttons above still call the server, which mints the execute token;
+ * this is presentation only, so a doctored preview cannot authorize anything.
+ */
+function ActionPreview({ preview }: { preview: ParsedActionPreview }) {
+  const entries = Object.entries(preview.diff);
+  return (
+    <div className="mt-2 rounded-md border border-border bg-card/50 p-2">
+      <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-primary/50">
+        <span className="rounded bg-primary/5 px-1.5 py-0.5 font-medium text-primary/70">
+          {preview.action || "change"}
+        </span>
+        {preview.targets.map((t) => (
+          <span key={t} className="truncate [overflow-wrap:anywhere]">
+            {t}
+          </span>
+        ))}
+      </div>
+      {entries.length > 0 && (
+        <dl className="mt-1.5 space-y-1">
+          {entries.map(([field, d]) => (
+            <div key={field} className="text-[11px]">
+              <dt className="font-medium text-primary/60">{field}</dt>
+              <dd className="mt-0.5 flex flex-wrap items-center gap-1 text-primary/70">
+                <span className="rounded bg-rose-500/10 px-1 py-0.5 text-rose-600 line-through [overflow-wrap:anywhere] dark:text-rose-400">
+                  {fmt(d.before)}
+                </span>
+                <span aria-hidden>→</span>
+                <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-emerald-700 [overflow-wrap:anywhere] dark:text-emerald-400">
+                  {fmt(d.after)}
+                </span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      <p className="mt-1.5 text-[10px] text-primary/45">
+        {preview.reversibility === "reversible" ? "Reversible" : "Irreversible"} ·{" "}
+        {preview.verificationPlan || "Verified after the change."}
+      </p>
+    </div>
+  );
+}
 
 /**
  * A tool that requested user approval before running (Phase 8). Actionable ONLY
@@ -34,6 +84,8 @@ export function ApprovalCard({
               {approval.reason}
             </p>
           )}
+
+          {approval.preview && <ActionPreview preview={approval.preview} />}
 
           {onResolve ? (
             <div className="mt-2 flex gap-2">

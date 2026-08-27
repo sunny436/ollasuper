@@ -6,6 +6,7 @@ import { internalMutation, mutation, query } from "../_generated/server";
 import { audit } from "../auditLog";
 import { bump } from "../counters";
 import { requireMember } from "../orgs";
+import { deleteMutationsForThread } from "../seoMutations";
 import { deleteSeoRunsForThread, SEO_RUN_PURGE_BATCH } from "../seoRuns";
 import {
   DEFAULT_MODEL,
@@ -402,6 +403,8 @@ export const purge = internalMutation({
       return;
     }
 
+    // Phase 7: the SEO mutation ledger is user-scoped + persistent; reclaim this thread's rows.
+    await deleteMutationsForThread(ctx, threadId);
     await ctx.db.delete(threadId);
   },
 });

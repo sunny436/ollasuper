@@ -181,6 +181,13 @@ class Settings(BaseSettings):
     ai_seo_batch_max_bytes: int = 20_000_000
     # Default per-run crawl breadth (Convex clamps; real bound is maxUrls/costBudget).
     ai_seo_run_max_urls: int = 500
+    # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
+    # (update metadata / structured data / redirects / content). OFF by default => the
+    # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and
+    # background/monitoring SEO stays hard read-only. When ON, the write tools are bound
+    # ONLY on an interactive chat turn and every write goes through the durable approval
+    # round-trip (NEEDS_APPROVAL); nothing runs autonomously.
+    ai_seo_mutations_enabled: bool = False
     # Core capabilities ALWAYS made available to the agent (independent of whether
     # the user's wording lexically matches them). Each string is a canonical intent;
     # the top discovery hit for it is unioned into the working set every agent turn.

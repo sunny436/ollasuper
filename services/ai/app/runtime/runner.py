@@ -65,6 +65,11 @@ from app.runtime.env_factory import build_live_agent_env
 from app.runtime.roster import build_delegate_spec, build_live_runtime
 from app.runtime.writer import DeltaWriter
 from app.seo.enqueue_tool import ENQUEUE_SEO_AUDIT_TOOL_SPEC
+from app.seo.mutations import (
+    SeoWriteAdapter,
+    StubSeoWriteProvider,
+    register_seo_mutation_provider,
+)
 from app.seo.report import build_seo_report_emitter
 from app.skills.registry import render_skills_block
 from app.tools.registry import ToolRegistry
@@ -233,6 +238,10 @@ async def run_generation(
         # a large site-wide audit to the durable run subsystem. Off by default → not
         # offered (byte-identical); the agent handles small audits inline as before.
         seo_runs = settings.ai_seo_runs_enabled
+        # Phase 7 — bind the approval-gated SEO write tools ONLY on this interactive
+        # turn when the flag is on. Off by default => not registered, not offered,
+        # byte-identical; the read-only audit agent + monitoring worker never see them.
+        seo_mutations = settings.ai_seo_mutations_enabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -532,6 +541,17 @@ async def run_generation(
                 register_connector_providers(tool_registry)
                 connector_adapters = build_connector_adapters(
                     settings, ollagraph_http, req.streamId
+                )
+            # Phase 7: register the SEO write provider + its adapter (keyed by provider
+            # "seo_write" for the executor dispatch map). The real site-write is an
+            # injected seam — StubSeoWriteProvider until a GSC/CMS provider is dropped
+            # in. The adapter posts the result to Convex seoMutations via ingress.
+            if seo_mutations and tool_registry is not None:
+                register_seo_mutation_provider(tool_registry)
+                connector_adapters["seo_write"] = SeoWriteAdapter(
+                    StubSeoWriteProvider(),
+                    stream_id=req.streamId,
+                    post_result=convex.ingress,
                 )
             if llm_tools is not None:
                 tools_ctx = ToolExecContext(

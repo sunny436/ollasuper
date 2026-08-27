@@ -793,6 +793,62 @@ export default defineSchema({
     .index("by_run", ["runId"])
     .index("by_project", ["projectId"]),
 
+  // Phase 7 — the durable, owner-scoped SEO MUTATION ledger: the auditable RESULT
+  // record for one approved site change (update metadata / structured data / redirect /
+  // content). Recorded at EXECUTE time only; the PROPOSAL lives in the APPROVAL_REQUEST
+  // event + auditLogs. A dedicated table (not toolExecutions, which is DELETED at finalize;
+  // not auditLogs, which is WORKSPACE-trust and would leak one user's before/after to
+  // co-members) because mutation history is USER-trust owner-scoped like chat. Owner ids
+  // are DERIVED from the stream, never client-sent. before/after/verification/estimatedCost
+  // are bounded JSON strings (the seoReports.report / chatShares.snapshot pattern — no v.any(),
+  // no payload-shape push). Idempotent by `approvalId` (a write is authorized by exactly one
+  // single-use approval). Additive table (no pre-migration rows), so required fields are safe.
+  seoMutations: defineTable({
+    approvalId: v.string(), // the ONLY execute capability — the approval that authorized this write
+    executionId: v.optional(v.string()), // the toolExecutions row (idempotency cross-ref)
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    streamId: v.optional(v.string()),
+    threadId: v.optional(v.id("chatThreads")),
+    messageId: v.optional(v.id("chatMessages")),
+    runId: v.optional(v.string()),
+    toolId: v.string(),
+    action: v.union(
+      v.literal("update_metadata"),
+      v.literal("update_structured_data"),
+      v.literal("propose_redirect"),
+      v.literal("update_content"),
+    ),
+    target: v.string(),
+    provider: v.string(),
+    argsHash: v.string(),
+    reversibility: v.union(v.literal("reversible"), v.literal("irreversible")),
+    estimatedCost: v.optional(v.string()), // bounded JSON
+    status: v.union(
+      v.literal("succeeded"),
+      v.literal("failed"),
+      v.literal("verification_failed"),
+      v.literal("precondition_failed"),
+      v.literal("rolled_back"),
+      v.literal("rollback_failed"),
+    ),
+    before: v.optional(v.string()), // bounded JSON snapshot
+    after: v.optional(v.string()), // bounded JSON snapshot
+    verification: v.optional(v.string()), // bounded JSON {method,passed,detail}
+    rollbackStatus: v.union(
+      v.literal("none"),
+      v.literal("not_needed"),
+      v.literal("succeeded"),
+      v.literal("failed"),
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_thread", ["threadId"])
+    .index("by_approval", ["approvalId"])
+    .index("by_execution", ["executionId"]),
+
   chatSettings: defineTable({
     workspaceId: v.id("workspaces"),
     userId: v.id("users"),
