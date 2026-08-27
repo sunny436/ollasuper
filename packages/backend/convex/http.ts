@@ -970,18 +970,21 @@ http.route({
     const mime = req.headers.get("content-type") ?? "application/gzip";
     if (!runId || !leaseToken || !artifactKey)
       return aiJson({ error: "bad request" }, 400);
-    const blob = await req.blob();
-    if (blob.size === 0 || blob.size > MAX_ARTIFACT_BYTES)
+    // Read the streaming request body ONCE. A streaming Blob (`req.blob()`) cannot be
+    // re-read, so hashing it and THEN storing it throws "Can't re-read streaming Blob".
+    // Materialize the bytes here and reuse them for BOTH the hash and the store.
+    const ab = await req.arrayBuffer();
+    if (ab.byteLength === 0 || ab.byteLength > MAX_ARTIFACT_BYTES)
       return aiJson({ error: "bad size" }, 400);
     // Always compute the stored hash; verify a declared one before storing.
-    const buf = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+    const buf = await crypto.subtle.digest("SHA-256", ab);
     const contentHash = Array.from(new Uint8Array(buf), (b) =>
       b.toString(16).padStart(2, "0"),
     ).join("");
     const declaredHash = req.headers.get("x-artifact-sha256");
     if (declaredHash && contentHash !== declaredHash.toLowerCase())
       return aiJson({ error: "checksum mismatch" }, 422);
-    const storageId = await ctx.storage.store(blob);
+    const storageId = await ctx.storage.store(new Blob([ab], { type: mime }));
     const res = await ctx.runMutation(internal.seoRuns.registerSeoArtifact, {
       runId,
       leaseToken,
@@ -991,7 +994,7 @@ http.route({
       filename,
       format,
       mime,
-      size: blob.size,
+      size: ab.byteLength,
       rowCount,
       contentHash,
     });
@@ -1003,7 +1006,7 @@ http.route({
     // bytes (on a dedup hit this is the EXISTING blob's hash, not the caller's).
     return aiJson({
       artifactId: res.artifactId,
-      size: blob.size,
+      size: ab.byteLength,
       contentHash: res.contentHash,
     });
   }),
