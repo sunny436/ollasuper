@@ -97,6 +97,15 @@ def test_every_delegate_role_is_registered_on():
     assert "seo" in roles
 
 
+def test_delegate_description_names_the_seo_specialist_when_enabled():
+    # The function-level description (not just the role enum) must advertise the
+    # flag-gated SEO specialist, so the model delegates a whole-site audit to it
+    # instead of doing the audit inline.
+    desc = build_delegate_spec(_on())["function"]["description"]
+    assert "seo" in desc and "SEO specialist" in desc
+    assert "'document'" not in desc  # no stale hardcoded example list
+
+
 # --- build_live_runtime wires the SEO surface + intents when the flag is on -
 def _resolver() -> CapabilityResolver:
     reg = ToolRegistry()
