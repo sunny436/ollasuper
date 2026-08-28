@@ -110,6 +110,32 @@ const getStream = (t: Tester, streamId: string) =>
   );
 
 describe("typed event protocol", () => {
+  test("a TOOL event rolls the deadline forward; a non-tool event does not", async () => {
+    const t = makeTester();
+    const { streamId } = await seed(t);
+    const before = Date.now();
+
+    // A tool event marks the turn as actively tooling → deadline rolls forward
+    // so a legitimately long audit is not reaped / instant-failed on resume.
+    await t.mutation(internal.chat.ingest.appendEvent, {
+      streamId,
+      events: [ev(0, "TOOL_CALL", { tool_name: "seo_meta_audit", call_id: "c1" })],
+    });
+    const afterTool = await getStream(t, streamId);
+    expect(afterTool?.deadlineAt ?? 0).toBeGreaterThanOrEqual(before + 300_000 - 5_000);
+
+    // A plain (non-tool) event must NOT extend it — a no-tool reply keeps its
+    // hard deadline.
+    await t.run((ctx) =>
+      ctx.db.patch(afterTool!._id, { deadlineAt: 123 }),
+    );
+    await t.mutation(internal.chat.ingest.appendEvent, {
+      streamId,
+      events: [ev(1, "CITATION", { source_id: "s1" })],
+    });
+    expect((await getStream(t, streamId))?.deadlineAt).toBe(123);
+  });
+
   test("appendEvent inserts, sets hasEvents, idempotent by (messageId, seq)", async () => {
     const t = makeTester();
     const { messageId, streamId } = await seed(t);

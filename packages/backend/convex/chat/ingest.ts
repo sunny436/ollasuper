@@ -37,6 +37,16 @@ const MAX_DELTA_CHARS = 16_000;
 const MAX_EVENTS_PER_BATCH = 64;
 const MAX_EVENT_PAYLOAD_CHARS = 100_000;
 /**
+ * The fixed total-execution deadline (mirror of AGENT_TOTAL_DEADLINE_MS in
+ * chat/messages.ts) bounds a plain no-tool reply. A turn that is actively RUNNING
+ * TOOLS (a skill/agent task, e.g. a deep SEO audit) rolls its deadline forward on
+ * each tool event — see the deadline roll in `appendEvent` — so it is bounded by
+ * tool INACTIVITY, not a fixed wall-clock, and neither the reaper nor a resume
+ * kills it mid-audit. A no-tool turn emits no tool events, so it is unchanged.
+ */
+const AGENT_TOTAL_DEADLINE_MS = 300_000;
+const TOOL_EVENT_TYPES = new Set(["TOOL_CALL", "TOOL_RESULT", "TOOL_PROGRESS"]);
+/**
  * A single delta with seq 1e9 would trigger compaction, set committedSeq to
  * 1e9, and then silently drop every legitimate delta that followed via the
  * `d.seq <= committedSeq` guard. Bound how far ahead a seq may jump.
@@ -323,8 +333,19 @@ export const appendEvent = internalMutation({
       hasEvents: true;
       heartbeatAt: number;
       status?: "running";
+      deadlineAt?: number;
     } = { hasEvents: true, heartbeatAt: now };
     if (stream.status === "queued") patch.status = "running";
+    // Roll the total-execution deadline forward on tool activity so a legitimately
+    // long tool/skill turn is not failed by the reaper (nor instant-failed when it
+    // resumes past the original deadline). Only tool events extend it — a plain
+    // no-tool reply never does, so its hard deadline is preserved.
+    if (events.some((e) => TOOL_EVENT_TYPES.has(e.type))) {
+      patch.deadlineAt = Math.max(
+        stream.deadlineAt ?? 0,
+        now + AGENT_TOTAL_DEADLINE_MS,
+      );
+    }
     await ctx.db.patch(stream._id, patch);
     if (stream.status === "queued") {
       await ctx.db.patch(stream.messageId, {

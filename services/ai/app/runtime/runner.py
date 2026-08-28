@@ -96,7 +96,6 @@ def _compute_deadline_mono(
 async def _background_heartbeat(
     writer: DeltaWriter,
     interval_ms: int,
-    deadline_mono: float,
     main_task: asyncio.Task,
     deadline_flag: dict,
 ) -> None:
@@ -108,11 +107,16 @@ async def _background_heartbeat(
     token flow. It also enforces the total-execution deadline even for a turn
     that produces no tokens (a hang the inline check can't see): on deadline it
     marks the flag and cancels the main task, which the CancelledError handler
-    converts to a clean TIMED_OUT. Cancelled in finally."""
+    converts to a clean TIMED_OUT. Cancelled in finally.
+
+    `deadline_flag["mono"]` is READ each tick (not captured once) so a turn that is
+    actively running tools can roll it forward via `writer.on_tool_activity` — a
+    deep audit is bounded by tool INACTIVITY, not a fixed wall-clock, while a plain
+    no-tool turn keeps the original hard deadline."""
     try:
         while True:
             await asyncio.sleep(max(0.01, interval_ms / 1000))
-            if time.monotonic() > deadline_mono:
+            if time.monotonic() > deadline_flag["mono"]:
                 deadline_flag["hit"] = True
                 main_task.cancel()
                 return
@@ -152,7 +156,21 @@ async def run_generation(
     error: dict | None = None
     started = time.monotonic()
     hb_task: asyncio.Task | None = None
-    deadline_flag = {"hit": False}
+    # `mono` is the LIVE total-execution deadline (monotonic seconds), read every
+    # heartbeat tick. A TOOL event rolls it forward (below) so a skill/agent turn
+    # that legitimately runs many tools is bounded by tool INACTIVITY, not a fixed
+    # wall-clock; a plain no-tool turn never rolls it and keeps the hard deadline.
+    deadline_flag = {"hit": False, "mono": 0.0}
+
+    def _extend_deadline() -> None:
+        deadline_flag["mono"] = max(
+            deadline_flag["mono"],
+            time.monotonic() + settings.ai_agent_total_deadline_s,
+        )
+
+    # The shared writer is reused by every delegated sub-agent, so a sub-agent's
+    # tool events roll the parent turn's deadline too (the deep-audit case).
+    writer.on_tool_activity = _extend_deadline
     tools_ctx: ToolExecContext | None = None  # defined pre-try for the finally
 
     try:
@@ -162,11 +180,11 @@ async def run_generation(
         # ERR_DEADLINE). v2-OFF leaves this None -> armed just before the stream
         # exactly as before (byte-identical).
         if settings.ai_runtime_v2_enabled:
+            deadline_flag["mono"] = _compute_deadline_mono(req, started, settings)
             hb_task = asyncio.create_task(
                 _background_heartbeat(
                     writer,
                     settings.ai_heartbeat_ms,
-                    _compute_deadline_mono(req, started, settings),
                     asyncio.current_task(),
                     deadline_flag,
                 )
@@ -882,11 +900,11 @@ async def run_generation(
         # is exactly that case, so this wraps the whole iteration.
         last_beat = time.monotonic()
         if hb_task is None:  # v2 arms it earlier (before prep); else arm it here.
+            deadline_flag["mono"] = deadline_mono
             hb_task = asyncio.create_task(
                 _background_heartbeat(
                     writer,
                     settings.ai_heartbeat_ms,
-                    deadline_mono,
                     asyncio.current_task(),
                     deadline_flag,
                 )

@@ -173,12 +173,37 @@ async def test_background_heartbeat_fires_independently():
     writer = DeltaWriter(convex, "s1", s)
     far = asyncio.get_event_loop().time() + 1000  # deadline never fires here
     task = asyncio.create_task(
-        _background_heartbeat(writer, 10, far, asyncio.current_task(), {"hit": False})
+        _background_heartbeat(
+            writer, 10, asyncio.current_task(), {"hit": False, "mono": far}
+        )
     )
     await asyncio.sleep(0.05)  # ~5 ticks at 10ms
     task.cancel()
     beats = _ops(convex, "heartbeat")
     assert len(beats) >= 2  # fired without any model chunk
+
+
+async def test_tool_event_rolls_the_deadline_plain_event_does_not():
+    # A TOOL event proves the turn is actively tooling → the deadline rolls forward
+    # (so a deep audit is not killed); a non-tool event leaves it untouched (so a
+    # plain no-tool reply keeps its hard deadline).
+    import time
+
+    from app.models.events import EventType
+
+    s = make_settings("http://x")
+    writer = DeltaWriter(RecordingConvex(), "s1", s)
+    flag = {"hit": False, "mono": 0.0}
+    writer.on_tool_activity = lambda: flag.__setitem__(
+        "mono", max(flag["mono"], time.monotonic() + s.ai_agent_total_deadline_s)
+    )
+    before = time.monotonic()
+    await writer.emit_event(EventType.TOOL_CALL, tool_name="t", call_id="c1")
+    assert flag["mono"] >= before + s.ai_agent_total_deadline_s - 1  # rolled forward
+
+    flag["mono"] = 0.0
+    await writer.emit_event(EventType.CITATION, source_id="s1")  # not a tool event
+    assert flag["mono"] == 0.0  # untouched
 
 
 # ---- 3. total deadline -------------------------------------------------------

@@ -32,16 +32,24 @@ coordination and no queue depth to tune.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import random
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.clients.convex import ConvexClient, ConvexRejected, ConvexUnavailable
 from app.config import Settings
 from app.logging import get_logger, redact_obj, redact_text
 from app.models.events import EventType, make_event
+
+# A TOOL event means the turn is actively doing tool work — the signal that rolls
+# the total-execution deadline forward (see DeltaWriter.on_tool_activity).
+_TOOL_EVENT_TYPES = frozenset(
+    {EventType.TOOL_CALL, EventType.TOOL_RESULT, EventType.TOOL_PROGRESS}
+)
 
 log = get_logger(__name__)
 
@@ -99,6 +107,13 @@ class DeltaWriter:
         # after the graph routes to END and SKIPS finalize (the durable park is
         # already recorded; finalizing would drive waiting_approval -> done).
         self.suspended = False
+        # Set by the runner to roll the total-execution deadline forward whenever a
+        # TOOL event is emitted — so a skill/agent turn that legitimately runs many
+        # tools (e.g. a deep SEO audit) is NOT killed by the fixed deadline that
+        # bounds a plain no-tool reply. Fires for the parent AND every delegated
+        # sub-agent, since they share this one writer. A no-tool turn emits no tool
+        # events, so its deadline is untouched.
+        self.on_tool_activity: Callable[[], None] | None = None
         self._first_failure_at: float | None = None
         self.stats = WriterStats()
 
@@ -513,6 +528,13 @@ class DeltaWriter:
         so the durable ledger never persists a leaked token. Shape-based, so real
         args (query/url/id) are inert; the transient toolExecutions record (resume
         authority) is untouched, so replay/recovery stay exact."""
+        # A tool event proves the turn is actively doing tool work — roll the
+        # total-execution deadline forward so a long, legitimately-tool-heavy turn
+        # (a deep audit) is not cut off. Best-effort: a hook error never breaks the
+        # turn, and the hook is unset for a plain no-tool reply.
+        if type in _TOOL_EVENT_TYPES and self.on_tool_activity is not None:
+            with contextlib.suppress(Exception):  # bookkeeping is never fatal
+                self.on_tool_activity()
         if "arguments" in body:
             body["arguments"] = redact_obj(body["arguments"])
         if "result" in body:
