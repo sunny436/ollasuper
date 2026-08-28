@@ -151,8 +151,16 @@ _OUTPUT = (
     "If a draft is genuinely too long for one response, END AT A CLEAN SECTION "
     "BOUNDARY (never mid-sentence) and add `*…continued — reply 'continue' for the "
     "remaining sections: <list>*`. For ANALYZE/AUDIT/GEO of an existing URL, lead with "
-    "the SAME 5-category score block + a prioritised, root-caused fix list (observed "
-    "-> why it matters -> fix) — no progression arc (nothing was rewritten). Keep it "
+    "the SAME OllaSuper 5-category score block (with the caption). CRITICAL: a tool "
+    "such as aeo_page_audit returns its OWN scored categories (Discoverability, "
+    "Answerability, Citability, Structured data, …) — DO NOT echo or relay those "
+    "labels as the score. ALWAYS translate the tool's signals INTO the fixed five: "
+    "map discoverability/crawlability/metadata -> SEO + Technical; content depth -> "
+    "Content quality; sources/author/evidence -> E-E-A-T; structured data/schema -> "
+    "Technical; answerability/citation/snippet-readiness -> AI-Citation. The five "
+    "OllaSuper labels + the 'NOT a Google-ranking prediction' caption are MANDATORY on "
+    "EVERY score, no exceptions. Then a prioritised, root-caused fix list (observed -> "
+    "why it matters -> fix); no progression arc (nothing was rewritten). Keep it "
     "focused and useful — the most useful blog for the question asked."
 )
 
