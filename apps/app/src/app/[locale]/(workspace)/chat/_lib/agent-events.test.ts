@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
+  aggregateStatus,
   buildTimeline,
   errorCopy,
+  isSuppressedRun,
   parseEvent,
+  runRunningLabel,
   timelineSignature,
   toolLabel,
+  type ToolRunModel,
   type TypedEvent,
 } from "./agent-events";
 
@@ -253,5 +257,61 @@ describe("errorCopy", () => {
       retryable: true,
     });
     expect(errorCopy(null, null).message).toBe("Something went wrong.");
+  });
+});
+
+describe("execution pill helpers", () => {
+  const run = (over: Partial<ToolRunModel>): ToolRunModel => ({
+    callId: "c",
+    toolName: "seo_meta_audit_endpoint",
+    args: {},
+    status: "running",
+    startedTs: 0,
+    signature: "s",
+    ...over,
+  });
+
+  test("backend label rides through buildTimeline onto the run", () => {
+    const t = buildTimeline([
+      ev("TOOL_CALL", {
+        tool_name: "seo_meta_audit_endpoint",
+        tool_id: "seo_meta_audit_endpoint",
+        call_id: "c1",
+        label: "Auditing page metadata",
+      }),
+    ]);
+    expect(t.runs[0]?.label).toBe("Auditing page metadata");
+    expect(runRunningLabel(t.runs[0] as ToolRunModel)).toBe("Auditing page metadata");
+  });
+
+  test("runRunningLabel falls back to toolLabel when no backend label", () => {
+    expect(runRunningLabel(run({ toolName: "search_web", label: undefined }))).toBe(
+      toolLabel("search_web").running,
+    );
+  });
+
+  test("internal orchestration tools are suppressed", () => {
+    expect(isSuppressedRun({ toolName: "find_capabilities" })).toBe(true);
+    expect(isSuppressedRun({ toolName: "x", toolId: "delegate_to_agent" })).toBe(true);
+    expect(isSuppressedRun({ toolName: "seo_meta_audit_endpoint" })).toBe(false);
+  });
+
+  test("aggregateStatus is stable and honest", () => {
+    // one running → its own label
+    expect(
+      aggregateStatus([run({ label: "Auditing page metadata" })], true),
+    ).toEqual({ state: "running", label: "Auditing page metadata" });
+    // several running → count, not a jittery single tool name
+    expect(
+      aggregateStatus([run({ callId: "a" }), run({ callId: "b" })], true).label,
+    ).toBe("Working on 2 tasks");
+    // settled clean → done + count
+    expect(
+      aggregateStatus([run({ status: "success", endedTs: 1 })], false),
+    ).toEqual({ state: "done", label: "Done · 1 step" });
+    // any failure → error state
+    expect(aggregateStatus([run({ status: "error", endedTs: 1 })], false).state).toBe(
+      "error",
+    );
   });
 });

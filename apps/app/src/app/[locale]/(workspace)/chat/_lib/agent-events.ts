@@ -37,6 +37,8 @@ export type ParsedEvent =
       callId: string;
       toolName: string;
       toolId?: string;
+      /** Backend-stamped human-readable action phrase ("Auditing page metadata"). */
+      label?: string;
       status: string;
       args: Record<string, unknown>;
     }
@@ -175,6 +177,7 @@ export function parseEvent(e: TypedEvent): ParsedEvent {
         callId,
         toolName: str(b, "tool_name") ?? "tool",
         toolId: str(b, "tool_id"),
+        label: str(b, "label"),
         status: str(b, "status") ?? "running",
         args: obj(b.arguments),
       };
@@ -267,6 +270,8 @@ export interface ToolRunModel {
   callId: string;
   toolName: string;
   toolId?: string;
+  /** Backend-stamped action phrase; the pill prefers it over toolLabel(). */
+  label?: string;
   args: Record<string, unknown>;
   status: ToolStatus;
   startedTs: number;
@@ -361,6 +366,7 @@ export function buildTimeline(events: TypedEvent[] | undefined): TimelineModel {
           callId: e.callId,
           toolName: e.toolName,
           toolId: e.toolId,
+          label: e.label,
           args: e.args,
           status: "running",
           startedTs: e.ts,
@@ -525,6 +531,60 @@ export function toolLabel(toolName: string, toolId?: string): ToolLabel {
   }
   const nice = titleCase(name);
   return { icon: "🔧", running: `Running ${nice}`, noun: nice };
+}
+
+// ---------------------------------------------------------------------------
+// Execution-status pill helpers — suppression + a stable aggregate header.
+// ---------------------------------------------------------------------------
+
+/** Internal orchestration tools — not user-meaningful "steps", hidden from the
+ *  pill (the "Find Capabilities" noise). App-level constants, not per-SEO-tool. */
+export const SUPPRESSED_TOOLS: ReadonlySet<string> = new Set([
+  "find_capabilities",
+  "delegate_to_agent",
+  "request_clarification",
+]);
+
+export function isSuppressedRun(run: {
+  toolName: string;
+  toolId?: string;
+}): boolean {
+  return SUPPRESSED_TOOLS.has(run.toolId ?? "") || SUPPRESSED_TOOLS.has(run.toolName);
+}
+
+/** A run's present-progressive phrase: the backend label first, else the generic
+ *  frontend derivation — so a tool without a curated label still never shows raw. */
+export function runRunningLabel(run: ToolRunModel): string {
+  return run.label?.trim() ? run.label : toolLabel(run.toolName, run.toolId).running;
+}
+
+export interface AggregateStatus {
+  state: "running" | "done" | "error";
+  label: string;
+}
+
+/**
+ * The single, stable header for the execution pill. Keys on the SET of running
+ * runs (not per-progress ticks), so the header never jitters:
+ *  exactly one running → its own label; several running → "Working on N tasks";
+ *  none running mid-stream → "Working"; settled → "Done · N steps" / failure.
+ * Expects the already-VISIBLE (non-suppressed) runs.
+ */
+export function aggregateStatus(
+  runs: ToolRunModel[],
+  isStreaming: boolean,
+): AggregateStatus {
+  const running = runs.filter((r) => r.status === "running");
+  const failed = runs.some((r) => r.status === "error");
+  const one = running[0];
+  if (running.length === 1 && one)
+    return { state: "running", label: runRunningLabel(one) };
+  if (running.length > 1)
+    return { state: "running", label: `Working on ${running.length} tasks` };
+  if (isStreaming && runs.length > 0) return { state: "running", label: "Working" };
+  if (failed) return { state: "error", label: "Some steps didn’t complete" };
+  const n = runs.length;
+  return { state: "done", label: `Done · ${n} step${n === 1 ? "" : "s"}` };
 }
 
 // ---------------------------------------------------------------------------

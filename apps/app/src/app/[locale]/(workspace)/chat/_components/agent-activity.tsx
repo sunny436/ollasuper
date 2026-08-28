@@ -1,17 +1,52 @@
 "use client";
 
+import { AlertCircle, Check, ChevronDown, Loader2 } from "lucide-react";
 import { memo, useMemo } from "react";
 import {
+  aggregateStatus,
   buildTimeline,
+  isSuppressedRun,
+  runRunningLabel,
   type ToolRunModel,
   timelineSignature,
-  toolLabel,
   type TypedEvent,
 } from "../_lib/agent-events";
 import { ApprovalCard } from "./approval-card";
-import { Badge, Disclosure, StatusDot } from "./agent-primitives";
+import { Badge, Disclosure } from "./agent-primitives";
 import { LazyMarkdown } from "./lazy-markdown";
 import { Mermaid } from "./mermaid";
+
+/** The one status icon for the pill + each row: spinner / check / alert, each with
+ *  sr-only text (never color-only). Reduced-motion drops the spin, not the icon. */
+function StateIcon({
+  state,
+  className = "h-3.5 w-3.5",
+}: {
+  state: "running" | "done" | "error";
+  className?: string;
+}) {
+  if (state === "running")
+    return (
+      <span className="inline-flex" role="img" aria-label="in progress">
+        <Loader2 className={`${className} animate-spin text-brand-ink motion-reduce:animate-none`} />
+      </span>
+    );
+  if (state === "error")
+    return (
+      <span className="inline-flex" role="img" aria-label="failed">
+        <AlertCircle className={`${className} text-destructive`} />
+      </span>
+    );
+  return (
+    <span className="inline-flex" role="img" aria-label="completed">
+      <Check className={`${className} text-brand-ink`} />
+    </span>
+  );
+}
+
+function runState(run: ToolRunModel): "running" | "done" | "error" {
+  return run.status === "running" ? "running" : run.status === "error" ? "error" : "done";
+}
 
 /**
  * The agent-activity timeline: paired tool runs rendered ABOVE the answer body,
@@ -41,15 +76,21 @@ export function AgentActivity({
     [timelineSignature(events)],
   );
 
-  if (!timeline.hasActivity) return null;
+  // Internal orchestration tools (find_capabilities / delegate / clarify) are not
+  // user-meaningful steps — hide them so the pill shows only real work.
+  const visibleRuns = timeline.runs.filter((r) => !isSuppressedRun(r));
 
-  const current = timeline.runs.find((r) => r.status === "running");
+  // Render nothing unless there is real activity to show (or a pending approval) —
+  // a turn whose only tool was suppressed must not leave an empty shell.
+  if (visibleRuns.length === 0 && !timeline.approval) return null;
+
+  const current = visibleRuns.find((r) => r.status === "running");
 
   return (
     <div data-agent-activity className="mb-2.5 flex flex-col gap-1.5">
-      {timeline.runs.map((run) => (
-        <ToolRun key={run.callId} run={run} />
-      ))}
+      {visibleRuns.length > 0 && (
+        <ExecutionStatus runs={visibleRuns} isStreaming={isStreaming} />
+      )}
       {timeline.approval && (
         <ApprovalCard
           approval={timeline.approval}
@@ -66,12 +107,65 @@ export function AgentActivity({
           without re-reading the whole timeline. */}
       {isStreaming && current && (
         <span className="sr-only" aria-live="polite">
-          {toolLabel(current.toolName, current.toolId).running}
+          {runRunningLabel(current)}
         </span>
       )}
     </div>
   );
 }
+
+/**
+ * The unified live execution pill: ONE compact, collapsible status that
+ * aggregates every tool run into a single conversational line. Collapsed by
+ * default — the chevron reveals the per-run detail. Parallel runs are just the
+ * independent rows (buildTimeline keys them by call_id); nothing here fakes
+ * concurrency or duplicates state. Repaints only when an event appends.
+ */
+function ExecutionStatusImpl({
+  runs,
+  isStreaming,
+}: {
+  runs: ToolRunModel[];
+  isStreaming: boolean;
+}) {
+  const agg = aggregateStatus(runs, isStreaming);
+  return (
+    <Disclosure
+      className="rounded-full border border-border/60 bg-card/40 px-3 py-1 text-xs open:rounded-2xl"
+      summary={
+        <>
+          <StateIcon state={agg.state} />
+          <span className="min-w-0 flex-1 truncate text-primary/80">
+            {agg.label}
+          </span>
+          {runs.length > 1 && (
+            <span className="shrink-0 tabular-nums text-[11px] text-primary/40">
+              {runs.filter((r) => r.status !== "running").length}/{runs.length}
+            </span>
+          )}
+          <ChevronDown
+            aria-hidden
+            className="h-3.5 w-3.5 shrink-0 text-primary/40 transition-transform duration-200 group-open/disc:rotate-180"
+          />
+        </>
+      }
+    >
+      <div className="flex flex-col gap-1 pl-0.5">
+        {runs.map((run) => (
+          <ToolRun key={run.callId} run={run} />
+        ))}
+      </div>
+    </Disclosure>
+  );
+}
+
+export const ExecutionStatus = memo(
+  ExecutionStatusImpl,
+  (a, b) =>
+    a.isStreaming === b.isStreaming &&
+    a.runs.length === b.runs.length &&
+    a.runs.every((r, i) => r.signature === b.runs[i]?.signature),
+);
 
 function resultSummary(result: unknown): string | null {
   if (!result || typeof result !== "object") return null;
@@ -101,25 +195,24 @@ function hasPreviewContent(result: unknown): boolean {
 }
 
 function ToolRunImpl({ run }: { run: ToolRunModel }) {
-  const label = toolLabel(run.toolName, run.toolId);
-  const state =
-    run.status === "running"
-      ? "running"
-      : run.status === "success"
-        ? "done"
-        : "error";
+  const label = runRunningLabel(run);
+  const state = runState(run);
   const duration =
     run.endedTs != null ? (run.endedTs - run.startedTs) / 1000 : undefined;
   const summary = resultSummary(run.result);
   const pct = run.progress ? Math.round(run.progress.progress * 100) : null;
 
   return (
-    <div className="rounded-lg border border-border/60 bg-card/40 px-2.5 py-1.5 text-xs">
+    <div className="text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <span aria-hidden>{label.icon}</span>
-        <StatusDot state={state} />
-        <span className="text-primary/80 [overflow-wrap:anywhere]">
-          {run.status === "running" ? `${label.running}…` : label.noun}
+        <StateIcon state={state} />
+        {/* Completed rows are quieter than the active one (the icon carries state). */}
+        <span
+          className={`[overflow-wrap:anywhere] ${
+            run.status === "running" ? "text-primary/80" : "text-primary/50"
+          }`}
+        >
+          {label}
         </span>
         {run.status === "success" && summary && (
           <Badge tone="brand">{summary}</Badge>
@@ -132,14 +225,14 @@ function ToolRunImpl({ run }: { run: ToolRunModel }) {
       </div>
 
       {run.status === "running" && run.progress?.message && (
-        <p className="mt-1 text-primary/50 [overflow-wrap:anywhere]">
+        <p className="mt-0.5 pl-5 text-primary/50 [overflow-wrap:anywhere]">
           {run.progress.message}
         </p>
       )}
 
       {run.status === "success" && hasPreviewContent(run.result) && (
         <Disclosure
-          className="mt-1"
+          className="mt-0.5 pl-5"
           summary={
             <span className="text-[11px] text-primary/50 hover:text-primary/70">
               View result

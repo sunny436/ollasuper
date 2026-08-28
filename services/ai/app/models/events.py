@@ -86,6 +86,11 @@ class ToolCallPayload(_ExecutionFields):
     # TOOL_RESULT) without re-discovering the tool. Absent → resume fails safe
     # (treats it as side-effecting → INDETERMINATE, never re-executes).
     side_effect: str | None = None
+    # UI: a human-readable present-progressive action phrase ("Auditing page
+    # metadata"), injected once at the emit chokepoint (writer.emit_event) so the
+    # unified execution-status pill never shows a raw endpoint name. Optional +
+    # additive: absent on older events → the frontend derives its own fallback.
+    label: str | None = None
 
 
 class ToolResultPayload(_ExecutionFields):

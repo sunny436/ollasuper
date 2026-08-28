@@ -40,6 +40,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from app.agent.tool_labels import action_label
 from app.clients.convex import ConvexClient, ConvexRejected, ConvexUnavailable
 from app.config import Settings
 from app.logging import get_logger, redact_obj, redact_text
@@ -500,6 +501,14 @@ class DeltaWriter:
             body["result"] = redact_obj(body["result"])
         if isinstance(body.get("content"), str):
             body["content"] = redact_text(body["content"])
+        # The ONE chokepoint every TOOL_CALL passes through (generic + reserved
+        # tools) — stamp a human-readable action label for the execution-status UI
+        # so it never renders a raw endpoint name. Guarded: a label never blocks a
+        # tool call.
+        if type is EventType.TOOL_CALL and "label" not in body:
+            body["label"] = action_label(
+                str(body.get("tool_name") or ""), body.get("tool_id")
+            )
         envelope = make_event(
             type,
             self._event_seq,
