@@ -35,6 +35,7 @@ from langgraph.graph.message import add_messages
 
 from app.agent.budget import fit_messages
 from app.agent.executor import execute_tool_calls
+from app.agent.harmony import recover_into_message
 from app.models.events import EventType
 
 if TYPE_CHECKING:
@@ -161,6 +162,13 @@ def _build_agent_graph(
         )
         t0 = time.monotonic()
         response = await client.ainvoke(messages)
+        # Recover gpt-5.6-luna "harmony" tool-call leaks: the gateway sometimes
+        # serializes tool calls into `.content` as text instead of `.tool_calls`,
+        # so route_after_model would end the step and the calls would never run
+        # (breaking multi-step audits). Parse them back into real tool_calls and
+        # clean the content so the leak neither drops calls nor pollutes history.
+        # NO-OP on any content without a harmony marker.
+        recover_into_message(response)
         # Phase 8: the model-decision half of the trace (post-hoc, no TTFT hit).
         await _emit_model_call(tools_ctx, response, time.monotonic() - t0)
         return {"messages": [response]}

@@ -34,6 +34,7 @@ from app.agent.executor import (
 )
 from app.agent.filegen_tool import GENERATE_FILE_TOOL_SPEC
 from app.agent.graph import build_graph
+from app.agent.harmony import HarmonyStreamFilter
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
 from app.agent.llm import build_llm
 from app.agent.memory import (
@@ -887,6 +888,11 @@ async def run_generation(
                     deadline_flag,
                 )
             )
+        # Strip gpt-5.6-luna "harmony" tool-call leaks out of the visible stream
+        # (recovery into real tool_calls happens in the graph's model node). The
+        # filter is a pass-through until a `to=functions.`/`multi_tool_use.parallel`
+        # marker appears, so normal text streams byte-for-byte with no added latency.
+        harmony_filter = HarmonyStreamFilter()
         async with aclosing(graph.astream(state, stream_mode="messages")) as stream:
             async for chunk, metadata in stream:
                 # Only the model node's output is user-visible. Tool nodes added
@@ -894,9 +900,11 @@ async def run_generation(
                 if metadata.get("langgraph_node") != "model":
                     continue
 
-                text = _chunk_text(chunk)
-                if text:
-                    await writer.push(text)
+                raw = _chunk_text(chunk)
+                if raw:
+                    text = harmony_filter.feed(raw)
+                    if text:
+                        await writer.push(text)
 
                 # Sum token usage ACROSS the multi-step loop (each model call
                 # reports its own usage on its final chunk) — the old code kept
@@ -924,6 +932,11 @@ async def run_generation(
                         status = "cancelled"
                         return
 
+        # Release any text the harmony filter was holding (an unterminated marker
+        # at the very end resolves to nothing; real trailing prose is emitted).
+        tail = harmony_filter.flush()
+        if tail:
+            await writer.push(tail)
         await writer.flush(force=True)
         # Phase 8: a tool parked awaiting approval routed the graph to END. The
         # durable approval + suspend is already recorded in Convex; do NOT
