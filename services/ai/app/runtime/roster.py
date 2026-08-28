@@ -28,7 +28,6 @@ from app.agent.spec import (
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.intents import register_intents
 from app.orchestrator.orchestrator import AgentRegistry, Orchestrator
-from app.seo.agent import SEO_AGENT
 from app.seo.capabilities import seo_intent_map
 from app.seo.skill import SEO_SKILL
 from app.skills.manifest import SkillManifest
@@ -140,13 +139,11 @@ PRODUCTION_SKILLS: list[SkillManifest] = [
 
 
 def effective_agents(settings: Settings | None = None) -> list[AgentSpec]:
-    """The live agent roster for these settings — the static roster plus any
-    flag-gated specialists. `ai_seo_enabled` appends the ONE SEO agent; OFF (or no
-    settings) is byte-identical to `PRODUCTION_AGENTS`."""
-    agents = list(PRODUCTION_AGENTS)
-    if settings is not None and getattr(settings, "ai_seo_enabled", False):
-        agents.append(SEO_AGENT)
-    return agents
+    """The live agent roster. SEO is NO LONGER a delegated sub-agent — the SEO audit
+    runs INLINE in the main turn (guided by SEO_SKILL) and streams a markdown report,
+    so the roster is just `PRODUCTION_AGENTS`. `settings` is kept for signature
+    compatibility with the skill roster + call sites."""
+    return list(PRODUCTION_AGENTS)
 
 
 def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:

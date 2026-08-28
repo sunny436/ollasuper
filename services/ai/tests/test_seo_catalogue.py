@@ -8,11 +8,6 @@ UNSUPPORTED rather than a fabricated value, and the report can never carry a
 
 from __future__ import annotations
 
-import jsonschema
-import pytest
-from pydantic import ValidationError
-
-from app.seo.agent import SEO_AGENT
 from app.seo.capabilities import (
     ALLOWED_CATEGORIES,
     ALLOWED_TOOL_IDS,
@@ -20,15 +15,7 @@ from app.seo.capabilities import (
     seo_intent_map,
 )
 from app.seo.checks import KNOWN_GAPS, SEO_CHECKS, checks_digest
-from app.seo.models import (
-    OUTPUT_SCHEMA,
-    SEO_AGENT_OUTPUT_SCHEMA,
-    EvidenceRecord,
-    FindingStatus,
-    SEOFinding,
-    SEOReport,
-    Severity,
-)
+from app.seo.models import Severity
 from app.seo.skill import SEO_SKILL
 from tests.fakes.seo_tools import category_for
 
@@ -121,103 +108,6 @@ def test_no_check_promises_a_ranking_guarantee():
     for chk in SEO_CHECKS:
         blob = (chk.expected + " " + chk.verification).lower()
         assert not any(b in blob for b in banned), chk.check_id
-
-
-# --- typed output contract -------------------------------------------------
-def test_report_has_no_numeric_score():
-    # No 0-100 score anywhere: not a model field, not a schema property.
-    assert "score" not in SEOReport.model_fields
-    props = OUTPUT_SCHEMA.get("properties", {})
-    assert not any("score" in k.lower() for k in props), list(props)
-
-
-def test_output_schema_is_strict():
-    # The STRICT SEOReport schema still governs the deterministic durable-run report.
-    assert OUTPUT_SCHEMA.get("additionalProperties") is False
-    assert "target" in OUTPUT_SCHEMA.get("properties", {})
-
-
-def test_seo_agent_is_gated_on_the_lenient_schema():
-    # The SUB-AGENT is gated leniently so build_envelope's salvage — not a formatting
-    # technicality — decides the audit. Requires only a `checks_performed` array and
-    # does NOT forbid additional properties.
-    schema = SEO_AGENT.output.schema
-    assert schema is SEO_AGENT_OUTPUT_SCHEMA
-    assert schema.get("additionalProperties") is not False
-    assert schema.get("required") == ["checks_performed"]
-    # A good report with extra keys + a loose scalar type (evidence_freshness as an
-    # object) passes — the strict schema would have failed it and produced FAILED.
-    jsonschema.validate(
-        instance={
-            "target": "https://x",
-            "checks_performed": [],
-            "evidence_freshness": {"note": "an object, not a string"},
-            "prioritised_action_plan": ["do X"],
-        },
-        schema=schema,
-    )
-    # But findings hidden under the wrong key (no checks_performed) still fails, so the
-    # key-naming repair pass is triggered rather than silently emitting an empty report.
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(instance={"findings": []}, schema=schema)
-
-
-def _valid_report() -> dict:
-    finding = SEOFinding(
-        check_id="crawl_index.robots_blocks_important",
-        intent="robots.analyze",
-        status=FindingStatus.PASS,
-        observation="robots.txt allows all important paths",
-        expected="important pages + CSS/JS are crawlable",
-        evidence=[EvidenceRecord(tool_id="intel_robots", intent="robots.analyze")],
-        severity=Severity.INFO,
-        confidence=0.9,
-        recommendation="",
-        verification="re-fetch robots.txt",
-    )
-    return SEOReport(
-        target="https://example.com",
-        coverage=["robots.analyze"],
-        checks_performed=[finding],
-        passed=["crawl_index.robots_blocks_important"],
-        business_exposure="low: no crawl/index blockers observed",
-    ).model_dump()
-
-
-def test_valid_report_validates():
-    jsonschema.validate(instance=_valid_report(), schema=OUTPUT_SCHEMA)
-
-
-def test_hallucinated_key_fails_validation():
-    bad = _valid_report()
-    bad["seo_score"] = 87  # a fabricated numeric score
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(instance=bad, schema=OUTPUT_SCHEMA)
-
-
-def test_out_of_enum_status_is_rejected():
-    with pytest.raises(ValidationError):
-        SEOFinding(check_id="x", status="LOOKS_FINE")  # not a FindingStatus
-
-
-def test_confidence_is_bounded():
-    with pytest.raises(ValidationError):
-        SEOFinding(
-            check_id="x", status=FindingStatus.WARN, confidence=1.5
-        )  # ge=0, le=1
-
-
-def test_unsupported_is_a_first_class_status():
-    # An honest capability gap is representable WITHOUT any fabricated data.
-    f = SEOFinding(
-        check_id="gap.core_web_vitals",
-        status=FindingStatus.UNSUPPORTED,
-        observation="",
-        expected="LCP<=2.5s, INP<=200ms, CLS<=0.1 at CrUX 75th pct",
-        recommendation="connect CrUX/PageSpeed to measure field data",
-        data_quality_flags=["requires_crux_psi"],
-    )
-    assert f.status is FindingStatus.UNSUPPORTED
 
 
 # --- the skill guidance encodes the honesty rules --------------------------

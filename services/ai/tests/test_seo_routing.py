@@ -52,15 +52,17 @@ def test_flag_off_seo_skill_never_activates():
     assert "seo-audit" not in ids
 
 
-# --- flag ON registers exactly one skill + one agent -----------------------
-def test_flag_on_appends_one_skill_and_one_agent():
+# --- flag ON registers the SKILL only (SEO is NOT a delegated agent) --------
+def test_flag_on_appends_the_skill_and_no_agent():
+    # The SEO audit runs INLINE in the main turn (streamed markdown report), so the
+    # flag adds only the guidance skill — never a delegated sub-agent or delegate role.
     agents = effective_agents(_on())
     skills = effective_skills(_on())
-    assert [a for a in agents if a.agent_id == "seo"], "SEO agent not registered"
-    assert len(agents) == len(PRODUCTION_AGENTS) + 1  # exactly ONE agent added
+    assert not [a for a in agents if a.agent_id == "seo"], "SEO must NOT be an agent"
+    assert agents == list(PRODUCTION_AGENTS)  # roster unchanged by the flag
     assert len([s for s in skills if s.skill_id == "seo-audit"]) == 1
     assert len(skills) == len(PRODUCTION_SKILLS) + 1  # exactly ONE skill added
-    assert "seo" in _delegate_roles(_on())
+    assert "seo" not in _delegate_roles(_on())
 
 
 # --- the SEO skill activates on SEO requests (and only those) --------------
@@ -94,16 +96,7 @@ def test_every_delegate_role_is_registered_on():
     roles = set(_delegate_roles(_on()))
     registered = {a.agent_id for a in effective_agents(_on())}
     assert roles <= registered
-    assert "seo" in roles
-
-
-def test_delegate_description_names_the_seo_specialist_when_enabled():
-    # The function-level description (not just the role enum) must advertise the
-    # flag-gated SEO specialist, so the model delegates a whole-site audit to it
-    # instead of doing the audit inline.
-    desc = build_delegate_spec(_on())["function"]["description"]
-    assert "seo" in desc and "SEO specialist" in desc
-    assert "'document'" not in desc  # no stale hardcoded example list
+    assert "seo" not in roles  # SEO is a skill, not a delegated agent
 
 
 # --- build_live_runtime wires the SEO surface + intents when the flag is on -
@@ -112,10 +105,10 @@ def _resolver() -> CapabilityResolver:
     return CapabilityResolver(reg, ToolSelector(reg))
 
 
-def test_build_live_runtime_on_registers_agent_skill_and_intents():
+def test_build_live_runtime_on_registers_skill_and_intents():
     orch, skill_reg = build_live_runtime(_on(), _resolver())
-    # the SEO agent is delegatable through the orchestrator registry...
-    assert orch._registry.get("seo") is not None
+    # SEO is NOT a delegated agent (it runs inline)...
+    assert orch._registry.get("seo") is None
     # ...the SEO skill is discoverable...
     assert skill_reg.get("seo-audit") is not None
     # ...and the SEO capability intents resolved into the global map WITHOUT

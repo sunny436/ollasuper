@@ -382,10 +382,6 @@ class Orchestrator:
             result = await Agent.run(
                 spec, task, sub_env, system_prefix=prepared.rendered_skills
             )
-            # Phase 3: persist a structured report artifact for a report-emitting spec
-            # (e.g. the SEO agent) HERE — the last place `result.data` exists before
-            # `to_observation()` drops it. Best-effort: never fails the turn.
-            await self._maybe_emit_report(env, spec, result, sub_env)
             if v2:
                 # Bounded, structured handoff back (carries metrics for cross-agent
                 # usage aggregation + data/error instead of raw-text-only).
@@ -397,45 +393,6 @@ class Orchestrator:
             }
 
         return delegate
-
-    @staticmethod
-    async def _maybe_emit_report(env, spec, result, sub_env) -> None:
-        """Bridge a report-emitting sub-agent result to the report emitter on the env.
-        The orchestrator stays feature-agnostic: it knows only `report_kind` +
-        `report_emitter` (a callable), never the SEO module. `sub_env.delegation_id`
-        is the resume-stable idempotency key (empty on the v1-off path)."""
-        kind = getattr(spec.output, "report_kind", "")
-        emitter = getattr(env, "report_emitter", None)
-        if not kind or emitter is None:
-            return
-        run_meta = {
-            "stream_id": getattr(sub_env, "run_id", ""),
-            "delegation_id": getattr(sub_env, "delegation_id", ""),
-        }
-        try:
-            if result.outcome is AgentOutcome.STRUCTURED_RESULT and isinstance(
-                result.data, dict
-            ):
-                await emitter(kind, result.data, run_meta)
-            elif result.outcome is AgentOutcome.FAILURE:
-                reason = ""
-                if isinstance(result.error, dict):
-                    reason = str(
-                        result.error.get("detail") or result.error.get("code") or ""
-                    )
-                await emitter(kind, None, run_meta, reason)
-        except Exception as e:  # noqa: BLE001 — a report emission must never fail the turn
-            # Capture the normalized cause (class + bounded message) — a bare
-            # "emit_failed" with no detail is undiagnosable in prod. ConvexRejected/
-            # ToolError messages are already user-safe (no provider text/creds).
-            log.warning(
-                "report.emit_failed",
-                extra={
-                    "agent_id": spec.agent_id,
-                    "err": type(e).__name__,
-                    "detail": str(e)[:200],
-                },
-            )
 
     @staticmethod
     def _to_result(
