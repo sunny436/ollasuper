@@ -26,6 +26,23 @@ def test_plain_text_is_untouched():
     assert cleaned == text
 
 
+def test_orphan_to_prefix_glued_to_heading_is_stripped():
+    # The gateway truncated a `to=functions.…` marker to a bare `to=` and glued it
+    # onto the report heading (seen in prod: `to=# SEO Audit`).
+    text = "auditing the pages directly.\n\nto=# SEO Audit — networkershome.com"
+    calls, cleaned = parse_harmony_calls(text)
+    assert calls == []
+    assert "to=#" not in cleaned
+    assert "# SEO Audit — networkershome.com" in cleaned
+    assert _drive(list(text)).endswith("# SEO Audit — networkershome.com")
+
+
+def test_real_equals_signs_survive():
+    # `to=` followed by a word char (a real token) is never touched.
+    text = "Set the header cache-control to=max-age and route=abc."
+    assert parse_harmony_calls(text)[1] == text
+
+
 def test_recover_is_noop_without_marker():
     m = _Msg("A perfectly normal reply.")
     assert recover_into_message(m) is False

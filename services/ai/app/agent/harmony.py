@@ -37,6 +37,11 @@ _MARKER_RE = re.compile(
 _SEP_RE = re.compile(r"[ \t]*(?:\(json|code:|json|\()")
 # Stray harmony channel control tokens (pure noise if they leak).
 _CTRL_RE = re.compile(r"<\|[^|>]*\|>")
+# An orphaned recipient prefix — the gateway truncated a `to=functions.…` marker to
+# a bare `to=` and glued it onto prose (`to=# SEO Audit`). Strip `to=` ONLY when it
+# is not followed by an identifier char, so real words are never touched (a full
+# `to=functions.…` is consumed by the marker logic before this runs).
+_ORPHAN_RE = re.compile(r"to=(?![A-Za-z0-9_.])")
 # How far past a marker to look for its `{...}` args before giving up.
 _SCAN_WINDOW = 200
 
@@ -135,8 +140,8 @@ def parse_harmony_calls(text: str) -> tuple[list[dict], str]:
     Returns (recovered_calls, cleaned_text). A NO-OP (returns ([], text)) when no
     marker is present, so it is safe to call on every message.
     """
-    if "to=functions." not in text and "multi_tool_use.parallel" not in text:
-        return [], _CTRL_RE.sub("", text) if "<|" in text else text
+    if "to=" not in text and "multi_tool_use.parallel" not in text and "<|" not in text:
+        return [], text
     calls: list[dict] = []
     out: list[str] = []
     i = 0
@@ -168,7 +173,7 @@ def parse_harmony_calls(text: str) -> tuple[list[dict], str]:
                 continue
             # Truncated/unbalanced JSON: fall through and strip to the boundary.
         i = boundary
-    cleaned = "".join(out)
+    cleaned = _ORPHAN_RE.sub("", "".join(out))
     if "<|" in cleaned:
         cleaned = _CTRL_RE.sub("", cleaned)
     return calls, cleaned
@@ -264,10 +269,12 @@ class HarmonyStreamFilter:
         buf = self._pending
         last = self._last_marker(buf)
         if last == -1:
-            # No complete marker: emit all but a possible partial-marker tail.
+            # No complete marker: emit all but a possible partial-marker tail, but
+            # still scrub an orphaned `to=` / control token from what we emit.
             keep = self._partial_tail(buf)
             self._pending = buf[len(buf) - keep :] if keep else ""
-            return buf[: len(buf) - keep] if keep else buf
+            emit = buf[: len(buf) - keep] if keep else buf
+            return parse_harmony_calls(emit)[1]
         if self._tail_is_open(buf, last):
             # The last span is unfinished — emit everything before it (resolving
             # any earlier complete spans), hold from the open marker onward.
