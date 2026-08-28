@@ -66,6 +66,24 @@ CAPABILITY_ORIENTATION = (
     "job. When you use retrieved information, ground your answer in it."
 )
 
+# Parallel tool-use directive — appended to the agentic orientation AND to any
+# tool-bound sub-agent's prompt (base.Agent.run). The executor already runs a
+# step's tool calls concurrently; this makes the model actually BATCH the
+# independent ones instead of one-per-step, without ever batching a dependent call
+# (so results stay complete + correct). Generic: applies to every current/future
+# tool and agent workflow.
+PARALLEL_TOOL_GUIDANCE = (
+    "PARALLELISM: when you need several tools whose inputs you ALREADY have and "
+    "whose results do NOT depend on each other, call them TOGETHER in ONE step so "
+    "they run at the same time instead of one after another. For example, run all "
+    "the independent checks on a page (robots, sitemap, headers, redirects, "
+    "mixed-content, broken-links, structured-data, meta) at once, and audit "
+    "several pages at once. ONLY do a tool by itself first when a later tool "
+    "genuinely needs its output (e.g. crawl or read the sitemap BEFORE auditing the "
+    "specific URLs it returns). Batching independent calls must never change WHICH "
+    "checks you run or your conclusions — it only makes them finish faster."
+)
+
 
 def build_system_prompt(
     *,
@@ -81,7 +99,11 @@ def build_system_prompt(
     # The agentic orientation LEADS so it survives a user's custom instructions
     # (which replace the persona base, never the core capability behavior). Only
     # included when the model actually has capabilities this turn.
-    parts = [CAPABILITY_ORIENTATION, persona] if agentic else [persona]
+    parts = (
+        [CAPABILITY_ORIENTATION, PARALLEL_TOOL_GUIDANCE, persona]
+        if agentic
+        else [persona]
+    )
     if about and about.strip():
         parts.append(f"<about_the_user>\n{about.strip()}\n</about_the_user>")
     if style and style.strip():

@@ -3,6 +3,8 @@ mapper and the sitemap-driven discoverer, tested hermetically with a fake adapte
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.clients.ollagraph import ToolError, ToolErrorKind
@@ -351,3 +353,50 @@ async def test_site_audit_tool_failure_is_coverage_gap_not_fatal(monkeypatch):
     fs = _by_id((await _backend(a).crawl(["https://x/"], _step())).findings)
     assert "technical.https_ssl" not in fs  # no fabrication on failure
     assert fs["crawl_index.robots_txt"]["status"] == "PASS"  # audit continued
+
+
+# --- parallel crawl is identical to sequential (the core correctness proof) ----
+
+
+class _ReorderAdapter:
+    """url-distinct responses + a variable delay so completion order is the REVERSE
+    of submission order — proving the crawl aggregates by INPUT order (gather), not
+    the order results happen to land in."""
+
+    def __init__(self) -> None:
+        self._n = 0
+
+    async def call_tool(self, tool, payload, *, input_schema=None, user_id="",
+                        workspace_id="", idempotency_key=None):
+        self._n += 1
+        await asyncio.sleep(0.02 / self._n)  # earlier submissions finish LAST
+        url = payload.get("url", "")
+        data = {**CLEAN, "canonical": url} if tool.tool_id == META_AUDIT_TOOL else {}
+        return {"ok": True, "tool_id": tool.tool_id, "data": data}
+
+
+def _backend_conc(adapter, n: int) -> OllagraphSeoBackend:
+    return OllagraphSeoBackend(
+        adapter, _FakeRegistry(), Settings(ai_seo_crawl_concurrency=n), user_id="u1"
+    )
+
+
+async def test_parallel_crawl_output_identical_to_sequential():
+    # THE HARD CONSTRAINT: concurrency must not change the result. The pool-sized
+    # parallel run must yield rows/findings/counts IDENTICAL to a strictly sequential
+    # (concurrency=1) run over the same responses, with findings in `urls` order even
+    # though completion order is reversed.
+    urls = [f"https://x/p{i}" for i in range(8)]
+    step = _step()  # target https://x/ not in urls → per-URL audits only
+    par = await _backend_conc(_ReorderAdapter(), 16).crawl(urls, step)
+    seq = await _backend_conc(_ReorderAdapter(), 1).crawl(urls, step)
+    assert par.rows == seq.rows
+    assert par.findings == seq.findings
+    assert par.counts == seq.counts
+    assert par.cost == seq.cost == 8.0
+    # Aggregation stayed in URL order despite reversed completion.
+    canon = [
+        f["observation"] for f in par.findings
+        if f["check_id"] == "crawl_index.canonical_consistency"
+    ]
+    assert canon == [f"Canonical: https://x/p{i}." for i in range(8)]

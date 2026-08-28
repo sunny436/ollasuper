@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
 from app.agent.budget import cumulative_tokens
+from app.agent.context import PARALLEL_TOOL_GUIDANCE
 from app.agent.executor import ToolExecContext, build_tool_specs
 from app.agent.graph import build_graph
 from app.agent.orchestration_tools import (
@@ -286,6 +287,14 @@ class Agent:
                     llm_tools = None
 
         use_tools = llm_tools is not None and ctx is not None
+        if use_tools:
+            # A tool-bound sub-agent (SEO and any future one) gets the same
+            # parallel-batching directive as the main model, so it calls independent
+            # tools together instead of one-per-step. The executor already runs a
+            # step's calls concurrently.
+            system_prompt = "\n\n".join(
+                p for p in (system_prompt, PARALLEL_TOOL_GUIDANCE) if p
+            )
         graph = (
             build_graph(env.llm, llm_tools=llm_tools, tools_ctx=ctx)
             if use_tools
