@@ -74,6 +74,57 @@ function classify(
   throw new ConvexError(`Unsupported file type: ${ct || "unknown"}`);
 }
 
+const _XLSX_MIME =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+function isTabular(contentType: string, name: string): boolean {
+  const ct = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  const ext = extOf(name);
+  return (
+    ct === "text/csv" ||
+    ct === "application/csv" ||
+    ct === "text/tab-separated-values" ||
+    ct === _XLSX_MIME ||
+    ext === "csv" ||
+    ext === "tsv" ||
+    ext === "xlsx"
+  );
+}
+
+/**
+ * INTERNAL-ONLY: the thread's tabular datasets (CSV/TSV/XLSX) for the dispatch
+ * payload, so a follow-up turn analyses the same data without re-uploading. Unlike
+ * `toPublic`, this DELIBERATELY carries `storageId` — it is the thread-scoped fetch
+ * capability the Python compute tools resolve by NAME (never exposed to the model).
+ * Owner-scoped (userId), most-recent first, capped. Callable only from dispatchPayload.
+ */
+export async function loadThreadDatasets(
+  ctx: QueryCtx,
+  threadId: Id<"chatThreads">,
+  userId: Id<"users">,
+  limit = 12,
+) {
+  const rows = await ctx.db
+    .query("chatAttachments")
+    .withIndex("by_thread", (q) => q.eq("threadId", threadId))
+    .collect();
+  const out = rows
+    .filter(
+      (a) =>
+        a.userId === userId &&
+        a.status !== "error" &&
+        isTabular(a.contentType, a.name),
+    )
+    .sort((x, y) => y.createdAt - x.createdAt)
+    .slice(0, limit)
+    .map((a) => ({
+      name: a.name,
+      storageId: a.storageId as string,
+      mime: a.contentType,
+    }));
+  return out;
+}
+
 /** Public shape. Note the absence of storageId — that is load-bearing. */
 async function toPublic(ctx: QueryCtx, a: Doc<"chatAttachments">) {
   return {

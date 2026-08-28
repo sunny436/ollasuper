@@ -51,6 +51,8 @@ from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
 from app.clients.ollagraph import OllagraphAdapter
 from app.config import Settings
+from app.data.loader import DatasetRef, sanitize_table_name
+from app.data.tool import DATA_TOOL_NAMES, DATA_TOOL_SPECS, DataContext
 from app.ingest.retrieve import render_rag_block, retrieve_context
 from app.logging import bind_log_context, get_logger
 from app.models.chat import GenerateRequest
@@ -257,6 +259,10 @@ async def run_generation(
         # flag is on. Off by default => not registered, byte-identical. The model only
         # calls it when the deep-research skill engages; binding is harmless otherwise.
         research_as_tool = settings.ai_research_enabled
+        # Data Analysis — bind the compute tools only when the flag is on AND the
+        # thread actually has a dataset (Convex listed them in req.datasets). Off/no
+        # dataset => not registered, byte-identical.
+        data_as_tool = settings.ai_data_analysis_enabled and bool(req.datasets)
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -334,6 +340,7 @@ async def run_generation(
             or memory_as_tool
             or file_gen
             or research_as_tool
+            or data_as_tool
         )
         system = build_system_prompt(
             custom=req.systemPrompt,
@@ -353,6 +360,34 @@ async def run_generation(
             seed = render_research_seed(req.activeResearchRun)
             if seed:
                 system = f"{system}\n\n{seed}"
+        # Data Analysis: build the per-turn dataset map (name→ref; storageId stays
+        # server-side) and tell the model which datasets are available THIS turn — so
+        # a follow-up with no new upload still analyses the same data.
+        data_ctx = None
+        if data_as_tool:
+            ds_map = {
+                d.name: DatasetRef(name=d.name, storage_id=d.storageId, mime=d.mime)
+                for d in req.datasets
+                if d.name and d.storageId
+            }
+            if ds_map:
+                data_ctx = DataContext(
+                    settings=settings,
+                    convex=convex,
+                    stream_id=req.streamId,
+                    datasets=ds_map,
+                )
+                listing = "\n".join(
+                    f"- {name} (SQL table: {sanitize_table_name(name)})"
+                    for name in ds_map
+                )
+                system = (
+                    f"{system}\n\n<datasets>\nStructured datasets available in this "
+                    f"conversation (analyse them with the data tools; do NOT ask the "
+                    f"user to re-upload):\n{listing}\n</datasets>"
+                )
+            else:
+                data_as_tool = False
 
         # User chat -> Ollima (title-gen + OCR keep build_llm's OpenRouter default).
         llm = build_llm(
@@ -491,6 +526,7 @@ async def run_generation(
                         REMEMBER_TOOL_NAME,
                         FORGET_TOOL_NAME,
                         RECORD_RESEARCH_TOOL_NAME,
+                        *DATA_TOOL_NAMES,
                     }
                     web_specs, name_to_id = build_tool_specs(
                         candidates, tool_registry, reserved=_reserved
@@ -532,6 +568,8 @@ async def run_generation(
             specs.append(GENERATE_FILE_TOOL_SPEC)
         if research_as_tool:
             specs.append(RECORD_RESEARCH_TOOL_SPEC)
+        if data_as_tool:
+            specs.extend(DATA_TOOL_SPECS)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -547,6 +585,8 @@ async def run_generation(
             reserved_specs.append(GENERATE_FILE_TOOL_SPEC)
         if research_as_tool:
             reserved_specs.append(RECORD_RESEARCH_TOOL_SPEC)
+        if data_as_tool:
+            reserved_specs.extend(DATA_TOOL_SPECS)
 
         llm_tools = None
         tools_ctx = None
@@ -597,6 +637,7 @@ async def run_generation(
                     rag=rag_ctx,
                     memory=mem_ctx,
                     research=research_ctx,
+                    data=data_ctx,
                     approvals={
                         a.approvalId: {"decision": a.decision, "token": a.token}
                         for a in req.approvals

@@ -14,6 +14,7 @@ import { loadMemoriesForDispatch } from "../memories";
 import { loadActiveResearchRun } from "../researchRuns";
 import { userHasReadyFiles } from "../userFiles";
 import { resolvedApprovalsForStream } from "./approvals";
+import { loadThreadDatasets } from "./attachments";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
 import { deleteExecutions } from "./executions";
 import { buildHistory } from "./messages";
@@ -432,6 +433,11 @@ export const dispatchPayload = internalQuery({
       stream.userId,
     );
 
+    // Data Analysis: the thread's tabular datasets (CSV/XLSX), owner-scoped, so a
+    // follow-up turn analyses the same data without re-uploading. [] on non-data
+    // threads => the Python field defaults to empty and the turn is byte-identical.
+    const datasets = await loadThreadDatasets(ctx, stream.threadId, stream.userId);
+
     // Reconstruct completed tool steps on a crash-resume (attempts > 0) OR an
     // approval-resume (attempts stays 0, but events survived). Decoupled from
     // `attempt` and mirrored in the Python runner (`if req.completedTools`) so
@@ -501,6 +507,8 @@ export const dispatchPayload = internalQuery({
       approvals,
       // Deep Research: compact resume seed (null when there is no incomplete run).
       activeResearchRun,
+      // Data Analysis: the thread's tabular datasets ([] when none).
+      datasets,
     };
   },
 });

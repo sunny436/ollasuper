@@ -8,6 +8,7 @@ import io
 
 from app.clients.convex import ConvexClient, ConvexRejected, ConvexUnavailable
 from app.config import Settings
+from app.data.loader import is_tabular, render_preview
 from app.logging import get_logger
 from app.models.chat import IMAGE_LONG_EDGE, Attachment, HistoryMessage
 
@@ -214,9 +215,23 @@ async def build_user_content(
     # a smaller value on a small-context model so the latest turn fits; it defaults
     # to the flat ai_max_turn_chars for direct/non-runner callers.
     doc_budget = settings.ai_max_turn_chars if doc_budget is None else doc_budget
+    # Data Analysis: when enabled, a TABULAR file (csv/tsv/xlsx) is NOT inlined in
+    # full — only a compact schema+sample preview is, so the model must COMPUTE over
+    # the full data with the tools instead of eyeballing/hallucinating from raw rows.
+    # Off (or a non-tabular file) => the full inline is kept, byte-identical.
+    data_enabled = settings.ai_data_analysis_enabled
     for att in others:
         try:
-            text = await _document_text(att, convex, settings, stream_id)
+            if data_enabled and is_tabular(att.name, att.contentType):
+                raw = await _fetch(att, convex, settings, stream_id)
+                text = render_preview(
+                    raw,
+                    att.name,
+                    att.contentType,
+                    rows=settings.ai_data_preview_rows,
+                )
+            else:
+                text = await _document_text(att, convex, settings, stream_id)
         except (ConvexUnavailable, ConvexRejected) as e:
             raise AttachmentError(f"could not load {att.name}") from e
         # Share one budget across all documents rather than giving each its own

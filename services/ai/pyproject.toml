@@ -66,6 +66,15 @@ dependencies = [
     # its declared JSON-schema (Pydantic cannot validate an arbitrary schema dict).
     # Pure-python, no system deps. Dormant until an AgentSpec sets output.schema.
     "jsonschema>=4.20,<5",
+    # --- Data Analysis compute layer ---
+    # The deterministic compute core: pandas loads/aggregates the uploaded dataset
+    # (so the model reasons over COMPUTED results, never inlined data), scipy powers
+    # hypothesis tests / correlation, and DuckDB runs read-only SQL over the loaded
+    # dataframe(s) (incl. multi-file joins). All in-process, self-contained wheels —
+    # NO new services or database. Dormant until ai_data_analysis_enabled.
+    "pandas>=2.2,<3",
+    "scipy>=1.13,<2",
+    "duckdb>=1.1,<2",
 ]
 
 # Deliberately NOT langchain-anthropic: it speaks the native Anthropic Messages

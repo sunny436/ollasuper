@@ -167,6 +167,18 @@ class ActiveResearchRun(BaseModel):
     sourceCount: int = 0
 
 
+class Dataset(BaseModel):
+    """A thread's tabular attachment (CSV/XLSX), surfaced EVERY turn so follow-ups
+    analyse the same data without re-uploading. `storageId` is the server-side fetch
+    capability (thread-scoped); it is resolved by NAME and never shown to the model."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(default="", max_length=256)
+    storageId: str = Field(default="", max_length=200)
+    mime: str = Field(default="", max_length=200)
+
+
 class GenerateRequest(BaseModel):
     """Everything needed for one turn.
 
@@ -239,6 +251,10 @@ class GenerateRequest(BaseModel):
     # (Convex reads it owner-scoped from researchRuns). None on every non-research
     # turn and for callers that predate this field (default => extra="forbid" safe).
     activeResearchRun: ActiveResearchRun | None = None
+    # Data Analysis: the thread's tabular attachments (Convex lists them owner-scoped
+    # every turn) so a follow-up analyses the same dataset without re-uploading.
+    # Empty on non-data threads and pre-field callers (default => extra="forbid" safe).
+    datasets: list[Dataset] = Field(default_factory=list, max_length=32)
 
 
 class GenerateAccepted(BaseModel):

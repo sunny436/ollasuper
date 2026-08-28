@@ -185,6 +185,28 @@ class Settings(BaseSettings):
     # ai_agent_max_tool_calls_per_step, ai_agent_total_deadline_s, token/turn budgets).
     ai_research_max_sources: int = 40  # max distinct sources read across one run
     ai_research_max_branches: int = 8  # max parallel research branches (sub-questions)
+    # Data Analysis — opt-in gate for the conversational data-analyst capability
+    # (app/data/): a deterministic compute layer (pandas/scipy/DuckDB) exposed as
+    # reserved tools + a methodology skill, so the model reasons over COMPUTED results
+    # of an uploaded CSV/XLSX instead of inlined data. OFF by default => the tools +
+    # skill are never registered, the dataset context is never built, tabular files
+    # inline exactly as today, and the runner is byte-identical. When ON, a tabular
+    # attachment is registered as a dataset (only a compact preview is inlined) and
+    # the compute tools/skill activate. SEO/Blog/Research are untouched.
+    ai_data_analysis_enabled: bool = False
+    # Compute SAFETY LIMITS (code-enforced). Rows are capped at READ time so a huge
+    # file never fully parses (memory safety on the single-worker plane); results are
+    # capped so tool output never blows context; a per-op timeout + a bounded compute
+    # semaphore keep the event loop responsive; the df LRU avoids re-parsing across
+    # tool calls within a turn (and follow-ups).
+    ai_data_max_rows: int = 1_000_000  # max rows read from a dataset (truncate + flag)
+    ai_data_result_max_rows: int = 200  # max rows any tool returns to the model
+    ai_data_result_max_chars: int = 12_000  # hard cap on a serialized tool result
+    ai_data_preview_rows: int = 10  # sample rows inlined instead of the full file
+    ai_data_timeout_s: float = 20.0  # per-compute-op wall-clock ceiling
+    ai_data_max_concurrent: int = 4  # bounded parallel compute ops (memory guard)
+    ai_data_cache_max: int = 6  # datasets held in the per-process df LRU
+    ai_data_max_datasets: int = 12  # most-recent tabular files surfaced per thread
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and

@@ -50,6 +50,7 @@ from app.agent.orchestration_tools import (
     ORCHESTRATION_BUILTIN_NAMES,
 )
 from app.agent.policy import PolicyScope, check_tool_policy
+from app.data.tool import DATA_TOOL_NAMES, DataContext, run_tool
 from app.logging import get_logger
 from app.models.events import EventType
 from app.models.execution import (
@@ -91,6 +92,7 @@ _RESERVED_BUILTINS = frozenset(
         FILE_GEN_TOOL_NAME,
         RECORD_RESEARCH_TOOL_NAME,
     }
+    | DATA_TOOL_NAMES
     | ORCHESTRATION_BUILTIN_NAMES
 )
 
@@ -172,6 +174,10 @@ class ToolExecContext:
     # the durable run id + the code-enforced source/branch safety ceilings. None on
     # every non-research turn (and for delegated sub-agents) => byte-identical.
     research: ResearchContext | None = None
+    # Data Analysis: set when the compute tools are bound (flag on + the thread has a
+    # dataset). Holds the per-turn dataset map (name→ref; storageId never reaches the
+    # model). None otherwise ⇒ byte-identical.
+    data: DataContext | None = None
     # Provider-neutral adapter map (empty => use the single `adapter` slot above,
     # preserving every existing single-provider call site + test byte-for-byte).
     adapters: dict[str, ToolAdapter] = field(default_factory=dict)
@@ -637,6 +643,16 @@ async def _run_one(
             execution,
             _run_record_research(ctx, call_id, args),
             side_effect="external_side_effect",
+        )
+
+    # Data Analysis: the reserved compute tools (read-only over the user's dataset),
+    # routed before registry.get. All 5 share one dispatcher (app/data/tool.run_tool).
+    if ctx.data is not None and bound_name in DATA_TOOL_NAMES:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_data_tool(ctx, call_id, bound_name, args),
+            side_effect="read_only",
         )
 
     # Phase 10 orchestration built-ins — routed before registry.get, like RAG/
@@ -1436,6 +1452,42 @@ async def _run_record_research(
     # in-context — report honestly.
     return _tool_message(
         call_id, {"status": "not_recorded", "reason": reason}, status="error"
+    )
+
+
+async def _run_data_tool(
+    ctx: ToolExecContext, call_id: str, bound_name: str, args: dict
+) -> ToolMessage:
+    """Data Analysis: resolve a dataset + run one deterministic computation
+    (pandas/scipy/DuckDB) over it, returning a SMALL result the model reasons over.
+    `run_tool` never raises — a bad column / timeout / parse error comes back as
+    `{"error": …}`, reported as an error result so the turn continues."""
+    assert ctx.data is not None  # guarded by the caller
+    # A compact, safe argument echo for the pill (never the full data / raw sql body).
+    echo = {
+        k: (v[:120] if isinstance(v, str) else v)
+        for k, v in args.items()
+        if k in ("dataset", "kind", "column", "method", "date_col", "value_col", "sql")
+    }
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=bound_name,
+        tool_id=bound_name,
+        call_id=call_id,
+        arguments=echo,
+        status="running",
+        side_effect="read_only",
+    )
+    result = await run_tool(ctx.data, bound_name, args)
+    err = result.get("error") if isinstance(result, dict) else None
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="error" if err else "success",
+        result={"error": err} if err else {"ok": True},
+    )
+    return _tool_message(
+        call_id, result, status="error" if err else "success"
     )
 
 

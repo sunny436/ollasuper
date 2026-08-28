@@ -102,6 +102,12 @@ _CURATED: dict[str, str] = {
     "request_clarification": "Asking a follow-up",
     # deep research
     "record_research": "Recording a finding",
+    # data analysis
+    "profile_dataset": "Profiling the dataset",
+    "sql_query": "Querying the data",
+    "statistics": "Running statistics",
+    "detect_outliers": "Detecting outliers",
+    "time_series": "Analyzing the trend",
 }
 
 # Verb-family derivation (generic), word → present-progressive. Matched against

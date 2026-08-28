@@ -27,6 +27,7 @@ from app.agent.spec import (
 )
 from app.blog.capabilities import blog_intent_map
 from app.blog.skill import BLOG_SKILL
+from app.data.skill import DATA_SKILL
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.intents import register_intents
 from app.orchestrator.orchestrator import AgentRegistry, Orchestrator
@@ -163,6 +164,12 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     # Deep Research is a SEPARATE flag-gated skill (optional; sibling to SEO/Blog).
     if settings is not None and getattr(settings, "ai_research_enabled", False):
         skills.append(RESEARCH_SKILL)
+    # Data Analysis: when enabled, the full compute-backed DATA_SKILL REPLACES the
+    # tiny generic "data-analysis" methodology (same skill_id) so routing isn't split.
+    # OFF => the generic one stays (no regression).
+    if settings is not None and getattr(settings, "ai_data_analysis_enabled", False):
+        skills = [s for s in skills if s.skill_id != DATA_SKILL.skill_id]
+        skills.append(DATA_SKILL)
     return skills
 
 
