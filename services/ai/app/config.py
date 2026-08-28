@@ -121,7 +121,13 @@ class Settings(BaseSettings):
     # composed guidance block so the prompt is bounded at 5 or 500 skills.
     ai_skill_max_active: int = 3
     ai_skill_min_score: float = 0.2
-    ai_skill_instructions_budget_chars: int = 6000
+    # Sized to fit the whole activated SEO skill (~17k chars: methodology + full
+    # diagnostic routing + capability_summary + checks_digest + constraints + the
+    # dynamic report template). At 6000 the block was hard-truncated mid-checks_digest
+    # by render_skills_block, silently dropping the constraints + output guidance from
+    # the prompt. This is a CAP, not a floor — small skills don't grow to fill it; only
+    # the large SEO skill uses the headroom, and only on SEO-activated requests.
+    ai_skill_instructions_budget_chars: int = 20000
     # Phase 12b (Stage 1) — wire the orchestrated runtime's DYNAMIC CAPABILITY
     # DISCOVERY into the LIVE agent path. OFF by default → the runner is
     # byte-identical (top-K remains the initial inline set). When on (and the agent
@@ -155,30 +161,6 @@ class Settings(BaseSettings):
     # the SEO skill activates by tags and delegate_to_agent('seo', ...) becomes
     # available. Read-only end to end; no VM deploy until phase 7.
     ai_seo_enabled: bool = False
-    # Phase 5 (SEO durable runs) — opt-in gate for the durable background audit
-    # subsystem: the dedicated seo_registry pool, the /v1/seo-run-step worker, and the
-    # enqueue_seo_audit tool. OFF by default => the pool + tool are not built and the
-    # agent never enqueues (byte-identical). The /v1/seo-run-step route stays mounted
-    # (service-key-gated, dormant) like /v1/ingest, since no run is ever dispatched.
-    ai_seo_runs_enabled: bool = False
-    # Dedicated pool sizing (SEO crawling must never starve chat — its own Registry).
-    ai_seo_max_concurrent_per_user: int = 1
-    ai_seo_max_concurrent_global: int = 4
-    # One /v1/seo-run-step dispatch does a bounded WINDOW of crawl batches then parks
-    # (retry_wait) and lets Convex re-dispatch — kept «« the Convex SEO_STALL_MS (10m)
-    # so a legitimately-working window is never false-reaped. Heartbeats DURING batches.
-    ai_seo_run_step_window_s: float = 240.0
-    ai_seo_run_heartbeat_ms: int = 15_000
-    # One batch crawls up to this many URLs, and its gzipped JSONL artifact is bounded
-    # well under the 30MB single-POST cap (split into :part:M if it would exceed).
-    ai_seo_batch_urls: int = 25
-    ai_seo_batch_max_bytes: int = 20_000_000
-    # How many URLs the durable crawler audits CONCURRENTLY within a batch (bounded
-    # gather, order-preserving so the report is identical to sequential). Sized to the
-    # Ollagraph adapter pool (16 conns); retry recovers the extra 429 bursts.
-    ai_seo_crawl_concurrency: int = 16
-    # Default per-run crawl breadth (Convex clamps; real bound is maxUrls/costBudget).
-    ai_seo_run_max_urls: int = 500
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and

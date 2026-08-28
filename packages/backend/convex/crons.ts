@@ -73,24 +73,4 @@ crons.interval(
   {},
 );
 
-// Phase 5 — recover durable SEO runs whose worker died (the only thing that resumes a
-// SIGKILLed run: no in-process finally runs, and the seo_registry restarts empty).
-// Scans EVERY non-terminal state (running/queued/retry_wait) so a lost redispatch is
-// still reaped. Cheap: one small doc per run.
-crons.interval(
-  "reap stalled seo runs",
-  { seconds: 60 },
-  internal.seoRuns.reapStalledRuns,
-  {},
-);
-
-// Phase 5 — reclaim compressed crawl-artifact blobs of abandoned terminal runs (a
-// crashed run never reaches the finalize cleanup path).
-crons.interval(
-  "gc abandoned seo run artifacts",
-  { minutes: 5 },
-  internal.seoRuns.gcTerminalArtifacts,
-  {},
-);
-
 export default crons;

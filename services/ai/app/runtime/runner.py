@@ -34,6 +34,7 @@ from app.agent.executor import (
 )
 from app.agent.filegen_tool import GENERATE_FILE_TOOL_SPEC
 from app.agent.graph import build_graph
+from app.agent.harmony import HarmonyStreamFilter
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
 from app.agent.llm import build_llm
 from app.agent.memory import (
@@ -60,13 +61,11 @@ from app.orchestrator.prepare import ProviderReadiness
 from app.runtime.env_factory import build_live_agent_env
 from app.runtime.roster import build_delegate_spec, build_live_runtime
 from app.runtime.writer import DeltaWriter
-from app.seo.enqueue_tool import ENQUEUE_SEO_AUDIT_TOOL_SPEC
 from app.seo.mutations import (
     SeoWriteAdapter,
     StubSeoWriteProvider,
     register_seo_mutation_provider,
 )
-from app.seo.report import build_seo_report_emitter
 from app.skills.registry import render_skills_block
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
@@ -248,10 +247,6 @@ async def run_generation(
         # File Generation System — bind `generate_file` when the flag is on. Off by
         # default → the tool is not offered and the runner is byte-identical.
         file_gen = settings.ai_file_generation_enabled
-        # Phase 5 — bind `enqueue_seo_audit` when the flag is on, so the agent can hand
-        # a large site-wide audit to the durable run subsystem. Off by default → not
-        # offered (byte-identical); the agent handles small audits inline as before.
-        seo_runs = settings.ai_seo_runs_enabled
         # Phase 7 — bind the approval-gated SEO write tools ONLY on this interactive
         # turn when the flag is on. Off by default => not registered, not offered,
         # byte-identical; the read-only audit agent + monitoring worker never see them.
@@ -513,8 +508,6 @@ async def run_generation(
             mem_ctx = MemoryContext(memories=req.memories, settings=settings)
         if file_gen:
             specs.append(GENERATE_FILE_TOOL_SPEC)
-        if seo_runs:
-            specs.append(ENQUEUE_SEO_AUDIT_TOOL_SPEC)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -528,8 +521,6 @@ async def run_generation(
                 reserved_specs.append(FORGET_TOOL_SPEC)
         if file_gen:
             reserved_specs.append(GENERATE_FILE_TOOL_SPEC)
-        if seo_runs:
-            reserved_specs.append(ENQUEUE_SEO_AUDIT_TOOL_SPEC)
 
         llm_tools = None
         tools_ctx = None
@@ -599,8 +590,6 @@ async def run_generation(
                     file_max_bytes=settings.ai_file_max_bytes,
                     file_gen_timeout_s=settings.ai_file_gen_timeout_s,
                     file_gen_pool_workers=settings.ai_ocr_render_workers,
-                    # Phase 5 — enable the `enqueue_seo_audit` built-in handler.
-                    seo_runs_enabled=seo_runs,
                 )
                 # Phase 12b (Stage 1): attach DYNAMIC CAPABILITY DISCOVERY to the
                 # live agent path. The model gains `find_capabilities` to reach ANY
@@ -688,11 +677,6 @@ async def run_generation(
                                 candidates=candidates,
                                 bind=llm_for_tools.bind_tools,
                                 capabilities=resolver,
-                                report_emitter=(
-                                    build_seo_report_emitter(writer, settings)
-                                    if settings.ai_seo_enabled
-                                    else None
-                                ),
                             )
                         )
 
@@ -856,11 +840,6 @@ async def run_generation(
                     approvals=dict(tools_ctx.approvals),
                     resume_seen=dict(tools_ctx.seen_calls),
                     resume_seen_set=frozenset(tools_ctx.seen_call_set),
-                    report_emitter=(
-                        build_seo_report_emitter(writer, settings)
-                        if settings.ai_seo_enabled
-                        else None
-                    ),
                 )
             )
 
@@ -909,6 +888,11 @@ async def run_generation(
                     deadline_flag,
                 )
             )
+        # Strip gpt-5.6-luna "harmony" tool-call leaks out of the visible stream
+        # (recovery into real tool_calls happens in the graph's model node). The
+        # filter is a pass-through until a `to=functions.`/`multi_tool_use.parallel`
+        # marker appears, so normal text streams byte-for-byte with no added latency.
+        harmony_filter = HarmonyStreamFilter()
         async with aclosing(graph.astream(state, stream_mode="messages")) as stream:
             async for chunk, metadata in stream:
                 # Only the model node's output is user-visible. Tool nodes added
@@ -916,9 +900,11 @@ async def run_generation(
                 if metadata.get("langgraph_node") != "model":
                     continue
 
-                text = _chunk_text(chunk)
-                if text:
-                    await writer.push(text)
+                raw = _chunk_text(chunk)
+                if raw:
+                    text = harmony_filter.feed(raw)
+                    if text:
+                        await writer.push(text)
 
                 # Sum token usage ACROSS the multi-step loop (each model call
                 # reports its own usage on its final chunk) — the old code kept
@@ -946,6 +932,11 @@ async def run_generation(
                         status = "cancelled"
                         return
 
+        # Release any text the harmony filter was holding (an unterminated marker
+        # at the very end resolves to nothing; real trailing prose is emitted).
+        tail = harmony_filter.flush()
+        if tail:
+            await writer.push(tail)
         await writer.flush(force=True)
         # Phase 8: a tool parked awaiting approval routed the graph to END. The
         # durable approval + suspend is already recorded in Convex; do NOT

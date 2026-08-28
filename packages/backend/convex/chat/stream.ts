@@ -11,7 +11,6 @@ import {
   query,
 } from "../_generated/server";
 import { loadMemoriesForDispatch } from "../memories";
-import { cancelSeoRunsForMessage } from "../seoRuns";
 import { userHasReadyFiles } from "../userFiles";
 import { resolvedApprovalsForStream } from "./approvals";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
@@ -195,10 +194,6 @@ export const stop = mutation({
     );
     // Phase 3: retire the durable execution checkpoint too (aborted is terminal).
     await deleteExecutions(ctx, messageId);
-    // Phase 5: a durable SEO run enqueued by this turn must stop crawling/billing when
-    // the user stops — but stays VISIBLE (listActiveRuns) since Stop purges the event
-    // that carried its runId. Cancel (don't delete) so its report/artifacts survive.
-    await cancelSeoRunsForMessage(ctx, messageId);
     await ctx.db.patch(messageId, {
       content: partial,
       status: "aborted",

@@ -16,8 +16,6 @@ import {
   requireThreadAccess,
   requireUserId,
 } from "./authz";
-import { deleteSeoRunsForMessage } from "../seoRuns";
-import { deleteReportsForMessage } from "./reports";
 import { titleFromText } from "./threads";
 
 const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
@@ -631,14 +629,9 @@ async function deleteFromSeq(
         }
       }
     }
-    // Phase 3 — reclaim this message's generated artifacts (blobs) + SEO report rows.
-    // Regenerate/edit previously left these until thread deletion; clean them here.
+    // Reclaim this message's generated artifacts (blobs). Regenerate/edit
+    // previously left these until thread deletion; clean them here.
     await deleteArtifactsForMessage(ctx, m._id);
-    await deleteReportsForMessage(ctx, m._id);
-    // Phase 5 — cancel + reclaim any durable SEO run enqueued by this message (its
-    // steps + compressed artifact blobs), so a regenerate/edit never orphans a live,
-    // budget-burning run writing into a deleted stream.
-    await deleteSeoRunsForMessage(ctx, m._id);
     await ctx.db.delete(m._id);
   }
   return doomed.length;
