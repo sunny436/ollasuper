@@ -24,8 +24,18 @@ import { Mermaid } from "./mermaid";
  * to text instead of throwing). remark-breaks only turns soft line breaks into
  * <br>. Neither opens an HTML passthrough. The one place SVG/HTML is injected is
  * mermaid.tsx — see its header.
+ *
+ * `singleDollarTextMath:false`: math requires `$$…$$` (block); a single `$` is
+ * literal. Currency is far more common than inline math in this product, and the
+ * default single-`$` mode mangled prices — "$10/user → $100/month" was parsed as
+ * one math span and rendered as a broken KaTeX stack. Block `$$` math is unchanged.
  */
-const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks];
+// biome-ignore lint/suspicious/noExplicitAny: react-markdown plugin-tuple typing
+const REMARK_PLUGINS: any = [
+  remarkGfm,
+  [remarkMath, { singleDollarTextMath: false }],
+  remarkBreaks,
+];
 // Stable empty default so blocks memoise while no math is present.
 // biome-ignore lint/suspicious/noExplicitAny: rehype plugin tuple typing
 const NO_REHYPE: any = [];
@@ -330,7 +340,9 @@ function MarkdownImpl({
   // Pull in katex only when this message contains math, and only the plugin
   // (not the whole first-load bundle). Until it resolves, math renders as raw
   // source; the state flip re-renders it once, formatted.
-  const hasMath = useMemo(() => content.includes("$"), [content]);
+  // Only `$$…$$` is math now (see REMARK_PLUGINS) — so a single `$` (currency)
+  // must NOT pull in the 75KB katex bundle.
+  const hasMath = useMemo(() => content.includes("$$"), [content]);
   // biome-ignore lint/suspicious/noExplicitAny: rehype plugin default export
   const [katex, setKatex] = useState<any>(null);
   useEffect(() => {
