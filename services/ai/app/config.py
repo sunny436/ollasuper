@@ -88,8 +88,12 @@ class Settings(BaseSettings):
     # model, and high-impact/approval tools are never silently executed.
     ai_agent_enabled: bool = False
     # Hard ceiling on model<->tool round-trips per turn. At the cap the model is
-    # re-invoked WITHOUT tools so it must produce a final text answer.
-    ai_agent_max_steps: int = 4
+    # re-invoked WITHOUT tools so it must produce a final text answer. A CEILING, not
+    # a target: simple chats use ~0-1, SEO audits ~4; only the tool-heaviest workflows
+    # (a research + quality-gated blog: research -> write -> score -> up to 3 targeted
+    # fix/rescore cycles) use the headroom. The blog fix loop caps itself at 3 cycles
+    # in-prompt, so this never becomes unbounded regeneration.
+    ai_agent_max_steps: int = 12
     # Phase 6: max tool calls executed in ONE step (assistant message). A model
     # that emits more gets the first N run and the rest refused with a paired
     # error — bounds a degenerate 50-fan-out (duration/ledger/memory). Generous:
@@ -161,6 +165,11 @@ class Settings(BaseSettings):
     # the SEO skill activates by tags and delegate_to_agent('seo', ...) becomes
     # available. Read-only end to end; no VM deploy until phase 7.
     ai_seo_enabled: bool = False
+    # Blog Assistant — opt-in gate for the ONE read-only, model-routed blog skill
+    # (write/analyze/rewrite/strategy/brief/outline/seo-check/schema/persona/brand/geo
+    # + research/factcheck/cluster/repurpose/audit/cannibalization/freshness/translate).
+    # OFF by default => byte-identical to today; the SEO Assistant is separate + intact.
+    ai_blog_enabled: bool = False
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and

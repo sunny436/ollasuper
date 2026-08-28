@@ -579,8 +579,16 @@ export function aggregateStatus(
   const one = running[0];
   if (running.length === 1 && one)
     return { state: "running", label: runRunningLabel(one) };
-  if (running.length > 1)
-    return { state: "running", label: `Working on ${running.length} tasks` };
+  if (running.length > 1) {
+    // Show the ACTUAL current activity (the most-recently-started running tool)
+    // plus a "+N more" for the parallel work — real, from the event stream, never
+    // a hardcoded "Working on N tasks".
+    const latest = running.reduce((a, b) => (b.startedTs >= a.startedTs ? b : a));
+    return {
+      state: "running",
+      label: `${runRunningLabel(latest)} · +${running.length - 1} more`,
+    };
+  }
   if (isStreaming && runs.length > 0) return { state: "running", label: "Working" };
   if (failed) return { state: "error", label: "Some steps didn’t complete" };
   const n = runs.length;

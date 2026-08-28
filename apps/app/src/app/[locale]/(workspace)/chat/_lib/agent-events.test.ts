@@ -301,10 +301,17 @@ describe("execution pill helpers", () => {
     expect(
       aggregateStatus([run({ label: "Auditing page metadata" })], true),
     ).toEqual({ state: "running", label: "Auditing page metadata" });
-    // several running → count, not a jittery single tool name
-    expect(
-      aggregateStatus([run({ callId: "a" }), run({ callId: "b" })], true).label,
-    ).toBe("Working on 2 tasks");
+    // several running → the ACTUAL current activity (latest started) + "+N more",
+    // not a bare count and not a fabricated stage.
+    const two = aggregateStatus(
+      [
+        run({ callId: "a", label: "Reading source A", startedTs: 1 }),
+        run({ callId: "b", label: "Reading source B", startedTs: 5 }),
+      ],
+      true,
+    );
+    expect(two.state).toBe("running");
+    expect(two.label).toBe("Reading source B · +1 more");
     // settled clean → done + count
     expect(
       aggregateStatus([run({ status: "success", endedTs: 1 })], false),

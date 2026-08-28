@@ -25,6 +25,8 @@ from app.agent.spec import (
     CapabilityPolicy,
     ContextPolicy,
 )
+from app.blog.capabilities import blog_intent_map
+from app.blog.skill import BLOG_SKILL
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.intents import register_intents
 from app.orchestrator.orchestrator import AgentRegistry, Orchestrator
@@ -153,6 +155,9 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     skills = list(PRODUCTION_SKILLS)
     if settings is not None and getattr(settings, "ai_seo_enabled", False):
         skills.append(SEO_SKILL)
+    # The Blog Assistant is a SEPARATE flag-gated skill (never merged with SEO).
+    if settings is not None and getattr(settings, "ai_blog_enabled", False):
+        skills.append(BLOG_SKILL)
     return skills
 
 
@@ -200,6 +205,10 @@ def build_live_runtime(
         # Additively register the SEO capability intents (never clobbers a core
         # intent like crawl.run). Idempotent, so repeated builds are safe.
         register_intents(seo_intent_map())
+    if getattr(settings, "ai_blog_enabled", False):
+        # Additively register the blog capability intents (distinct `blog.*` keys —
+        # never clobbers SEO or core intents). Idempotent.
+        register_intents(blog_intent_map())
     agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
     skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(
