@@ -973,6 +973,15 @@ async def run_generation(
             status = "suspended"
             return
         status = "done"
+        # Deep Research: on NORMAL completion, deterministically CLOSE a research run
+        # the model opened, so it never lingers as "researching" (which would keep
+        # re-seeding future turns). Only here — an interrupt/suspend/deadline returned
+        # earlier and deliberately leaves the run resumable. research_checkpoint never
+        # raises (it swallows Convex errors), so this cannot fail the finished turn.
+        if research_ctx is not None and research_ctx.plan_recorded:
+            await writer.research_checkpoint(
+                run_id=research_ctx.run_id, kind="complete", payload={}
+            )
 
     except asyncio.CancelledError:
         if deadline_flag["hit"]:
