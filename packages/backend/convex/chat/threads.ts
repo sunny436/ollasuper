@@ -7,7 +7,6 @@ import { audit } from "../auditLog";
 import { bump } from "../counters";
 import { requireMember } from "../orgs";
 import { deleteMutationsForThread } from "../seoMutations";
-import { deleteSeoRunsForThread, SEO_RUN_PURGE_BATCH } from "../seoRuns";
 import {
   DEFAULT_MODEL,
   assertAllowedModel,
@@ -378,30 +377,6 @@ export const purge = internalMutation({
       return;
     }
 
-    // Phase 3 — SEO report rows are persistent too (their downloadable blobs are the
-    // chatArtifacts reclaimed just above); reclaim the rows here.
-    const reports = await ctx.db
-      .query("seoReports")
-      .withIndex("by_thread", (q) => q.eq("threadId", threadId))
-      .take(PURGE_BATCH);
-    for (const r of reports) await ctx.db.delete(r._id);
-    if (reports.length === PURGE_BATCH) {
-      await ctx.scheduler.runAfter(0, internal.chat.threads.purge, {
-        threadId,
-      });
-      return;
-    }
-
-    // Phase 5 — durable SEO runs (+ their steps and compressed artifact blobs) are
-    // persistent; cancel + reclaim them here. Bounded per tick since each run drags
-    // its own children.
-    const runsPurged = await deleteSeoRunsForThread(ctx, threadId);
-    if (runsPurged === SEO_RUN_PURGE_BATCH) {
-      await ctx.scheduler.runAfter(0, internal.chat.threads.purge, {
-        threadId,
-      });
-      return;
-    }
 
     // Phase 7: the SEO mutation ledger is user-scoped + persistent; reclaim this thread's rows.
     await deleteMutationsForThread(ctx, threadId);
