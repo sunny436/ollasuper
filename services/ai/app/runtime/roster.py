@@ -171,6 +171,19 @@ def build_delegate_spec(settings: Settings | None = None) -> dict:
     roles = [a.agent_id for a in agents]
     hints = "; ".join(f"'{a.agent_id}' ({a.role})" for a in agents)
     spec = copy.deepcopy(DELEGATE_TOOL_SPEC)
+    # Name the ACTUAL roster in the function description too — the static spec's fixed
+    # examples ('research'/'data'/'document') omit the flag-gated SEO specialist, so
+    # the model never learns to hand an SEO audit to it and does the audit inline
+    # (or delegates to a role that isn't offered). Deriving both the description and
+    # the enum from the effective roster keeps delegation reliable as it grows.
+    spec["function"]["description"] = (
+        "Delegate a self-contained sub-task to one of your specialist agents and "
+        "receive its structured result. Prefer this whenever a listed specialist "
+        "handles the task better than you can inline (e.g. hand a whole-site or "
+        "multi-page audit to the matching specialist rather than doing it yourself). "
+        f"Available specialists: {hints}. The sub-agent runs with its own tools "
+        "under the same safety policy; you observe its result."
+    )
     role = spec["function"]["parameters"]["properties"]["role"]
     role["enum"] = roles
     role["description"] = (
