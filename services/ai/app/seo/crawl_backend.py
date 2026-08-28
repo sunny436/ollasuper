@@ -323,39 +323,63 @@ class OllagraphSeoBackend:
                      extra={"tool": tool_id, "err": type(e).__name__})
             return {}
 
+    async def _audit_url(self, url: str) -> tuple[list[dict], list[dict]]:
+        """One URL's on-page audit (meta + structured). Catches its own errors and
+        NEVER raises — a failed fetch is a NOT_TESTED finding, never a dropped page —
+        so it is safe to run concurrently for many URLs at once."""
+        try:
+            data = await self._call_retry(META_AUDIT_TOOL, {"url": url})
+        except ToolError as e:
+            return [], [
+                _finding("crawl_index.fetch", url, "NOT_TESTED", "medium",
+                         f"Audit call failed ({type(e).__name__}).",
+                         "A successful fetch + parse.")
+            ]
+        rows = [{"url": url, "audit": {k: data.get(k) for k in _EVIDENCE_KEYS}}]
+        findings = list(meta_audit_to_findings(url, data))
+        # Structured data — best-effort enrichment, but RETRIED (not single-shot): under
+        # concurrent 429 pressure a single shot would drop MORE structured findings than
+        # a sequential run, so retry recovers them → completeness is never below
+        # sequential. Skipped only after retries exhaust.
+        try:
+            sd = await self._call_retry(STRUCTURED_TOOL, {"url": url})
+            findings.extend(structured_to_findings(url, sd))
+        except ToolError:
+            pass
+        return rows, findings
+
     async def crawl(self, urls: list[str], step: SeoRunStep) -> BatchResult:
         """Site-level audit once (the batch with the target) + per-URL on-page audit
-        (meta + structured). A failed page is a NOT_TESTED finding, never dropped."""
-        rows: list[dict] = []
-        findings: list[dict] = []
+        (meta + structured), run CONCURRENTLY. Read-only tools + order-preserving
+        aggregation ⇒ the BatchResult is identical to a sequential run (never less
+        complete); a failed page is a NOT_TESTED finding, never dropped."""
+        sem = asyncio.Semaphore(max(1, self._settings.ai_seo_crawl_concurrency))
 
-        if step.target in urls:
+        async def _bounded(url: str) -> tuple[list[dict], list[dict]]:
+            async with sem:
+                return await self._audit_url(url)
+
+        async def _site() -> list[dict]:
+            if step.target not in urls:
+                return []
             try:
-                findings.extend(await self._site_audit(step.target))
+                return list(await self._site_audit(step.target))
             except Exception:  # noqa: BLE001 — site audit is best-effort, never fatal
                 log.warning("seo_crawl.site_audit_failed")
+                return []
 
-        for i, url in enumerate(urls):
-            if i:
-                await asyncio.sleep(_THROTTLE_S)  # gentle spacing to avoid tripping 429
-            try:
-                data = await self._call_retry(META_AUDIT_TOOL, {"url": url})
-            except ToolError as e:
-                findings.append(
-                    _finding("crawl_index.fetch", url, "NOT_TESTED", "medium",
-                             f"Audit call failed ({type(e).__name__}).",
-                             "A successful fetch + parse.")
-                )
-                continue
-            rows.append({"url": url, "audit": {k: data.get(k) for k in _EVIDENCE_KEYS}})
-            findings.extend(meta_audit_to_findings(url, data))
-            # Structured data — best-effort enrichment (single-shot; skip on any error
-            # so it never amplifies rate-limit backoff for the retried core meta-audit).
-            try:
-                sd = await self._call(STRUCTURED_TOOL, {"url": url})
-                findings.extend(structured_to_findings(url, sd))
-            except ToolError:
-                pass
+        # The site audit and every per-URL audit run at the same time; results are
+        # then combined in a DETERMINISTIC order (site findings first, then per-URL in
+        # `urls` order — asyncio.gather preserves input order) so rows/findings/counts
+        # are byte-identical to the sequential version regardless of completion order.
+        site_findings, per_url = await asyncio.gather(
+            _site(), asyncio.gather(*(_bounded(u) for u in urls))
+        )
+        rows: list[dict] = []
+        findings: list[dict] = list(site_findings)
+        for r, f in per_url:
+            rows.extend(r)
+            findings.extend(f)
 
         counts: dict[str, int] = {}
         for f in findings:

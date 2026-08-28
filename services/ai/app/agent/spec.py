@@ -78,8 +78,13 @@ class ContextPolicy:
 class ExecutionPolicy:
     """The Phase 4/5/7 execution knobs the agent's tools run under."""
 
-    max_concurrent_tools: int = 4
-    max_tool_calls_per_step: int = 8
+    # Run a whole step's independent tool calls at once (bounded by the Ollagraph
+    # httpx pool, max_connections=16 — beyond it concurrency just queues). The
+    # model batches independent calls (PARALLEL_TOOL_GUIDANCE) and the executor
+    # runs them concurrently; kept in lockstep with the config defaults + the
+    # grounding test (test_agent.py).
+    max_concurrent_tools: int = 16
+    max_tool_calls_per_step: int = 24
     tool_max_retries: int = 2
     tool_retry_base_s: float = 0.5
     default_timeout_s: float = 30.0
@@ -136,8 +141,8 @@ DEFAULT_AGENT = AgentSpec(
     ),
     context=ContextPolicy(max_steps=4, tool_result_max_chars=8000),
     execution=ExecutionPolicy(
-        max_concurrent_tools=4,
-        max_tool_calls_per_step=8,
+        max_concurrent_tools=16,
+        max_tool_calls_per_step=24,
         tool_max_retries=2,
         tool_retry_base_s=0.5,
         default_timeout_s=30.0,

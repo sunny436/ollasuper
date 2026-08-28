@@ -94,12 +94,14 @@ class Settings(BaseSettings):
     # that emits more gets the first N run and the rest refused with a paired
     # error — bounds a degenerate 50-fan-out (duration/ledger/memory). Generous:
     # real turns emit a handful. 0 = unlimited.
-    ai_agent_max_tool_calls_per_step: int = 8
+    ai_agent_max_tool_calls_per_step: int = 24
     # Phase 7: max tool calls that run SIMULTANEOUSLY within one step. The batched
     # (independent) calls of one assistant message run concurrently, bounded by
-    # this semaphore — a typical 3-5 search fan-out runs at once while a burst is
-    # capped (the adapter pool is 16 conns). 0/1 = sequential (no concurrency).
-    ai_agent_max_concurrent_tools: int = 4
+    # this semaphore. Sized to the Ollagraph adapter pool (16 conns) so a whole
+    # step's independent checks run at once; beyond the pool concurrency just
+    # queues. 0/1 = sequential (no concurrency). Kept in lockstep with
+    # ExecutionPolicy/DEFAULT_AGENT (spec.py) + the grounding test (test_agent.py).
+    ai_agent_max_concurrent_tools: int = 16
     # Per-tool result is truncated to this many chars of serialized JSON before
     # it re-enters the context as a ToolMessage (bounds runaway tool output).
     ai_agent_tool_result_max_chars: int = 8000
@@ -171,6 +173,10 @@ class Settings(BaseSettings):
     # well under the 30MB single-POST cap (split into :part:M if it would exceed).
     ai_seo_batch_urls: int = 25
     ai_seo_batch_max_bytes: int = 20_000_000
+    # How many URLs the durable crawler audits CONCURRENTLY within a batch (bounded
+    # gather, order-preserving so the report is identical to sequential). Sized to the
+    # Ollagraph adapter pool (16 conns); retry recovers the extra 429 bursts.
+    ai_seo_crawl_concurrency: int = 16
     # Default per-run crawl breadth (Convex clamps; real bound is maxUrls/costBudget).
     ai_seo_run_max_urls: int = 500
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
