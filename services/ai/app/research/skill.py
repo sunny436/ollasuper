@@ -144,6 +144,7 @@ _PREFERRED = frozenset(
 
 RESEARCH_SKILL = SkillManifest(
     skill_id="deep-research",
+    metadata={"category": "Research"},
     name="Deep Research",
     version="1.0.0",
     purpose="optional, evidence-first multi-source research with cited synthesis",

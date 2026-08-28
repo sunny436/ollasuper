@@ -187,6 +187,7 @@ _PREFERRED = frozenset(
 
 BLOG_SKILL = SkillManifest(
     skill_id="blog-assist",
+    metadata={"category": "Content & Writing"},
     name="Blog Assistant",
     version="1.0.0",
     purpose="research-driven, quality-gated blog writing, analysis and optimisation",

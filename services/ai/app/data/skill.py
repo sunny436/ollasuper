@@ -103,6 +103,7 @@ _PREFERRED = frozenset()  # the reserved compute tools are bound directly by the
 
 DATA_SKILL = SkillManifest(
     skill_id="data-analysis",
+    metadata={"category": "Data & Analytics"},
     name="Data Analysis",
     version="1.0.0",
     purpose="conversational, compute-backed analysis of uploaded structured data",

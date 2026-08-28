@@ -89,6 +89,7 @@ PRODUCTION_AGENTS: list[AgentSpec] = [
 PRODUCTION_SKILLS: list[SkillManifest] = [
     SkillManifest(
         skill_id="research-methodology",
+        metadata={"category": "Research"},
         name="Research Methodology",
         purpose="rigorous multi-source research",
         when_to_use="researching a topic, investigating, or verifying claims",
@@ -103,6 +104,7 @@ PRODUCTION_SKILLS: list[SkillManifest] = [
     ),
     SkillManifest(
         skill_id="data-analysis",
+        metadata={"category": "Data & Analytics"},
         name="Data Analysis",
         purpose="careful quantitative analysis",
         when_to_use="analyzing data, numbers, metrics, or statistics",
@@ -116,6 +118,7 @@ PRODUCTION_SKILLS: list[SkillManifest] = [
     ),
     SkillManifest(
         skill_id="report-writing",
+        metadata={"category": "Content & Writing"},
         name="Report Writing",
         purpose="clear, structured, actionable reporting",
         when_to_use="producing a report, summary, comparison, or recommendation",
@@ -129,6 +132,7 @@ PRODUCTION_SKILLS: list[SkillManifest] = [
     ),
     SkillManifest(
         skill_id="software-engineering",
+        metadata={"category": "Coding"},
         name="Software Engineering",
         purpose="correct, readable code",
         when_to_use="writing, debugging, refactoring, or reviewing code",

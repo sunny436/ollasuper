@@ -62,8 +62,13 @@ from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.prepare import ProviderReadiness
 from app.research.run_state import build_research_context, render_research_seed
 from app.research.tool import RECORD_RESEARCH_TOOL_NAME, RECORD_RESEARCH_TOOL_SPEC
+from app.runtime.capabilities import render_capability_overview
 from app.runtime.env_factory import build_live_agent_env
-from app.runtime.roster import build_delegate_spec, build_live_runtime
+from app.runtime.roster import (
+    build_delegate_spec,
+    build_live_runtime,
+    effective_skills,
+)
 from app.runtime.writer import DeltaWriter
 from app.seo.mutations import (
     SeoWriteAdapter,
@@ -351,6 +356,21 @@ async def run_generation(
             rag=rag_text,
             agentic=agentic,
         )
+        # Capability self-awareness: an always-on, compact catalogue of what OllaSuper
+        # can ACTUALLY do this turn, derived live from the enabled skills + platform
+        # flags + context — so "what can you do?" is answered from runtime state, not a
+        # static list. Independent of the discover() path (which only surfaces skills
+        # matching the query's tags). Agentic-only ⇒ off-path is byte-identical.
+        if agentic:
+            overview = render_capability_overview(
+                effective_skills(settings),
+                settings,
+                has_datasets=bool(req.datasets),
+                has_files=req.ragFileCount > 0,
+                memory_enabled=req.memoryEnabled,
+            )
+            if overview:
+                system = f"{system}\n\n{overview}"
         # Deep Research resume: seed the model with the thread's incomplete run so it
         # continues OPEN sub-questions and never re-researches completed ones. Empty
         # (no active run) => system prompt unchanged.

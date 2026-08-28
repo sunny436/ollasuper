@@ -208,6 +208,7 @@ _PREFERRED = frozenset(
 
 SEO_SKILL = SkillManifest(
     skill_id="seo-audit",
+    metadata={"category": "SEO & Web"},
     name="SEO Audit",
     version="1.0.0",
     purpose="rigorous, evidence-backed technical SEO auditing",
