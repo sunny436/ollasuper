@@ -30,6 +30,8 @@ from app.blog.skill import BLOG_SKILL
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.intents import register_intents
 from app.orchestrator.orchestrator import AgentRegistry, Orchestrator
+from app.research.capabilities import research_intent_map
+from app.research.skill import RESEARCH_SKILL
 from app.seo.capabilities import seo_intent_map
 from app.seo.skill import SEO_SKILL
 from app.skills.manifest import SkillManifest
@@ -158,6 +160,9 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     # The Blog Assistant is a SEPARATE flag-gated skill (never merged with SEO).
     if settings is not None and getattr(settings, "ai_blog_enabled", False):
         skills.append(BLOG_SKILL)
+    # Deep Research is a SEPARATE flag-gated skill (optional; sibling to SEO/Blog).
+    if settings is not None and getattr(settings, "ai_research_enabled", False):
+        skills.append(RESEARCH_SKILL)
     return skills
 
 
@@ -209,6 +214,10 @@ def build_live_runtime(
         # Additively register the blog capability intents (distinct `blog.*` keys —
         # never clobbers SEO or core intents). Idempotent.
         register_intents(blog_intent_map())
+    if getattr(settings, "ai_research_enabled", False):
+        # Additively register the deep-research capability intents (distinct
+        # `research.*` keys — never clobbers SEO/Blog or core intents). Idempotent.
+        register_intents(research_intent_map())
     agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
     skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(

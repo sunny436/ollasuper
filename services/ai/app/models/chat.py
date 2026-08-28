@@ -134,6 +134,39 @@ class ApprovalDecision(BaseModel):
     token: str | None = Field(default=None, max_length=200)
 
 
+class ResearchFindingSeed(BaseModel):
+    """One COMPACT prior finding, replayed on resume so it is not re-researched.
+    Bounded; carries provenance (source + date) but NOT the raw source text."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    subquestion: str = Field(default="", max_length=200)
+    claim: str = Field(default="", max_length=600)
+    sourceUrl: str = Field(default="", max_length=2000)
+    sourceTitle: str = Field(default="", max_length=200)
+    sourceDate: str = Field(default="", max_length=200)
+    confidence: str = Field(default="", max_length=20)
+
+
+class ActiveResearchRun(BaseModel):
+    """The COMPACT, owner-scoped resume seed for the thread's incomplete research run
+    (read by Convex from `researchRuns`, never client-sent). Injected into the prompt
+    so the model continues OPEN sub-questions without repeating completed ones. Kept
+    compact (completed sub-questions + key findings, not raw evidence) to respect the
+    turn budget. `extra="ignore"` so a schema that adds fields never 400s Python."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    runId: str = Field(default="", max_length=200)
+    objective: str = Field(default="", max_length=600)
+    status: str = Field(default="", max_length=40)
+    timeSensitive: bool = False
+    subquestions: list[str] = Field(default_factory=list, max_length=32)
+    completed: list[str] = Field(default_factory=list, max_length=32)
+    findings: list[ResearchFindingSeed] = Field(default_factory=list, max_length=60)
+    sourceCount: int = 0
+
+
 class GenerateRequest(BaseModel):
     """Everything needed for one turn.
 
@@ -202,6 +235,10 @@ class GenerateRequest(BaseModel):
     # Phase 8: resolved approval decisions for this stream (empty on a normal
     # turn). Default-empty so extra="forbid" never 400s a pre-Phase-8 caller.
     approvals: list[ApprovalDecision] = Field(default_factory=list, max_length=64)
+    # Deep Research: the compact resume seed for the thread's incomplete research run
+    # (Convex reads it owner-scoped from researchRuns). None on every non-research
+    # turn and for callers that predate this field (default => extra="forbid" safe).
+    activeResearchRun: ActiveResearchRun | None = None
 
 
 class GenerateAccepted(BaseModel):

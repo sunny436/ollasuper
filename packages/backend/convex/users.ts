@@ -3,6 +3,7 @@ import { asyncMap } from "convex-helpers";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { action, internalMutation, mutation, query } from "./_generated/server";
+import { deleteResearchRunsForUser } from "./researchRuns";
 import { deleteMutationsForUser } from "./seoMutations";
 import { polar } from "./subscriptions";
 import { username } from "./utils/validators";
@@ -139,6 +140,8 @@ export const deleteUserAccount = internalMutation({
     }
     // Phase 7: purge the user's SEO mutation ledger (user-trust owner-scoped rows).
     await deleteMutationsForUser(ctx, args.userId);
+    // Deep Research: purge the user's durable research runs (user-trust owner-scoped).
+    await deleteResearchRunsForUser(ctx, args.userId);
     await ctx.db.delete(args.userId);
   },
 });

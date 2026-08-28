@@ -47,6 +47,7 @@ _CURATED: dict[str, str] = {
     "extract_clean": "Reading the page content",
     "clean_extract": "Reading the page content",
     "content_extract": "Reading the page content",
+    "scrape_llm_ready": "Reading the source",
     "extract_structured": "Extracting structured data",
     "structured_extract": "Extracting structured data",
     "keyword_extract": "Extracting keywords",
@@ -99,6 +100,8 @@ _CURATED: dict[str, str] = {
     "find_capabilities": "Finding the right tools",
     "delegate_to_agent": "Delegating to a specialist",
     "request_clarification": "Asking a follow-up",
+    # deep research
+    "record_research": "Recording a finding",
 }
 
 # Verb-family derivation (generic), word → present-progressive. Matched against

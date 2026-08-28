@@ -376,6 +376,38 @@ class DeltaWriter:
             return {"disabled": 0, "reason": "stream_closed"}
         return {"disabled": int(resp.get("disabled") or 0)}
 
+    async def research_checkpoint(
+        self, *, run_id: str, kind: str, payload: dict
+    ) -> dict:
+        """Deep Research: persist the model's research state through Convex
+        (`op:"research-checkpoint"`). Convex derives ownership from the streamId
+        capability and UPSERTS the run idempotently by `researchRunId` (in-place on
+        resume — never a duplicate row). Returns `{saved}`; a lost/dropped/rejected
+        write is reported honestly so the agent never claims it persisted."""
+        body = {
+            "op": "research-checkpoint",
+            "streamId": self._stream_id,
+            "researchRunId": run_id,
+            "kind": kind,
+            "payload": payload,
+        }
+        try:
+            resp = await self._convex.ingress(body)
+        except ConvexUnavailable:
+            return {"saved": False, "reason": "unavailable"}
+        except ConvexRejected:
+            log.error(
+                "research_checkpoint_rejected", extra={"stream_id": self._stream_id}
+            )
+            return {"saved": False, "reason": "rejected"}
+        if resp.get("cancel"):
+            self._cancel_requested = True
+        if resp.get("unknown") or resp.get("dropped"):
+            return {"saved": False, "reason": "stream_closed"}
+        if resp.get("rejected"):
+            return {"saved": False, "reason": str(resp.get("rejected"))}
+        return {"saved": bool(resp.get("saved"))}
+
     async def store_artifact(
         self,
         blob: bytes,

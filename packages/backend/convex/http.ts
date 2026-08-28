@@ -310,6 +310,37 @@ http.route({
           return aiJson({ error: "unknown stream" }, 404);
         return aiJson(r);
       }
+      case "research-checkpoint": {
+        // Deep Research: persist ONE unit of durable research state (plan / finding /
+        // complete) from the agent's `record_research` tool. Owner DERIVED from the
+        // stream; idempotent by researchRunId. The nested payload is stringified +
+        // bounded at the edge so the mutation validator only ever sees a string
+        // (no v.any(), no payload-shape push on the live backend).
+        const KINDS = ["plan", "finding", "complete"] as const;
+        if (
+          !streamId ||
+          typeof body.researchRunId !== "string" ||
+          typeof body.kind !== "string" ||
+          !(KINDS as readonly string[]).includes(body.kind)
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        let payloadJson = "{}";
+        try {
+          payloadJson = JSON.stringify(body.payload ?? {}).slice(0, 24_000);
+        } catch {
+          payloadJson = "{}";
+        }
+        const r = await ctx.runMutation(internal.researchRuns.checkpoint, {
+          streamId,
+          researchRunId: body.researchRunId,
+          kind: body.kind as (typeof KINDS)[number],
+          payloadJson,
+        });
+        if ("unknown" in r && r.unknown)
+          return aiJson({ error: "unknown stream" }, 404);
+        return aiJson(r);
+      }
       case "execution": {
         // Phase 3: durable per-execution record (crash-recovery authority). Coerce
         // + validate the state literal at the edge (mirrors the "event" filter) so

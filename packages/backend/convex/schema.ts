@@ -582,6 +582,46 @@ export default defineSchema({
     .index("by_approval", ["approvalId"])
     .index("by_execution", ["executionId"]),
 
+  // Deep Research — the durable, owner-scoped, RESUMABLE research state for one run.
+  // `checkpoint` (researchRuns.ts) is the ONLY writer, called from http.ts
+  // (op:"research-checkpoint", ingress-secret-verified) when the agent's reserved
+  // `record_research` tool fires. Owner/workspace/thread ids are DERIVED from the
+  // stream (never client-sent), exactly like seoMutations/chat executions. Idempotent
+  // by `researchRunId` (upsert in place — a resume never duplicates a row). USER-trust
+  // owner-scoped (a non-owner gets nothing, never an oracle). plan/evidence are bounded
+  // JSON strings (the seoReports/chatShares pattern — no v.any(), no payload-shape push).
+  // FUTURE-SAFE: many rows per thread are allowed (NO unique-thread constraint); the
+  // "one active run" policy is a QUERY choice (newest incomplete by_thread), so a
+  // future multi-run model needs no migration. Additive table (no pre-migration rows),
+  // so required fields are safe.
+  researchRuns: defineTable({
+    researchRunId: v.string(), // stable idempotency key (Python-minted per run)
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    threadId: v.id("chatThreads"),
+    streamId: v.optional(v.string()),
+    messageId: v.optional(v.id("chatMessages")),
+    objective: v.string(),
+    reason: v.optional(v.string()), // H1: a short SAFE label, never chain-of-thought
+    status: v.union(
+      v.literal("planning"),
+      v.literal("researching"),
+      v.literal("synthesizing"),
+      v.literal("complete"),
+      v.literal("stopped"),
+      v.literal("failed"),
+    ),
+    timeSensitive: v.boolean(),
+    plan: v.optional(v.string()), // bounded JSON: sub-questions[]
+    evidence: v.optional(v.string()), // bounded JSON: findings[] with provenance
+    sourceCount: v.number(), // distinct sources read (the H4 budget counter)
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_run", ["researchRunId"])
+    .index("by_thread", ["threadId"])
+    .index("by_user", ["userId"]),
+
   chatSettings: defineTable({
     workspaceId: v.id("workspaces"),
     userId: v.id("users"),

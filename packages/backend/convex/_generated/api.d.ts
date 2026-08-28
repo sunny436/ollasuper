@@ -49,6 +49,7 @@ import type * as memoryUtil from "../memoryUtil.js";
 import type * as notifications from "../notifications.js";
 import type * as orgs from "../orgs.js";
 import type * as passwordProviders from "../passwordProviders.js";
+import type * as researchRuns from "../researchRuns.js";
 import type * as seed from "../seed.js";
 import type * as seoMutations from "../seoMutations.js";
 import type * as subscriptions from "../subscriptions.js";
@@ -113,6 +114,7 @@ declare const fullApi: ApiFromModules<{
   notifications: typeof notifications;
   orgs: typeof orgs;
   passwordProviders: typeof passwordProviders;
+  researchRuns: typeof researchRuns;
   seed: typeof seed;
   seoMutations: typeof seoMutations;
   subscriptions: typeof subscriptions;

@@ -170,6 +170,21 @@ class Settings(BaseSettings):
     # + research/factcheck/cluster/repurpose/audit/cannibalization/freshness/translate).
     # OFF by default => byte-identical to today; the SEO Assistant is separate + intact.
     ai_blog_enabled: bool = False
+    # Deep Research — opt-in gate for the ONE optional, read-only, model-routed deep-
+    # research skill (app/research/): decompose → parallel multi-source acquisition →
+    # provenance → freshness → conflict/gap loop → citation verification → cited
+    # synthesis, with DURABLE, resumable state. OFF by default => the skill + its
+    # intents + the record_research checkpoint tool are never registered, so the
+    # runner is byte-identical and the SEO/Blog skills are untouched. It only ENGAGES
+    # when a request genuinely needs multi-source research (discovery tag-gate + the
+    # skill's own STEP-0 self-gate) — simple requests stay on the fast path.
+    ai_research_enabled: bool = False
+    # Deep-Research SAFETY CEILINGS (not targets). The model chooses depth dynamically
+    # UP TO these; the record_research checkpoint enforces them and stops gracefully.
+    # These are IN ADDITION to the shared per-turn ceilings (ai_agent_max_steps,
+    # ai_agent_max_tool_calls_per_step, ai_agent_total_deadline_s, token/turn budgets).
+    ai_research_max_sources: int = 40  # max distinct sources read across one run
+    ai_research_max_branches: int = 8  # max parallel research branches (sub-questions)
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and

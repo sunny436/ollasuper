@@ -6,6 +6,7 @@ import { internalMutation, mutation, query } from "../_generated/server";
 import { audit } from "../auditLog";
 import { bump } from "../counters";
 import { requireMember } from "../orgs";
+import { deleteResearchRunsForThread } from "../researchRuns";
 import { deleteMutationsForThread } from "../seoMutations";
 import {
   DEFAULT_MODEL,
@@ -380,6 +381,8 @@ export const purge = internalMutation({
 
     // Phase 7: the SEO mutation ledger is user-scoped + persistent; reclaim this thread's rows.
     await deleteMutationsForThread(ctx, threadId);
+    // Deep Research: research runs are user-scoped + persistent; reclaim this thread's rows.
+    await deleteResearchRunsForThread(ctx, threadId);
     await ctx.db.delete(threadId);
   },
 });

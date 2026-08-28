@@ -11,6 +11,7 @@ import {
   query,
 } from "../_generated/server";
 import { loadMemoriesForDispatch } from "../memories";
+import { loadActiveResearchRun } from "../researchRuns";
 import { userHasReadyFiles } from "../userFiles";
 import { resolvedApprovalsForStream } from "./approvals";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
@@ -421,6 +422,16 @@ export const dispatchPayload = internalQuery({
       ? await loadMemoriesForDispatch(ctx, stream.userId, stream.workspaceId)
       : [];
 
+    // Deep Research: the compact, owner-scoped resume seed for this thread's incomplete
+    // research run (null for every non-research thread => the Python field defaults to
+    // None and the turn is byte-identical). One indexed by_thread read; never exposes
+    // the raw run. The Python `ai_research_enabled` flag gates whether it is USED.
+    const activeResearchRun = await loadActiveResearchRun(
+      ctx,
+      stream.threadId,
+      stream.userId,
+    );
+
     // Reconstruct completed tool steps on a crash-resume (attempts > 0) OR an
     // approval-resume (attempts stays 0, but events survived). Decoupled from
     // `attempt` and mirrored in the Python runner (`if req.completedTools`) so
@@ -488,6 +499,8 @@ export const dispatchPayload = internalQuery({
       eventSeqBaseline: resume.eventSeqBaseline,
       // Phase 8 durable approval decisions.
       approvals,
+      // Deep Research: compact resume seed (null when there is no incomplete run).
+      activeResearchRun,
     };
   },
 });

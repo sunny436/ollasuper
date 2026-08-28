@@ -59,6 +59,12 @@ from app.models.execution import (
     ToolExecution,
 )
 from app.models.tools import SideEffect, ToolCandidate, ToolDefinition
+from app.research.tool import (
+    RECORD_RESEARCH_TOOL_NAME,
+    ResearchContext,
+    clean_finding_args,
+    clean_plan_args,
+)
 from app.runtime.writer import DeltaWriter
 from app.tools.errors import ToolError, ToolErrorKind
 from app.tools.registry import ToolRegistry
@@ -83,6 +89,7 @@ _RESERVED_BUILTINS = frozenset(
         REMEMBER_TOOL_NAME,
         FORGET_TOOL_NAME,
         FILE_GEN_TOOL_NAME,
+        RECORD_RESEARCH_TOOL_NAME,
     }
     | ORCHESTRATION_BUILTIN_NAMES
 )
@@ -161,6 +168,10 @@ class ToolExecContext:
     rag: RagContext | None = None
     # Phase 6: set when the memory tools (search_memory/remember) are bound.
     memory: MemoryContext | None = None
+    # Deep Research: set when the `record_research` checkpoint tool is bound. Holds
+    # the durable run id + the code-enforced source/branch safety ceilings. None on
+    # every non-research turn (and for delegated sub-agents) => byte-identical.
+    research: ResearchContext | None = None
     # Provider-neutral adapter map (empty => use the single `adapter` slot above,
     # preserving every existing single-provider call site + test byte-for-byte).
     adapters: dict[str, ToolAdapter] = field(default_factory=dict)
@@ -614,6 +625,17 @@ async def _run_one(
             ctx,
             execution,
             _run_forget(ctx, call_id, args),
+            side_effect="external_side_effect",
+        )
+
+    # Deep Research: the reserved checkpoint tool, routed before registry.get. It
+    # persists the model's own research state (external write to researchRuns) and
+    # enforces the source/branch safety ceilings in code.
+    if ctx.research is not None and bound_name == RECORD_RESEARCH_TOOL_NAME:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_record_research(ctx, call_id, args),
             side_effect="external_side_effect",
         )
 
@@ -1283,6 +1305,137 @@ async def _run_forget(ctx: ToolExecContext, call_id: str, args: dict) -> ToolMes
         call_id,
         {"status": "not_forgotten", "reason": result.get("reason") or "no_match"},
         status="error",
+    )
+
+
+async def _run_record_research(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """Deep Research: persist the model's structured research state (plan / finding /
+    complete) to Convex (`op:"research-checkpoint"`), and ENFORCE the source/branch
+    safety ceilings in code. Convex derives ownership from the streamId capability;
+    this never writes a record directly. A finding beyond the source ceiling is
+    REFUSED with an explicit stop-and-synthesise instruction (the H4 hard budget)."""
+    rc = ctx.research
+    assert rc is not None  # guarded by the caller
+    kind = args.get("kind")
+    if kind not in ("plan", "finding", "complete"):
+        return _tool_message(
+            call_id,
+            {"status": "error", "message": "kind must be plan|finding|complete"},
+            status="error",
+        )
+
+    # --- validate + enforce ceilings per kind ------------------------------
+    payload: dict
+    citation: dict | None = None
+    if kind == "plan":
+        cleaned = clean_plan_args(args)
+        if cleaned is None:
+            return _tool_message(
+                call_id,
+                {"status": "error", "message": "objective is required for a plan"},
+                status="error",
+            )
+        # H4: bound the branch fan-out (a plan cannot declare more parallel
+        # sub-questions than the safety ceiling; extra ones are trimmed, not run).
+        subs = cleaned["subquestions"][: rc.max_branches]
+        cleaned["subquestions"] = subs
+        rc.objective = cleaned["objective"]
+        rc.plan_recorded = True
+        rc.branch_count = len(subs)
+        payload = cleaned
+    elif kind == "finding":
+        cleaned = clean_finding_args(args)
+        if cleaned is None:
+            return _tool_message(
+                call_id,
+                {"status": "error", "message": "a finding needs a claim + source_url"},
+                status="error",
+            )
+        # H4: hard source ceiling. A NEW source beyond the cap is refused; the model
+        # is told to stop and synthesise (never silently exceed the budget).
+        if rc.sources_exhausted(cleaned["sourceUrl"]):
+            await ctx.writer.emit_event(
+                EventType.TOOL_RESULT,
+                call_id=call_id,
+                status="error",
+                result={"budget_reached": True, "sources": len(rc.seen_sources)},
+            )
+            return _tool_message(
+                call_id,
+                {
+                    "status": "budget_reached",
+                    "sources": len(rc.seen_sources),
+                    "max_sources": rc.max_sources,
+                    "instruction": (
+                        "Source budget reached — STOP researching now and synthesise "
+                        "the best-supported answer, honestly noting what is still open."
+                    ),
+                },
+                status="error",
+            )
+        rc.seen_sources.add(cleaned["sourceUrl"])
+        citation = {
+            "source_id": cleaned["sourceUrl"],
+            "title": cleaned.get("sourceTitle") or cleaned["sourceUrl"],
+            "metadata": {
+                "type": cleaned.get("sourceType") or "",
+                "date": cleaned.get("sourceDate") or "",
+                "confidence": cleaned.get("confidence"),
+            },
+        }
+        payload = cleaned
+    else:  # complete
+        payload = {}
+
+    dedup_key = json.dumps(
+        {"k": kind, "o": rc.objective, "p": payload}, sort_keys=True, default=str
+    )
+    if ctx.seen_calls.get(f"{RECORD_RESEARCH_TOOL_NAME}:{kind}") == dedup_key:
+        return _tool_message(
+            call_id, {"note": "duplicate call skipped"}, status="error"
+        )
+    ctx.seen_calls[f"{RECORD_RESEARCH_TOOL_NAME}:{kind}"] = dedup_key
+
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=RECORD_RESEARCH_TOOL_NAME,
+        tool_id=RECORD_RESEARCH_TOOL_NAME,
+        call_id=call_id,
+        arguments={"kind": kind},  # the content persists in the run; not echoed here
+        status="running",
+        side_effect="external_side_effect",  # a research-state WRITE
+    )
+    result = await ctx.writer.research_checkpoint(
+        run_id=rc.run_id, kind=kind, payload=payload
+    )
+    if result.get("saved"):
+        if citation is not None:
+            await ctx.writer.emit_event(EventType.CITATION, **citation)
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="success",
+            result={"saved": True, "kind": kind, "sources": len(rc.seen_sources)},
+        )
+        return _tool_message(
+            call_id,
+            {"status": "recorded", "kind": kind, "sources": len(rc.seen_sources)},
+            status="success",
+        )
+
+    reason = result.get("reason") or "not_saved"
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="error",
+        result={"saved": False, "reason": reason},
+    )
+    # A lost checkpoint must not fabricate success, but research can still continue
+    # in-context — report honestly.
+    return _tool_message(
+        call_id, {"status": "not_recorded", "reason": reason}, status="error"
     )
 
 

@@ -58,6 +58,8 @@ from app.models.execution import hash_args
 from app.models.tools import SideEffect, ToolFilters
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.prepare import ProviderReadiness
+from app.research.run_state import build_research_context, render_research_seed
+from app.research.tool import RECORD_RESEARCH_TOOL_NAME, RECORD_RESEARCH_TOOL_SPEC
 from app.runtime.env_factory import build_live_agent_env
 from app.runtime.roster import build_delegate_spec, build_live_runtime
 from app.runtime.writer import DeltaWriter
@@ -251,6 +253,10 @@ async def run_generation(
         # turn when the flag is on. Off by default => not registered, not offered,
         # byte-identical; the read-only audit agent + monitoring worker never see them.
         seo_mutations = settings.ai_seo_mutations_enabled
+        # Deep Research — bind the `record_research` durable-checkpoint tool when the
+        # flag is on. Off by default => not registered, byte-identical. The model only
+        # calls it when the deep-research skill engages; binding is harmless otherwise.
+        research_as_tool = settings.ai_research_enabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -322,7 +328,13 @@ async def run_generation(
         # actually have a capability this turn (web tools, RAG tool, or memory
         # tools) — so it can autonomously choose the right source and the user
         # never has to say "search the web" / "use my PDF".
-        agentic = settings.agent_enabled or rag_as_tool or memory_as_tool or file_gen
+        agentic = (
+            settings.agent_enabled
+            or rag_as_tool
+            or memory_as_tool
+            or file_gen
+            or research_as_tool
+        )
         system = build_system_prompt(
             custom=req.systemPrompt,
             about=req.customInstructionsAbout,
@@ -332,6 +344,15 @@ async def run_generation(
             rag=rag_text,
             agentic=agentic,
         )
+        # Deep Research resume: seed the model with the thread's incomplete run so it
+        # continues OPEN sub-questions and never re-researches completed ones. Empty
+        # (no active run) => system prompt unchanged.
+        research_ctx = None
+        if research_as_tool:
+            research_ctx = build_research_context(settings, req.activeResearchRun)
+            seed = render_research_seed(req.activeResearchRun)
+            if seed:
+                system = f"{system}\n\n{seed}"
 
         # User chat -> Ollima (title-gen + OCR keep build_llm's OpenRouter default).
         llm = build_llm(
@@ -469,6 +490,7 @@ async def run_generation(
                         MEMORY_SEARCH_TOOL_NAME,
                         REMEMBER_TOOL_NAME,
                         FORGET_TOOL_NAME,
+                        RECORD_RESEARCH_TOOL_NAME,
                     }
                     web_specs, name_to_id = build_tool_specs(
                         candidates, tool_registry, reserved=_reserved
@@ -508,6 +530,8 @@ async def run_generation(
             mem_ctx = MemoryContext(memories=req.memories, settings=settings)
         if file_gen:
             specs.append(GENERATE_FILE_TOOL_SPEC)
+        if research_as_tool:
+            specs.append(RECORD_RESEARCH_TOOL_SPEC)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -521,6 +545,8 @@ async def run_generation(
                 reserved_specs.append(FORGET_TOOL_SPEC)
         if file_gen:
             reserved_specs.append(GENERATE_FILE_TOOL_SPEC)
+        if research_as_tool:
+            reserved_specs.append(RECORD_RESEARCH_TOOL_SPEC)
 
         llm_tools = None
         tools_ctx = None
@@ -570,6 +596,7 @@ async def run_generation(
                     max_concurrent_tools=settings.ai_agent_max_concurrent_tools,
                     rag=rag_ctx,
                     memory=mem_ctx,
+                    research=research_ctx,
                     approvals={
                         a.approvalId: {"decision": a.decision, "token": a.token}
                         for a in req.approvals
