@@ -84,6 +84,31 @@ PARALLEL_TOOL_GUIDANCE = (
     "checks you run or your conclusions — it only makes them finish faster."
 )
 
+# Charting capability — a GENERIC, reusable UI primitive (not a dashboard, not a
+# skill). Any response can visualise data inline by emitting a ```chart fenced block
+# whose body is a JSON Chart.js config; the chat renders it to a canvas right where it
+# sits in the answer. Bounded (one paragraph + a tiny example) and appended to the
+# agentic orientation, so it is available to every skill without any per-skill code.
+CHART_GUIDANCE = (
+    "CHARTS: when numeric data is genuinely clearer as a chart than as a table or "
+    "prose, render it INLINE by emitting a fenced ```chart code block whose body is a "
+    "single JSON Chart.js config with `type`, `data` (labels + datasets), and optional "
+    "`options`. The UI draws it as a real chart exactly where you place the block, "
+    "alongside your text — put it next to the relevant analysis, not all at the end. "
+    "Supported `type`s: bar, line, pie, doughnut, scatter, radar, polarArea, bubble; "
+    "for an area chart use `line` with `\"fill\": true`. You may include several chart "
+    "blocks in one answer; each renders independently. The JSON must be valid and "
+    "DATA-ONLY (no functions/callbacks); colours are optional (the UI themes them). "
+    "Do not describe the raw JSON to the user or wrap it in prose — just place the "
+    "block. Example:\n"
+    "```chart\n"
+    '{"type":"bar","data":{"labels":["Jan","Feb","Mar"],'
+    '"datasets":[{"label":"Signups","data":[10,25,18]}]}}\n'
+    "```\n"
+    "Only chart when it genuinely helps; a single number or a two-row table does not "
+    "need one."
+)
+
 
 def build_system_prompt(
     *,
@@ -100,7 +125,7 @@ def build_system_prompt(
     # (which replace the persona base, never the core capability behavior). Only
     # included when the model actually has capabilities this turn.
     parts = (
-        [CAPABILITY_ORIENTATION, PARALLEL_TOOL_GUIDANCE, persona]
+        [CAPABILITY_ORIENTATION, PARALLEL_TOOL_GUIDANCE, CHART_GUIDANCE, persona]
         if agentic
         else [persona]
     )

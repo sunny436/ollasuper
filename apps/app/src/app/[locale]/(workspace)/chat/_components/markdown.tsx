@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { type Block, splitBlocks } from "../_lib/split-blocks";
 import { safeImageUrl, safeUrl } from "../_lib/url-guard";
+import { ChartBlock } from "./chart-block";
 import { CodeBlock } from "./code-block";
 import { Mermaid } from "./mermaid";
 
@@ -162,6 +163,7 @@ const components: Components = {
     const lang = langOf(children);
     const text = nodeText(children).replace(/\n$/, "");
     if (lang === "mermaid") return <Mermaid code={text} complete />;
+    if (lang === "chart") return <ChartBlock spec={text} complete />;
     return <CodeBlock code={text} lang={lang} complete />;
   },
   p: ({ children, ...props }) => (
@@ -292,6 +294,9 @@ const MarkdownBlock = memo(
         .replace(/\n?\s*(`{3,}|~{3,})\s*$/, "");
       if (block.lang === "mermaid") {
         return <Mermaid code={body} complete={block.complete} />;
+      }
+      if (block.lang === "chart") {
+        return <ChartBlock spec={body} complete={block.complete} />;
       }
       return (
         <CodeBlock code={body} lang={block.lang} complete={block.complete} />

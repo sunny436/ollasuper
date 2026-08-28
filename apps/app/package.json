@@ -23,6 +23,7 @@
     "@v1/backend": "workspace:*",
     "@v1/ui": "workspace:*",
     "@xixixao/uploadstuff": "^0.0.5",
+    "chart.js": "^4",
     "convex": "1.19.2",
     "dub": "^0.36.5",
     "framer-motion": "^13.1.0",
