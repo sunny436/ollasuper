@@ -121,7 +121,13 @@ class Settings(BaseSettings):
     # composed guidance block so the prompt is bounded at 5 or 500 skills.
     ai_skill_max_active: int = 3
     ai_skill_min_score: float = 0.2
-    ai_skill_instructions_budget_chars: int = 6000
+    # Sized to fit the whole activated SEO skill (~17k chars: methodology + full
+    # diagnostic routing + capability_summary + checks_digest + constraints + the
+    # dynamic report template). At 6000 the block was hard-truncated mid-checks_digest
+    # by render_skills_block, silently dropping the constraints + output guidance from
+    # the prompt. This is a CAP, not a floor — small skills don't grow to fill it; only
+    # the large SEO skill uses the headroom, and only on SEO-activated requests.
+    ai_skill_instructions_budget_chars: int = 20000
     # Phase 12b (Stage 1) — wire the orchestrated runtime's DYNAMIC CAPABILITY
     # DISCOVERY into the LIVE agent path. OFF by default → the runner is
     # byte-identical (top-K remains the initial inline set). When on (and the agent

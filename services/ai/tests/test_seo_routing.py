@@ -17,7 +17,8 @@ from app.runtime.roster import (
     effective_agents,
     effective_skills,
 )
-from app.skills.registry import SkillRegistry
+from app.seo.skill import SEO_SKILL
+from app.skills.registry import SkillRegistry, render_skills_block
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
 from tests.conftest import make_settings
@@ -121,3 +122,26 @@ def test_build_live_runtime_off_omits_seo():
     orch, skill_reg = build_live_runtime(_off(), _resolver())
     assert orch._registry.get("seo") is None
     assert skill_reg.get("seo-audit") is None
+
+
+# --- the WHOLE activated skill survives the budget (no silent truncation) ----
+# Regression guard: the SEO skill grew past the old 6000-char budget, so
+# render_skills_block hard-truncated it mid-checks_digest and the constraints +
+# output guidance never reached the model. The budget now fits the whole skill —
+# assert a marker from the LAST rendered section (output) AND from the constraints
+# both survive, i.e. nothing was cut, at the live configured budget.
+def test_activated_seo_skill_is_not_truncated():
+    settings = _on()
+    budget = settings.ai_skill_instructions_budget_chars
+    reg = SkillRegistry(effective_skills(settings))
+    active = reg.discover("run a full SEO audit of example.com")
+    assert active and active[0].manifest.skill_id == "seo-audit"
+    block = render_skills_block(active, char_budget=budget)
+    # A constraints-tail marker and an output-tail marker must BOTH be present —
+    # if the skill were truncated, the later sections would be gone.
+    assert "tiebreaker" in block.lower()  # from _CONSTRAINTS
+    assert "not a direct ranking factor" in block.lower()  # from _CONSTRAINTS
+    assert "SEO Health" in block  # from _OUTPUT (the last-rendered section)
+    # The whole skill fits the budget with headroom, so a modest future edit to
+    # checks.py / the guidance won't silently start truncating again.
+    assert len(SEO_SKILL.render()) <= budget - 1000

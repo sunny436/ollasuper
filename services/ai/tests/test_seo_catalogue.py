@@ -1,9 +1,9 @@
-"""Phase 2 (SEO) — catalogue integrity, rule-base rigor/epistemics, and the typed
-output contract. These are the hermetic guards that keep the SEO system honest:
+"""Phase 2 (SEO) — catalogue integrity, rule-base rigor/epistemics, and the skill's
+honesty guarantees. These are the hermetic guards that keep the SEO system honest:
 every capability maps to a real read-only tool, every rule is SOURCED with an
 observed-vs-expected condition and a verification method, known gaps resolve to
-UNSUPPORTED rather than a fabricated value, and the report can never carry a
-0-100 score or a ranking guarantee.
+UNSUPPORTED rather than a fabricated value, and the report's SEO-health score is
+scoped to signal health only — never a ranking guarantee.
 """
 
 from __future__ import annotations
