@@ -53,10 +53,10 @@ interface ThreadItem {
  * blow away the search input's focus and value on each keystroke. The same bug
  * is documented above Shell in components/auth/auth-form.tsx.
  */
-function BrandHeader() {
+function BrandHeader({ active }: { active: boolean }) {
   return (
     <div className="group flex cursor-pointer items-center gap-3 px-4 py-4">
-      <IntelligenceCore />
+      <IntelligenceCore active={active} />
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold tracking-tight text-primary">
@@ -191,6 +191,26 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const activeId = params?.threadId ?? null;
   const { current } = useWorkspace();
 
+  // Defer the decorative rail orb's WebGL renderer until the workspace is ready
+  // AND the browser is idle, so three.js never competes with composer readiness.
+  // The static fallback fills the same box until then. Cancellable so a fast
+  // unmount never fires the deferred mount.
+  const [orbIdle, setOrbIdle] = useState(false);
+  useEffect(() => {
+    if (!current || orbIdle) return;
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+      cancelIdleCallback?: (h: number) => void;
+    };
+    if (w.requestIdleCallback) {
+      const h = w.requestIdleCallback(() => setOrbIdle(true), { timeout: 2000 });
+      return () => w.cancelIdleCallback?.(h);
+    }
+    const t = window.setTimeout(() => setOrbIdle(true), 800);
+    return () => window.clearTimeout(t);
+  }, [current, orbIdle]);
+  const orbActive = Boolean(current) && orbIdle;
+
   // Once a thread is the active route, its own components subscribe to the same
   // queries the hover-prefetch warmed — release the held warm subs so they do
   // not linger past their usefulness (the TTL is only a backstop).
@@ -259,7 +279,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      <BrandHeader />
+      <BrandHeader active={orbActive} />
 
       {/* Grouped header block — New chat, Files — with no internal
           dividers, matching the reference's grouping. */}

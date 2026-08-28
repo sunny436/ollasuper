@@ -104,24 +104,12 @@ export function MessageList({ threadId }: { threadId: string | null }) {
   }, [pendingUsers, settledClientIds, threadId, setPendingUsers]);
 
   // The markdown renderer is a lazy chunk (kept out of /chat's first-load so the
-  // empty landing hydrates faster). Preload it off the critical path: as soon as a
-  // transcript has messages, and otherwise on idle — so it is ready before any
-  // reply streams and settled messages never show the raw-text fallback.
+  // empty landing hydrates faster). Preload it only when a transcript ACTUALLY has
+  // messages — so settled messages never show the raw-text fallback. An EMPTY chat
+  // no longer idle-preloads it (that competed with composer readiness); it warms
+  // instead on composer focus and at the top of a send (see chat-input.tsx).
   useEffect(() => {
-    if (settled.length > 0) {
-      void preloadMarkdown();
-      return;
-    }
-    const w = window as unknown as {
-      requestIdleCallback?: (cb: () => void) => number;
-      cancelIdleCallback?: (id: number) => void;
-    };
-    if (w.requestIdleCallback) {
-      const id = w.requestIdleCallback(() => void preloadMarkdown());
-      return () => w.cancelIdleCallback?.(id);
-    }
-    const t = setTimeout(() => void preloadMarkdown(), 1500);
-    return () => clearTimeout(t);
+    if (settled.length > 0) void preloadMarkdown();
   }, [settled.length]);
 
   const streamingId = (live?.messageId as Id<"chatMessages"> | undefined) ?? null;

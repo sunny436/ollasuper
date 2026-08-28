@@ -2,9 +2,15 @@
 // script, hand-rolled step harness, hard assertion of zero console errors.
 //
 // It is a MEASUREMENT tool first and a regression gate second. Every number it
-// prints is a median over N runs so a single slow sample cannot be mistaken for
-// a trend, and every run gets a brand-new browser context so the HTTP cache
-// never makes the second measurement look like an improvement.
+// prints is a median (and p90) over N runs so a single slow sample cannot be
+// mistaken for a trend, and every run gets a brand-new browser context so the
+// HTTP cache never makes the second measurement look like an improvement.
+//
+// READINESS-RELATIVE by construction: the clock starts BEFORE page.goto, and the
+// thing the user waits for is the ENABLED composer. Everything is timed from
+// navigation start, total blocking time is split at composer-ready, and scripts
+// are bucketed into "requested before readiness" vs "after", so decorative/lazy
+// chunks that land after the composer is usable never inflate the readiness gate.
 //
 //   E2E_BASE_URL=https://app.ollasuper.com node p-perf.js --label baseline
 //   node p-perf.js --label after --runs 7
@@ -25,6 +31,7 @@ const arg = (n, d) => {
 const LABEL = arg("label", "run");
 const RUNS = Number(arg("runs", 7));
 const OUT = path.join(__dirname, ".perf");
+const POST_READY_MS = 2000; // the window we report SEPARATELY, after readiness
 
 const errs = [];
 const median = (a) => {
@@ -40,8 +47,6 @@ const p90 = (a) => {
 };
 const ms = (v) => (v == null ? "  n/a" : String(Math.round(v)).padStart(5));
 
-// Collect console errors + failed responses on every page we open. The suite
-// fails on any of them, which is what makes a perf run double as a smoke test.
 function watch(page) {
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -53,8 +58,6 @@ function watch(page) {
   });
 }
 
-// Walk response.request().redirectedFrom() back to the first hop so we can
-// report the chain length, which is the thing the audit is actually about.
 function chainOf(response) {
   const hops = [];
   let req = response ? response.request() : null;
@@ -76,10 +79,6 @@ async function login(browser) {
   await page.locator('input[type="email"]').first().fill(EMAIL);
   await page.locator('input[type="password"]').first().fill(PASSWORD);
 
-  // Measurement, not just setup: does signing in navigate on its own? The audit
-  // found no router.push after signIn(), and p-chat.js works around it with a
-  // fixed 3.5s wait plus an explicit goto. Time how long the app takes to leave
-  // /login unaided, and record whether it ever does.
   const t0 = Date.now();
   await page.click('button[type="submit"]');
   let autoNavMs = null;
@@ -90,8 +89,6 @@ async function login(browser) {
     /* stayed on /login - recorded as null */
   }
 
-  // Whatever happened above, make sure we really are authenticated before
-  // saving the state the rest of the runs reuse.
   await page.goto(BASE + "/chat", { waitUntil: "domcontentloaded" });
   await page.waitForSelector("#chat-composer", { timeout: 30000 });
   const state = await ctx.storageState();
@@ -99,8 +96,8 @@ async function login(browser) {
   return { state, autoNavMs };
 }
 
-// One cold run: brand-new context (so empty HTTP cache and empty memory cache)
-// carrying the saved auth state.
+// One cold run: brand-new context (empty HTTP + memory cache) carrying the saved
+// auth state. The readiness clock starts BEFORE navigation.
 async function coldRun(browser, state, url) {
   const ctx = await browser.newContext({
     viewport: { width: 1440, height: 900 },
@@ -112,62 +109,98 @@ async function coldRun(browser, state, url) {
   const cdp = await ctx.newCDPSession(page);
   await cdp.send("Performance.enable");
 
-  // Long tasks -> total blocking time. Installed before navigation so it sees
-  // the hydration burst, which is the whole point.
+  // Long tasks -> total blocking time. Installed before navigation so it sees the
+  // hydration burst. Each entry keeps its startTime (relative to navigationStart)
+  // so TBT can be split at composer-ready.
   await page.addInitScript(() => {
     window.__lt = [];
     try {
       new PerformanceObserver((l) => {
-        for (const e of l.getEntries()) window.__lt.push(e.duration);
+        for (const e of l.getEntries())
+          window.__lt.push({ start: e.startTime, dur: e.duration });
       }).observe({ type: "longtask", buffered: true });
     } catch {}
+  });
+
+  // The Convex browser socket. First open, measured from navigation start.
+  const tStart = Date.now();
+  let wsOpenMs = null;
+  page.on("websocket", () => {
+    if (wsOpenMs === null) wsOpenMs = Date.now() - tStart;
   });
 
   const resp = await page.goto(BASE + url, { waitUntil: "domcontentloaded" });
   const chain = chainOf(resp);
 
-  // Time to the two things the user actually waits for on /chat: the rail
-  // having threads, and the composer becoming usable (it renders disabled with
-  // "Preparing your workspace..." until the workspace query lands).
-  const tNav = Date.now();
-  let railMs = null;
+  // The two readiness milestones, BOTH relative to navigation start (tStart):
+  // the composer first RENDERS (disabled, "Preparing your workspace...") and then
+  // becomes ENABLED (workspace query landed) — the moment the user can type.
+  let firstComposerMs = null;
   let composerMs = null;
+  let railMs = null;
+  let readyPerf = null; // page-time (performance.now()) at composer-enabled
+  try {
+    await page.waitForSelector("#chat-composer", { timeout: 30000 });
+    firstComposerMs = Date.now() - tStart;
+  } catch {}
   try {
     await page.waitForSelector('a[href^="/chat/"]', { timeout: 30000 });
-    railMs = Date.now() - tNav;
+    railMs = Date.now() - tStart;
   } catch {}
   try {
     await page.waitForSelector("#chat-composer:not([disabled])", {
       timeout: 30000,
     });
-    composerMs = Date.now() - tNav;
+    composerMs = Date.now() - tStart;
+    readyPerf = await page.evaluate(() => performance.now());
   } catch {}
 
   await page.waitForLoadState("load").catch(() => {});
-  // Let post-hydration lazy chunks (three.js, framer features) land so the byte
-  // count reflects what the browser really pulls, not just first-load JS.
-  await page.waitForTimeout(2500);
+  // Let post-readiness lazy chunks land so we can report them SEPARATELY (they
+  // must not count against the readiness gate).
+  await page.waitForTimeout(POST_READY_MS);
 
-  const m = await page.evaluate(() => {
-    const nav = performance.getEntriesByType("navigation")[0] || {};
-    const res = performance.getEntriesByType("resource");
-    const js = res.filter(
-      (r) => r.initiatorType === "script" || /\.js(\?|$)/.test(r.name),
-    );
-    const sum = (a, f) => a.reduce((x, r) => x + (f(r) || 0), 0);
-    return {
-      responseStart: nav.responseStart,
-      domContentLoaded: nav.domContentLoadedEventEnd,
-      loadEventEnd: nav.loadEventEnd,
-      jsRequests: js.length,
-      jsTransfer: sum(js, (r) => r.transferSize),
-      jsDecoded: sum(js, (r) => r.decodedBodySize),
-      allRequests: res.length,
-      allTransfer: sum(res, (r) => r.transferSize),
-      tbt: (window.__lt || []).reduce((a, d) => a + Math.max(0, d - 50), 0),
-      longTasks: (window.__lt || []).length,
-    };
-  });
+  const m = await page.evaluate(
+    ({ cutoff, postMs }) => {
+      const nav = performance.getEntriesByType("navigation")[0] || {};
+      const res = performance.getEntriesByType("resource");
+      const isJs = (r) =>
+        r.initiatorType === "script" || /\.js(\?|$)/.test(r.name);
+      const sum = (a, f) => a.reduce((x, r) => x + (f(r) || 0), 0);
+      // A null cutoff (composer never enabled) buckets everything as "before" so
+      // a broken run reads as heavy, never as a false "0 after".
+      const cut = cutoff == null ? Infinity : cutoff;
+      const js = res.filter(isJs);
+      const jsBefore = js.filter((r) => r.startTime <= cut);
+      const jsAfter = js.filter((r) => r.startTime > cut);
+      const lt = window.__lt || [];
+      const blocking = (arr) => arr.reduce((a, e) => a + Math.max(0, e.dur - 50), 0);
+      return {
+        responseStart: nav.responseStart,
+        domContentLoaded: nav.domContentLoadedEventEnd,
+        loadEventEnd: nav.loadEventEnd,
+        jsRequests: js.length,
+        jsTransfer: sum(js, (r) => r.transferSize),
+        jsDecoded: sum(js, (r) => r.decodedBodySize),
+        jsBeforeRequests: jsBefore.length,
+        jsBeforeTransfer: sum(jsBefore, (r) => r.transferSize),
+        jsBeforeDecoded: sum(jsBefore, (r) => r.decodedBodySize),
+        jsAfterRequests: jsAfter.length,
+        jsAfterTransfer: sum(jsAfter, (r) => r.transferSize),
+        allRequests: res.length,
+        allTransfer: sum(res, (r) => r.transferSize),
+        // TBT only within the readiness window (nav start -> composer-ready)...
+        tbtToReady: blocking(lt.filter((e) => e.start <= cut)),
+        // ...and a SEPARATE post-ready window, so decorative work is visible but
+        // never inflates the gate.
+        tbtPostReady: blocking(
+          lt.filter((e) => e.start > cut && e.start <= cut + postMs),
+        ),
+        longTasks: lt.length,
+      };
+    },
+    { cutoff: readyPerf, postMs: POST_READY_MS },
+  );
 
   const metrics = Object.fromEntries(
     (await cdp.send("Performance.getMetrics")).metrics.map((x) => [
@@ -176,19 +209,21 @@ async function coldRun(browser, state, url) {
     ]),
   );
 
-  // Client-side route transition: rail click -> that thread's transcript.
+  // Client-side route transition: rail click -> that thread is fully ready. END
+  // on the real destination signals — URL is /chat/<id>, a transcript bubble is
+  // present, and the composer is enabled again — NOT on a <main> the full-bleed
+  // chat route never renders (the old harness hung here).
   let transitionMs = null;
   try {
     const links = page.locator('a[href^="/chat/"]');
     if ((await links.count()) > 0) {
       const t = Date.now();
       await links.first().click();
-      await page.waitForFunction(
-        () => /\/chat\/.+/.test(location.pathname),
-        undefined,
-        { timeout: 15000 },
-      );
-      await page.waitForSelector("main", { timeout: 15000 });
+      await page.waitForFunction(() => /\/chat\/.+/.test(location.pathname), undefined, {
+        timeout: 15000,
+      });
+      await page.waitForSelector("[data-message-role]", { timeout: 15000 });
+      await page.waitForSelector("#chat-composer:not([disabled])", { timeout: 15000 });
       transitionMs = Date.now() - t;
     }
   } catch {}
@@ -202,6 +237,8 @@ async function coldRun(browser, state, url) {
     layoutDuration: (metrics.LayoutDuration || 0) * 1000,
     recalcStyleDuration: (metrics.RecalcStyleDuration || 0) * 1000,
     transitionMs,
+    wsOpenMs,
+    firstComposerMs,
     railMs,
     composerMs,
   };
@@ -235,23 +272,33 @@ async function coldRun(browser, state, url) {
   const agg = {};
   for (const [url, runs] of Object.entries(samples)) {
     const pick = (k) => runs.map((r) => r[k]).filter((v) => v != null);
+    const medKB = (k) => Math.round(median(pick(k)) / 1024);
     agg[url] = {
       hops: runs[0].hops,
       chain: runs[0].chain,
       jsRequests: runs[0].jsRequests,
       allRequests: runs[0].allRequests,
-      jsTransferKB: Math.round(median(pick("jsTransfer")) / 1024),
-      jsDecodedKB: Math.round(median(pick("jsDecoded")) / 1024),
-      allTransferKB: Math.round(median(pick("allTransfer")) / 1024),
+      jsTransferKB: medKB("jsTransfer"),
+      jsDecodedKB: medKB("jsDecoded"),
+      allTransferKB: medKB("allTransfer"),
+      // The readiness split — the headline of the corrected harness.
+      jsBeforeReadyReqs: Math.round(median(pick("jsBeforeRequests"))),
+      jsBeforeReadyTransferKB: medKB("jsBeforeTransfer"),
+      jsBeforeReadyDecodedKB: medKB("jsBeforeDecoded"),
+      jsAfterReadyReqs: Math.round(median(pick("jsAfterRequests"))),
+      jsAfterReadyTransferKB: medKB("jsAfterTransfer"),
     };
     for (const k of [
       "responseStart",
       "domContentLoaded",
       "loadEventEnd",
+      "wsOpenMs",
+      "firstComposerMs",
       "railMs",
       "composerMs",
       "transitionMs",
-      "tbt",
+      "tbtToReady",
+      "tbtPostReady",
       "scriptDuration",
       "layoutDuration",
       "recalcStyleDuration",
@@ -279,10 +326,13 @@ async function coldRun(browser, state, url) {
     ["responseStart (TTFB)", "responseStart"],
     ["domContentLoaded", "domContentLoaded"],
     ["loadEventEnd", "loadEventEnd"],
+    ["websocket open", "wsOpenMs"],
+    ["composer rendered", "firstComposerMs"],
     ["rail populated", "railMs"],
-    ["composer enabled", "composerMs"],
+    ["composer ENABLED", "composerMs"],
     ["route transition", "transitionMs"],
-    ["total blocking time", "tbt"],
+    ["TBT to ready", "tbtToReady"],
+    ["TBT post-ready 2s", "tbtPostReady"],
     ["script duration", "scriptDuration"],
     ["layout duration", "layoutDuration"],
     ["recalc style", "recalcStyleDuration"],
@@ -295,6 +345,12 @@ async function coldRun(browser, state, url) {
       "    JS " + a.jsRequests + " reqs, " + a.jsTransferKB + " KB transferred, " +
         a.jsDecodedKB + " KB decoded | all " + a.allRequests + " reqs, " +
         a.allTransferKB + " KB",
+    );
+    console.log(
+      "    before-ready JS: " + a.jsBeforeReadyReqs + " reqs, " +
+        a.jsBeforeReadyTransferKB + " KB / " + a.jsBeforeReadyDecodedKB +
+        " KB decoded  |  after-ready: " + a.jsAfterReadyReqs + " reqs, " +
+        a.jsAfterReadyTransferKB + " KB",
     );
     for (const [name, k] of ROWS) {
       console.log(

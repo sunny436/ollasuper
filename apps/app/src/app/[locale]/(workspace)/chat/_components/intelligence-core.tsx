@@ -38,15 +38,30 @@ const Core = dynamic(
 export function IntelligenceCore({
   /** Tailwind size utilities. The rail uses the default; a turn avatar is smaller. */
   className = "h-9 w-9",
+  /**
+   * Gate the LIVE WebGL renderer. Defaults true so the streaming-turn avatar is
+   * unchanged. The decorative rail orb passes `active={false}` until the
+   * workspace is ready and the browser is idle — until then the static fallback
+   * fills the same box, so three.js (~150 kB gz) never loads inside the /chat
+   * readiness window (the module is fetched only when `<Core/>` first renders).
+   */
+  active = true,
 }: {
   className?: string;
+  active?: boolean;
 }) {
+  const inner =
+    "relative flex h-full w-full items-center justify-center overflow-hidden rounded-[14px]";
   return (
     <div
       className={`relative shrink-0 rounded-2xl bg-gradient-to-tr from-sky-400 via-indigo-500 to-purple-500 p-[1.5px] shadow-[0_0_20px_hsl(var(--brand)/0.35)] ${className}`}
     >
       <div className="h-full w-full overflow-hidden rounded-[14px] bg-card">
-        <Core className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-[14px]" />
+        {active ? (
+          <Core className={inner} />
+        ) : (
+          <IntelligenceCoreFallback className={inner} />
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,5 @@
 import "@v1/ui/globals.css";
 import { ConvexAuthNextjsServerProvider } from "@convex-dev/auth/nextjs/server";
-import { TooltipProvider } from "@v1/ui/tooltip";
 import { cn } from "@v1/ui/utils";
 import { GeistMono } from "geist/font/mono";
 import type { Metadata } from "next";
@@ -48,9 +47,10 @@ export default function RootLayout({
               app content is styled. */}
           <AmbienceScript />
           <AmbienceProvider>
-            <TooltipProvider delayDuration={0}>
-              <ConvexClientProvider>{children}</ConvexClientProvider>
-            </TooltipProvider>
+            {/* No TooltipProvider: the app renders no Radix Tooltip (only the
+                unused ui/tooltip component exists), so mounting its context added
+                a small client chunk for nothing. Re-add if a Tooltip is used. */}
+            <ConvexClientProvider>{children}</ConvexClientProvider>
           </AmbienceProvider>
         </body>
       </html>

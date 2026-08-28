@@ -121,6 +121,10 @@ export function ChatInput() {
     const text = value;
     const ids = attachments.readyIds;
     if (!text.trim() && ids.length === 0) return;
+    // Warm the markdown chunk the moment the user commits to a send (incl.
+    // attachment-only) — the assistant reply renders markdown, and the empty-chat
+    // transcript no longer idle-preloads it. Harmless if a guard below aborts.
+    void preloadMarkdown();
     // A reply is still generating — Enter is a no-op here (the composer shows
     // Stop, not Send). Without this, an Enter while streaming reaches
     // messages.send, which rejects with "already generating" (a deliberate

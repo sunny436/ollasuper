@@ -28,15 +28,23 @@ import { useEffect, useRef, useState } from "react";
  * what has actually arrived, so this cannot restart, flicker, or invent text.
  */
 
-/** Fraction of the outstanding backlog to close per frame (~60fps). */
+/** Fraction of the outstanding backlog to close per 60fps-frame of ELAPSED time. */
 const K = 0.12;
 /** Always make progress, so a 1-2 char backlog cannot stall on rounding. */
 const MIN_STEP = 1;
+/** One 60fps frame, the time-unit K is defined against. */
+const BASE_FRAME_MS = 1000 / 60;
+/** Cap React commits at ~30/sec — indistinguishable to the eye, half the renders
+ *  and half the markdown reparses of a fast stream. rAF still drives scheduling;
+ *  only the state commit is throttled, and K is scaled by real elapsed time so
+ *  the visual convergence rate is unchanged from the old per-frame version. */
+const COMMIT_MS = 1000 / 30;
 
 export function useReveal(text: string, active: boolean): string {
   const [revealed, setRevealed] = useState(() => (active ? 0 : text.length));
   const frame = useRef<number | null>(null);
   const count = useRef(revealed);
+  const lastCommit = useRef<number | null>(null);
 
   // Reduced motion is a preference, not a nicety: skip the animation entirely.
   // Read in an effect (not during render) — matchMedia does not exist on the
@@ -67,18 +75,31 @@ export function useReveal(text: string, active: boolean): string {
     if (text.length < count.current) {
       count.current = 0;
       setRevealed(0);
+      lastCommit.current = null;
     }
 
-    const step = () => {
+    const step = (now: number) => {
       const backlog = text.length - count.current;
       if (backlog <= 0) {
         frame.current = null;
         return;
       }
+      const last = lastCommit.current;
+      // Throttle the COMMIT to ~30/sec; keep the rAF loop alive so a later frame
+      // lands the commit. Nothing is skipped — only coalesced.
+      if (last !== null && now - last < COMMIT_MS) {
+        frame.current = requestAnimationFrame(step);
+        return;
+      }
+      // Close a fraction of the backlog scaled by the REAL elapsed time, so a
+      // 30Hz commit closes as much as two old 60Hz frames did — same convergence.
+      const elapsed = last === null ? BASE_FRAME_MS : now - last;
+      const effectiveK = 1 - (1 - K) ** (elapsed / BASE_FRAME_MS);
       count.current = Math.min(
         text.length,
-        count.current + Math.max(MIN_STEP, Math.ceil(backlog * K)),
+        count.current + Math.max(MIN_STEP, Math.ceil(backlog * effectiveK)),
       );
+      lastCommit.current = now;
       setRevealed(count.current);
       frame.current = requestAnimationFrame(step);
     };
