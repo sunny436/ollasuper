@@ -70,6 +70,7 @@ from app.runtime.roster import (
     effective_skills,
 )
 from app.runtime.writer import DeltaWriter
+from app.sales.tool import SALES_FORECAST_TOOL_SPEC
 from app.seo.mutations import (
     SeoWriteAdapter,
     StubSeoWriteProvider,
@@ -268,6 +269,11 @@ async def run_generation(
         # thread actually has a dataset (Convex listed them in req.datasets). Off/no
         # dataset => not registered, byte-identical.
         data_as_tool = settings.ai_data_analysis_enabled and bool(req.datasets)
+        # Sales — bind the DETERMINISTIC forecast tool when the sales flag is on. It is
+        # stateless (computes from the deals the model passes), so it needs no dataset;
+        # the model calls it only when a FORECAST/coverage number is required. Off =>
+        # not registered, byte-identical.
+        sales_as_tool = settings.ai_sales_enabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -590,6 +596,8 @@ async def run_generation(
             specs.append(RECORD_RESEARCH_TOOL_SPEC)
         if data_as_tool:
             specs.extend(DATA_TOOL_SPECS)
+        if sales_as_tool:
+            specs.append(SALES_FORECAST_TOOL_SPEC)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -607,6 +615,8 @@ async def run_generation(
             reserved_specs.append(RECORD_RESEARCH_TOOL_SPEC)
         if data_as_tool:
             reserved_specs.extend(DATA_TOOL_SPECS)
+        if sales_as_tool:
+            reserved_specs.append(SALES_FORECAST_TOOL_SPEC)
 
         llm_tools = None
         llm_tools_fallback = None

@@ -67,6 +67,7 @@ from app.research.tool import (
     clean_plan_args,
 )
 from app.runtime.writer import DeltaWriter
+from app.sales.tool import SALES_FORECAST_TOOL_NAME, compute_forecast
 from app.tools.errors import ToolError, ToolErrorKind
 from app.tools.registry import ToolRegistry
 
@@ -91,6 +92,7 @@ _RESERVED_BUILTINS = frozenset(
         FORGET_TOOL_NAME,
         FILE_GEN_TOOL_NAME,
         RECORD_RESEARCH_TOOL_NAME,
+        SALES_FORECAST_TOOL_NAME,
     }
     | DATA_TOOL_NAMES
     | ORCHESTRATION_BUILTIN_NAMES
@@ -692,6 +694,16 @@ async def _run_one(
             execution,
             _run_generate_file(ctx, call_id, args),
             side_effect="external_side_effect",
+        )
+
+    # Sales: the reserved DETERMINISTIC forecast tool (stateless, read-only). Routed
+    # before registry.get; bound only when the sales flag is on.
+    if bound_name == SALES_FORECAST_TOOL_NAME:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_sales_forecast(ctx, call_id, args),
+            side_effect="read_only",
         )
 
     # Tools-only turn (no registry/Ollagraph): any unmatched tool is unknown.
@@ -1494,6 +1506,33 @@ async def _run_data_tool(
     return _tool_message(
         call_id, result, status="error" if err else "success"
     )
+
+
+async def _run_sales_forecast(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """Sales: DETERMINISTIC weighted forecast + coverage from the deals the model
+    passes, via the pure `app/sales/forecast.py`. Stateless + read-only; never raises
+    (a bad shape comes back as {"error": …})."""
+    n = len(args.get("deals") or []) if isinstance(args.get("deals"), list) else 0
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=SALES_FORECAST_TOOL_NAME,
+        tool_id=SALES_FORECAST_TOOL_NAME,
+        call_id=call_id,
+        arguments={"deals": n, "quota": args.get("quota")},
+        status="running",
+        side_effect="read_only",
+    )
+    result = compute_forecast(args)
+    err = result.get("error") if isinstance(result, dict) else None
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="error" if err else "success",
+        result={"error": err} if err else {"ok": True},
+    )
+    return _tool_message(call_id, result, status="error" if err else "success")
 
 
 async def _run_find_capabilities(
