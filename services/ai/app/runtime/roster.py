@@ -33,6 +33,8 @@ from app.finance.equity import EQUITY_SKILL
 from app.finance.skill import FINANCE_SKILL
 from app.hr.capabilities import hr_intent_map
 from app.hr.skill import HR_SKILL
+from app.marketing.capabilities import marketing_intent_map
+from app.marketing.skill import MARKETING_SKILL
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.intents import register_intents
 from app.orchestrator.orchestrator import AgentRegistry, Orchestrator
@@ -192,6 +194,9 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     if settings is not None and getattr(settings, "ai_finance_enabled", False):
         skills.append(FINANCE_SKILL)
         skills.append(EQUITY_SKILL)
+    # Marketing = ONE flag-gated router skill that composes with the siblings.
+    if settings is not None and getattr(settings, "ai_marketing_enabled", False):
+        skills.append(MARKETING_SKILL)
     return skills
 
 
@@ -259,6 +264,10 @@ def build_live_runtime(
         # Additively register the finance capability intents (distinct `finance.*`
         # keys — never clobbers SEO/Blog/Research/Sales/HR or core intents). Idempotent.
         register_intents(finance_intent_map())
+    if getattr(settings, "ai_marketing_enabled", False):
+        # Additively register the marketing capability intents (distinct `marketing.*`
+        # keys — never clobbers any sibling or core intents). Idempotent.
+        register_intents(marketing_intent_map())
     agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
     skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(

@@ -239,6 +239,18 @@ class Settings(BaseSettings):
     # math is the deterministic `finance_calc` tool, and bundled sector/valuation
     # methodology is served by `finance_reference`.
     ai_finance_enabled: bool = False
+    # Marketing capability — opt-in gate for the ONE read-only, model-routed marketing
+    # skill (app/marketing/): strategy/PMM (ICP/positioning/messaging/GTM/launch/
+    # competitive), demand-gen & paid media, social & channel strategy, content
+    # strategy, CRO, pricing, growth, AEO and marketing analytics. It COMPOSES with the
+    # existing SEO/Blog/Deep-Research/Data-Analysis/Sales/Finance skills (never forks
+    # them). NO MCP / ads/analytics/CRM connectors. OFF by default => neither the skill,
+    # its `marketing.*` intents, nor the reserved marketing_calc / marketing_reference
+    # tools are registered, so the runner is byte-identical and every sibling is
+    # untouched. When ON, the skill activates by marketing tags, computes via
+    # `marketing_calc`, pulls specialist playbooks via `marketing_reference`, and reuses
+    # Data-Analysis (CSV) + `finance_calc` (CAC/LTV/ROI) + `generate_file` + `remember`.
+    ai_marketing_enabled: bool = False
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and

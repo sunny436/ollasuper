@@ -59,6 +59,10 @@ from app.finance.tool import (
 )
 from app.ingest.retrieve import render_rag_block, retrieve_context
 from app.logging import bind_log_context, get_logger
+from app.marketing.tool import (
+    MARKETING_CALC_TOOL_SPEC,
+    MARKETING_REFERENCE_TOOL_SPEC,
+)
 from app.models.chat import GenerateRequest
 from app.models.execution import hash_args
 from app.models.tools import SideEffect, ToolFilters
@@ -283,6 +287,10 @@ async def run_generation(
         # model's args / serve bundled data), so they need no dataset; the model uses
         # when the Finance/Equity skills engage. Off => not registered, byte-identical.
         finance_as_tool = settings.ai_finance_enabled
+        # Marketing — bind marketing_calc + on-demand marketing_reference when the
+        # marketing flag is on. Stateless; the model calls them only when the Marketing
+        # skill engages. Off => not registered, byte-identical.
+        marketing_as_tool = settings.ai_marketing_enabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -610,6 +618,9 @@ async def run_generation(
         if finance_as_tool:
             specs.append(FINANCE_CALC_TOOL_SPEC)
             specs.append(FINANCE_REFERENCE_TOOL_SPEC)
+        if marketing_as_tool:
+            specs.append(MARKETING_CALC_TOOL_SPEC)
+            specs.append(MARKETING_REFERENCE_TOOL_SPEC)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -632,6 +643,9 @@ async def run_generation(
         if finance_as_tool:
             reserved_specs.append(FINANCE_CALC_TOOL_SPEC)
             reserved_specs.append(FINANCE_REFERENCE_TOOL_SPEC)
+        if marketing_as_tool:
+            reserved_specs.append(MARKETING_CALC_TOOL_SPEC)
+            reserved_specs.append(MARKETING_REFERENCE_TOOL_SPEC)
 
         llm_tools = None
         llm_tools_fallback = None
