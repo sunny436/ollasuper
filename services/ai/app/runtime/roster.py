@@ -35,6 +35,8 @@ from app.hr.capabilities import hr_intent_map
 from app.hr.skill import HR_SKILL
 from app.marketing.capabilities import marketing_intent_map
 from app.marketing.skill import MARKETING_SKILL
+from app.operations.capabilities import operations_intent_map
+from app.operations.skill import OPERATIONS_SKILL
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.intents import register_intents
 from app.orchestrator.orchestrator import AgentRegistry, Orchestrator
@@ -197,6 +199,9 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     # Marketing = ONE flag-gated router skill that composes with the siblings.
     if settings is not None and getattr(settings, "ai_marketing_enabled", False):
         skills.append(MARKETING_SKILL)
+    # Operations = ONE flag-gated router skill; composes with the siblings (HR pattern).
+    if settings is not None and getattr(settings, "ai_operations_enabled", False):
+        skills.append(OPERATIONS_SKILL)
     return skills
 
 
@@ -268,6 +273,10 @@ def build_live_runtime(
         # Additively register the marketing capability intents (distinct `marketing.*`
         # keys — never clobbers any sibling or core intents). Idempotent.
         register_intents(marketing_intent_map())
+    if getattr(settings, "ai_operations_enabled", False):
+        # Additively register the operations capability intents (distinct `operations.*`
+        # keys — never clobbers any sibling or core intents). Idempotent.
+        register_intents(operations_intent_map())
     agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
     skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(

@@ -251,6 +251,19 @@ class Settings(BaseSettings):
     # `marketing_calc`, pulls specialist playbooks via `marketing_reference`, and reuses
     # Data-Analysis (CSV) + `finance_calc` (CAC/LTV/ROI) + `generate_file` + `remember`.
     ai_marketing_enabled: bool = False
+    # Operations capability — opt-in gate for the ONE read-only, model-routed operations
+    # skill (app/operations/): vendor review, process docs/SOP/RACI, process optim,
+    # change management, capacity/resource planning, status reports, operational risk,
+    # compliance tracking (India-first) and runbooks. It COMPOSES with the existing
+    # Data-Analysis/Finance/HR/Sales/Deep-Research skills (never forks them). No MCP,
+    # ITSM or tracker connectors, no deterministic tool. OFF by default =>
+    # neither the skill nor its `operations.*` intents are registered, so the runner is
+    # byte-identical and every sibling is untouched. When ON, the skill activates by ops
+    # tags, reuses Data-Analysis (workload/utilization), `finance_calc` (TCO/cost),
+    # `generate_file` (SOPs/runbooks/reports), `remember` (ops context) and shared web
+    # tools (vendor / current-compliance research). Leanest integration (HR pattern):
+    # config + roster only.
+    ai_operations_enabled: bool = False
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and
