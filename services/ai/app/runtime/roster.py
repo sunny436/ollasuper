@@ -28,6 +28,8 @@ from app.agent.spec import (
 from app.blog.capabilities import blog_intent_map
 from app.blog.skill import BLOG_SKILL
 from app.data.skill import DATA_SKILL
+from app.hr.capabilities import hr_intent_map
+from app.hr.skill import HR_SKILL
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.intents import register_intents
 from app.orchestrator.orchestrator import AgentRegistry, Orchestrator
@@ -179,6 +181,9 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     # The Sales Assistant is a SEPARATE flag-gated skill (never merged with the others).
     if settings is not None and getattr(settings, "ai_sales_enabled", False):
         skills.append(SALES_SKILL)
+    # The HR Assistant is a SEPARATE flag-gated skill (never merged with the others).
+    if settings is not None and getattr(settings, "ai_hr_enabled", False):
+        skills.append(HR_SKILL)
     return skills
 
 
@@ -238,6 +243,10 @@ def build_live_runtime(
         # Additively register the sales capability intents (distinct `sales.*` keys —
         # never clobbers SEO/Blog/Research or core intents). Idempotent.
         register_intents(sales_intent_map())
+    if getattr(settings, "ai_hr_enabled", False):
+        # Additively register the HR capability intents (distinct `hr.*` keys — never
+        # clobbers SEO/Blog/Research/Sales or core intents). Idempotent.
+        register_intents(hr_intent_map())
     agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
     skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(

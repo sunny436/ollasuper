@@ -217,6 +217,15 @@ class Settings(BaseSettings):
     # compute tools (CSV forecast/pipeline math), `generate_file` (assets) and the
     # `remember` tool (seller context).
     ai_sales_enabled: bool = False
+    # HR Assistant — opt-in gate for the ONE read-only, model-routed HR skill
+    # (app/hr/): recruiting pipeline, interview prep, offers, onboarding, performance
+    # reviews, policy/handbook Q&A, compensation analysis/benchmarking, people
+    # analytics and org planning. NO MCP/HRIS/ATS connectors. OFF by default => the
+    # skill + its `hr.*` intents are never registered, so the runner is byte-identical
+    # and SEO/Blog/Research/Data/Sales are untouched. When ON, the skill activates by HR
+    # tags and reuses the shared web tools, the Data-Analysis compute tools (people +
+    # comp CSV math), `generate_file` (docs) and the `remember` tool (HR context).
+    ai_hr_enabled: bool = False
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and
