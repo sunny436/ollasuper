@@ -226,6 +226,19 @@ class Settings(BaseSettings):
     # tags and reuses the shared web tools, the Data-Analysis compute tools (people +
     # comp CSV math), `generate_file` (docs) and the `remember` tool (HR context).
     ai_hr_enabled: bool = False
+    # Finance capability — opt-in gate for the TWO read-only, model-routed finance
+    # skills (app/finance/): the corporate-Finance skill (FP&A statements/ratios/DCF,
+    # budget variance, forecasting, SaaS metrics, investment appraisal) and the
+    # Equity-Research skill (sector-relative, filings-first listed-stock analysis). NO
+    # MCP/ERP/accounting/market-data connectors. OFF by default => neither skill, its
+    # `finance.*` intents, nor the reserved `finance_calc` / `finance_reference` tools
+    # are registered, so the runner is byte-identical and SEO/Blog/Research/Data/Sales
+    # /HR are untouched. When ON, the skills activate by finance/equity tags and reuse
+    # shared web tools, the Data-Analysis compute tools (CSV/XLSX aggregation),
+    # `generate_file` (reports) and the `remember` tool (finance context); all numeric
+    # math is the deterministic `finance_calc` tool, and bundled sector/valuation
+    # methodology is served by `finance_reference`.
+    ai_finance_enabled: bool = False
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and

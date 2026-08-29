@@ -51,6 +51,12 @@ from app.agent.orchestration_tools import (
 )
 from app.agent.policy import PolicyScope, check_tool_policy
 from app.data.tool import DATA_TOOL_NAMES, DataContext, run_tool
+from app.finance.tool import (
+    FINANCE_CALC_TOOL_NAME,
+    FINANCE_REFERENCE_TOOL_NAME,
+    compute_finance_calc,
+    run_finance_reference,
+)
 from app.logging import get_logger
 from app.models.events import EventType
 from app.models.execution import (
@@ -93,6 +99,8 @@ _RESERVED_BUILTINS = frozenset(
         FILE_GEN_TOOL_NAME,
         RECORD_RESEARCH_TOOL_NAME,
         SALES_FORECAST_TOOL_NAME,
+        FINANCE_CALC_TOOL_NAME,
+        FINANCE_REFERENCE_TOOL_NAME,
     }
     | DATA_TOOL_NAMES
     | ORCHESTRATION_BUILTIN_NAMES
@@ -703,6 +711,23 @@ async def _run_one(
             ctx,
             execution,
             _run_sales_forecast(ctx, call_id, args),
+            side_effect="read_only",
+        )
+
+    # Finance: the reserved DETERMINISTIC calc + on-demand reference tools (stateless,
+    # read-only). Routed before registry.get; bound only when the finance flag is on.
+    if bound_name == FINANCE_CALC_TOOL_NAME:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_finance_calc(ctx, call_id, args),
+            side_effect="read_only",
+        )
+    if bound_name == FINANCE_REFERENCE_TOOL_NAME:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_finance_reference(ctx, call_id, args),
             side_effect="read_only",
         )
 
@@ -1525,6 +1550,56 @@ async def _run_sales_forecast(
         side_effect="read_only",
     )
     result = compute_forecast(args)
+    err = result.get("error") if isinstance(result, dict) else None
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="error" if err else "success",
+        result={"error": err} if err else {"ok": True},
+    )
+    return _tool_message(call_id, result, status="error" if err else "success")
+
+
+async def _run_finance_calc(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """Finance: DETERMINISTIC math via the pure `app/finance/calc.py`, dispatched by
+    `kind`. Stateless + read-only; never raises (bad shape -> {"error": …})."""
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=FINANCE_CALC_TOOL_NAME,
+        tool_id=FINANCE_CALC_TOOL_NAME,
+        call_id=call_id,
+        arguments={"kind": args.get("kind")},
+        status="running",
+        side_effect="read_only",
+    )
+    result = compute_finance_calc(args)
+    err = result.get("error") if isinstance(result, dict) else None
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="error" if err else "success",
+        result={"error": err} if err else {"ok": True},
+    )
+    return _tool_message(call_id, result, status="error" if err else "success")
+
+
+async def _run_finance_reference(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """Finance: serve a bundled read-only equity/sector reference on demand via
+    `app/finance/references.py`. Stateless + read-only; never raises."""
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=FINANCE_REFERENCE_TOOL_NAME,
+        tool_id=FINANCE_REFERENCE_TOOL_NAME,
+        call_id=call_id,
+        arguments={"doc": args.get("doc"), "section": args.get("section")},
+        status="running",
+        side_effect="read_only",
+    )
+    result = run_finance_reference(args)
     err = result.get("error") if isinstance(result, dict) else None
     await ctx.writer.emit_event(
         EventType.TOOL_RESULT,

@@ -53,6 +53,10 @@ from app.clients.ollagraph import OllagraphAdapter
 from app.config import Settings
 from app.data.loader import DatasetRef, sanitize_table_name
 from app.data.tool import DATA_TOOL_NAMES, DATA_TOOL_SPECS, DataContext
+from app.finance.tool import (
+    FINANCE_CALC_TOOL_SPEC,
+    FINANCE_REFERENCE_TOOL_SPEC,
+)
 from app.ingest.retrieve import render_rag_block, retrieve_context
 from app.logging import bind_log_context, get_logger
 from app.models.chat import GenerateRequest
@@ -274,6 +278,11 @@ async def run_generation(
         # the model calls it only when a FORECAST/coverage number is required. Off =>
         # not registered, byte-identical.
         sales_as_tool = settings.ai_sales_enabled
+        # Finance — bind the DETERMINISTIC finance_calc + on-demand finance_reference
+        # tools when the finance flag is on. Both are stateless (compute from the
+        # model's args / serve bundled data), so they need no dataset; the model uses
+        # when the Finance/Equity skills engage. Off => not registered, byte-identical.
+        finance_as_tool = settings.ai_finance_enabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -598,6 +607,9 @@ async def run_generation(
             specs.extend(DATA_TOOL_SPECS)
         if sales_as_tool:
             specs.append(SALES_FORECAST_TOOL_SPEC)
+        if finance_as_tool:
+            specs.append(FINANCE_CALC_TOOL_SPEC)
+            specs.append(FINANCE_REFERENCE_TOOL_SPEC)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -617,6 +629,9 @@ async def run_generation(
             reserved_specs.extend(DATA_TOOL_SPECS)
         if sales_as_tool:
             reserved_specs.append(SALES_FORECAST_TOOL_SPEC)
+        if finance_as_tool:
+            reserved_specs.append(FINANCE_CALC_TOOL_SPEC)
+            reserved_specs.append(FINANCE_REFERENCE_TOOL_SPEC)
 
         llm_tools = None
         llm_tools_fallback = None

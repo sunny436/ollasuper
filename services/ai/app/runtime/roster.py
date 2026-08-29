@@ -28,6 +28,9 @@ from app.agent.spec import (
 from app.blog.capabilities import blog_intent_map
 from app.blog.skill import BLOG_SKILL
 from app.data.skill import DATA_SKILL
+from app.finance.capabilities import finance_intent_map
+from app.finance.equity import EQUITY_SKILL
+from app.finance.skill import FINANCE_SKILL
 from app.hr.capabilities import hr_intent_map
 from app.hr.skill import HR_SKILL
 from app.orchestrator.capabilities import CapabilityResolver
@@ -184,6 +187,11 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     # The HR Assistant is a SEPARATE flag-gated skill (never merged with the others).
     if settings is not None and getattr(settings, "ai_hr_enabled", False):
         skills.append(HR_SKILL)
+    # Finance = TWO separate flag-gated skills under ONE flag (corporate FP&A/SaaS/
+    # investment + listed-stock Equity Research); never merged with the others.
+    if settings is not None and getattr(settings, "ai_finance_enabled", False):
+        skills.append(FINANCE_SKILL)
+        skills.append(EQUITY_SKILL)
     return skills
 
 
@@ -247,6 +255,10 @@ def build_live_runtime(
         # Additively register the HR capability intents (distinct `hr.*` keys — never
         # clobbers SEO/Blog/Research/Sales or core intents). Idempotent.
         register_intents(hr_intent_map())
+    if getattr(settings, "ai_finance_enabled", False):
+        # Additively register the finance capability intents (distinct `finance.*`
+        # keys — never clobbers SEO/Blog/Research/Sales/HR or core intents). Idempotent.
+        register_intents(finance_intent_map())
     agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
     skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(
