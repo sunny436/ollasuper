@@ -110,6 +110,34 @@ def test_ratios_alias_and_flat_inputs():
     assert r2["profitability"]["roe"]["value"] == 0.2  # via 'equity' alias
 
 
+def test_ratios_gross_profit_and_misplaced_fields():
+    # e2e: the model dropped COGS (gross margin read 100%). Deriving COGS from
+    # gross_profit AND finding a field placed in the "wrong" section must both work.
+    gp = C.ratios(
+        {
+            "income_statement": {
+                "revenue": 1000,
+                "gross_profit": 400,
+                "net_income": 100,
+            },
+            "balance_sheet": {"inventory": 100},
+        }
+    )["categories"]
+    assert (
+        gp["profitability"]["gross_margin"]["value"] == 0.4
+    )  # derived from gross_profit
+    assert gp["efficiency"]["inventory_turnover"]["value"] == 6.0  # cogs 600 / inv 100
+    misplaced = C.ratios(
+        {
+            "income_statement": {"revenue": 1000, "net_income": 100},
+            "cogs": 600,
+        }
+    )["categories"]
+    assert (
+        misplaced["profitability"]["gross_margin"]["value"] == 0.4
+    )  # found via merged
+
+
 def test_wacc_exact():
     w = C.wacc()  # CAPM defaults
     assert w["cost_of_equity"] == 0.1  # 0.04 + 1.0*0.06

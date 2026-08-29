@@ -180,12 +180,19 @@ fs.writeFileSync(
         "accounts receivable 125, operating cash flow 150.",
     );
     show("RATIOS", r);
-    const t = nospace(r.text);
-    need(/40%|0\.40|0\.4\b/.test(r.text) || t.includes("40%"), "gross margin 40% missing");
-    need(/10%|0\.10/.test(r.text), "net margin 10% missing");
-    need(/20%|0\.20|0\.2\b/.test(r.text), "ROE 20% missing");
-    need(/2\.0|2\b/.test(t.match(/current[^0-9]{0,12}([0-9.]+)/i)?.[1] || "") || /current ratio/i.test(r.text), "current ratio missing");
-    need(/0\.6|0\.60/.test(r.text), "debt-to-equity 0.6 missing");
+    // Label-anchored value checks (a stray "0.40" elsewhere must not false-pass).
+    const val = (label) => {
+      const m = r.text.match(
+        new RegExp(label + "[^%x0-9\\n]*?(\\d+(?:\\.\\d+)?)\\s*[%x]?", "i"),
+      );
+      return m ? parseFloat(m[1]) : NaN;
+    };
+    const near = (a, b, tol) => Number.isFinite(a) && Math.abs(a - b) <= tol;
+    need(near(val("gross margin"), 40, 0.6), "gross margin not ~40% (got " + val("gross margin") + ")");
+    need(near(val("net margin"), 10, 0.6), "net margin not ~10% (got " + val("net margin") + ")");
+    need(near(val("roe"), 20, 0.6), "ROE not ~20%");
+    need(near(val("current ratio"), 2, 0.05), "current ratio not ~2.0");
+    need(near(val("debt.?to.?equity"), 0.6, 0.05), "debt-to-equity not ~0.6");
   });
 
   // 3 DCF — EXACT WACC + EV
