@@ -157,34 +157,133 @@ def ratios(data: dict, category: str | None = None) -> dict:
     income_statement / balance_sheet / cash_flow / market_data sections (missing
     fields default to 0). Every ratio -> {value, formula, name, interpretation};
     an undefined ratio has value None (never a fabricated 0)."""
-    inc = data.get("income_statement", {}) or {}
-    bal = data.get("balance_sheet", {}) or {}
-    cf = data.get("cash_flow", {}) or {}
-    mkt = data.get("market_data", {}) or {}
+    # Accept nested sections OR a flat dict (fall back to the whole payload per
+    # section) so the model's free-text -> JSON mapping doesn't have to nest.
+    inc = data.get("income_statement") or data
+    bal = data.get("balance_sheet") or data
+    cf = data.get("cash_flow") or data
+    mkt = data.get("market_data") or data
 
-    def g(d: dict, k: str) -> float:
-        return _f(d.get(k), 0.0) or 0.0
+    def g(d: dict, *keys: str) -> float:
+        """First present ALIAS, tolerant-parsed; 0.0 if none (source default).
+        Alias-tolerance is load-bearing: the model maps user free-text ('COGS', 'cash')
+        to varied JSON keys, and an unmapped field must not silently poison a ratio."""
+        if not isinstance(d, dict):
+            return 0.0
+        for k in keys:
+            v = _f(d.get(k))
+            if v is not None:
+                return v
+        return 0.0
 
-    revenue = g(inc, "revenue")
-    cogs = g(inc, "cost_of_goods_sold")
-    op_income = g(inc, "operating_income")
-    net_income = g(inc, "net_income")
-    interest = g(inc, "interest_expense")
-    ebitda = g(inc, "ebitda")
-    equity = g(bal, "total_equity")
-    assets = g(bal, "total_assets")
-    cur_assets = g(bal, "current_assets")
-    cur_liab = g(bal, "current_liabilities")
-    inventory = g(bal, "inventory")
-    cash = g(bal, "cash_and_equivalents")
-    debt = g(bal, "total_debt")
-    ar = g(bal, "accounts_receivable")
-    ocf = g(cf, "operating_cash_flow")
-    debt_service = _f(cf.get("total_debt_service"), interest) or 0.0
-    mkt_cap = g(mkt, "market_cap")
-    price = g(mkt, "share_price")
-    shares = g(mkt, "shares_outstanding")
-    growth = g(mkt, "earnings_growth_rate")
+    revenue = g(
+        inc,
+        "revenue",
+        "sales",
+        "total_revenue",
+        "net_revenue",
+        "net_sales",
+        "revenue_from_operations",
+        "total_sales",
+        "turnover",
+    )
+    cogs = g(
+        inc,
+        "cost_of_goods_sold",
+        "cogs",
+        "cost_of_sales",
+        "cost_of_revenue",
+        "cost_of_goods",
+        "cost_of_goods_sold_cogs",
+    )
+    op_income = g(
+        inc,
+        "operating_income",
+        "operating_profit",
+        "ebit",
+        "operating_income_loss",
+        "income_from_operations",
+    )
+    net_income = g(
+        inc,
+        "net_income",
+        "net_profit",
+        "profit",
+        "net_earnings",
+        "pat",
+        "profit_after_tax",
+        "net_income_loss",
+    )
+    interest = g(
+        inc,
+        "interest_expense",
+        "interest",
+        "finance_costs",
+        "interest_expenses",
+        "interest_cost",
+    )
+    ebitda = g(inc, "ebitda") or g(mkt, "ebitda")
+    equity = g(
+        bal,
+        "total_equity",
+        "equity",
+        "shareholders_equity",
+        "stockholders_equity",
+        "total_shareholders_equity",
+        "net_worth",
+    )
+    assets = g(bal, "total_assets", "assets")
+    cur_assets = g(bal, "current_assets", "total_current_assets")
+    cur_liab = g(bal, "current_liabilities", "total_current_liabilities")
+    inventory = g(bal, "inventory", "inventories", "stock", "stock_in_trade")
+    cash = g(
+        bal,
+        "cash_and_equivalents",
+        "cash",
+        "cash_and_cash_equivalents",
+        "cash_equivalents",
+        "cash_and_bank",
+    )
+    debt = g(bal, "total_debt", "debt", "total_borrowings", "borrowings")
+    ar = g(
+        bal,
+        "accounts_receivable",
+        "receivables",
+        "trade_receivables",
+        "ar",
+        "accounts_receivables",
+        "debtors",
+    )
+    ocf = g(
+        cf,
+        "operating_cash_flow",
+        "cash_from_operations",
+        "ocf",
+        "cfo",
+        "operating_cashflow",
+        "cash_flow_from_operations",
+    )
+    debt_service = _f((cf or {}).get("total_debt_service"), interest) or 0.0
+    mkt_cap = g(
+        mkt,
+        "market_cap",
+        "market_capitalization",
+        "mktcap",
+        "marketcap",
+        "market_value",
+    )
+    price = g(mkt, "share_price", "price", "current_price", "stock_price")
+    shares = g(
+        mkt,
+        "shares_outstanding",
+        "shares",
+        "diluted_shares",
+        "number_of_shares",
+        "total_shares",
+    )
+    growth = g(
+        mkt, "earnings_growth_rate", "growth_rate", "eps_growth", "earnings_growth"
+    )
 
     if mkt_cap == 0 and price > 0 and shares > 0:
         mkt_cap = price * shares

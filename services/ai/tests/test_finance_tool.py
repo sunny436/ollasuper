@@ -72,6 +72,33 @@ def test_kind_saas_metrics_bands():
     assert out["ltv_cac"]["band"] == "excellent"
 
 
+def test_saas_alias_keys_and_percent_gross_margin():
+    # aliased keys (prev_mrr, churned, marketing_spend, new, gm) + gross margin as a
+    # PERCENT (80 -> 0.8) must resolve; NRR falls back to churn-only. Regression: e2e
+    # showed the model uses varied key names and may pass gross margin as a percent.
+    out = compute_finance_calc(
+        {
+            "kind": "saas_metrics",
+            "saas": {
+                "mrr": 100000,
+                "prev_mrr": 90000,
+                "customers": 100,
+                "churned": 3,
+                "marketing_spend": 50000,
+                "new": 10,
+                "gm": 80,
+            },
+        }
+    )
+    assert out["arr"]["value"] == 1_200_000
+    assert out["cac"]["value"] == 5000.0
+    assert out["ltv"]["value"] == pytest.approx(
+        26666.67, abs=1.0
+    )  # gm normalized 80->0.8
+    assert out["ltv_cac"]["value"] == pytest.approx(5.33, abs=0.02)
+    assert out["nrr_pct"]["value"] == 100.0  # churn-only fallback, no blocking
+
+
 def test_kind_variance_and_forecast():
     v = compute_finance_calc(
         {

@@ -81,6 +81,35 @@ def test_ratio_divide_by_zero_is_none_not_zero():
 
 
 # --- 2. WACC / DCF (exact + sensitivity + WACC<=g + missing) ---------------
+def test_ratios_alias_and_flat_inputs():
+    # The model maps free-text ('COGS', 'cash') to varied JSON keys and may not nest —
+    # aliased AND flat inputs must still resolve (regression: e2e showed gross margin
+    # 100% / cash ratio 0 when 'cogs'/'cash' were passed unmapped).
+    flat = {
+        "revenue": 1000,
+        "cogs": 600,
+        "net_income": 100,
+        "total_equity": 500,
+        "current_assets": 400,
+        "current_liabilities": 200,
+        "inventory": 100,
+        "cash": 80,
+        "total_debt": 300,
+    }
+    r = C.ratios(flat)["categories"]
+    assert r["profitability"]["gross_margin"]["value"] == 0.4  # via 'cogs' alias
+    assert r["liquidity"]["cash_ratio"]["value"] == 0.4  # 80/200, via 'cash' alias
+    assert r["profitability"]["net_margin"]["value"] == 0.1
+    # nested sections with alias keys resolve too
+    nested = {
+        "income_statement": {"sales": 1000, "cost_of_sales": 600, "net_profit": 100},
+        "balance_sheet": {"equity": 500},
+    }
+    r2 = C.ratios(nested)["categories"]
+    assert r2["profitability"]["gross_margin"]["value"] == 0.4
+    assert r2["profitability"]["roe"]["value"] == 0.2  # via 'equity' alias
+
+
 def test_wacc_exact():
     w = C.wacc()  # CAPM defaults
     assert w["cost_of_equity"] == 0.1  # 0.04 + 1.0*0.06

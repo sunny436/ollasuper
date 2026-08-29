@@ -54,6 +54,76 @@ def _floats(d: dict, keys: tuple[str, ...]) -> dict:
     return out
 
 
+# canonical SaaS param -> accepted aliases (model maps free-text to varied keys).
+_SAAS_ALIASES: dict[str, tuple[str, ...]] = {
+    "mrr": ("mrr", "monthly_recurring_revenue", "current_mrr", "mrr_current"),
+    "mrr_prev": (
+        "mrr_prev",
+        "prev_mrr",
+        "mrr_previous",
+        "previous_mrr",
+        "last_month_mrr",
+        "prior_mrr",
+        "mrr_last_month",
+        "prior_month_mrr",
+    ),
+    "customers": (
+        "customers",
+        "customer_count",
+        "total_customers",
+        "num_customers",
+        "active_customers",
+    ),
+    "churned_customers": (
+        "churned_customers",
+        "churned",
+        "customers_churned",
+        "lost_customers",
+        "churn_count",
+        "churned_custs",
+    ),
+    "sm_spend": (
+        "sm_spend",
+        "sales_and_marketing",
+        "s_and_m",
+        "marketing_spend",
+        "sales_marketing_spend",
+        "sm",
+        "sales_and_marketing_spend",
+        "cac_spend",
+    ),
+    "new_customers": (
+        "new_customers",
+        "new",
+        "customers_added",
+        "new_custs",
+        "acquired_customers",
+        "new_customer_count",
+    ),
+    "gross_margin": ("gross_margin", "gm", "gross_margin_pct", "gross_margin_percent"),
+    "expansion_mrr": ("expansion_mrr", "expansion", "upsell_mrr", "expansion_revenue"),
+    "churned_mrr": ("churned_mrr", "churn_mrr", "lost_mrr", "churned_revenue"),
+    "contraction_mrr": ("contraction_mrr", "contraction", "downgrade_mrr"),
+    "profit_margin": ("profit_margin", "profit_margin_pct", "net_profit_margin"),
+}
+
+
+def _resolve_saas(d: dict) -> dict:
+    """Resolve SaaS inputs by alias, tolerant-parsed. gross_margin given as a percent
+    (>1.5, e.g. 80) is normalized to a decimal (0.80) so LTV/payback stay correct."""
+    out: dict[str, float] = {}
+    for canon, keys in _SAAS_ALIASES.items():
+        for k in keys:
+            v = _num(d.get(k))
+            if v is not None:
+                out[canon] = v
+                break
+    gm = out.get("gross_margin")
+    if gm is not None and gm > 1.5:
+        out["gross_margin"] = gm / 100.0
+    return out
+
+
 FINANCE_CALC_TOOL_SPEC: dict = {
     "type": "function",
     "function": {
@@ -329,22 +399,7 @@ def compute_finance_calc(args: dict) -> dict:
             )
         if kind == "saas_metrics":
             p = _obj(args, "saas")
-            kw = _floats(
-                p,
-                (
-                    "mrr",
-                    "mrr_prev",
-                    "customers",
-                    "churned_customers",
-                    "sm_spend",
-                    "new_customers",
-                    "gross_margin",
-                    "expansion_mrr",
-                    "churned_mrr",
-                    "contraction_mrr",
-                    "profit_margin",
-                ),
-            )
+            kw = _resolve_saas(p)
             return C.saas_metrics(
                 segment=str(p.get("segment") or "smb").lower().replace("-", "_"),
                 stage=str(p.get("stage") or "growth").lower(),
