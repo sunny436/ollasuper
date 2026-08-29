@@ -264,6 +264,38 @@ class Settings(BaseSettings):
     # tools (vendor / current-compliance research). Leanest integration (HR pattern):
     # config + roster only.
     ai_operations_enabled: bool = False
+    # Documents capability — opt-in gate for the ONE model-routed Documents skill
+    # (app/documents/): PPTX + PDF create / read / edit / process / convert with REAL
+    # inline slide+page preview in the chat UI. It steers the model to the extended
+    # `generate_file` (create) + the new `document_ops` reserved tool (read/edit/merge/
+    # split/rotate/extract/tables/OCR/forms/convert), reusing the deployed python-pptx /
+    # pypdf / pdfplumber / pypdfium2 / rapidocr — NO new Python dependency. Composes
+    # with
+    # Finance/Research/Marketing/Operations/Data (content in, artifact out). OFF by
+    # default => neither the skill, its `documents.*` intents, nor `document_ops` are
+    # registered, so the runner is byte-identical and every sibling is untouched.
+    ai_documents_enabled: bool = False
+    # The faithful PPTX visual-preview + PPTX<->PDF path uses LibreOffice headless
+    # (soffice), sandboxed per-conversion (systemd-run scope: PrivateNetwork + MemoryMax
+    # + CPUQuota + ProtectSystem + NoNewPrivileges, else unshare -n + prlimit) with a
+    # hard
+    # Python timeout. Kept on a SEPARATE flag so the capability works (download +
+    # faithful
+    # PDF preview + LABELED-approximate generated-deck preview) even before the binary
+    # is
+    # installed/verified. OFF => no soffice call; uploaded/edited-deck visual preview
+    # and
+    # PPTX->PDF are unavailable (honestly reported), never faked.
+    ai_documents_soffice_enabled: bool = False
+    # document_ops resource bounds (untrusted files). preview page/slide cap; preview
+    # render scale (pypdfium2, below the 2.0 OCR scale); per-op + soffice timeouts; max
+    # input file size; concurrent soffice processes (memory-heavy).
+    ai_documents_preview_max_pages: int = 10
+    ai_documents_preview_scale: float = 1.5
+    ai_documents_op_timeout_s: float = 60.0
+    ai_documents_soffice_timeout_s: float = 45.0
+    ai_documents_max_file_bytes: int = 25_000_000
+    ai_documents_soffice_concurrency: int = 1
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and

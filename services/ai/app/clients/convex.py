@@ -155,6 +155,9 @@ class ConvexClient:
         mime: str,
         sha256: str | None = None,
         artifact_key: str | None = None,
+        parent_artifact_id: str | None = None,
+        role: str | None = None,
+        page: int | None = None,
     ) -> dict:
         """Store a GENERATED file blob and register it (File Generation System).
 
@@ -181,6 +184,16 @@ class ConvexClient:
             headers["x-artifact-sha256"] = sha256
         if artifact_key:
             headers["x-artifact-key"] = artifact_key
+        # Documents preview (additive): a child artifact (page image) links to its
+        # parent
+        # artifact + carries role/page, so the UI can render the inline preview. Omitted
+        # for filegen/SEO ⇒ byte-identical.
+        if parent_artifact_id:
+            headers["x-artifact-parent"] = parent_artifact_id
+        if role:
+            headers["x-artifact-role"] = role
+        if page is not None:
+            headers["x-artifact-page"] = str(page)
         r = await self._c.post(
             self._s.artifact_url,
             content=blob,

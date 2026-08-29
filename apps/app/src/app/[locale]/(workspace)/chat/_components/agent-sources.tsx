@@ -1,7 +1,7 @@
 "use client";
 
 import { api } from "@v1/backend/convex/_generated/api";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { Download, FileText } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
@@ -20,6 +20,10 @@ function convexSite(): string {
   const u = process.env.NEXT_PUBLIC_CONVEX_URL ?? "";
   return u.includes("/__cvx") ? u.replace("/__cvx", "/__cvx-site") : u;
 }
+
+/** Stable keys for the fixed-length preview loading skeletons (an index key would
+ *  trip biome's noArrayIndexKey; these never reorder). */
+const SKELETON_KEYS = ["sk0", "sk1", "sk2", "sk3"] as const;
 
 function formatBytes(n?: number): string {
   if (!n || n <= 0) return "";
@@ -127,15 +131,28 @@ function CitationCard({
 }
 
 /**
- * An assistant-generated file (File Generation System). Download is OWNERSHIP-
- * enforced: the event carries only the artifact id; clicking Download calls the
- * authenticated `mintDownload` (which checks the caller owns it) to get a short-TTL
+ * An assistant-generated file (File Generation System + Documents capability). Download
+ * is OWNERSHIP-enforced: the event carries only the artifact id; clicking Download calls
+ * the authenticated `mintDownload` (which checks the caller owns it) to get a short-TTL
  * token URL, then triggers the download. A memory-style artifact (no id/format) still
  * renders as a plain note. `url` is honoured if a tool ever bakes one directly.
+ *
+ * When the artifact carries a `preview` manifest (a pptx/pdf from the Documents skill),
+ * an inline slide/page preview strip renders ABOVE the download row: the images are
+ * fetched via the AUTHENTICATED `previewUrls` query (owner-checked server-side, same
+ * origin, CSP-safe) and lazy-loaded. The download always remains the real editable file;
+ * an approximate (non-faithful) preview is labeled as such — never presented as exact.
  */
 function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
   const mintDownload = useMutation(api.chat.artifacts.mintDownload);
   const [busy, setBusy] = useState(false);
+  const preview = artifact.preview;
+  // Only query when this artifact actually declares a preview (else "skip").
+  const previewData = useQuery(
+    api.chat.artifacts.previewUrls,
+    preview && artifact.artifactId ? { artifactId: artifact.artifactId } : "skip",
+  );
+  const pages = previewData?.pages ?? [];
   const title =
     artifact.filename ||
     (typeof artifact.metadata.title === "string" && artifact.metadata.title) ||
@@ -143,6 +160,10 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
   const badge = (artifact.format || artifact.artifactType || "").toUpperCase();
   const size = formatBytes(artifact.size);
   const downloadable = Boolean(artifact.url) || Boolean(artifact.artifactId);
+  const moreLabel =
+    preview && preview.pages > preview.shown
+      ? `Showing ${preview.shown} of ${preview.pages} — download for all`
+      : "";
 
   const onDownload = async () => {
     if (busy) return;
@@ -172,24 +193,58 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
   return (
     <div
       data-artifact-card
-      className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-2.5 py-1.5 text-xs"
+      className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 p-2 text-xs"
     >
-      <FileText className="h-4 w-4 shrink-0 text-brand-ink" aria-hidden />
-      <span className="min-w-0 flex-1 truncate text-primary/80">{title}</span>
-      {size && <span className="shrink-0 text-primary/40 tabular-nums">{size}</span>}
-      {badge && <Badge>{badge}</Badge>}
-      {downloadable && (
-        <button
-          type="button"
-          data-artifact-download
-          onClick={onDownload}
-          disabled={busy}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-brand-ink outline-none hover:bg-primary/5 focus-visible:ring-2 focus-visible:ring-brand/40 disabled:opacity-50"
-        >
-          <Download className="h-3.5 w-3.5" aria-hidden />
-          {busy ? "Preparing…" : "Download"}
-        </button>
+      {preview && (
+        <div data-artifact-preview className="flex flex-col gap-1">
+          <div className="flex snap-x gap-2 overflow-x-auto pb-1">
+            {pages.length === 0
+              ? SKELETON_KEYS.slice(0, Math.min(preview.shown, 4)).map((k) => (
+                  <div
+                    key={k}
+                    className="h-32 w-56 shrink-0 animate-pulse rounded border border-border/50 bg-primary/5"
+                  />
+                ))
+              : pages.map((p) => (
+                  <img
+                    key={p.page}
+                    src={safeUrl(p.url)}
+                    alt={`${title} — page ${p.page}`}
+                    loading="lazy"
+                    data-preview-page={p.page}
+                    className="h-auto max-h-56 w-56 shrink-0 snap-start rounded border border-border/50 bg-white object-contain"
+                  />
+                ))}
+          </div>
+          {(moreLabel || !preview.faithful) && (
+            <span className="text-[10px] text-primary/40">
+              {!preview.faithful
+                ? preview.note || "Approximate preview — download for the exact file"
+                : moreLabel}
+            </span>
+          )}
+        </div>
       )}
+      <div className="flex items-center gap-2">
+        <FileText className="h-4 w-4 shrink-0 text-brand-ink" aria-hidden />
+        <span className="min-w-0 flex-1 truncate text-primary/80">{title}</span>
+        {size && (
+          <span className="shrink-0 text-primary/40 tabular-nums">{size}</span>
+        )}
+        {badge && <Badge>{badge}</Badge>}
+        {downloadable && (
+          <button
+            type="button"
+            data-artifact-download
+            onClick={onDownload}
+            disabled={busy}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-brand-ink outline-none hover:bg-primary/5 focus-visible:ring-2 focus-visible:ring-brand/40 disabled:opacity-50"
+          >
+            <Download className="h-3.5 w-3.5" aria-hidden />
+            {busy ? "Preparing…" : "Download"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -681,6 +681,13 @@ http.route({
       }
     }
     const artifactKey = req.headers.get("x-artifact-key") ?? undefined;
+    // Documents inline preview (additive): a child preview-page image declares its
+    // parent artifact + role/page. Absent for filegen/SEO ⇒ byte-identical.
+    const parentArtifactId = req.headers.get("x-artifact-parent") ?? undefined;
+    const role = req.headers.get("x-artifact-role") ?? undefined;
+    const pageHeader = req.headers.get("x-artifact-page");
+    const page =
+      pageHeader && /^\d{1,6}$/.test(pageHeader) ? Number(pageHeader) : undefined;
     const storageId = await ctx.storage.store(new Blob([ab], { type: mime }));
     const res = await ctx.runMutation(internal.chat.artifacts.registerArtifact, {
       streamId,
@@ -691,6 +698,9 @@ http.route({
       size: ab.byteLength,
       ...(contentHash ? { contentHash } : {}),
       ...(artifactKey ? { artifactKey } : {}),
+      ...(parentArtifactId ? { parentArtifactId } : {}),
+      ...(role ? { role } : {}),
+      ...(page !== undefined ? { page } : {}),
     });
     if (!res.ok || !res.artifactId) {
       await ctx.storage.delete(storageId).catch(() => {});

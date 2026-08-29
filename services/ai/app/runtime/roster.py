@@ -28,6 +28,8 @@ from app.agent.spec import (
 from app.blog.capabilities import blog_intent_map
 from app.blog.skill import BLOG_SKILL
 from app.data.skill import DATA_SKILL
+from app.documents.capabilities import documents_intent_map
+from app.documents.skill import DOCUMENTS_SKILL
 from app.finance.capabilities import finance_intent_map
 from app.finance.equity import EQUITY_SKILL
 from app.finance.skill import FINANCE_SKILL
@@ -202,6 +204,10 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     # Operations = ONE flag-gated router skill; composes with the siblings (HR pattern).
     if settings is not None and getattr(settings, "ai_operations_enabled", False):
         skills.append(OPERATIONS_SKILL)
+    # Documents = ONE flag-gated router skill (PPTX + PDF create/read/edit/process with
+    # inline preview); composes with the siblings, steers generate_file + document_ops.
+    if settings is not None and getattr(settings, "ai_documents_enabled", False):
+        skills.append(DOCUMENTS_SKILL)
     return skills
 
 
@@ -277,6 +283,10 @@ def build_live_runtime(
         # Additively register the operations capability intents (distinct `operations.*`
         # keys — never clobbers any sibling or core intents). Idempotent.
         register_intents(operations_intent_map())
+    if getattr(settings, "ai_documents_enabled", False):
+        # Additively register the documents capability intents (distinct `documents.*`
+        # keys — never clobbers any sibling or core intents). Idempotent.
+        register_intents(documents_intent_map())
     agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
     skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(

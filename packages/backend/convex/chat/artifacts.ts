@@ -2,7 +2,12 @@ import { ConvexError, v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
-import { internalMutation, internalQuery, mutation } from "../_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "../_generated/server";
 
 /**
  * File Generation System — persistence + ownership-enforced download for a file the
@@ -46,6 +51,13 @@ export const registerArtifact = internalMutation({
     // is byte-identical.
     contentHash: v.optional(v.string()),
     artifactKey: v.optional(v.string()),
+    // Documents preview (additive): a child preview-page image links to its parent
+    // artifact + carries a role/page. v.string() (not v.id) + normalizeId below so a
+    // malformed parent can never ArgumentValidationError the ingress. All optional ⇒
+    // filegen/SEO byte-identical.
+    parentArtifactId: v.optional(v.string()),
+    role: v.optional(v.string()),
+    page: v.optional(v.number()),
   },
   handler: async (ctx, a) => {
     const stream = await loadStream(ctx, a.streamId);
@@ -79,6 +91,14 @@ export const registerArtifact = internalMutation({
       createdAt: Date.now(),
       ...(a.contentHash ? { contentHash: a.contentHash } : {}),
       ...(a.artifactKey ? { artifactKey: a.artifactKey } : {}),
+      ...(() => {
+        const pid = a.parentArtifactId
+          ? ctx.db.normalizeId("chatArtifacts", a.parentArtifactId)
+          : null;
+        return pid ? { parentArtifactId: pid } : {};
+      })(),
+      ...(a.role ? { role: a.role } : {}),
+      ...(a.page !== undefined ? { page: a.page } : {}),
     });
     return { ok: true as const, artifactId };
   },
@@ -105,6 +125,41 @@ export const mintDownload = mutation({
       downloadTokenExpiresAt: Date.now() + DOWNLOAD_TTL_MS,
     });
     return { token, filename: art.filename, mime: art.mime };
+  },
+});
+
+/**
+ * AUTHENTICATED, ownership-enforced inline PREVIEW (Documents capability). Returns the
+ * browser-reachable image URLs for a pptx/pdf artifact's preview pages — but ONLY to the
+ * owner. `ctx.storage.getUrl()` is a bearer capability, so it is minted here strictly
+ * AFTER the `getAuthUserId === parent.userId` check, exactly like /ai/file mints its url
+ * only post-ownership. A non-owner (or unknown id) gets an empty list — no existence
+ * oracle, no leaked url. Preview children are found via `by_parent` and ordered by page.
+ */
+export const previewUrls = query({
+  // v.string() + normalizeId (not v.id): a malformed/URL-derived id must resolve to an
+  // empty result, never an ArgumentValidationError → console.error (fails every e2e).
+  args: { artifactId: v.string() },
+  handler: async (ctx, { artifactId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return { pages: [] as { page: number; url: string }[] };
+    const id = ctx.db.normalizeId("chatArtifacts", artifactId);
+    const parent = id ? await ctx.db.get(id) : null;
+    if (!parent || parent.userId !== userId) {
+      return { pages: [] as { page: number; url: string }[] };
+    }
+    const children = await ctx.db
+      .query("chatArtifacts")
+      .withIndex("by_parent", (q) => q.eq("parentArtifactId", parent._id))
+      .collect();
+    children.sort((a, b) => (a.page ?? 0) - (b.page ?? 0));
+    const pages: { page: number; url: string }[] = [];
+    for (const c of children) {
+      if (c.role !== "preview") continue;
+      const url = await ctx.storage.getUrl(c.storageId);
+      if (url) pages.push({ page: c.page ?? 0, url });
+    }
+    return { pages };
   },
 });
 

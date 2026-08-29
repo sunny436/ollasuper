@@ -53,6 +53,8 @@ from app.clients.ollagraph import OllagraphAdapter
 from app.config import Settings
 from app.data.loader import DatasetRef, sanitize_table_name
 from app.data.tool import DATA_TOOL_NAMES, DATA_TOOL_SPECS, DataContext
+from app.documents.context import DocumentRef, DocumentsContext, document_kind
+from app.documents.tool import DOCUMENT_OPS_TOOL_SPEC
 from app.finance.tool import (
     FINANCE_CALC_TOOL_SPEC,
     FINANCE_REFERENCE_TOOL_SPEC,
@@ -291,6 +293,10 @@ async def run_generation(
         # marketing flag is on. Stateless; the model calls them only when the Marketing
         # skill engages. Off => not registered, byte-identical.
         marketing_as_tool = settings.ai_marketing_enabled
+        # Documents — bind `document_ops` only when the flag is on AND the conversation
+        # has an uploaded PPTX/PDF to operate on. Off/no document => not registered,
+        # byte-identical. Creating a NEW document stays with generate_file.
+        documents_as_tool = settings.ai_documents_enabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -432,6 +438,45 @@ async def run_generation(
             else:
                 data_as_tool = False
 
+        # Documents: build the per-turn PPTX/PDF map (name→ref; storageId stays server-
+        # side) from THIS conversation's document attachments, and tell the model which
+        # files it can operate on with document_ops.
+        documents_ctx = None
+        if documents_as_tool:
+            doc_map: dict[str, DocumentRef] = {}
+            for msg in [*history, latest]:
+                if msg is None or msg.role != "user":
+                    continue
+                for att in msg.attachments:
+                    if att.kind != "document" or not att.storageId:
+                        continue
+                    kind = document_kind(att.name, att.contentType)
+                    if kind:
+                        doc_map[att.name] = DocumentRef(
+                            name=att.name,
+                            storage_id=att.storageId,
+                            mime=att.contentType,
+                            kind=kind,
+                        )
+            if doc_map:
+                documents_ctx = DocumentsContext(
+                    settings=settings,
+                    convex=convex,
+                    stream_id=req.streamId,
+                    documents=doc_map,
+                )
+                listing = "\n".join(
+                    f"- {name} ({r.kind.upper()})" for name, r in doc_map.items()
+                )
+                system = (
+                    f"{system}\n\n<documents>\nPowerPoint/PDF files available in this "
+                    f"conversation (read/edit/process them with document_ops; "
+                    f"do NOT ask the user to re-upload):\n{listing}\n"
+                    f"</documents>"
+                )
+            else:
+                documents_as_tool = False
+
         # User chat -> Ollima (title-gen + OCR keep build_llm's OpenRouter default).
         llm = build_llm(
             settings,
@@ -555,7 +600,9 @@ async def run_generation(
                 _seen_ids = {c.tool.tool_id for c in candidates}
                 for _q in settings.ai_agent_core_capability_queries:
                     _hit = tool_selector.select(
-                        _q, top_k=1, filters=_filters,
+                        _q,
+                        top_k=1,
+                        filters=_filters,
                         min_score=settings.tool_discovery_min_score,
                     ).candidates
                     if _hit and _hit[0].tool.tool_id not in _seen_ids:
@@ -582,8 +629,7 @@ async def run_generation(
                     # in fixed_tokens by B1; this caps them at the source.)
                     _schema_budget = cb.input_ceiling // 4
                     while (
-                        len(candidates) > 1
-                        and spec_tokens(web_specs) > _schema_budget
+                        len(candidates) > 1 and spec_tokens(web_specs) > _schema_budget
                     ):
                         candidates = candidates[:-1]
                         web_specs, name_to_id = build_tool_specs(
@@ -598,9 +644,7 @@ async def run_generation(
                 specs, name_to_id, adapter = [], {}, None
         if rag_as_tool:
             specs.append(KNOWLEDGE_TOOL_SPEC)
-            rag_ctx = RagContext(
-                engine=engine, user_id=req.userId, settings=settings
-            )
+            rag_ctx = RagContext(engine=engine, user_id=req.userId, settings=settings)
         if memory_as_tool:
             specs.append(REMEMBER_TOOL_SPEC)
             if req.memories:  # only bind recall/forget when there is something there
@@ -621,6 +665,8 @@ async def run_generation(
         if marketing_as_tool:
             specs.append(MARKETING_CALC_TOOL_SPEC)
             specs.append(MARKETING_REFERENCE_TOOL_SPEC)
+        if documents_as_tool:
+            specs.append(DOCUMENT_OPS_TOOL_SPEC)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -646,6 +692,8 @@ async def run_generation(
         if marketing_as_tool:
             reserved_specs.append(MARKETING_CALC_TOOL_SPEC)
             reserved_specs.append(MARKETING_REFERENCE_TOOL_SPEC)
+        if documents_as_tool:
+            reserved_specs.append(DOCUMENT_OPS_TOOL_SPEC)
 
         llm_tools = None
         llm_tools_fallback = None
@@ -725,6 +773,15 @@ async def run_generation(
                     file_max_bytes=settings.ai_file_max_bytes,
                     file_gen_timeout_s=settings.ai_file_gen_timeout_s,
                     file_gen_pool_workers=settings.ai_ocr_render_workers,
+                    # Documents capability — the per-turn file map + preview render
+                    # bounds.
+                    documents=documents_ctx,
+                    documents_enabled=documents_as_tool,
+                    doc_preview_max_pages=settings.ai_documents_preview_max_pages,
+                    doc_preview_scale=settings.ai_documents_preview_scale,
+                    doc_soffice_enabled=settings.ai_documents_soffice_enabled,
+                    doc_soffice_timeout_s=settings.ai_documents_soffice_timeout_s,
+                    doc_soffice_concurrency=settings.ai_documents_soffice_concurrency,
                 )
                 # Phase 12b (Stage 1): attach DYNAMIC CAPABILITY DISCOVERY to the
                 # live agent path. The model gains `find_capabilities` to reach ANY
@@ -776,14 +833,11 @@ async def run_generation(
                                 min_score=settings.ai_skill_min_score,
                             )
                             if active_skills:
-                                system = (
-                                    f"{system}\n\n"
-                                    + render_skills_block(
-                                        active_skills,
-                                        char_budget=(
-                                            settings.ai_skill_instructions_budget_chars
-                                        ),
-                                    )
+                                system = f"{system}\n\n" + render_skills_block(
+                                    active_skills,
+                                    char_budget=(
+                                        settings.ai_skill_instructions_budget_chars
+                                    ),
                                 )
                                 skill_approvals: set[str] = set()
                                 for a in active_skills:
@@ -866,9 +920,7 @@ async def run_generation(
                         tool_calls=[{"name": ct.toolId, "args": ct.args, "id": cid}],
                     )
                 )
-                messages.append(
-                    ToolMessage(content=ct.resultContent, tool_call_id=cid)
-                )
+                messages.append(ToolMessage(content=ct.resultContent, tool_call_id=cid))
                 if tools_ctx is not None:
                     tools_ctx.seen_calls[ct.toolId] = json.dumps(
                         ct.args, sort_keys=True, default=str
@@ -995,9 +1047,7 @@ async def run_generation(
 
         state = {"messages": messages, "system_prompt": system}
         if tools_ctx is not None:
-            state["tool_budget"] = max(
-                0, settings.ai_agent_max_steps - completed_steps
-            )
+            state["tool_budget"] = max(0, settings.ai_agent_max_steps - completed_steps)
             # Phase 6 (B3): the per-step re-fit budget for the in-graph model node.
             state["fit_budget"] = fit_budget
             # Phase 12b (Stage 1): seed the dynamic working set so the model node

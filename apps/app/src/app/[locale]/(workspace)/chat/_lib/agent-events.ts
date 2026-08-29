@@ -290,6 +290,18 @@ export interface ParsedCitation {
   kind: "rag" | "memory" | "web";
 }
 
+export interface ArtifactPreview {
+  /** Total pages/slides in the document (may exceed `shown`). */
+  pages: number;
+  /** How many preview images were rendered/stored (the strip length). */
+  shown: number;
+  /** True when the preview is a faithful render (LibreOffice/pypdfium); false when it
+   *  is the approximate spec-based fallback and must be labeled as such. */
+  faithful: boolean;
+  /** A short caveat to show when not faithful (e.g. "approximate preview — …"). */
+  note: string;
+}
+
 export interface ParsedArtifact {
   artifactId: string;
   artifactType: string;
@@ -297,6 +309,7 @@ export interface ParsedArtifact {
   filename?: string;
   format?: string;
   size?: number;
+  preview?: ArtifactPreview;
   metadata: Record<string, unknown>;
 }
 
@@ -340,6 +353,20 @@ function extractRagFiles(result: unknown): RagFile[] {
     if (fileId && filename) out.push({ fileId, filename, page: num(fo.page) });
   }
   return out;
+}
+
+/** Parse the optional `metadata.preview` manifest a Documents artifact carries. Absent
+ *  / malformed ⇒ undefined (the card renders as a plain download, exactly as before). */
+function parsePreviewMeta(v: unknown): ArtifactPreview | undefined {
+  const p = obj(v);
+  const shown = num(p.shown) ?? 0;
+  if (shown <= 0) return undefined;
+  return {
+    pages: num(p.pages) ?? shown,
+    shown,
+    faithful: p.faithful !== false,
+    note: str(p, "note") ?? "",
+  };
 }
 
 /**
@@ -422,6 +449,7 @@ export function buildTimeline(events: TypedEvent[] | undefined): TimelineModel {
           filename: str(e.metadata, "filename"),
           format: str(e.metadata, "format"),
           size: num(e.metadata.size),
+          preview: parsePreviewMeta(e.metadata.preview),
           metadata: e.metadata,
         });
         break;

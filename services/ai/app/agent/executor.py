@@ -51,6 +51,8 @@ from app.agent.orchestration_tools import (
 )
 from app.agent.policy import PolicyScope, check_tool_policy
 from app.data.tool import DATA_TOOL_NAMES, DataContext, run_tool
+from app.documents.context import DocumentsContext, run_document_ops
+from app.documents.tool import DOCUMENT_OPS_TOOL_NAME
 from app.finance.tool import (
     FINANCE_CALC_TOOL_NAME,
     FINANCE_REFERENCE_TOOL_NAME,
@@ -103,6 +105,7 @@ _RESERVED_BUILTINS = frozenset(
         REMEMBER_TOOL_NAME,
         FORGET_TOOL_NAME,
         FILE_GEN_TOOL_NAME,
+        DOCUMENT_OPS_TOOL_NAME,
         RECORD_RESEARCH_TOOL_NAME,
         SALES_FORECAST_TOOL_NAME,
         FINANCE_CALC_TOOL_NAME,
@@ -249,6 +252,18 @@ class ToolExecContext:
     file_max_bytes: int = 25_000_000
     file_gen_timeout_s: float = 60.0
     file_gen_pool_workers: int = 2
+    # Documents capability — set when `document_ops` is bound (flag on + the turn has an
+    # uploaded PPTX/PDF). `documents` holds the per-turn file map (name→ref; storageId
+    # never reaches the model). None otherwise ⇒ byte-identical.
+    documents: DocumentsContext | None = None
+    documents_enabled: bool = False
+    # Inline-preview render bounds (shared by generate_file auto-preview +
+    # document_ops).
+    doc_preview_max_pages: int = 10
+    doc_preview_scale: float = 1.5
+    doc_soffice_enabled: bool = False
+    doc_soffice_timeout_s: float = 45.0
+    doc_soffice_concurrency: int = 1
 
 
 # --- OpenAI function-spec construction (runner-side) ----------------------
@@ -317,7 +332,7 @@ def build_tool_specs(
                 tool.input_schema or {},
                 registry.components_for(tool.provider) or components,
             )
-        except Exception:  # noqa: BLE001 — a bad schema must not break the turn
+        except Exception:  # noqa: BLE001
             resolved = {"type": "object"}
         if not isinstance(resolved, dict) or resolved.get("type") != "object":
             resolved = {"type": "object", "properties": {}}
@@ -411,8 +426,7 @@ def _step_id(ctx: ToolExecContext) -> str:
         # (which share run_id/attempt and each restart step_counter at 0) never
         # collide. Top-level runs (empty delegation_id) stay byte-identical.
         return (
-            f"{ctx.run_id}:a{ctx.run_attempt}"
-            f":d{ctx.delegation_id}:s{ctx.step_counter}"
+            f"{ctx.run_id}:a{ctx.run_attempt}:d{ctx.delegation_id}:s{ctx.step_counter}"
         )
     return f"{ctx.run_id}:a{ctx.run_attempt}:s{ctx.step_counter}"
 
@@ -461,7 +475,7 @@ async def _park_for_approval(
             preview = await _adapter.build_preview(
                 tool, args, ttl_ms=ctx.approval_ttl_ms
             )
-        except Exception:  # noqa: BLE001 — a preview is best-effort, never load-bearing
+        except Exception:  # noqa: BLE001
             preview = None
 
     resp = await ctx.writer.request_approval(
@@ -564,8 +578,7 @@ def _retry_safe(tool: ToolDefinition) -> bool:
     """Safe to auto-retry after an AMBIGUOUS failure iff read-only (no side effect
     to duplicate) or the provider dedups via an idempotency key."""
     return (
-        tool.side_effect is SideEffect.READ_ONLY
-        or tool.provider_idempotency_supported
+        tool.side_effect is SideEffect.READ_ONLY or tool.provider_idempotency_supported
     )
 
 
@@ -712,6 +725,17 @@ async def _run_one(
             side_effect="external_side_effect",
         )
 
+    # Documents capability — read/edit/process an uploaded PPTX/PDF (routed before
+    # registry). Produces a new artifact (with inline preview) or returns extracted
+    # data.
+    if ctx.documents is not None and bound_name == DOCUMENT_OPS_TOOL_NAME:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_document_ops(ctx, call_id, args),
+            side_effect="external_side_effect",
+        )
+
     # Sales: the reserved DETERMINISTIC forecast tool (stateless, read-only). Routed
     # before registry.get; bound only when the sales flag is on.
     if bound_name == SALES_FORECAST_TOOL_NAME:
@@ -777,9 +801,7 @@ async def _run_one(
     # was never offered — resolves to None here and takes the unknown-tool path,
     # so registry.get can never be the de-facto execution authority. (line 473's
     # tool_id stays the ledger/audit label; only this RESOLUTION is gated.)
-    tool = (
-        ctx.registry.get(tool_id) if bound_name in ctx.name_to_tool_id else None
-    )
+    tool = ctx.registry.get(tool_id) if bound_name in ctx.name_to_tool_id else None
     if tool is None:
         _advance(execution, ExecutionState.FAILED)
         await _emit(
@@ -822,9 +844,7 @@ async def _run_one(
         # STABLE approval id = tool_id + hash(canonical args). Resume-stable
         # (unlike the model's per-turn call_id), so a re-emitted request upserts
         # the SAME durable row instead of creating a duplicate.
-        approval_id = (
-            f"{tool_id}:{hashlib.sha256(dedup_key.encode()).hexdigest()[:16]}"
-        )
+        approval_id = f"{tool_id}:{hashlib.sha256(dedup_key.encode()).hexdigest()[:16]}"
         d = ctx.approvals.get(approval_id)
         if d and d.get("decision") == "approved" and d.get("token"):
             pass  # approved WITH a token: fall through to execute (RUNNING below)
@@ -885,7 +905,7 @@ async def _run_one(
             tool.input_schema or {},
             ctx.registry.components_for(tool.provider) or ctx.registry.components,
         )
-    except Exception:  # noqa: BLE001 — a bad schema must never break the call
+    except Exception:  # noqa: BLE001
         input_schema = ctx.registry.resolve_schema(tool.input_schema or {})
     if not isinstance(input_schema, dict):
         input_schema = {}
@@ -933,9 +953,7 @@ async def _run_one(
     # Phase 2: a provider idempotency key (execution_id) is sent ONLY when the
     # tool declares support — so a retry is provider-deduped. No Ollagraph tool
     # declares it, so this is None (dormant) for every current tool.
-    idem_key = (
-        execution.execution_id if tool.provider_idempotency_supported else None
-    )
+    idem_key = execution.execution_id if tool.provider_idempotency_supported else None
 
     async def _cancelled() -> ToolMessage:
         # C2: a stop that lands mid-tool. An in-flight adapter call cannot be
@@ -1032,9 +1050,7 @@ async def _run_one(
     # TOOL_RESULT event for the UI; record the framed content so resume
     # reconstruction is consistent with the live turn.
     result_msg = ToolMessage(
-        content=_frame_tool_output(
-            json.dumps(body, ensure_ascii=False, default=str)
-        ),
+        content=_frame_tool_output(json.dumps(body, ensure_ascii=False, default=str)),
         tool_call_id=call_id,
         status="success",
     )
@@ -1131,7 +1147,7 @@ async def _run_knowledge(ctx: ToolExecContext, call_id: str, args: dict) -> Tool
             {"status": "timeout", "message": "Knowledge search timed out."},
             status="error",
         )
-    except Exception:  # noqa: BLE001 — never surface raw DB/provider text
+    except Exception:  # noqa: BLE001
         log.exception("agent.knowledge_failed")
         await ctx.writer.emit_event(
             EventType.TOOL_RESULT,
@@ -1357,7 +1373,9 @@ async def _run_forget(ctx: ToolExecContext, call_id: str, args: dict) -> ToolMes
     ids = match_memories_to_forget(mem.memories, query)
     if not ids:
         await ctx.writer.emit_event(
-            EventType.TOOL_RESULT, call_id=call_id, status="success",
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="success",
             result={"disabled": 0},
         )
         return _tool_message(
@@ -1553,9 +1571,7 @@ async def _run_data_tool(
         status="error" if err else "success",
         result={"error": err} if err else {"ok": True},
     )
-    return _tool_message(
-        call_id, result, status="error" if err else "success"
-    )
+    return _tool_message(call_id, result, status="error" if err else "success")
 
 
 async def _run_sales_forecast(
@@ -1719,9 +1735,7 @@ async def _run_find_capabilities(
         ctx.scope.allowed_categories is not None
         or ctx.scope.allowed_tool_ids is not None
     ):
-        resolved = [
-            r for r in resolved if check_tool_policy(r.tool, ctx.scope).allowed
-        ]
+        resolved = [r for r in resolved if check_tool_policy(r.tool, ctx.scope).allowed]
     await ctx.writer.emit_event(
         EventType.TOOL_CALL,
         tool_name=FIND_CAPABILITIES_TOOL_NAME,
@@ -1803,9 +1817,9 @@ async def _run_delegate(ctx: ToolExecContext, call_id: str, args: dict) -> ToolM
     if isinstance(result, dict):
         _m = result.get("metrics")
         if isinstance(_m, dict) and _m.get("tokens"):
-            ctx.delegated_usage["tokens"] = ctx.delegated_usage.get(
-                "tokens", 0
-            ) + int(_m.get("tokens") or 0)
+            ctx.delegated_usage["tokens"] = ctx.delegated_usage.get("tokens", 0) + int(
+                _m.get("tokens") or 0
+            )
     ok = bool(result.get("ok", True)) if isinstance(result, dict) else True
     outcome = result.get("outcome") if isinstance(result, dict) else None
     text = result.get("text") if isinstance(result, dict) else str(result)
@@ -1864,7 +1878,7 @@ async def _run_generate_file(
 
     try:
         spec = FileSpec.model_validate(args if isinstance(args, dict) else {})
-    except Exception:  # noqa: BLE001 — a bad spec is a user-facing error, not a crash
+    except Exception:  # noqa: BLE001
         return _tool_message(
             call_id,
             {"status": "error", "message": "Invalid file specification."},
@@ -1883,7 +1897,9 @@ async def _run_generate_file(
 
     async def _fail(message: str) -> ToolMessage:
         await ctx.writer.emit_event(
-            EventType.TOOL_RESULT, call_id=call_id, status="error",
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="error",
             result={"status": "error", "format": spec.format},
         )
         return _tool_message(
@@ -1897,8 +1913,10 @@ async def _run_generate_file(
 
             result = await asyncio.wait_for(
                 run_in_pool(
-                    render_and_validate, spec_dict,
-                    workers=ctx.file_gen_pool_workers, label="filegen",
+                    render_and_validate,
+                    spec_dict,
+                    workers=ctx.file_gen_pool_workers,
+                    label="filegen",
                 ),
                 timeout=ctx.file_gen_timeout_s,
             )
@@ -1907,7 +1925,7 @@ async def _run_generate_file(
     except TimeoutError:
         log.warning("agent.filegen_timeout", extra={"format": spec.format})
         return await _fail("The file took too long to generate. Try a smaller request.")
-    except Exception:  # noqa: BLE001 — never surface raw renderer internals
+    except Exception:  # noqa: BLE001
         log.exception("agent.filegen_render_failed")
         return await _fail("The file could not be generated.")
 
@@ -1924,7 +1942,7 @@ async def _run_generate_file(
         stored = await ctx.writer.store_artifact(
             data, filename=filename, fmt=spec.format, mime=mime
         )
-    except Exception:  # noqa: BLE001 — storage failure must not crash the turn
+    except Exception:  # noqa: BLE001
         log.exception("agent.filegen_store_failed")
         return await _fail("The file was generated but could not be saved.")
     artifact_id = stored.get("artifactId")
@@ -1932,18 +1950,26 @@ async def _run_generate_file(
         return await _fail("The file was generated but could not be saved.")
 
     size = len(data)
+    # Documents: attach a bounded inline preview for pptx/pdf. For a generated deck the
+    # spec is the labeled-approximate fallback source when LibreOffice is unavailable.
+    preview = await _store_preview(
+        ctx, str(artifact_id), data, spec.format, spec_dict=spec_dict
+    )
+    meta = {
+        "title": spec.title or filename,
+        "filename": filename,
+        "format": spec.format,
+        "size": size,
+    }
+    if preview:
+        meta["preview"] = preview
     # The download card renders from this ARTIFACT event; `artifact_id` is the
     # chatArtifacts id the UI passes to the (authenticated) mintDownload.
     await ctx.writer.emit_event(
         EventType.ARTIFACT,
         artifact_id=str(artifact_id),
         artifact_type=spec.format,
-        metadata={
-            "title": spec.title or filename,
-            "filename": filename,
-            "format": spec.format,
-            "size": size,
-        },
+        metadata=meta,
     )
     await ctx.writer.emit_event(
         EventType.TOOL_RESULT,
@@ -1968,6 +1994,288 @@ async def _run_generate_file(
     )
 
 
+async def _store_preview(
+    ctx: ToolExecContext,
+    parent_id: str,
+    data: bytes,
+    fmt: str,
+    *,
+    spec_dict: dict | None = None,
+) -> dict | None:
+    """Render + store a bounded inline preview for a pdf/pptx artifact and return the
+    manifest for the ARTIFACT metadata: {pages, shown, faithful, note, thumbs:[ids]}.
+
+    PDF => pypdfium page images (faithful). PPTX => LibreOffice->PDF->images (faithful)
+    when soffice is enabled; else the generated deck's SPEC via Pillow, clearly LABELED
+    approximate; an uploaded deck with soffice off gets NO preview (never a faked one).
+    Preview images are stored as child artifacts (role=preview, parent,
+    page). Failure is
+    swallowed — a missing preview never fails the artifact (download still works)."""
+    if fmt not in ("pdf", "pptx"):
+        return None
+    from app.documents import soffice
+    from app.documents.preview import pdf_preview_pngs, spec_preview_pngs
+    from app.ingest.pool import run_in_pool
+
+    max_pages = max(1, int(ctx.doc_preview_max_pages))
+    scale = float(ctx.doc_preview_scale)
+    workers = ctx.file_gen_pool_workers
+    faithful = True
+    note = ""
+    pngs: list[bytes] = []
+    total = 0
+    try:
+        if fmt == "pdf":
+            pngs, total = await run_in_pool(
+                pdf_preview_pngs,
+                data,
+                max_pages,
+                scale,
+                workers=workers,
+                label="doc:preview",
+            )
+        else:  # pptx
+            pdf = await soffice.convert(
+                data,
+                to="pdf",
+                src_ext="pptx",
+                enabled=ctx.doc_soffice_enabled,
+                timeout_s=ctx.doc_soffice_timeout_s,
+                concurrency=ctx.doc_soffice_concurrency,
+            )
+            if pdf is not None:
+                pngs, total = await run_in_pool(
+                    pdf_preview_pngs,
+                    pdf,
+                    max_pages,
+                    scale,
+                    workers=workers,
+                    label="doc:preview",
+                )
+            elif spec_dict is not None:
+                pngs = await run_in_pool(
+                    spec_preview_pngs,
+                    spec_dict,
+                    max_pages,
+                    scale,
+                    workers=workers,
+                    label="doc:preview",
+                )
+                total = len(spec_dict.get("slides") or []) or len(pngs)
+                faithful = False
+                note = (
+                    "approximate preview — download the .pptx for the exact rendering"
+                )
+            else:
+                return None  # uploaded deck, no soffice → no faked preview
+    except Exception:  # noqa: BLE001
+        log.warning("agent.doc_preview_render_failed", extra={"format": fmt})
+        return None
+    if not pngs:
+        return None
+
+    thumbs: list[str] = []
+    for i, png in enumerate(pngs, 1):
+        try:
+            stored = await ctx.writer.store_artifact(
+                png,
+                filename=f"preview-{i}.png",
+                fmt="png",
+                mime="image/png",
+                parent_artifact_id=parent_id,
+                role="preview",
+                page=i,
+                artifact_key=f"preview:{parent_id}:{i}",
+            )
+            aid = stored.get("artifactId")
+            if aid:
+                thumbs.append(str(aid))
+        except Exception:  # noqa: BLE001,S112
+            continue
+    if not thumbs:
+        return None
+    return {
+        "pages": total or len(thumbs),
+        "shown": len(thumbs),
+        "faithful": faithful,
+        "note": note,
+        "thumbs": thumbs,
+    }
+
+
+async def _run_document_ops(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """Documents capability: read/edit/process an uploaded PPTX/PDF. Returns extracted
+    DATA, or stores a NEW artifact (with inline preview) and reports it.
+    Every failure is
+    a safe error (the chat never crashes)."""
+    from app.documents.tool import DOCUMENT_OPERATIONS
+    from app.filegen.mime import mime_for as _doc_mime
+
+    operation = args.get("operation") if isinstance(args, dict) else None
+    if operation not in DOCUMENT_OPERATIONS or ctx.documents is None:
+        return _tool_message(
+            call_id,
+            {
+                "status": "error",
+                "message": "Unknown or unavailable document operation.",
+            },
+            status="error",
+        )
+
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=DOCUMENT_OPS_TOOL_NAME,
+        tool_id=DOCUMENT_OPS_TOOL_NAME,
+        call_id=call_id,
+        arguments={"operation": operation, "file": str(args.get("file", ""))[:120]},
+        status="running",
+        side_effect="external_side_effect",
+    )
+
+    async def _fail(message: str) -> ToolMessage:
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="error",
+            result={"status": "error", "operation": operation},
+        )
+        return _tool_message(
+            call_id, {"status": "error", "message": message}, status="error"
+        )
+
+    from app.ingest.pool import run_in_pool
+
+    result = await run_document_ops(
+        ctx.documents,
+        operation,
+        args if isinstance(args, dict) else {},
+        run_in_pool=run_in_pool,
+    )
+    if result.error:
+        return await _fail(result.error)
+
+    # DATA result (read/extract/analyse) — no artifact.
+    if result.file is None and result.images is None:
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="success",
+            result={"operation": operation, "ok": True},
+        )
+        body = {"status": "ok", "operation": operation, **(result.data or {})}
+        return _tool_message(call_id, body, status="success")
+
+    # Extracted images — store each as its own artifact (no preview manifest).
+    if result.images is not None:
+        stored_names: list[str] = []
+        for i, (img_bytes, name) in enumerate(result.images, 1):
+            if len(img_bytes) > ctx.file_max_bytes:
+                continue
+            fmt = "png" if name.lower().endswith(".png") else "jpeg"
+            fn = _safe_doc_name(args.get("filename") or name, fmt, i)
+            try:
+                st = await ctx.writer.store_artifact(
+                    img_bytes, filename=fn, fmt=fmt, mime=_doc_mime(fmt)
+                )
+                aid = st.get("artifactId")
+                if aid:
+                    await ctx.writer.emit_event(
+                        EventType.ARTIFACT,
+                        artifact_id=str(aid),
+                        artifact_type=fmt,
+                        metadata={
+                            "title": fn,
+                            "filename": fn,
+                            "format": fmt,
+                            "size": len(img_bytes),
+                        },
+                    )
+                    stored_names.append(fn)
+            except Exception:  # noqa: BLE001,S112
+                continue
+        await ctx.writer.emit_event(
+            EventType.TOOL_RESULT,
+            call_id=call_id,
+            status="success",
+            result={"operation": operation, "images": len(stored_names)},
+        )
+        return _tool_message(
+            call_id,
+            {"status": "extracted", "operation": operation, "images": stored_names},
+            status="success",
+        )
+
+    # FILE result — store the produced artifact + inline preview.
+    data = result.file
+    fmt = result.fmt or "pdf"
+    if len(data) > ctx.file_max_bytes:
+        return await _fail("The produced file is too large.")
+    # Validate before delivering (never hand over a broken file).
+    try:
+        from app.filegen.validate import validate_output
+
+        report = await asyncio.to_thread(validate_output, fmt, data)
+    except Exception:  # noqa: BLE001
+        report = {"ok": True}
+    if not report.get("ok"):
+        return await _fail("The produced file failed validation and was discarded.")
+
+    filename = _safe_doc_name(args.get("filename"), fmt, 0, operation=operation)
+    try:
+        stored = await ctx.writer.store_artifact(
+            data, filename=filename, fmt=fmt, mime=_doc_mime(fmt)
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("agent.docops_store_failed")
+        return await _fail("The file was produced but could not be saved.")
+    artifact_id = stored.get("artifactId")
+    if not artifact_id:
+        return await _fail("The file was produced but could not be saved.")
+
+    preview = await _store_preview(ctx, str(artifact_id), data, fmt)
+    meta = {"title": filename, "filename": filename, "format": fmt, "size": len(data)}
+    if preview:
+        meta["preview"] = preview
+    await ctx.writer.emit_event(
+        EventType.ARTIFACT,
+        artifact_id=str(artifact_id),
+        artifact_type=fmt,
+        metadata=meta,
+    )
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="success",
+        result={
+            "operation": operation,
+            "filename": filename,
+            "format": fmt,
+            "size": len(data),
+        },
+    )
+    body = {
+        "status": "produced",
+        "operation": operation,
+        "filename": filename,
+        "format": fmt,
+        "note": "The file is attached to the chat with an inline preview.",
+    }
+    if result.warnings:
+        body["warnings"] = result.warnings
+    return _tool_message(call_id, body, status="success")
+
+
+def _safe_doc_name(name, fmt: str, index: int, *, operation: str = "") -> str:
+    from app.filegen.mime import safe_filename
+
+    base = name or (operation.replace("_", "-") if operation else "document")
+    if index:
+        base = f"{base}-{index}"
+    return safe_filename(str(base), fmt, fallback="document")
+
+
 async def _park_all_for_approval(
     tool_calls: list[dict], ctx: ToolExecContext, step_id: str
 ) -> list[ToolMessage]:
@@ -1985,9 +2293,7 @@ async def _park_all_for_approval(
         approval_id = _fresh_approval_id(tc, ctx)
         if approval_id is None:
             out.append(
-                _tool_message(
-                    call_id, {"status": "awaiting_approval"}, status="error"
-                )
+                _tool_message(call_id, {"status": "awaiting_approval"}, status="error")
             )
             continue
         bound_name = tc.get("name") or ""
@@ -2007,8 +2313,14 @@ async def _park_all_for_approval(
         )
         decision = check_tool_policy(tool, ctx.scope)
         outcome, msg = await _park_for_approval(
-            ctx, execution, tool, tool_id, approval_id, args,
-            decision.reason or "", call_id,
+            ctx,
+            execution,
+            tool,
+            tool_id,
+            approval_id,
+            args,
+            decision.reason or "",
+            call_id,
         )
         if outcome == "suspend":
             any_parked = True
@@ -2018,9 +2330,7 @@ async def _park_all_for_approval(
         out.append(
             msg
             if msg is not None
-            else _tool_message(
-                call_id, {"status": "awaiting_approval"}, status="error"
-            )
+            else _tool_message(call_id, {"status": "awaiting_approval"}, status="error")
         )
     if any_parked:
         ctx.writer.suspended = True
@@ -2106,14 +2416,10 @@ async def execute_tool_calls(
                 return _cancelled_record(tc, i, step_id, ctx)
             try:
                 return await _run_one(tc, ctx, i, step_id)
-            except Exception:  # noqa: BLE001 — a task crash must not break pairing
+            except Exception:  # noqa: BLE001
                 log.exception("agent.tool_task_failed")
                 cid = tc.get("id") or f"call_{i}"
-                return _tool_message(
-                    cid, {"error": "tool task failed"}, status="error"
-                )
+                return _tool_message(cid, {"error": "tool task failed"}, status="error")
 
-    out = await asyncio.gather(
-        *(_run_call(i, tc) for i, tc in enumerate(tool_calls))
-    )
+    out = await asyncio.gather(*(_run_call(i, tc) for i, tc in enumerate(tool_calls)))
     return list(out) + refused

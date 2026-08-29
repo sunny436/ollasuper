@@ -520,11 +520,19 @@ export default defineSchema({
     // Filegen sets neither ⇒ existing rows/behavior are unchanged.
     contentHash: v.optional(v.string()),
     artifactKey: v.optional(v.string()),
+    // Documents inline preview (additive, optional): a preview page image is a CHILD
+    // artifact of the pptx/pdf it previews — `parentArtifactId` links it, `role`
+    // ("preview") marks it so it is NOT rendered as its own download card, and `page`
+    // orders the strip. The parent (and filegen/SEO) set none ⇒ existing rows unchanged.
+    parentArtifactId: v.optional(v.id("chatArtifacts")),
+    role: v.optional(v.string()),
+    page: v.optional(v.number()),
   })
     .index("by_downloadToken", ["downloadToken"])
     .index("by_message", ["messageId"])
     .index("by_thread", ["threadId"])
-    .index("by_stream_key", ["streamId", "artifactKey"]),
+    .index("by_stream_key", ["streamId", "artifactKey"])
+    .index("by_parent", ["parentArtifactId"]),
 
   // Phase 7 — the durable, owner-scoped SEO MUTATION ledger: the auditable RESULT
   // record for one approved site change (update metadata / structured data / redirect /

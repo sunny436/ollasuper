@@ -417,6 +417,9 @@ class DeltaWriter:
         mime: str,
         sha256: str | None = None,
         artifact_key: str | None = None,
+        parent_artifact_id: str | None = None,
+        role: str | None = None,
+        page: int | None = None,
     ) -> dict:
         """File Generation System: persist a generated file blob through Convex
         (streamId-scoped, owner derived server-side). Returns `{artifactId, size}`
@@ -435,6 +438,9 @@ class DeltaWriter:
             mime=mime,
             sha256=sha256,
             artifact_key=artifact_key,
+            parent_artifact_id=parent_artifact_id,
+            role=role,
+            page=page,
         )
 
     async def record_execution(

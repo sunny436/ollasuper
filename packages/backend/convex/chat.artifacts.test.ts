@@ -162,4 +162,73 @@ describe("chat artifacts", () => {
     );
     expect(gone).toBe(true);
   });
+
+  // --- Documents inline preview (child artifacts + previewUrls) ---------------
+  async function storePreview(
+    t: TestT,
+    streamId: string,
+    parentArtifactId: string,
+    page: number,
+  ) {
+    const storageId = await t.run((ctx) =>
+      ctx.storage.store(new Blob(["PNG-BYTES"], { type: "image/png" })),
+    );
+    return t.run((ctx) =>
+      ctx.runMutation(internal.chat.artifacts.registerArtifact, {
+        streamId,
+        storageId,
+        filename: `preview-${page}.png`,
+        format: "png",
+        mime: "image/png",
+        size: 9,
+        parentArtifactId,
+        role: "preview",
+        page,
+      }),
+    );
+  }
+
+  test("owner gets ordered preview page urls; a non-owner gets none", async () => {
+    const t = convexTest(schema, modules);
+    const { streamId, userId, otherId } = await seed(t);
+    const { artifactId } = await store(t, streamId);
+    // insert previews out of order to prove sorting by page
+    await storePreview(t, streamId, artifactId as string, 2);
+    await storePreview(t, streamId, artifactId as string, 1);
+
+    const mine = await t
+      .withIdentity(as(userId))
+      .query(api.chat.artifacts.previewUrls, {
+        artifactId: artifactId as string,
+      });
+    expect(mine.pages.map((p) => p.page)).toEqual([1, 2]);
+    expect(mine.pages.every((p) => typeof p.url === "string" && p.url)).toBe(true);
+
+    const theirs = await t
+      .withIdentity(as(otherId))
+      .query(api.chat.artifacts.previewUrls, {
+        artifactId: artifactId as string,
+      });
+    expect(theirs.pages).toEqual([]);
+  });
+
+  test("previewUrls on a malformed id returns no pages (no oracle)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId } = await seed(t);
+    const res = await t
+      .withIdentity(as(userId))
+      .query(api.chat.artifacts.previewUrls, { artifactId: "garbage" });
+    expect(res.pages).toEqual([]);
+  });
+
+  test("purging the thread also deletes preview child rows + blobs", async () => {
+    const t = convexTest(schema, modules);
+    const { streamId, threadId } = await seed(t);
+    const { artifactId } = await store(t, streamId);
+    await storePreview(t, streamId, artifactId as string, 1);
+    await t.run((ctx) => ctx.db.patch(threadId, { status: "trashed" }));
+    await t.mutation(internal.chat.threads.purge, { threadId });
+    const rows = await t.run((ctx) => ctx.db.query("chatArtifacts").collect());
+    expect(rows.length).toBe(0); // parent + preview child both gone
+  });
 });
