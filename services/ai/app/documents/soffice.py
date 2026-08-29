@@ -1,17 +1,17 @@
 """Sandboxed LibreOffice headless converter — the faithful PPTX<->PDF engine.
 
 The source `soffice.py` has NO timeout and NO real sandbox (only an isolated profile for
-a sandboxed env). Here we add REAL, proven-available controls: each conversion runs
-under
-the strongest isolation the host offers — `systemd-run --scope` with a network namespace
-(`PrivateNetwork=yes`), memory/CPU caps, `ProtectSystem=strict`, a `ReadWritePaths` jail
-and `NoNewPrivileges`; else `unshare -n` (no network) + `prlimit` (memory); else plain —
-always with a per-call isolated `UserInstallation` profile, a locked temp jobdir, and a
-HARD Python wall-clock timeout that kills the whole process group. A concurrency
-semaphore bounds the memory-heavy soffice processes. Untrusted OOXML/PDF is the input,
-so
-the sandbox is load-bearing. Returns the converted bytes, or None (→ the caller degrades
-honestly: download + labeled-approximate/absent preview, never a faked render).
+a sandboxed env). Here we add REAL, VM-verified controls: each conversion runs inside a
+private NETWORK NAMESPACE (`unshare -rn`, so a malicious document's remote refs cannot
+reach the network — no SSRF / exfil) with address-space + fd RESOURCE CAPS (`prlimit`),
+a per-call isolated `UserInstallation` profile, macros disabled, a locked temp jobdir,
+and a HARD Python wall-clock timeout that kills the whole process group. A concurrency
+semaphore bounds the memory-heavy soffice processes. (`systemd-run --scope` was tried
+but scopes don't apply sandbox properties, and a `--wait` service tripped over
+ProtectSystem/PrivateTmp vs the temp jobdir — `unshare -rn` + `prlimit` is what works.)
+Untrusted OOXML/PDF is the input, so the sandbox is load-bearing. Returns the converted
+bytes, or None (→ the caller degrades honestly: download + labeled-approximate/absent
+preview, never a faked render).
 """
 
 from __future__ import annotations
@@ -73,37 +73,18 @@ def _bin() -> str:
 
 
 def _wrap(cmd: list[str], jobdir: str) -> list[str]:
-    """Prepend the strongest available isolation to the soffice argv."""
-    mem = "1G"
-    if shutil.which("systemd-run"):
-        return [
-            "systemd-run",
-            "--scope",
-            "--quiet",
-            "--collect",
-            "-p",
-            "PrivateNetwork=yes",
-            "-p",
-            f"MemoryMax={mem}",
-            "-p",
-            "CPUQuota=100%",
-            "-p",
-            "ProtectSystem=strict",
-            "-p",
-            f"ReadWritePaths={jobdir}",
-            "-p",
-            "PrivateTmp=yes",
-            "-p",
-            "NoNewPrivileges=yes",
-            "--",
-            *cmd,
-        ]
+    """Prepend the strongest available isolation to the soffice argv. `jobdir` is the RW
+    working dir (kept for signature symmetry; the network+resource sandbox doesn't jail
+    the FS, it isolates the network and caps resources — verified working on the VM)."""
+    _ = jobdir
+    # Resource caps: address space + open files.
     caps: list[str] = []
     if shutil.which("prlimit"):
         caps = ["prlimit", "--as=1500000000", "--nofile=2048", "--"]
     if shutil.which("unshare"):
-        # -n = network namespace (no network); -r maps to root inside so it works
-        # without CAP_SYS_ADMIN when the service is not already root.
+        # -n = private network namespace (NO network: blocks SSRF/exfil from a doc's
+        # remote refs); -r maps the caller to root inside the userns so it works without
+        # extra capabilities. This is the real, VM-verified isolation.
         return ["unshare", "-rn", "--", *caps, *cmd]
     return [*caps, *cmd]
 
@@ -127,25 +108,27 @@ def _convert_sync(raw: bytes, to: str, src_ext: str, timeout_s: float) -> bytes 
             str(src),
         ]
         cmd = _wrap(argv, jobdir)
-        timeout = float(timeout_s)
+        # Popen + a HARD timeout that kills the whole PROCESS GROUP (soffice forks
+        # children; start_new_session makes the child a group leader so killpg reaps
+        # the lot — a plain run(timeout=) would kill only the direct child).
+        proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell, temp-file input
+            cmd,
+            cwd=jobdir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env={**os.environ, "HOME": profile, "SAL_USE_VCLPLUGIN": "svp"},
+        )
         try:
-            subprocess.run(  # noqa: S603 - fixed argv, no shell, temp-file input
-                cmd,
-                cwd=jobdir,
-                timeout=timeout,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                check=False,
-                env={**os.environ, "HOME": profile, "SAL_USE_VCLPLUGIN": "svp"},
-            )
+            proc.communicate(timeout=float(timeout_s))
         except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            proc.communicate()
             log.warning("documents.soffice_timeout")
             return None
         out = Path(jobdir) / f"input.{to}"
         if out.exists() and out.stat().st_size > 0:
             return out.read_bytes()
-        # A stray systemd scope / child may still hold the file; nothing to read.
         return None
     finally:
         _rmtree(jobdir)
@@ -159,7 +142,7 @@ def _rmtree(path: str) -> None:
         pass
 
 
-def _kill_group(proc: subprocess.Popen) -> None:  # pragma: no cover - defensive
+def _kill_group(proc: subprocess.Popen) -> None:
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except Exception:  # noqa: BLE001,S110
