@@ -207,6 +207,16 @@ class Settings(BaseSettings):
     ai_data_max_concurrent: int = 4  # bounded parallel compute ops (memory guard)
     ai_data_cache_max: int = 6  # datasets held in the per-process df LRU
     ai_data_max_datasets: int = 12  # most-recent tabular files surfaced per thread
+    # Sales Assistant — opt-in gate for the ONE read-only, model-routed sales skill
+    # (app/sales/): account/prospect research, call prep, research-first outreach,
+    # call summary, pipeline review, weighted forecast, competitive intelligence,
+    # sales assets, daily briefing, deal strategy. NO MCP/CRM connectors. OFF by
+    # default => the skill + its `sales.*` intents are never registered, so the runner
+    # is byte-identical and SEO/Blog/Research/Data are untouched. When ON, the skill
+    # activates by sales tags and reuses the shared web tools, the Data-Analysis
+    # compute tools (CSV forecast/pipeline math), `generate_file` (assets) and the
+    # `remember` tool (seller context).
+    ai_sales_enabled: bool = False
     # Phase 7 (SEO mutations) — opt-in gate for OPTIONAL, approval-gated site changes
     # (update metadata / structured data / redirects / content). OFF by default => the
     # write tools + SeoWriteAdapter are never bound, so the runner is byte-identical and

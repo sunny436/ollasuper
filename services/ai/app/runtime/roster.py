@@ -33,6 +33,8 @@ from app.orchestrator.intents import register_intents
 from app.orchestrator.orchestrator import AgentRegistry, Orchestrator
 from app.research.capabilities import research_intent_map
 from app.research.skill import RESEARCH_SKILL
+from app.sales.capabilities import sales_intent_map
+from app.sales.skill import SALES_SKILL
 from app.seo.capabilities import seo_intent_map
 from app.seo.skill import SEO_SKILL
 from app.skills.manifest import SkillManifest
@@ -174,6 +176,9 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     if settings is not None and getattr(settings, "ai_data_analysis_enabled", False):
         skills = [s for s in skills if s.skill_id != DATA_SKILL.skill_id]
         skills.append(DATA_SKILL)
+    # The Sales Assistant is a SEPARATE flag-gated skill (never merged with the others).
+    if settings is not None and getattr(settings, "ai_sales_enabled", False):
+        skills.append(SALES_SKILL)
     return skills
 
 
@@ -229,6 +234,10 @@ def build_live_runtime(
         # Additively register the deep-research capability intents (distinct
         # `research.*` keys — never clobbers SEO/Blog or core intents). Idempotent.
         register_intents(research_intent_map())
+    if getattr(settings, "ai_sales_enabled", False):
+        # Additively register the sales capability intents (distinct `sales.*` keys —
+        # never clobbers SEO/Blog/Research or core intents). Idempotent.
+        register_intents(sales_intent_map())
     agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
     skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(
