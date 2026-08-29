@@ -148,7 +148,7 @@ fs.writeFileSync(
 
   // 2 ICP / PERSONA
   await step("[2 ICP] who should we sell to", async () => {
-    const r = await fresh(page, "Who should we actually be selling our project-management tool to? Define our ICP and buyer personas.");
+    const r = await fresh(page, "Who should we actually be selling to? We make a B2B project-management SaaS that helps engineering teams ship faster; we're early-stage at $2M ARR. Define our ICP and buyer personas.");
     show("ICP", r);
     need(/icp|ideal customer|persona/i.test(r.text), "no ICP/persona");
     need(/firmograph|industry|company size|role|pain/i.test(r.text), "no ICP dimensions");
@@ -165,7 +165,7 @@ fs.writeFileSync(
 
   // 4 GTM
   await step("[4 GTM] go-to-market", async () => {
-    const r = await fresh(page, "Create a go-to-market strategy for launching our new analytics feature next quarter.");
+    const r = await fresh(page, "Create a go-to-market strategy for launching our new analytics feature (real-time delivery dashboards) next quarter. We're a B2B project-management SaaS selling to engineering managers.");
     show("GTM", r);
     need(/go-to-market|gtm|launch/i.test(r.text), "no GTM");
     need(/channel|audience|position|timeline|kpi/i.test(r.text), "no GTM components");
@@ -182,7 +182,7 @@ fs.writeFileSync(
 
   // 6 COMPETITOR ANALYSIS
   await step("[6 COMPETITOR] how are competitors beating us", async () => {
-    const r = await fresh(page, "How are competitors beating us? Analyze our main competitors' positioning and where we can win.");
+    const r = await fresh(page, "How are competitors beating us? We're a B2B project-management SaaS (Asana and Monday are the big competitors, plus Linear for eng teams). Analyze their positioning and where we can win. Use reasonable assumptions.");
     show("COMPETITOR", r);
     need(/competit/i.test(r.text), "no competitor analysis");
     need(/strength|weakness|position|differen/i.test(r.text), "no competitive assessment");
@@ -294,7 +294,7 @@ fs.writeFileSync(
 
   // 18 Blog composition
   await step("[18 +BLOG] content campaign", async () => {
-    const r = await fresh(page, "Create a content campaign around our new feature and draft the first blog post intro.");
+    const r = await fresh(page, "Create a content campaign around our new feature (real-time delivery dashboards for our B2B project-management SaaS, aimed at engineering managers) and draft the first blog post intro. Use reasonable assumptions.");
     show("PLUS-BLOG", r);
     need(/content|campaign/i.test(r.text) && r.text.length > 400, "no content/blog composition");
   });
