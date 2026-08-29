@@ -110,6 +110,18 @@ def test_ratios_alias_and_flat_inputs():
     assert r2["profitability"]["roe"]["value"] == 0.2  # via 'equity' alias
 
 
+def test_ratios_case_insensitive_keys():
+    # e2e: the model sent the acronym key "COGS" (upper-case), so a case-sensitive
+    # lookup read gross margin as 100%. Keys must resolve regardless of casing.
+    r = C.ratios({
+        "income_statement": {"Revenue": 1000, "COGS": 600, "Net_Income": 100},
+        "balance_sheet": {"Cash": 80, "Current_Liabilities": 200, "Inventory": 100},
+    })["categories"]
+    assert r["profitability"]["gross_margin"]["value"] == 0.4  # "COGS" resolved
+    assert r["liquidity"]["cash_ratio"]["value"] == 0.4  # "Cash" resolved
+    assert r["efficiency"]["inventory_turnover"]["value"] == 6.0  # 600/100
+
+
 def test_ratios_gross_profit_and_misplaced_fields():
     # e2e: the model dropped COGS (gross margin read 100%). Deriving COGS from
     # gross_profit AND finding a field placed in the "wrong" section must both work.

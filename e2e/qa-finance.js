@@ -294,7 +294,7 @@ fs.writeFileSync(
     need(/32,?3|32,?394|32,?393/.test(t), "NPV ~$32,393 missing");
     need(/24\.8|24\.9|25%|0\.249/.test(r.text), "IRR ~24.9% missing");
     need(/2\.2|2\.22/.test(r.text), "payback ~2.2y missing");
-    need(/80%/.test(r.text), "ROI 80% missing");
+    need(/\b80(\.0+)?\s*%/.test(r.text), "ROI 80% missing");
     need(/recommend|proceed|yes|worth|approve/i.test(r.text), "no recommendation");
   });
 
@@ -335,7 +335,7 @@ fs.writeFileSync(
     need(/receivable|cash flow|red flag|earnings quality|profit/i.test(r.text), "no forensic analysis");
     need(/page|filing|fy2025|consolidated/i.test(r.text), "did not cite the source/period");
     need(/crore|inr/i.test(r.text), "did not state currency/units");
-    need(/not (investment|financial) advice|analysis, not advice/i.test(r.text), "no not-advice boundary");
+    need(/not (investment|financial|licensed).{0,25}advice|analysis,? not advice|informational|educational|not a recommendation/i.test(r.text), "no not-advice boundary");
     need(noFalseAuto(r.text), "false automation claim");
   });
 

@@ -157,33 +157,35 @@ def ratios(data: dict, category: str | None = None) -> dict:
     income_statement / balance_sheet / cash_flow / market_data sections (missing
     fields default to 0). Every ratio -> {value, formula, name, interpretation};
     an undefined ratio has value None (never a fabricated 0)."""
-    # Robust to how the model maps free-text -> JSON: search the labelled section
-    # first, then a MERGED view of every section + top-level scalar, so a field placed
-    # flat, in the "wrong" section, or under an alias is still found (e2e showed the
-    # model nests some lines and drops/moves others, e.g. COGS).
-    inc = data.get("income_statement")
-    bal = data.get("balance_sheet")
-    cf = data.get("cash_flow")
-    mkt = data.get("market_data")
+    # Robust to how the model maps free-text -> JSON: CASE-INSENSITIVE, and search the
+    # labelled section first, then a MERGED view of every section + top-level scalar, so
+    # a field placed flat, in the "wrong" section, mis-cased ("COGS") or under an alias
+    # is still found (e2e: the model sent the acronym key "COGS", so a case-sensitive
+    # lookup read gross margin as 100%).
+    def _ci(d: object) -> dict:
+        return {str(k).lower(): v for k, v in d.items()} if isinstance(d, dict) else {}
+
+    inc = _ci(data.get("income_statement"))
+    bal = _ci(data.get("balance_sheet"))
+    cf = _ci(data.get("cash_flow"))
+    mkt = _ci(data.get("market_data"))
     merged: dict = {}
     for _sec in ("income_statement", "balance_sheet", "cash_flow", "market_data"):
-        _v = data.get(_sec)
-        if isinstance(_v, dict):
-            merged.update(_v)
+        merged.update(_ci(data.get(_sec)))
     for _k, _v in data.items():
         if not isinstance(_v, dict):
-            merged.setdefault(_k, _v)
+            merged.setdefault(str(_k).lower(), _v)
 
-    def g(section: object, *keys: str) -> float:
+    def g(section: dict, *keys: str) -> float:
         """First present ALIAS (section first, then the merged all-fields view),
-        tolerant-parsed; 0.0 if none. Alias + placement tolerance is load-bearing: an
-        unmapped/misplaced field must not silently poison a ratio."""
+        CASE-INSENSITIVE + tolerant-parsed; 0.0 if none. Case/alias/placement tolerance
+        is load-bearing: the model maps user free-text ('COGS', 'Cash') to varied JSON
+        keys and casings, and an unmatched field must not silently poison a ratio."""
         for src in (section, merged):
-            if isinstance(src, dict):
-                for k in keys:
-                    v = _f(src.get(k))
-                    if v is not None:
-                        return v
+            for k in keys:
+                v = _f(src.get(k))
+                if v is not None:
+                    return v
         return 0.0
 
     revenue = g(
