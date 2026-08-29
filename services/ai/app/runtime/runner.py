@@ -609,21 +609,29 @@ async def run_generation(
             reserved_specs.extend(DATA_TOOL_SPECS)
 
         llm_tools = None
+        llm_tools_fallback = None
         tools_ctx = None
         if specs:
             try:
-                llm_tools = llm_for_tools.bind_tools(specs)
+                # STREAMING primary so the final answer streams token-by-token like a
+                # normal prompt; NON-streaming fallback (identical specs) used only
+                # when a model's streamed tool-call deltas break the accumulator.
+                llm_tools = llm.bind_tools(specs)
+                llm_tools_fallback = llm_for_tools.bind_tools(specs)
             except Exception:  # noqa: BLE001 — a bad web spec must not kill RAG/memory
                 log.warning(
                     "agent_tools_bind_failed", extra={"stream_id": req.streamId}
                 )
                 llm_tools = None
+                llm_tools_fallback = None
                 if reserved_specs:
                     try:
-                        llm_tools = llm_for_tools.bind_tools(reserved_specs)
+                        llm_tools = llm.bind_tools(reserved_specs)
+                        llm_tools_fallback = llm_for_tools.bind_tools(reserved_specs)
                         name_to_id, adapter = {}, None
                     except Exception:  # noqa: BLE001
                         llm_tools = None
+                        llm_tools_fallback = None
             # Per-request adapters keyed by tool.provider for the executor dispatch map.
             connector_adapters: dict = {}
             # Phase 7: register the SEO write provider + its adapter (keyed by provider
@@ -684,8 +692,10 @@ async def run_generation(
                 # registered tool (no Top-K reachability ceiling); matches are
                 # dynamically loaded by the Phase-10 executor/graph (which update
                 # BOTH the allowlist + bound specs, authorization still enforced per
-                # call). `rebind` targets the NON-streaming `llm_for_tools`, so the
-                # final answer still streams via `llm`. OFF by default → skipped, and
+                # call). `rebind` targets the STREAMING `llm` so the final answer (and
+                # narration) streams like a normal prompt; `rebind_fallback` (the
+                # non-streaming twin) recovers tool_calls when a model's streamed
+                # tool-call deltas break the accumulator. OFF by default → skipped, and
                 # the runner is byte-identical (top-K stays the initial inline set).
                 if (
                     settings.ai_orchestrated_runtime_enabled
@@ -700,7 +710,8 @@ async def run_generation(
                         resolver = resolver_v2
                         specs.append(FIND_CAPABILITIES_TOOL_SPEC)
                         tools_ctx.capabilities = resolver
-                        tools_ctx.rebind = llm_for_tools.bind_tools
+                        tools_ctx.rebind = llm.bind_tools
+                        tools_ctx.rebind_fallback = llm_for_tools.bind_tools
                         tools_ctx.pending_capabilities = []
                         if prepared_v2 is not None and prepared_v2.force_approval_ids:
                             tools_ctx.force_approval_ids = (
@@ -715,7 +726,8 @@ async def run_generation(
                         resolver = CapabilityResolver(tool_registry, tool_selector)
                         specs.append(FIND_CAPABILITIES_TOOL_SPEC)
                         tools_ctx.capabilities = resolver
-                        tools_ctx.rebind = llm_for_tools.bind_tools
+                        tools_ctx.rebind = llm.bind_tools
+                        tools_ctx.rebind_fallback = llm_for_tools.bind_tools
                         tools_ctx.pending_capabilities = []
                         orchestrator, skill_reg = build_live_runtime(settings, resolver)
                         if latest is not None:
@@ -788,7 +800,12 @@ async def run_generation(
             system_tokens=system_tokens, schema_tokens=schema_tokens
         )
 
-        graph = build_graph(llm, llm_tools=llm_tools, tools_ctx=tools_ctx)
+        graph = build_graph(
+            llm,
+            llm_tools=llm_tools,
+            llm_tools_fallback=llm_tools_fallback,
+            tools_ctx=tools_ctx,
+        )
 
         # Phase 7 resume: rebuild the already-completed tool steps from the durable
         # event log (Convex pushed them in `completedTools`) so side-effecting
@@ -987,7 +1004,11 @@ async def run_generation(
                 # later stream through here too and must not reach the transcript.
                 if metadata.get("langgraph_node") != "model":
                     continue
-
+                # A tool-call turn whose streamed tool-call deltas broke the accumulator
+                # is recovered by the graph's non-streaming fallback, which CLEARS the
+                # (already-streamed) content on that message — so the fallback's own
+                # emit contributes no text here and the preamble is not duplicated. No
+                # extra guard is needed in this loop.
                 raw = _chunk_text(chunk)
                 if raw:
                     text = harmony_filter.feed(raw)

@@ -217,6 +217,11 @@ class ToolExecContext:
     capabilities: object | None = None
     delegator: object | None = None
     rebind: object | None = None
+    # Streaming: `rebind` is the STREAMING tool client (final answer streams);
+    # `rebind_fallback` is its non-streaming twin, used by the model node only when a
+    # model's proper tool-call DELTAS break the streaming accumulator. None ⇒ no
+    # fallback (non-agent / delegated paths), byte-identical.
+    rebind_fallback: object | None = None
     pending_capabilities: list[dict] = field(default_factory=list)
     clarification: str | None = None
     # File Generation System — set when `generate_file` is bound (flag on). All

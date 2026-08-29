@@ -28,7 +28,7 @@ import uuid
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 from langchain_core.runnables import Runnable
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -36,10 +36,42 @@ from langgraph.graph.message import add_messages
 from app.agent.budget import fit_messages
 from app.agent.executor import execute_tool_calls
 from app.agent.harmony import recover_into_message
+from app.logging import get_logger
 from app.models.events import EventType
 
 if TYPE_CHECKING:
     from app.agent.executor import ToolExecContext
+
+log = get_logger(__name__)
+
+# LangGraph's messages-mode drops a chat-model run tagged with this from BOTH its
+# streamed tokens and its on_llm_end: StreamMessagesHandler.on_chat_model_start skips
+# registering a run whose tags contain it (langgraph's own TAG_NOSTREAM convention).
+# The non-streaming fallback below is invoked with this tag so its OWN emit of the
+# recovered message is silenced. The node-return path (on_chain_end) ignores the tag,
+# so the returned message ALSO has its content cleared (_clear_content_for_dup). Both
+# together keep the already-streamed preamble from being re-pushed (duplicated).
+NOSTREAM_TAG = "nostream"
+
+
+def _clear_content_for_dup(response: object) -> object:
+    """After a streaming tool-call turn broke the accumulator and was recovered by the
+    non-streaming fallback, the turn's content has ALREADY streamed to the user. Return
+    a tool_calls-only copy so messages-mode does not re-push (duplicate) that content.
+
+    Only fires when tool_calls are present (this branch is always a tool-call turn); a
+    fallback that somehow produced pure text is left intact rather than dropped. The id
+    is preserved so history/routing are stable."""
+    content = getattr(response, "content", "")
+    tool_calls = list(getattr(response, "tool_calls", None) or [])
+    if not content or not tool_calls:
+        return response
+    return AIMessage(
+        content="",
+        tool_calls=tool_calls,
+        id=getattr(response, "id", None),
+        additional_kwargs=getattr(response, "additional_kwargs", None) or {},
+    )
 
 
 class ChatState(TypedDict):
@@ -81,6 +113,7 @@ def build_graph(
     llm: BaseChatModel,
     *,
     llm_tools: Runnable | None = None,
+    llm_tools_fallback: Runnable | None = None,
     tools_ctx: ToolExecContext | None = None,
 ):
     """Compile the generation graph.
@@ -104,7 +137,7 @@ def build_graph(
         builder.add_edge("model", END)
         return builder.compile(checkpointer=None)
 
-    return _build_agent_graph(llm, llm_tools, tools_ctx)
+    return _build_agent_graph(llm, llm_tools, llm_tools_fallback, tools_ctx)
 
 
 async def _emit_model_call(
@@ -137,7 +170,10 @@ async def _emit_model_call(
 
 
 def _build_agent_graph(
-    llm: BaseChatModel, llm_tools: Runnable, tools_ctx: ToolExecContext
+    llm: BaseChatModel,
+    llm_tools: Runnable,
+    llm_tools_fallback: Runnable | None,
+    tools_ctx: ToolExecContext,
 ):
     async def model(state: ChatState) -> dict:
         # With budget left, offer tools; at the cap fall back to the plain LLM so
@@ -146,11 +182,28 @@ def _build_agent_graph(
         # Phase 10: when dynamic capability loading is active, RE-BIND from the
         # (possibly expanded) working set each step so a just-discovered tool is
         # callable. With no resolver attached, the fixed bind is used unchanged.
+        #
+        # STREAMING: the tool-bound client is now STREAMING so the final answer (and
+        # any narration) streams token-by-token exactly like a normal prompt —
+        # skill-agnostic, one place. `fallback_client` is the NON-streaming twin: this
+        # deployment's gateway streams proper tool-call DELTAS in a shape that breaks
+        # langchain's accumulator ("Tool call index out of bounds"). That error fires
+        # only AFTER the content preamble has fully streamed (the tool-call deltas come
+        # last), so the visible text is already on the stream; we then recover valid
+        # tool_calls from the non-streaming twin and CLEAR its content so neither
+        # messages-mode emit path re-pushes (duplicates) the preamble. When budget is
+        # exhausted / no tools, both clients are the plain streaming `llm` (no tools),
+        # so the try always succeeds → byte-identical to the pre-streaming behaviour.
         if tools_ctx.capabilities is not None and tools_ctx.rebind is not None:
             specs = state.get("bound_specs") or []
-            client = tools_ctx.rebind(specs) if (budget > 0 and specs) else llm
+            use_tools = budget > 0 and bool(specs)
+            client = tools_ctx.rebind(specs) if use_tools else llm
+            fb = tools_ctx.rebind_fallback
+            fallback_client = fb(specs) if (use_tools and fb is not None) else None
         else:
-            client = llm_tools if budget > 0 else llm
+            use_tools = budget > 0
+            client = llm_tools if use_tools else llm
+            fallback_client = llm_tools_fallback if use_tools else None
         # Phase 6 (B3): re-fit the accumulated messages to the per-turn budget
         # before EACH model call, so multi-step tool results can't overrun the
         # window — old raw results compact to references (pairing preserved).
@@ -161,7 +214,21 @@ def _build_agent_graph(
             else state["messages"]
         )
         t0 = time.monotonic()
-        response = await client.ainvoke(messages)
+        stream_broke = False
+        try:
+            response = await client.ainvoke(messages)
+        except Exception:  # noqa: BLE001 — streaming tool-call-delta accumulator break
+            if fallback_client is None:
+                raise
+            log.warning("model_stream_fallback", extra={"run_id": tools_ctx.run_id})
+            # Tag the recovery call NOSTREAM so messages-mode silences the fallback's
+            # OWN emit (its content already streamed via the primary above); the node
+            # return is separately silenced by clearing the content after recovery.
+            fb_client = fallback_client
+            if hasattr(fb_client, "with_config"):
+                fb_client = fb_client.with_config(tags=[NOSTREAM_TAG])
+            response = await fb_client.ainvoke(messages)
+            stream_broke = True
         # Recover gpt-5.6-luna "harmony" tool-call leaks: the gateway sometimes
         # serializes tool calls into `.content` as text instead of `.tool_calls`,
         # so route_after_model would end the step and the calls would never run
@@ -169,6 +236,14 @@ def _build_agent_graph(
         # clean the content so the leak neither drops calls nor pollutes history.
         # NO-OP on any content without a harmony marker.
         recover_into_message(response)
+        if stream_broke:
+            # The streaming attempt already streamed this turn's content (the preamble
+            # precedes the tool-call deltas that broke the accumulator), so the visible
+            # text is complete. Drop the fallback's copy of it — otherwise messages-mode
+            # (on_llm_end AND the node-return path on_chain_end) would push it again and
+            # DUPLICATE it. tool_calls are kept for routing; this branch is only ever a
+            # tool-call turn, never the final answer, so no user-facing text is lost.
+            response = _clear_content_for_dup(response)
         # Phase 8: the model-decision half of the trace (post-hoc, no TTFT hit).
         await _emit_model_call(tools_ctx, response, time.monotonic() - t0)
         return {"messages": [response]}
