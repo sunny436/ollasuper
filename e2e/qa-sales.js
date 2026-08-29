@@ -42,10 +42,31 @@ const step = async (n, f) => {
   }
 };
 const settle = async (page, ms) => {
+  // Robust across the suspend->approve->resume cycle: an approval-gated tool SUSPENDS
+  // the turn (the Stop button vanishes) and shows an Approve button. A real user clicks
+  // Approve, which resumes generation. So we click Approve whenever it appears and only
+  // conclude "done" after a stable idle with neither Stop nor Approve present.
   const stop = page.getByRole("button", { name: "Stop generating" });
+  const approve = page.getByRole("button", { name: "Approve" });
   await stop.waitFor({ timeout: 45000 }).catch(() => {});
   const d = Date.now() + ms;
-  while (Date.now() < d && (await stop.count()) > 0) await page.waitForTimeout(700);
+  let idle = 0;
+  while (Date.now() < d) {
+    if ((await approve.count()) > 0) {
+      await approve.first().click().catch(() => {});
+      await page.waitForTimeout(2000); // let the resume kick off
+      idle = 0;
+      continue;
+    }
+    if ((await stop.count()) > 0) {
+      idle = 0;
+      await page.waitForTimeout(700);
+      continue;
+    }
+    idle += 1; // neither generating nor awaiting approval
+    if (idle >= 3) break; // ~2s stable idle => truly done
+    await page.waitForTimeout(700);
+  }
   await page.waitForTimeout(1500);
 };
 const lastMsg = (page) =>
