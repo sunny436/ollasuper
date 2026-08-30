@@ -85,18 +85,35 @@ def _normalise_image(raw: bytes, mime: str, long_edge: int) -> tuple[bytes, str]
 
 
 def _extract_pdf_text(raw: bytes) -> str:
+    """Inline text for the model. UNTRUSTED input: an encrypted or malformed PDF must
+    NEVER fail the turn (pypdf raises FileNotDecryptedError / PdfStreamError otherwise);
+    it degrades to a short note, and the model can still act on it (e.g. call the
+    document tools to decrypt with a user-supplied password)."""
     from pypdf import PdfReader
 
-    reader = PdfReader(io.BytesIO(raw))
-    parts: list[str] = []
-    total = 0
-    for page in reader.pages:
-        text = page.extract_text() or ""
-        parts.append(text)
-        total += len(text)
-        if total > MAX_PDF_CHARS:
-            break
-    return "\n".join(parts)[:MAX_PDF_CHARS]
+    try:
+        reader = PdfReader(io.BytesIO(raw))
+        if reader.is_encrypted:
+            try:
+                reader.decrypt("")  # many PDFs use an empty owner password
+            except Exception:  # noqa: BLE001,S110 — stays locked; handled below
+                pass
+            if reader.is_encrypted:
+                return "[This PDF is password-protected; text can't be read inline.]"
+        parts: list[str] = []
+        total = 0
+        for page in reader.pages:
+            try:
+                text = page.extract_text() or ""
+            except Exception:  # noqa: BLE001 — one bad page must not fail the file
+                text = ""
+            parts.append(text)
+            total += len(text)
+            if total > MAX_PDF_CHARS:
+                break
+        return "\n".join(parts)[:MAX_PDF_CHARS]
+    except Exception:  # noqa: BLE001 — a corrupt/locked PDF must not fail the turn
+        return "[This PDF could not be read inline (it may be corrupt or protected).]"
 
 
 async def _fetch(

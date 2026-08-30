@@ -189,12 +189,13 @@ const F = (n) => path.join(TMP, n);
   });
   page.on("pageerror", (e) => errs.push(String(e)));
 
-  // login
-  await page.goto(BASE + "/en/login", { waitUntil: "domcontentloaded" });
-  await page.fill('input[type="email"]', EMAIL);
-  await page.fill('input[type="password"]', PASSWORD);
-  await page.getByRole("button", { name: /sign in|log in/i }).click();
-  await page.waitForURL(/\/chat/, { timeout: 30000 }).catch(() => {});
+  // login (mirrors the proven qa-operations flow)
+  await page.goto(BASE, { waitUntil: "domcontentloaded" });
+  await page.waitForURL(/login/, { timeout: 20000 }).catch(() => {});
+  await page.locator('input[type="email"]').first().fill(EMAIL);
+  await page.locator('input[type="password"]').first().fill(PASSWORD);
+  await page.click('button[type="submit"]');
+  await page.waitForTimeout(3500);
   rec("logged in");
 
   // 1 CREATE DECK

@@ -19,6 +19,7 @@ from app.clients.attachments import (
     EMPTY_TURN_FALLBACK,
     EMPTY_TURN_PLACEHOLDER,
     AttachmentError,
+    _extract_pdf_text,
     _safe_name,
     build_user_content,
 )
@@ -257,3 +258,36 @@ async def test_text_only_empty_message_is_never_empty(convex_client, fake_convex
     )
     assert n == 0
     assert isinstance(content, str) and content == EMPTY_TURN_FALLBACK
+
+
+# --- an untrusted PDF must never fail the turn (encrypted / malformed) --------
+def _reportlab_pdf(text: str = "hello") -> bytes:
+    from reportlab.pdfgen import canvas
+
+    b = io.BytesIO()
+    c = canvas.Canvas(b)
+    c.drawString(72, 720, text)
+    c.showPage()
+    c.save()
+    return b.getvalue()
+
+
+def test_extract_pdf_text_normal():
+    assert "hello" in _extract_pdf_text(_reportlab_pdf("hello"))
+
+
+def test_extract_pdf_text_encrypted_degrades_not_raises():
+    from pypdf import PdfReader, PdfWriter
+
+    w = PdfWriter()
+    w.append(PdfReader(io.BytesIO(_reportlab_pdf("secret"))))
+    w.encrypt("pw")
+    b = io.BytesIO()
+    w.write(b)
+    out = _extract_pdf_text(b.getvalue())  # must NOT raise FileNotDecryptedError
+    assert "password-protected" in out.lower()
+
+
+def test_extract_pdf_text_malformed_degrades_not_raises():
+    out = _extract_pdf_text(b"this is definitely not a pdf")  # must NOT raise
+    assert "could not be read" in out.lower()
