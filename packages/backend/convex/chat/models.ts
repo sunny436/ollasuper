@@ -75,12 +75,40 @@ export interface CatalogueEntry {
  *   prompt/completionPrice = "" (unknown; the picker renders "variable pricing")
  *   vision        = true (a cosmetic label only; it never gates uploads)
  * The id is preserved VERBATIM so any future tensorzero:: id round-trips intact.
- * NOTE: /v1/models is a superset of what Ollima actually serves — a few ids are
- * advertised but unserved; picking one fails at generation (surfaced by the
- * normal error UI). We do NOT filter here — the endpoint is the source of truth
- * and a probe-based filter would be slow, rate-limit-confounded, and a de-facto
- * manual list.
+ * NOTE: /v1/models is a superset of what Ollima actually SERVES. This used to
+ * pass the whole list through, on the reasoning that the endpoint is the source
+ * of truth and a probe-based filter would become a de-facto manual list. That
+ * reasoning held right up until an entire family stopped serving: every gpt-5*
+ * id began returning 502 wrapping `Unauthorized ... token is expired` from the
+ * provider's upstream, while the other eleven models answered normally. Nine
+ * dead entries stayed in the picker, and choosing any of them broke chat.
+ *
+ * So there is now a denylist — see DENY_PREFIXES. It is a manual list, and that
+ * is the lesser evil: offering a user a model that cannot possibly work is a
+ * worse failure than a stale exclusion, and the exclusion is one env var away
+ * from being lifted the moment the provider recovers.
  */
+/**
+ * Model-id prefixes the provider advertises but cannot currently serve.
+ *
+ * Configurable so this does not need a deploy to change: set MODEL_DENY_PREFIXES
+ * to a comma-separated list, or to an empty string to offer everything again
+ * once the upstream credential is restored.
+ */
+function deniedPrefixes(): string[] {
+  const raw = process.env.MODEL_DENY_PREFIXES;
+  // Unset means the known-bad family; empty string means deny nothing.
+  if (raw === undefined) return ["gpt-5"];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function isServable(modelId: string, denied: string[]): boolean {
+  return !denied.some((prefix) => modelId.startsWith(prefix));
+}
+
 function toEntry(m: OllimaModel): CatalogueEntry | null {
   if (typeof m.id !== "string" || !m.id) return null;
   return {
@@ -105,9 +133,11 @@ export const refresh = internalAction({
     }
     const body = (await res.json()) as { data?: OllimaModel[] };
     const raw = Array.isArray(body.data) ? body.data : [];
+    const denied = deniedPrefixes();
     const entries = raw
       .map(toEntry)
-      .filter((e): e is CatalogueEntry => e !== null);
+      .filter((e): e is CatalogueEntry => e !== null)
+      .filter((e) => isServable(e.modelId, denied));
 
     const applied: boolean = await ctx.runMutation(
       internal.chat.models.apply,

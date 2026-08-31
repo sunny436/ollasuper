@@ -66,6 +66,14 @@ const taskRows = (page) =>
   const taskId = page.url().split("/scheduled/")[1].split(/[/?#]/)[0];
   must(Boolean(taskId), "task created through the composer", taskId);
 
+  // The PARSER owns the title, so it is not the prompt text. While the parser
+  // was down it echoed the prompt back and TAG happened to survive into the
+  // title; the moment parsing worked the title became a clean summary and every
+  // row lookup by TAG stopped matching. Read what was actually created.
+  await page.waitForTimeout(1500);
+  const TITLE = (await page.locator("aside h2").first().innerText()).trim();
+  console.log(`      title: "${TITLE}"`);
+
   // ── enable email + PDF for this task ──────────────────────────────────────
   await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2500);
@@ -73,7 +81,7 @@ const taskRows = (page) =>
   // updatedAt on every run — so any other task that happens to execute jumps
   // above this one. An earlier version of this script ran an unrelated task for
   // exactly that reason, and then waited for an occurrence that never existed.
-  const row = taskRows(page).filter({ hasText: TAG }).first();
+  const row = taskRows(page).filter({ hasText: TITLE }).first();
   await row.hover();
   await row.getByRole("button", { name: "Task actions" }).click();
   await page.waitForTimeout(400);
@@ -184,7 +192,7 @@ const taskRows = (page) =>
     await page.waitForTimeout(1500);
     const list = await page.locator("body").innerText();
     must(
-      new RegExp(TAG, "i").test(list) || /completed|failed/i.test(list),
+      list.includes(TITLE.slice(0, 20)) || /completed|failed/i.test(list),
       "an in-app notification was raised for the run",
     );
     await page.keyboard.press("Escape");
@@ -193,7 +201,7 @@ const taskRows = (page) =>
   // ── cleanup ──────────────────────────────────────────────────────────────
   await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2500);
-  const mine = taskRows(page).filter({ hasText: TAG });
+  const mine = taskRows(page).filter({ hasText: TITLE });
   if (await mine.count()) {
     await mine.first().hover();
     await mine.first().getByRole("button", { name: "Task actions" }).click();
@@ -203,7 +211,7 @@ const taskRows = (page) =>
     await page.getByRole("button", { name: "Delete", exact: true }).last().click();
     await page.waitForTimeout(2500);
   }
-  must((await taskRows(page).filter({ hasText: TAG }).count()) === 0, "cleaned up");
+  must((await taskRows(page).filter({ hasText: TITLE }).count()) === 0, "cleaned up");
 
   await b.close();
   const passed = results.filter(Boolean).length;
