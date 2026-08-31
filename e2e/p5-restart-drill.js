@@ -68,6 +68,19 @@ async function signUp(email, password) {
   const ws = await user.mutation(anyApi.orgs.createWorkspace, {
     name: `Restart${ts}`,
   });
+  // Pin a model that is actually serving.
+  //
+  // This drill measures RESTART RECOVERY. Leaving the account on whatever
+  // DEFAULT_MODEL happens to be conflates that with model availability at the
+  // provider — which is not hypothetical: production's default (gpt-5.6-luna)
+  // was returning 502 from the provider's upstream while three other models
+  // answered 200, and this drill reported a scheduling failure for it.
+  const MODEL = process.env.E2E_MODEL || "glm-5.2";
+  await user.mutation(anyApi.chat.settings.upsert, {
+    workspaceId: ws,
+    defaultModel: MODEL,
+  });
+
   const taskId = await user.mutation(anyApi.scheduled.tasks.create, {
     workspaceId: ws,
     title: `restart-drill-${ts}`,
