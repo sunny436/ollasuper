@@ -134,6 +134,24 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
   return (
     <SidebarCtx.Provider value={api}>
       {/*
+        Skip link — the FIRST focusable thing on the page.
+
+        The rail lists every conversation, so on a real account it holds ~66
+        focusable controls and a keyboard user had to press Tab 69 times to
+        reach the composer. Measured on production, not guessed. That is not a
+        long tab order, it is an unusable one, and it gets worse the longer
+        someone uses the product.
+
+        Visually hidden until focused, which is the standard shape: sighted
+        mouse users never see it, and the first Tab reveals it.
+      */}
+      <a
+        href="#workspace-main"
+        className="sr-only rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-foreground focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50"
+      >
+        Skip to content
+      </a>
+      {/*
         Docked from md up, collapsible to zero width.
 
         <nav>, not <aside>: e2e/p-sidebar.js does page.locator("aside") and
@@ -159,7 +177,11 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
         </div>
       </nav>
 
-      {children}
+      {/* tabIndex -1 so the skip link can move focus here; it is not a tab stop
+          of its own. */}
+      <div id="workspace-main" tabIndex={-1} className="contents outline-none">
+        {children}
+      </div>
 
       {/* Drawer for everything below md. */}
       {open && (

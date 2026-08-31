@@ -3,7 +3,7 @@
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
-import { Dialog, DialogContent } from "@v1/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@v1/ui/dialog";
 import { useMutation } from "convex/react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -130,9 +130,13 @@ export function EditTaskDialog({
               ? "Paused"
               : recurrenceLabel(task.spec)}
         </div>
-        <h2 className="mt-1 text-lg font-semibold text-primary">
+        {/* DialogTitle, not a bare h2: Radix needs it to label the dialog for
+            screen readers, and warns through console.error when it is missing —
+            which also fails the e2e zero-console-error gate. It renders an h2
+            anyway, so this is the same markup with the accessibility attached. */}
+        <DialogTitle className="mt-1 text-lg font-semibold text-primary">
           {duplicate ? "Duplicate scheduled task" : task.title}
-        </h2>
+        </DialogTitle>
 
         {conflict && (
           <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
