@@ -200,19 +200,18 @@ export const refresh = internalAction({
     }
     const body = (await res.json()) as { data?: OllimaModel[] };
     const raw = Array.isArray(body.data) ? body.data : [];
-    // Intersect the curated list with what the provider currently advertises,
-    // so a model they retire disappears on its own. If the fetch came back
-    // empty or unrecognisable, keep the curated list rather than emptying the
-    // picker over a bad response.
-    const advertised = new Set(
-      raw.map((m) => (typeof m.id === "string" ? m.id : "")).filter(Boolean),
-    );
+    // The CURATED list wins outright; the fetch is kept only so a refresh
+    // still fails loudly if the provider is unreachable.
+    //
+    // It is tempting to intersect with what /v1/models advertises, and that was
+    // the first attempt — but the endpoint is not a reliable inventory. It lists
+    // neither grok-4.5 nor gemini-3.7-flash-high, and both answer 200 at
+    // /chat/completions under their tensorzero:: ids; meanwhile it happily
+    // advertises the entire gpt-5* family, none of which can serve a request.
+    // Intersecting therefore dropped two working models and kept nine dead ones.
+    // A hand-probed list is the more honest source of truth.
     const denied = deniedPrefixes();
-    const entries = CURATED.filter(
-      (e) =>
-        isServable(e.modelId, denied) &&
-        (advertised.size === 0 || advertised.has(e.modelId)),
-    );
+    const entries = CURATED.filter((e) => isServable(e.modelId, denied));
 
     const applied: boolean = await ctx.runMutation(
       internal.chat.models.apply,

@@ -87,21 +87,27 @@ describe("the model catalogue is a curated shortlist", () => {
     expect(listed[0].name).toBe("DeepSeek V4 Pro");
   });
 
-  test("a model the provider stops advertising disappears", async () => {
-    const t = convexTest(schema, modules);
-    serve(ALL_CURATED.filter((id) => id !== "qwen3.5"));
-    await t.action(internal.chat.models.refresh, {});
-    expect((await rowsIn(t)).map((m) => m.modelId)).not.toContain("qwen3.5");
-  });
-
-  test("a bad response keeps the curated list rather than emptying the picker", async () => {
-    // An empty or unrecognisable /v1/models must never leave users with nothing
-    // to choose from.
+  test("the curated list does not depend on what /v1/models advertises", async () => {
+    // The endpoint is not a reliable inventory: it lists neither grok-4.5 nor
+    // gemini-3.7-flash-high, both of which answer 200 under their tensorzero::
+    // ids, while advertising the whole gpt-5* family, none of which can serve.
+    // Intersecting with it dropped two working models and kept nine dead ones.
     const t = convexTest(schema, modules);
     serve([]);
     const res = await t.action(internal.chat.models.refresh, {});
     expect(res.applied).toBe(true);
-    expect((await rowsIn(t)).length).toBe(ALL_CURATED.length);
+    const ids = (await rowsIn(t)).map((m) => m.modelId).sort();
+    expect(ids).toEqual([...ALL_CURATED].sort());
+  });
+
+  test("the tensorzero-prefixed models survive a refresh", async () => {
+    // The two the intersection used to eat.
+    const t = convexTest(schema, modules);
+    serve(["glm-5.2"]);
+    await t.action(internal.chat.models.refresh, {});
+    const ids = (await rowsIn(t)).map((m) => m.modelId);
+    expect(ids).toContain("tensorzero::model_name::grok-4.5");
+    expect(ids).toContain("tensorzero::model_name::gemini-3.7-flash-high");
   });
 
   test("the denylist still applies on top", async () => {
