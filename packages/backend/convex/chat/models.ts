@@ -38,15 +38,80 @@ import { DEFAULT_MODEL } from "./authz";
 const OLLIMA_MODELS_URL = "https://api.ollima.com/v1/models";
 
 /**
- * Refuse to apply deletions below this many models.
+ * The models we actually offer.
  *
- * Without a floor, one truncated or partially-failed response empties the
- * catalogue, `assertAllowedModel` falls back to the bootstrap default, and
- * every user is silently pinned to one model until the next refresh. Rejecting
- * an implausible response and keeping yesterday's catalogue is always the
- * better failure.
+ * /v1/models advertises ~63 ids, and most of them are noise: the whole gpt-5*
+ * family returns 502 (the provider's upstream credential is expired), and the
+ * rest was an undifferentiated wall of raw ids with no way for anyone to choose
+ * between them. Every id here has been probed and answers.
+ *
+ * The list is short and hand-written on purpose. A picker is a product surface,
+ * not a database dump — a name and one line about when to reach for it is worth
+ * more than fifty entries nobody can tell apart.
  */
-const MIN_PLAUSIBLE_MODELS = 50;
+const CURATED_SPECS: readonly {
+  modelId: string;
+  name: string;
+  description: string;
+}[] = [
+  {
+    modelId: "deepseek-v4-pro",
+    name: "DeepSeek V4 Pro",
+    description: "Fastest to answer. The default for everyday work.",
+  },
+  {
+    modelId: "deepseek-v4-flash",
+    name: "DeepSeek V4 Flash",
+    description: "Lighter and quicker, for short back-and-forth.",
+  },
+  {
+    modelId: "glm-5.2",
+    name: "GLM 5.2",
+    description: "Strong all-rounder for coding and agentic work.",
+  },
+  {
+    modelId: "glm-5.1",
+    name: "GLM 5.1",
+    description: "The previous GLM generation.",
+  },
+  {
+    modelId: "qwen3.5",
+    name: "Qwen 3.5",
+    description: "Multilingual generalist.",
+  },
+  {
+    modelId: "gpt-oss-120b",
+    name: "GPT-OSS 120B",
+    description: "Open-weight, 120B parameters.",
+  },
+  {
+    modelId: "tensorzero::model_name::grok-4.5",
+    name: "Grok 4.5",
+    description: "Conversational reasoning.",
+  },
+  {
+    modelId: "tensorzero::model_name::gemini-3.7-flash-high",
+    name: "Gemini 3.7 Flash",
+    description: "Fast, with a long context window.",
+  },
+];
+
+/**
+ * Never write an empty catalogue: that would pin every user to the bootstrap
+ * default until the next refresh. The old floor was 50, which made sense while
+ * the catalogue mirrored the provider's whole list and is meaningless now.
+ */
+const MIN_PLAUSIBLE_MODELS = 1;
+
+/** /v1/models carries no metadata, so the numeric fields take safe defaults —
+ *  the picker shows a name and a line, and never renders these. */
+const CURATED: readonly CatalogueEntry[] = CURATED_SPECS.map((m) => ({
+  ...m,
+  contextLength: 0,
+  promptPrice: "",
+  completionPrice: "",
+  vision: true,
+}));
 
 interface OllimaModel {
   id?: unknown;
@@ -58,6 +123,8 @@ interface OllimaModel {
 export interface CatalogueEntry {
   modelId: string;
   name: string;
+  /** One short line for the picker. */
+  description?: string;
   contextLength: number;
   promptPrice: string;
   completionPrice: string;
@@ -133,11 +200,19 @@ export const refresh = internalAction({
     }
     const body = (await res.json()) as { data?: OllimaModel[] };
     const raw = Array.isArray(body.data) ? body.data : [];
+    // Intersect the curated list with what the provider currently advertises,
+    // so a model they retire disappears on its own. If the fetch came back
+    // empty or unrecognisable, keep the curated list rather than emptying the
+    // picker over a bad response.
+    const advertised = new Set(
+      raw.map((m) => (typeof m.id === "string" ? m.id : "")).filter(Boolean),
+    );
     const denied = deniedPrefixes();
-    const entries = raw
-      .map(toEntry)
-      .filter((e): e is CatalogueEntry => e !== null)
-      .filter((e) => isServable(e.modelId, denied));
+    const entries = CURATED.filter(
+      (e) =>
+        isServable(e.modelId, denied) &&
+        (advertised.size === 0 || advertised.has(e.modelId)),
+    );
 
     const applied: boolean = await ctx.runMutation(
       internal.chat.models.apply,
@@ -154,6 +229,7 @@ export const apply = internalMutation({
       v.object({
         modelId: v.string(),
         name: v.string(),
+        description: v.optional(v.string()),
         contextLength: v.number(),
         promptPrice: v.string(),
         completionPrice: v.string(),
@@ -194,6 +270,7 @@ function toPublic(d: Doc<"chatModels">) {
   return {
     modelId: d.modelId,
     name: d.name,
+    description: d.description,
     contextLength: d.contextLength,
     promptPrice: d.promptPrice,
     completionPrice: d.completionPrice,
@@ -217,7 +294,11 @@ export const list = query({
       return [
         {
           modelId: DEFAULT_MODEL,
-          name: DEFAULT_MODEL,
+          name:
+            CURATED.find((m) => m.modelId === DEFAULT_MODEL)?.name ??
+            DEFAULT_MODEL,
+          description: CURATED.find((m) => m.modelId === DEFAULT_MODEL)
+            ?.description,
           contextLength: 0,
           promptPrice: "",
           completionPrice: "",
@@ -225,9 +306,16 @@ export const list = query({
         },
       ];
     }
+    // Curated ORDER, not alphabetical — the list is hand-ordered so the
+    // default sits at the top and the rest read as a considered shortlist.
+    const rank = new Map(CURATED.map((m, i) => [m.modelId, i]));
     return rows
       .map(toPublic)
-      .sort((a, b) => a.modelId.localeCompare(b.modelId));
+      .sort(
+        (a, b) =>
+          (rank.get(a.modelId) ?? 999) - (rank.get(b.modelId) ?? 999) ||
+          a.name.localeCompare(b.name),
+      );
   },
 });
 

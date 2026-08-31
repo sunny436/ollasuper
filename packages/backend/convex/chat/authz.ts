@@ -150,7 +150,7 @@ export function timingSafeEqualStr(
 // expired` — an expired upstream credential on THEIR side, which we cannot fix
 // and should not depend on. The default was one of those two, so every new
 // user and every scheduled run failed while the rest of the catalogue was fine.
-export const DEFAULT_MODEL = "glm-5.2";
+export const DEFAULT_MODEL = "deepseek-v4-pro";
 
 /**
  * Validate a model against the cached OpenRouter catalogue.

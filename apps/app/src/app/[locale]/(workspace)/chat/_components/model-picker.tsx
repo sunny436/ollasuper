@@ -135,17 +135,17 @@ export function ModelPicker({
                 value === m.modelId ? "bg-brand/10" : ""
               }`}
             >
+              {/* A name and one line. The raw id used to sit under the name,
+                  which read as the same thing twice because the catalogue set
+                  name = id; and "variable pricing · vision" was on every row,
+                  so it distinguished nothing. */}
               <span className="flex min-w-0 flex-col">
                 <span className="truncate text-primary/90">{m.name}</span>
-                <span className="truncate font-geist-mono text-[10px] text-primary/40">
-                  {m.modelId}
-                </span>
-                <span className="mt-0.5 text-[10px] text-primary/45">
-                  {priceHint(m.promptPrice, m.completionPrice)}
-                  {m.contextLength > 0 &&
-                    ` · ${Math.round(m.contextLength / 1000)}k ctx`}
-                  {m.vision && " · vision"}
-                </span>
+                {m.description && (
+                  <span className="truncate text-[11px] text-primary/45">
+                    {m.description}
+                  </span>
+                )}
               </span>
               {value === m.modelId && (
                 <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-ink" />

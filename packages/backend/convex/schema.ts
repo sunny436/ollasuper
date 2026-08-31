@@ -763,6 +763,9 @@ export default defineSchema({
   chatModels: defineTable({
     modelId: v.string(),
     name: v.string(),
+    // A short human line for the picker. Optional and additive, so rows written
+    // before this existed still validate.
+    description: v.optional(v.string()),
     contextLength: v.number(),
     // Kept as the raw per-token strings OpenRouter returns. The 5 meta-routers
     // (openrouter/auto, fusion, ...) report "-1" for variable pricing, so this
