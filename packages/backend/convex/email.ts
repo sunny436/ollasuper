@@ -125,7 +125,10 @@ export const sendReportEmail = internalAction({
     title: v.string(),
     outcome: v.string(),
     markdown: v.string(),
-    attachmentStorageId: v.optional(v.id("_storage")),
+    // The attachment arrives as base64 rather than as a storage id to read
+    // back: reading it back failed in production with a transient storage
+    // error, and the caller already had the bytes.
+    attachmentBase64: v.optional(v.string()),
     idempotencyKey: v.string(),
     noteTooLarge: v.optional(v.boolean()),
     notePdfFailed: v.optional(v.boolean()),
@@ -161,16 +164,9 @@ export const sendReportEmail = internalAction({
     const text = [body, ...notes].join("\n\n");
     const html = [toHtml(body), ...notes.map((n) => `<p><em>${esc(n)}</em></p>`)].join("\n");
 
-    let attachment: { filename: string; content: string } | undefined;
-    if (a.attachmentStorageId) {
-      const blob = await ctx.storage.get(a.attachmentStorageId);
-      if (blob) {
-        const buf = new Uint8Array(await blob.arrayBuffer());
-        let binary = "";
-        for (const byte of buf) binary += String.fromCharCode(byte);
-        attachment = { filename: "report.pdf", content: btoa(binary) };
-      }
-    }
+    const attachment = a.attachmentBase64
+      ? { filename: "report.pdf", content: a.attachmentBase64 }
+      : undefined;
 
     if (transport === "smtp") {
       // Replica/dev only. deploy/71 refuses this value on the production host,

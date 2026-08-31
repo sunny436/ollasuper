@@ -105,7 +105,7 @@ const taskRows = (page) =>
   for (let i = 0; i < 40; i++) {
     await page.waitForTimeout(5000);
     const body = await page.locator("aside").first().innerText();
-    if (/Succeeded|Failed|Cancelled/i.test(body)) {
+    if (/Completed|Failed|Cancelled/i.test(body)) {
       settled = true;
       console.log(`      settled after ~${(i + 1) * 5}s`);
       break;
@@ -116,7 +116,7 @@ const taskRows = (page) =>
   // ── the result viewer is READ-ONLY (C1) ──────────────────────────────────
   const runBtn = page
     .locator("aside button")
-    .filter({ hasText: /Succeeded|Failed|Cancelled/i })
+    .filter({ hasText: /Completed|Failed|Cancelled/i })
     .first();
   if (await runBtn.count()) {
     await runBtn.click();

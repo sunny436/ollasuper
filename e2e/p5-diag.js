@@ -129,9 +129,9 @@ const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
         const aside = page.locator("aside");
         const txt = (await aside.count()) ? await aside.innerText() : "";
         const spin = await page.locator(".animate-spin").count();
-        const status = (txt.match(/(Running|Queued|Retrying|Succeeded|Failed|Cancelled)/g) || []).join(",");
+        const status = (txt.match(/(Running|Queued|Retrying|Completed|Failed|Cancelled)/g) || []).join(",");
         console.log(`    t+${(s + 1) * 5}s  spinners=${spin}  statuses=[${status}]`);
-        if (/Succeeded|Failed/.test(txt)) break;
+        if (/Completed|Failed/.test(txt)) break;
       }
     } else {
       console.log("\n[3] Run now disabled — skipping");

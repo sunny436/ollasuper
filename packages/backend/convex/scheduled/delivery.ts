@@ -314,9 +314,15 @@ export const reap = internalMutation({
   },
 });
 
-/** Hard ceiling on an email attachment. A PDF above this is still STORED and
- *  downloadable in-app; only the attachment is dropped. */
-export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+/**
+ * Hard ceiling on an email attachment. A PDF above this is still STORED and
+ * downloadable in-app; only the attachment is dropped.
+ *
+ * 5MB rather than 8: the bytes now travel to the mail action as base64, which
+ * inflates by ~4/3, so this keeps the argument well inside Convex's function
+ * payload limit with room to spare. Real reports are tens of kilobytes.
+ */
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 /** Bound on what is handed to the renderer. Truncation is marked in the PDF. */
 export const MAX_MARKDOWN_CHARS = 400_000;
 
@@ -496,8 +502,29 @@ async function renderPdf(
 type PdfState = {
   pdfStatus: "none" | "succeeded" | "failed";
   attachment: "none" | "attached" | "skipped_too_large" | "skipped_pdf_failed";
-  storageId: Id<"_storage"> | null;
+  /**
+   * The attachment itself, base64, or null.
+   *
+   * NOT a storage id. This used to hand the mail action an Id<"_storage"> to
+   * read back, and production failed three times over with
+   * `Transient error while running storage get url` — on a 44KB PDF, so not a
+   * size problem. The bytes are already in memory here, so reading them back
+   * out of storage bought nothing and added a failure mode between two actions.
+   * The artifact is still stored separately for in-app download.
+   */
+  attachmentBase64: string | null;
 };
+
+/** Chunked so a multi-megabyte attachment cannot blow the argument stack. */
+function toBase64(bytes: ArrayBuffer): string {
+  const view = new Uint8Array(bytes);
+  let binary = "";
+  const CHUNK = 8192;
+  for (let i = 0; i < view.length; i += CHUNK) {
+    binary += String.fromCharCode(...view.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
 
 /**
  * One delivery attempt, end to end.
@@ -541,7 +568,7 @@ export const deliver = internalAction({
     let pdf: PdfState = {
       pdfStatus: "none",
       attachment: "none",
-      storageId: null,
+      attachmentBase64: null,
     };
     try {
       const p = await ctx.runQuery(internal.scheduled.delivery.payload, {
@@ -569,7 +596,7 @@ export const deliver = internalAction({
         title: p.title,
         outcome: p.outcome,
         markdown: p.markdown,
-        attachmentStorageId: pdf.storageId ?? undefined,
+        attachmentBase64: pdf.attachmentBase64 ?? undefined,
         idempotencyKey: p.idempotencyKey,
         noteTooLarge: pdf.attachment === "skipped_too_large",
         notePdfFailed: pdf.attachment === "skipped_pdf_failed",
@@ -683,7 +710,7 @@ async function buildPdf(
     return {
       pdfStatus: "failed",
       attachment: "skipped_pdf_failed",
-      storageId: null,
+      attachmentBase64: null,
     };
   }
 
@@ -704,10 +731,14 @@ async function buildPdf(
     return {
       pdfStatus: "succeeded",
       attachment: "skipped_too_large",
-      storageId: null,
+      attachmentBase64: null,
     };
   }
-  return { pdfStatus: "succeeded", attachment: "attached", storageId };
+  return {
+    pdfStatus: "succeeded",
+    attachment: "attached",
+    attachmentBase64: toBase64(bytes),
+  };
 }
 
 /**

@@ -419,7 +419,7 @@ const openRowMenu = async (page, title) => {
         );
         return;
       }
-      if (/Succeeded|Failed|Cancelled/i.test(body) && sawQueuedOrRunning) {
+      if (/Completed|Failed|Cancelled/i.test(body) && sawQueuedOrRunning) {
         // It finished between polls. The run happened, which is the point.
         return;
       }
@@ -478,7 +478,7 @@ const openRowMenu = async (page, title) => {
       await page.waitForTimeout(2500);
       body = await panel.first().innerText();
       if (
-        /Succeeded|Failed|Cancelled|Queued|Running|Retrying|Skipped|Interrupted|No updates available|Runs will appear here/i.test(
+        /Completed|Failed|Cancelled|Queued|Running|Retrying|Skipped|Interrupted|No updates available|Runs will appear here/i.test(
           body,
         )
       ) {
@@ -491,7 +491,7 @@ const openRowMenu = async (page, title) => {
   await soft("the result viewer offers no mutating action", async () => {
     const run = page
       .locator("aside button")
-      .filter({ hasText: /Succeeded|Failed|Cancelled/i })
+      .filter({ hasText: /Completed|Failed|Cancelled/i })
       .first();
     if ((await run.count()) === 0) return false;
     await run.click();
@@ -648,7 +648,7 @@ const openRowMenu = async (page, title) => {
     await page.waitForTimeout(2500);
     const run = page
       .locator("aside button")
-      .filter({ hasText: /Succeeded|Failed|Cancelled/i })
+      .filter({ hasText: /Completed|Failed|Cancelled/i })
       .first();
     if ((await run.count()) === 0) return false;
     await run.click();
