@@ -265,7 +265,15 @@ Billing**.
 > Superseded by section 0 for the home/sessions items — the home overview and the active-sessions
 > UI were removed rather than built out. The rest still stands.
 - **Settings restructure** — sectioned settings (Profile · Notifications · Team · Billing · API keys · Danger zone); **change password**; **delete account** (`deleteCurrentUserAccount` exists, needs UI).
-- **Command palette (⌘K)** (cmdk) + **notifications center** (needs a `notifications` table + functions + bell UI).
+- **Command palette (⌘K)** (cmdk).
+- ~~**Notifications center**~~ — **DONE**. `notifications` table + `notify()` (serialisable dedupe),
+  `myNotifications` (paged) / `unreadCount` / `markRead` / `markAllRead`, and a `DropdownMenu`-based
+  centre in the chat header (between Share and the ambience control) and on `/scheduled`, which has
+  no header of its own. Emitters: scheduled run terminal states, delivery email-disabled, tool
+  approval required/expired, chat turn failed, and chat turns past a 2-minute threshold — the last
+  three skipped for `status: "scheduled"` threads so a scheduled run is never announced twice.
+  Severity is derived from `type`, not stored. Prod-verified 15/15 headed Chrome.
+  **Known limitation:** the table has no retention cron; `markAllRead` is bounded per call instead.
 - **Pagination / load-more** on files / audit / events (closes audit **BUG-8**; queries currently `take(50)` / unbounded `.collect()`).
 - **Polish** — loading skeletons, consistent empty states, 404 page + error boundary, footer/version, help/docs link, keyboard shortcuts.
 
