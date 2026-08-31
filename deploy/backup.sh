@@ -74,7 +74,7 @@ PY
 # pg_restore, and the host may have none or a mismatched major version.
 verify_dump() {
   local cid="$1" f="$2"
-  docker exec -i "$cid" pg_restore --list - < "$f" >/dev/null 2>&1 \
+  docker exec -i "$cid" pg_restore --list < "$f" >/dev/null 2>&1 \
     || { echo "FATAL: $f has an unreadable pg_restore TOC; refusing to prune" >&2; exit 1; }
 }
 # Sets $SIZE rather than echoing it. Deliberate: `size=$(verify_size ...)` would

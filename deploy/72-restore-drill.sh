@@ -113,7 +113,7 @@ done
 restore_db() {
   local label="$1" dump="$2" dbname="$3"
   [ -f "$dump" ] || { no "$label dump present" "$dump missing"; return; }
-  if ! docker exec -i "$DRILL_CONTAINER" pg_restore --list - < "$dump" >/dev/null 2>&1; then
+  if ! docker exec -i "$DRILL_CONTAINER" pg_restore --list < "$dump" >/dev/null 2>&1; then
     no "$label dump has a readable TOC" "pg_restore --list failed"
     return
   fi

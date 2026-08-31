@@ -22,9 +22,38 @@ if [ "${FAKE_TINY:-0}" = "1" ]; then echo tiny > "$out"; exit 0; fi
 d=$(mktemp -d); head -c 300000 /dev/urandom > "$d/data.bin"
 "$FAKE_MKZIP" "$out" "$d/data.bin"
 EOF
+# A fake that BEHAVES, not one that just exits 0.
+#
+# The first version of this returned 0 for everything, so the dump path never
+# actually ran and `pg_restore --list -` shipped: the trailing dash makes real
+# pg_restore look for a FILE named "-" and fail, which only showed up on
+# production. A fake that always succeeds tests nothing.
 cat > "$T/bin/docker" <<'EOF'
 #!/usr/bin/env bash
-exit 0   # `compose ps` prints nothing -> both dump blocks are skipped
+case "$1 $2" in
+  "compose -f")
+    # `ps -q` -> a container id; `ps <svc>` -> a status line, so the dump blocks run.
+    for a in "$@"; do [ "$a" = "-q" ] && { echo "fakecid"; exit 0; }; done
+    echo "knowledge-db  Up 3 days (healthy)"; exit 0 ;;
+esac
+if [ "$1" = "exec" ]; then
+  shift
+  # strip -i / the container id
+  while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done
+  shift 2>/dev/null   # container id
+  case "${1:-}" in
+    pg_dump)  printf 'PGDMP'; head -c 40000 /dev/zero | tr '\0' 'x'; exit 0 ;;
+    pg_restore)
+      # Real pg_restore reads STDIN only when given no filename. A literal "-"
+      # is treated as a filename and fails — reproduce that exactly.
+      for a in "$@"; do
+        [ "$a" = "-" ] && { echo 'pg_restore: error: could not open input file "-"' >&2; exit 1; }
+      done
+      head -c 5 | grep -q 'PGDMP' && exit 0 || exit 1 ;;
+    psql) echo 1; exit 0 ;;
+  esac
+fi
+exit 0
 EOF
 # The fake export needs to CREATE a valid zip. Linux/CI has `zip` or `python3`;
 # a Windows dev box may have neither, but does have uv's CPython. (backup.sh's
@@ -123,6 +152,20 @@ else
   no "a corrupt run does not prune the last good archive" "good=$good gone"
 fi
 
+# ── 4b. the dump path is actually exercised ─────────────────────────────────
+rm -rf "$T/dest"; mkdir -p "$T/dest"
+env PATH="$T/bin:$PATH" BACKUP_DIR="$T/dest" REPO="$T/repo" bash "$T/backup.sh" > "$T/out.log" 2>&1
+rc=$?
+if [ "$rc" = 0 ] && grep -q "knowledge dump written" "$T/out.log"; then
+  ok "the knowledge dump is produced and passes pg_restore --list"
+else
+  no "the knowledge dump verifies" "rc=$rc $(grep -i fatal "$T/out.log" | head -1)"
+fi
+if grep -q "dbos dump written" "$T/out.log"; then
+  ok "the DBOS dump is produced and verified"
+else
+  no "the DBOS dump is produced" "$(grep -i fatal "$T/out.log" | head -1)"
+fi
 # ── 5. the manifest is written last and covers the archive ───────────────────
 rm -rf "$T/dest"; mkdir -p "$T/dest"
 env PATH="$T/bin:$PATH" BACKUP_DIR="$T/dest" REPO="$T/repo" bash "$T/backup.sh" >/dev/null 2>&1
