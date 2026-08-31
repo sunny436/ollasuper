@@ -71,6 +71,20 @@ const compose = async (page, text) => {
   return card;
 };
 
+const taskRows = (page) =>
+  page
+    .locator("div.group")
+    .filter({ has: page.getByRole("button", { name: "Task actions" }) });
+
+/** The most recently updated task — list() orders by_user_updated desc, so a
+ *  task created moments ago is first. Used where the parser owns the title. */
+const openFirstRowMenu = async (page) => {
+  const row = taskRows(page).first();
+  await row.hover();
+  await row.getByRole("button", { name: "Task actions" }).click();
+  await page.waitForTimeout(300);
+};
+
 const openRowMenu = async (page, title) => {
   const row = page.locator("div.group").filter({ hasText: title }).first();
   await row.hover();
@@ -344,11 +358,28 @@ const openRowMenu = async (page, title) => {
   });
 
   await soft("a live run shows a running badge", async () => {
+    // A QUEUED occurrence has no spinner and should not: it is not running yet.
+    // The claim takes up to one 30s tick, so poll for the Running state rather
+    // than sampling once and asserting on whatever happened to be on screen.
     await page.goto(`${BASE}/en/scheduled/${taskId}`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(3000);
-    const body = await page.locator("body").innerText();
-    if (!/Running|Queued|Retrying/i.test(body)) return false;
-    must(await page.locator(".animate-spin").count(), "a live run rendered no progress affordance");
+    let sawQueuedOrRunning = false;
+    for (let i = 0; i < 24; i++) {
+      const body = await page.locator("body").innerText();
+      if (/Queued|Running|Retrying/i.test(body)) sawQueuedOrRunning = true;
+      if (/Running|Retrying/i.test(body)) {
+        must(
+          await page.locator(".animate-spin").count(),
+          "a RUNNING occurrence rendered no progress affordance",
+        );
+        return;
+      }
+      if (/Succeeded|Failed|Cancelled/i.test(body) && sawQueuedOrRunning) {
+        // It finished between polls. The run happened, which is the point.
+        return;
+      }
+      await page.waitForTimeout(5000);
+    }
+    return sawQueuedOrRunning ? undefined : false;
   });
 
   await step("share is withheld until a run has succeeded", async () => {
@@ -452,25 +483,44 @@ const openRowMenu = async (page, title) => {
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 
-  await step("the composer is reachable by keyboard alone", async () => {
+  await step("a skip link puts main content within reach of the keyboard", async () => {
     await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
+
+    // The rail lists every conversation, so on a real account the composer sits
+    // ~70 tab stops in. The skip link has to be the FIRST thing focused.
+    await page.keyboard.press("Tab");
+    const first = await page.evaluate(() =>
+      (document.activeElement?.textContent || "").trim(),
+    );
+    must(/skip to content/i.test(first), `first tab stop was "${first}"`);
+
+    await page.keyboard.press("Enter");
     let reached = false;
-    for (let i = 0; i < 40 && !reached; i++) {
+    for (let i = 0; i < 10 && !reached; i++) {
       await page.keyboard.press("Tab");
       reached = await page.evaluate(
         () => document.activeElement?.getAttribute("aria-label") === "Schedule a task",
       );
     }
-    must(reached, "the composer was not reachable by Tab");
+    must(reached, "the composer was not reachable after activating the skip link");
   });
 
   // ── Phase 4: delivery preferences and honest delivery status ─────────────
 
   await step("email preferences are opt-in and default OFF", async () => {
+    // A FRESH task: the earlier persistence test deliberately leaves a toggle
+    // flipped, so asserting "defaults" on that task would be asserting the
+    // previous test's leftovers.
     await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
-    await openRowMenu(page, editedTitle);
+    await compose(page, `${TAG} defaults probe — every day at 6pm`);
+    await page.getByRole("button", { name: "Create task" }).click();
+    await page.waitForURL(/\/scheduled\/[a-z0-9]+/i, { timeout: 20000 });
+    const freshId = page.url().split("/scheduled/")[1].split(/[/?#]/)[0];
+    await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2000);
+    await openFirstRowMenu(page);
     await page.getByRole("menuitem", { name: "Notification settings" }).click();
     await page.waitForTimeout(1000);
 
@@ -574,6 +624,29 @@ const openRowMenu = async (page, title) => {
     await page.getByRole("button", { name: "Delete", exact: true }).last().click();
     await page.waitForTimeout(3000);
     must((await page.getByText(editedTitle).count()) === 0, "the deleted task is still listed");
+  });
+
+  await step("the defaults probe task is cleaned up", async () => {
+    // Production is not a scratch pad: every task this suite creates is removed
+    // again, so a hundred runs leave a hundred fewer rows than they otherwise
+    // would.
+    let removed = 0;
+    for (let i = 0; i < 6; i++) {
+      const rows = taskRows(page);
+      if ((await rows.count()) === 0) break;
+      const label = await rows.first().innerText();
+      if (!label.includes(TAG)) break;
+      await openFirstRowMenu(page);
+      await page.getByRole("menuitem", { name: "Delete" }).click();
+      await page.waitForTimeout(700);
+      await page.getByRole("button", { name: "Delete", exact: true }).last().click();
+      await page.waitForTimeout(2500);
+      removed++;
+    }
+    must(
+      removed >= 1,
+      `expected to clean up at least the defaults probe, removed ${removed}`,
+    );
   });
 
   await step("a deleted task's deep link is safe, not an error", async () => {

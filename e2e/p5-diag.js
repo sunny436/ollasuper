@@ -46,14 +46,37 @@ const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
     if (i < 12) seen.push(`${info?.tag}:${info?.label}`);
     if (info?.label === "Schedule a task") { steps = i + 1; break; }
   }
-  console.log(`    composer reached after ${steps} tabs (test allowed 40)`);
+  console.log(`    composer reached after ${steps} tabs WITHOUT the skip link`);
   console.log(`    first stops: ${seen.join(" -> ")}`);
+
+  // A skip link is ACTIVATED, not tabbed past — measure it the way it is used.
+  await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2000);
+  await page.keyboard.press("Tab");
+  const firstLabel = await page.evaluate(() =>
+    (document.activeElement?.textContent || "").trim(),
+  );
+  await page.keyboard.press("Enter");
+  let viaSkip = -1;
+  for (let i = 0; i < 15; i++) {
+    await page.keyboard.press("Tab");
+    const l = await page.evaluate(() =>
+      document.activeElement?.getAttribute("aria-label"),
+    );
+    if (l === "Schedule a task") {
+      viaSkip = i + 1;
+      break;
+    }
+  }
+  console.log(
+    `    first tab stop = "${firstLabel}"; composer is ${viaSkip} tabs after activating it`,
+  );
 
   // ── 2. the notification dialog's real switch order ───────────────────────
   await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2000);
   // Do not depend on a task already existing — the e2e run deletes its own.
-  if ((await page.locator("div.group").count()) === 0) {
+  if ((await page.locator("div.group").filter({ has: page.getByRole("button", { name: "Task actions" }) }).count()) === 0) {
     const box = page.getByRole("textbox", { name: "Schedule a task" });
     await box.fill("p5-diag probe - every day at 9am, summarise my open items");
     await page.getByRole("button", { name: "Interpret schedule" }).click();
@@ -66,7 +89,7 @@ const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
     await page.waitForTimeout(2000);
     console.log("    [created a probe task]");
   }
-  const row = page.locator("div.group").first();
+  const row = page.locator("div.group").filter({ has: page.getByRole("button", { name: "Task actions" }) }).first();
   if (await row.count()) {
     await row.hover();
     await row.getByRole("button", { name: "Task actions" }).click();
