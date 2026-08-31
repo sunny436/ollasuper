@@ -86,6 +86,7 @@ export function RunResult({
             <Line label="Finished" value={formatInstant(occurrence.finishedAt, "UTC")} />
           )}
         </dl>
+        {delivery && <DeliveryLine row={delivery} />}
         {prompt && (
           <p className="mt-2 border-t border-border pt-2 text-[11px] leading-relaxed text-primary/55">
             {/* The PINNED revision's prompt — what this run actually executed,

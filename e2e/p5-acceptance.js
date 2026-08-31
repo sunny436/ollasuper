@@ -69,7 +69,11 @@ const taskRows = (page) =>
   // ── enable email + PDF for this task ──────────────────────────────────────
   await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2500);
-  const row = taskRows(page).first();
+  // NOT .first(): list() orders by updatedAt, and finishTaskIfDone bumps
+  // updatedAt on every run — so any other task that happens to execute jumps
+  // above this one. An earlier version of this script ran an unrelated task for
+  // exactly that reason, and then waited for an occurrence that never existed.
+  const row = taskRows(page).filter({ hasText: TAG }).first();
   await row.hover();
   await row.getByRole("button", { name: "Task actions" }).click();
   await page.waitForTimeout(400);
@@ -142,9 +146,33 @@ const taskRows = (page) =>
       !claimsDelivered || claimsAccepted === false,
       "the UI never upgrades 'accepted' into 'delivered' on its own (P3)",
     );
-    const anyDelivery =
-      /Email|PDF/i.test(panel) || /No email sent/i.test(panel);
-    must(anyDelivery, "a delivery outcome is reported in the run viewer");
+    // Delivery is enqueued only once the run is terminal, and the send is a
+    // separate async step — so the line legitimately appears a moment after the
+    // run does. Poll rather than checking the instant the run settles.
+    let deliveryLine = "";
+    for (let i = 0; i < 20; i++) {
+      const t = await page.locator("aside").first().innerText();
+      if (/Email|PDF/i.test(t)) {
+        deliveryLine = t;
+        break;
+      }
+      await page.waitForTimeout(3000);
+    }
+    must(
+      Boolean(deliveryLine),
+      "a delivery outcome is reported in the run viewer",
+    );
+    if (deliveryLine) {
+      const m = deliveryLine.match(
+        /(Email queued|Sending email|Email accepted[^\n]*|Email delivered|Email bounced|Email failed|No email sent|Email status unknown)/i,
+      );
+      console.log(`      delivery line: ${m ? m[1] : "(none)"}`);
+      // PDF outcome is reported independently of the email's.
+      const pdf = deliveryLine.match(
+        /(PDF attached|PDF generated|PDF was too large[^\n]*|PDF could not be generated)/i,
+      );
+      console.log(`      pdf line:      ${pdf ? pdf[1] : "(none)"}`);
+    }
   } else {
     no("a settled run row is present to open");
   }
