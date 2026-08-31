@@ -452,16 +452,30 @@ const openRowMenu = async (page, title) => {
   // ── history and the result viewer ────────────────────────────────────────
 
   await step("every occurrence is its own history row", async () => {
-    await page.goto(`${BASE}/en/scheduled/${taskId}`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(3000);
+    await page.goto(`${BASE}/en/scheduled/${taskId}`, {
+      waitUntil: "domcontentloaded",
+    });
     const panel = page.locator("aside");
-    must(await panel.count(), "the detail panel did not render");
-    const body = await panel.innerText();
-    // Either runs are listed, or the panel says there are none — never blank.
-    must(
-      /Succeeded|Failed|Cancelled|Queued|Running|Skipped|Interrupted|No runs|hasn't run/i.test(body),
-      "the run history rendered neither rows nor an empty state",
-    );
+    await panel.first().waitFor({ timeout: 15000 });
+
+    // Poll rather than sampling once: history and activeRun are two separate
+    // subscriptions, and while both are still resolving the panel shows a
+    // skeleton that is legitimately neither a run row nor an empty state.
+    // The wording must match what the panel actually says — "No updates
+    // available" / "Runs will appear here once this task has executed."
+    let body = "";
+    for (let i = 0; i < 12; i++) {
+      await page.waitForTimeout(2500);
+      body = await panel.first().innerText();
+      if (
+        /Succeeded|Failed|Cancelled|Queued|Running|Retrying|Skipped|Interrupted|No updates available|Runs will appear here/i.test(
+          body,
+        )
+      ) {
+        return;
+      }
+    }
+    must(false, `the run history settled on neither rows nor an empty state`);
   });
 
   await soft("the result viewer offers no mutating action", async () => {
@@ -600,7 +614,9 @@ const openRowMenu = async (page, title) => {
     await page.keyboard.press("Escape");
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2500);
-    await openRowMenu(page, editedTitle);
+    // The SAME fresh task the two steps above used — openRowMenu(editedTitle)
+    // would reopen the older task, whose email preference nothing ever toggled.
+    await openFirstRowMenu(page);
     await page.getByRole("menuitem", { name: "Notification settings" }).click();
     await page.waitForTimeout(1000);
     must(
