@@ -31,9 +31,17 @@ chmod +x "$BIN"
 echo "  $DEST ready; $(ls -l "$BIN" | awk '{print $1}') $BIN"
 
 echo "=== [2/4] cron ==="
-# Drop any previous line for this script first, so re-running cannot duplicate.
+# `bash "$BIN"`, NOT "$BIN" on its own.
+#
+# This job silently died for 13 consecutive nights with
+# `/bin/sh: /opt/myos/deploy/backup.sh: Permission denied`, and production went
+# 12 days with no recovery point. The chmod +x above is real but not durable:
+# git tracked these scripts as 100644, so the next `git reset --hard` on the VM
+# put the mode straight back and nothing re-ran this installer. The exec bit is
+# now set in git too, which fixes the cause — invoking through `bash` as well
+# means a future mode regression degrades to nothing at all.
 ( crontab -l 2>/dev/null | grep -vF "deploy/backup.sh" || true
-  echo "$SCHEDULE $BIN >> $LOG 2>&1" ) | crontab -
+  echo "$SCHEDULE bash $BIN >> $LOG 2>&1" ) | crontab -
 echo "  installed: $(crontab -l 2>/dev/null | grep -cF 'deploy/backup.sh') entry"
 crontab -l 2>/dev/null | grep -F "deploy/backup.sh" | sed 's/^/    /'
 
