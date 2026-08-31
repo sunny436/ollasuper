@@ -6,8 +6,20 @@
  * things that must work WITHOUT a query survive in this module.
  */
 
-/** Mirrors DEFAULT_MODEL in convex/chat/authz.ts. Keep the ids in sync. */
-export const DEFAULT_MODEL = "gpt-5.6-luna";
+/**
+ * Mirrors DEFAULT_MODEL in convex/chat/authz.ts. Keep the ids in sync.
+ *
+ * These DRIFTED once, and the failure was invisible from either side: the
+ * backend moved to deepseek-v4-pro when the gpt-5* family stopped serving, this
+ * copy did not, and the picker went on seeding every session with a model that
+ * had left the catalogue. On a new thread that id no longer matched
+ * thread.model, so assertAllowedModel read it as a deliberate pick and threw
+ * "Unsupported model" — chat was dead for anyone who had not manually chosen a
+ * model, with nothing in the database to explain why. ModelPicker now also
+ * corrects the selection once the catalogue loads, so a future drift degrades
+ * instead of breaking.
+ */
+export const DEFAULT_MODEL = "deepseek-v4-pro";
 
 /**
  * A readable name for a model id, derived purely from the string.

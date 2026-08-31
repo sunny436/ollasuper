@@ -8,7 +8,7 @@ import {
 } from "@v1/ui/dropdown-menu";
 import { useQuery } from "convex/react";
 import { Check, ChevronDown, Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { modelLabel, pricePerMillion } from "../_lib/models";
 
 /**
@@ -66,6 +66,19 @@ export function ModelPicker({
   // The catalogue carries a display name; fall back to deriving one from the id
   // so the trigger never renders a bare slug while the query is in flight.
   const current = models?.find((m) => m.modelId === value);
+
+  // A model that has LEFT the catalogue must not stay selected. It used to sit
+  // in the trigger as a slug-derived name ("Gpt 5 6 Luna") and get sent on the
+  // next turn, where — on a new thread, so no longer matching thread.model —
+  // it counted as a deliberate pick and threw "Unsupported model", leaving the
+  // user unable to chat until they noticed the picker. Once the catalogue has
+  // loaded and does not contain the value, move to the first offered model.
+  useEffect(() => {
+    if (!models || models.length === 0) return;
+    if (models.some((m) => m.modelId === value)) return;
+    const first = models[0];
+    if (first) onChange(first.modelId);
+  }, [models, value, onChange]);
 
   return (
     <DropdownMenu

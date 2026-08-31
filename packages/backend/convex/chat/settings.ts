@@ -175,6 +175,13 @@ export const remapDeadModels = internalMutation({
 /**
  * The same for threads already created against a dead model.
  *
+ * This is the other half of the trace, and the one that actually reaches the
+ * user: the picker shows the CURRENT THREAD's model, so a conversation last
+ * used on a retired id keeps rendering it, and the client then sends that id on
+ * a NEW thread — where it no longer matches `thread.model`, so
+ * `assertAllowedModel` reads it as a deliberate pick and throws
+ * "Unsupported model".
+ *
  * A scheduled task's execution thread is created ONCE and reused, so without
  * this an existing task keeps dispatching to the dead model forever — the
  * settings fix would only reach tasks created afterwards.

@@ -118,6 +118,31 @@ describe("the model catalogue is a curated shortlist", () => {
     expect((await rowsIn(t)).map((m) => m.modelId)).not.toContain("qwen3.5");
   });
 
+  test("the app's copy of DEFAULT_MODEL has not drifted from this one", async () => {
+    // These are two constants for one value, and they drifted: the backend
+    // moved to deepseek-v4-pro when the gpt-5* family stopped serving, the
+    // app's mirror stayed on gpt-5.6-luna, and the picker seeded every session
+    // with a model that had left the catalogue — so a new thread sent an id
+    // that no longer matched thread.model and threw "Unsupported model".
+    // Nothing in the database held the value, which is why it survived two
+    // rounds of data cleanup.
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(
+      new URL(
+        "../../../apps/app/src/app/[locale]/(workspace)/chat/_lib/models.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const found = src.match(/export const DEFAULT_MODEL = "([^"]+)"/)?.[1];
+    expect(found).toBe(DEFAULT_MODEL);
+  });
+
+  test("the default model is one the picker actually offers", async () => {
+    // A default outside the catalogue is the same failure by another route.
+    expect(ALL_CURATED).toContain(DEFAULT_MODEL);
+  });
+
   test("the list query exposes the description the picker renders", async () => {
     const t = convexTest(schema, modules);
     serve(ALL_CURATED);
