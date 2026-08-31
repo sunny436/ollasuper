@@ -63,7 +63,11 @@ function switchKind(spec: ScheduleSpec, kind: Kind): ScheduleSpec {
       return {
         kind: "weekly",
         timezone: tz,
-        weekdays: spec.kind === "weekly" ? spec.weekdays : [0],
+        // NO DEFAULT DAY. This used to be [0] — Monday — so a user who had
+        // said "every Sunday", landed on the manual form and picked Weekly got
+        // Monday pre-selected and no sign of it. An unanswered day stays
+        // unanswered; `specGaps` makes the caller block saving until it is set.
+        weekdays: spec.kind === "weekly" ? spec.weekdays : [],
         hour,
         minute,
         endsAt,
@@ -87,6 +91,18 @@ export function emptySpec(): ScheduleSpec {
     hour: 9,
     minute: 0,
   };
+}
+
+/**
+ * Fields the spec itself cannot answer yet, so a caller can refuse to save.
+ *
+ * A weekly schedule with no day is the one shape this UI can hold but Phase 1
+ * rejects (`normalizeSpec` throws "Invalid weekdays"). It exists on purpose:
+ * the alternative was pre-selecting Monday, which quietly overrode what the
+ * user had actually asked for. Surfacing it as a question is the whole point.
+ */
+export function specGaps(spec: ScheduleSpec): string[] {
+  return spec.kind === "weekly" && spec.weekdays.length === 0 ? ["weekdays"] : [];
 }
 
 export function ScheduleFields({
@@ -144,8 +160,16 @@ export function ScheduleFields({
       </Row>
 
       {value.kind === "weekly" && (
-        <Row label="Days" highlighted={highlight.includes("weekdays")}>
-          <div className="flex flex-wrap justify-end gap-1">
+        <Row
+          label="Days"
+          highlighted={
+            highlight.includes("weekdays") || value.weekdays.length === 0
+          }
+        >
+          <div className="flex flex-wrap items-center justify-end gap-1">
+            {value.weekdays.length === 0 && (
+              <span className="mr-1 text-xs text-primary/50">Pick a day</span>
+            )}
             {WEEKDAY_OPTIONS.map((d) => {
               const on = value.weekdays.includes(d.value);
               return (

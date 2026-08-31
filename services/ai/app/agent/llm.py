@@ -34,6 +34,8 @@ def build_llm(
     streaming: bool = True,
     base_url: str | None = None,
     api_key: str | None = None,
+    timeout: float = 180.0,
+    max_retries: int = 2,
 ) -> ChatOpenAI:
     # base_url/api_key default (None) => OpenRouter, so title-gen + OCR stay
     # byte-for-byte unchanged; only the user-chat call site overrides them for
@@ -62,8 +64,10 @@ def build_llm(
             max_tokens or settings.ai_max_output_tokens, context_window
         ),
         temperature=None,
-        timeout=180.0,
-        max_retries=2,
+        # Defaults suit a generation. An INTERACTIVE caller (the scheduling
+        # composer blocks a user behind a spinner) passes a much shorter budget.
+        timeout=timeout,
+        max_retries=max_retries,
         # OpenRouter attribution headers — cosmetic, and meaningless to Ollima,
         # so send them only on the OpenRouter (title/OCR) path.
         default_headers=(

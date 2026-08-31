@@ -13,7 +13,7 @@ import {
   recurrenceLabel,
   scheduleSummary,
 } from "../_lib/schedule-format";
-import { ScheduleFields } from "./schedule-fields";
+import { ScheduleFields, specGaps } from "./schedule-fields";
 
 /**
  * The edit modal from the product reference: PROMPT, then the FREQUENCY block,
@@ -61,6 +61,12 @@ export function EditTaskDialog({
   const [spec, setSpec] = useState<ScheduleSpec>(task.spec);
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(false);
+
+  // Switching Repeat to Weekly no longer pre-selects Monday, so the spec can
+  // legitimately be half-built while the dialog is open. Phase 1 rejects an
+  // empty weekly schedule, so refuse to submit one rather than surfacing that
+  // as a server error the user cannot act on.
+  const gaps = specGaps(spec);
 
   const dirty =
     duplicate ||
@@ -204,7 +210,8 @@ export function EditTaskDialog({
           </button>
           <button
             type="button"
-            disabled={busy || !dirty}
+            disabled={busy || !dirty || gaps.length > 0}
+            title={gaps.length > 0 ? "Pick a day" : undefined}
             onClick={save}
             className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:bg-brand/90 disabled:opacity-40"
           >

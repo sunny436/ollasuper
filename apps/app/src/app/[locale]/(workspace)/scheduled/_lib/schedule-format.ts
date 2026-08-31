@@ -70,6 +70,9 @@ export function recurrenceLabel(spec: ScheduleSpec): string {
       return "Daily";
     case "weekly": {
       const days = [...spec.weekdays].sort((a, b) => a - b);
+      // A draft can hold a weekly schedule with no day yet: the composer no
+      // longer invents Monday. A saved task never can — Phase 1 rejects it.
+      if (days.length === 0) return "Weekly";
       if (days.length === 7) return "Daily";
       // Mon–Fri is common enough to be worth naming.
       if (days.length === 5 && days.every((d, i) => d === i)) return "Weekdays";
@@ -88,6 +91,12 @@ export function scheduleSummary(spec: ScheduleSpec): string {
   const zone = shortZone(spec.timezone);
   if (spec.kind === "once") {
     return `Once on ${formatInstant(spec.runAt, spec.timezone)}`;
+  }
+  // Never assert a cadence that has not been chosen. The old code printed the
+  // fabricated Monday here as "Mon at 8:00 AM", which is what made a wrong
+  // schedule look like a decision the user had made.
+  if (spec.kind === "weekly" && spec.weekdays.length === 0) {
+    return `Pick a day · ${clockLabel(spec.hour, spec.minute)} · ${zone}`;
   }
   const base = `${recurrenceLabel(spec)} at ${clockLabel(spec.hour, spec.minute)} · ${zone}`;
   // A 31st that lands in February is clamped server-side; say so rather than

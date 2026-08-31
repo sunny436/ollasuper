@@ -42,6 +42,10 @@ export type ParseResult =
       ok: boolean;
       schedule?: unknown;
       needs?: string[];
+      /** The subset of `needs` that came back FILLED but unsafely — "Sunday
+       *  at 8" with no AM/PM. Present so the card can word it as a
+       *  confirmation rather than as a blank. */
+      ambiguous?: string[];
       question?: string | null;
       reason?: string | null;
     };
@@ -158,6 +162,7 @@ export const parse = action({
         ok: boolean;
         schedule?: unknown;
         needs?: string[];
+        ambiguous?: string[];
         question?: string | null;
         reason?: string | null;
       };

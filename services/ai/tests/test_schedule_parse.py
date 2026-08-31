@@ -171,13 +171,23 @@ def test_a_missing_time_is_reported_rather_than_invented():
 
 
 def test_a_missing_kind_short_circuits():
-    assert _missing(ParsedSchedule(prompt="do a thing")) == ["kind"]
+    needs = _missing(ParsedSchedule(prompt="do a thing"))
+    assert "kind" in needs
+    # Short-circuit: with no kind there is nothing meaningful to say about the
+    # kind-specific fields, so they must NOT be reported as missing too.
+    assert not {"hour", "weekdays", "dayOfMonth", "runAt"} & set(needs)
 
 
 def test_a_complete_daily_schedule_needs_nothing():
     assert (
         _missing(
-            ParsedSchedule(kind="daily", prompt="summarise my inbox", hour=8, minute=0)
+            ParsedSchedule(
+                kind="daily",
+                title="Inbox Digest",
+                prompt="summarise my inbox",
+                hour=8,
+                minute=0,
+            )
         )
         == []
     )

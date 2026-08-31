@@ -13,7 +13,7 @@ import {
   browserZone,
   scheduleSummary,
 } from "../_lib/schedule-format";
-import { ScheduleFields, emptySpec } from "./schedule-fields";
+import { ScheduleFields, emptySpec, specGaps } from "./schedule-fields";
 
 /**
  * The scheduling composer.
@@ -22,7 +22,7 @@ import { ScheduleFields, emptySpec } from "./schedule-fields";
  * confirmation. Say "every Monday and Friday at 9am, search AI news", correct it
  * with "actually make it 8am and add Wednesday", then press Create.
  *
- * Two properties are deliberate:
+ * Three properties are deliberate:
  *
  *  - NOTHING IS PERSISTED UNTIL CONFIRM. The draft lives in React (mirrored to
  *    sessionStorage so a refresh does not lose it); no scheduledTasks row
@@ -30,6 +30,13 @@ import { ScheduleFields, emptySpec } from "./schedule-fields";
  *  - THE CARD IS THE AUTHORITY, not the parser. Confirm submits the fields as
  *    shown, and every parser failure — timeout, rate limit, malformed reply —
  *    degrades to the same editable form rather than blocking the user.
+ *  - A GAP IS A QUESTION, NEVER A GUESS. This one is newer, and it is the fix
+ *    for a real defect. The parser reports what it could not determine; this
+ *    file used to throw that away and substitute the raw sentence for the title
+ *    and instruction, and weekday 0 — Monday — for the days. All three read as
+ *    decisions the user had made. Now an undetermined field is SEEDED so it
+ *    stays editable, but marked `unresolved`, and Create is refused until every
+ *    one of them has been answered.
  */
 
 type Turn = { role: "user" | "assistant"; content: string };
@@ -39,11 +46,42 @@ interface Draft {
   title: string;
   prompt: string;
   spec: ScheduleSpec;
-  needs: string[];
+  /**
+   * Fields that are filled in but NOT answered — the parser could not determine
+   * them, or admitted it guessed. Blocks Create; cleared field-by-field as the
+   * user edits. A seeded value is not an answer.
+   */
+  unresolved: string[];
+  /** The subset of `unresolved` that came back filled but unsafely ("at 8"). */
+  ambiguous: string[];
   question: string | null;
+  emailOnSuccess: boolean;
+  attachPdf: boolean;
 }
 
 const MAX_TEXT = 2_000;
+
+/** What to show beside a blocked Create when the parser sent no question. */
+const FIELD_PROMPTS: Record<string, string> = {
+  title: "Give the task a name",
+  prompt: "Say what should happen on each run",
+  kind: "Choose how often it repeats",
+  hour: "Set the time — is that AM or PM?",
+  weekdays: "Pick a day",
+  dayOfMonth: "Pick a day of the month",
+  runAt: "Set the date and time",
+};
+
+function blockingReason(draft: Draft): string | null {
+  const first = draft.unresolved[0];
+  if (!first) return null;
+  return draft.question ?? FIELD_PROMPTS[first] ?? "A few details are missing";
+}
+
+/** Remove one field from `unresolved` — the user just answered it. */
+function resolve(draft: Draft, ...fields: string[]): string[] {
+  return draft.unresolved.filter((f) => !fields.includes(f));
+}
 
 export function ScheduleComposer({
   onCreated,
@@ -54,6 +92,7 @@ export function ScheduleComposer({
   const user = useCachedUser();
   const parse = useAction(api.scheduled.parse.parse);
   const create = useMutation(api.scheduled.tasks.create);
+  const setNotifyPrefs = useMutation(api.scheduled.tasks.setNotifyPrefs);
 
   const [text, setText] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
@@ -69,10 +108,22 @@ export function ScheduleComposer({
     try {
       const raw = window.sessionStorage.getItem(storageKey);
       if (!raw) return;
-      const saved = JSON.parse(raw) as { turns: Turn[]; draft: Draft };
-      if (saved?.draft) {
+      const saved = JSON.parse(raw) as { turns: Turn[]; draft: Partial<Draft> };
+      if (saved?.draft?.spec) {
         setTurns(saved.turns ?? []);
-        setDraft(saved.draft);
+        // A draft stored before `unresolved` existed has no gap information, so
+        // treat it as answered rather than blocking a user on a field they
+        // cannot tell apart from the ones they already filled in.
+        setDraft({
+          title: saved.draft.title ?? "",
+          prompt: saved.draft.prompt ?? "",
+          spec: saved.draft.spec,
+          unresolved: saved.draft.unresolved ?? [],
+          ambiguous: saved.draft.ambiguous ?? [],
+          question: saved.draft.question ?? null,
+          emailOnSuccess: saved.draft.emailOnSuccess ?? false,
+          attachPdf: saved.draft.attachPdf ?? false,
+        });
         setPhase("draft");
       }
     } catch {
@@ -96,6 +147,15 @@ export function ScheduleComposer({
       }
     },
     [storageKey],
+  );
+
+  /** One place to write a draft, so nothing can update state without saving. */
+  const apply = useCallback(
+    (next: Draft, nextTurns: Turn[] = turns) => {
+      setDraft(next);
+      persist(nextTurns, next);
+    },
+    [persist, turns],
   );
 
   function discard() {
@@ -138,16 +198,25 @@ export function ScheduleComposer({
     if (!res.ok || !("schedule" in res) || !res.schedule) {
       // Every failure lands in the same place: an editable form seeded with
       // what the user typed. Parsing is never on the critical path.
+      //
+      // But the seed is the RAW SENTENCE, and a task made from it is exactly
+      // the reported bug — a run that asks the assistant to "create a
+      // scheduler". So title and instruction are marked unresolved: the user
+      // must write them, which is one edit each. The schedule itself is left
+      // alone; "Daily at 9:00 AM" is a visible, conventional default sitting in
+      // a form the user is already filling in, not a hidden guess.
       const fallback: Draft = draft ?? {
         title: message.slice(0, 60),
         prompt: message,
         spec: emptySpec(),
-        needs: [],
+        unresolved: ["title", "prompt"],
+        ambiguous: [],
         question: null,
+        emailOnSuccess: false,
+        attachPdf: false,
       };
-      setDraft(fallback);
       setPhase("draft");
-      persist(nextTurns, fallback);
+      apply(fallback, nextTurns);
       setTurns([
         ...nextTurns,
         {
@@ -155,7 +224,7 @@ export function ScheduleComposer({
           content:
             "reason" in res && res.reason === "rate_limited"
               ? "You've scheduled a lot just now — set the details below and I'll create it."
-              : "I couldn't read that as a schedule. Set the details below and I'll create it.",
+              : "I couldn't read that as a schedule. Fill in the name and what it should do, and I'll create it.",
         },
       ]);
       return;
@@ -163,22 +232,40 @@ export function ScheduleComposer({
 
     const parsed = res.schedule as Record<string, unknown>;
     const spec = specFromParsed(parsed, draft?.spec ?? emptySpec());
+
+    const parsedTitle =
+      typeof parsed.title === "string" ? parsed.title.trim() : "";
+    const parsedPrompt =
+      typeof parsed.prompt === "string" ? parsed.prompt.trim() : "";
+
+    // Seed so the field stays editable; record that it was seeded, not answered.
+    const unresolved = new Set<string>(
+      Array.isArray(res.needs) ? (res.needs as string[]) : [],
+    );
+    if (!parsedTitle && (!draft?.title || draft.unresolved.includes("title"))) {
+      unresolved.add("title");
+    }
+    if (
+      !parsedPrompt &&
+      (!draft?.prompt || draft.unresolved.includes("prompt"))
+    ) {
+      unresolved.add("prompt");
+    }
+    // A weekly draft with no day: the composer no longer invents Monday.
+    for (const f of specGaps(spec)) unresolved.add(f);
+
     const next: Draft = {
-      title:
-        (typeof parsed.title === "string" && parsed.title.trim()) ||
-        draft?.title ||
-        message.slice(0, 60),
-      prompt:
-        (typeof parsed.prompt === "string" && parsed.prompt.trim()) ||
-        draft?.prompt ||
-        message,
+      title: parsedTitle || draft?.title || message.slice(0, 60),
+      prompt: parsedPrompt || draft?.prompt || message,
       spec,
-      needs: Array.isArray(res.needs) ? (res.needs as string[]) : [],
+      unresolved: [...unresolved],
+      ambiguous: Array.isArray(res.ambiguous) ? (res.ambiguous as string[]) : [],
       question: typeof res.question === "string" ? res.question : null,
+      emailOnSuccess: draft?.emailOnSuccess ?? false,
+      attachPdf: draft?.attachPdf ?? false,
     };
-    setDraft(next);
     setPhase("draft");
-    persist(nextTurns, next);
+    apply(next, nextTurns);
     setTurns([
       ...nextTurns,
       {
@@ -190,6 +277,7 @@ export function ScheduleComposer({
 
   async function confirm() {
     if (!draft || !current) return;
+    if (draft.unresolved.length > 0) return;
     if (!draft.prompt.trim()) {
       toast.error("A scheduled task needs an instruction");
       return;
@@ -203,6 +291,19 @@ export function ScheduleComposer({
         // biome-ignore lint/suspicious/noExplicitAny: the validator owns the shape
         spec: draft.spec as any,
       });
+      // Delivery is a separate, already-existing mutation — creation does not
+      // carry these, and a failure here must not look like a failed create.
+      if (draft.emailOnSuccess || draft.attachPdf) {
+        try {
+          await setNotifyPrefs({
+            taskId: id,
+            emailOnSuccess: draft.emailOnSuccess,
+            attachPdf: draft.attachPdf,
+          });
+        } catch {
+          toast.warning("Task created — but its email setting didn't save");
+        }
+      }
       // Cleared only AFTER the mutation resolves, so a failure never leaves a
       // phantom task or an emptied composer.
       discard();
@@ -213,6 +314,8 @@ export function ScheduleComposer({
       toast.error(e instanceof Error ? e.message : "Couldn't create the task");
     }
   }
+
+  const reason = draft ? blockingReason(draft) : null;
 
   return (
     <div className="space-y-3">
@@ -268,10 +371,28 @@ export function ScheduleComposer({
       {draft && (
         <div className="rounded-2xl border border-brand/30 bg-brand/[0.04] p-4">
           <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-primary">
-                {draft.title || "Untitled task"}
-              </p>
+            <div className="min-w-0 flex-1">
+              {/* Editable: the name is one of the fields the parser can fail to
+                  determine, so it must be answerable here. It used to be plain
+                  text showing the raw sentence. */}
+              <input
+                value={draft.title}
+                onChange={(e) =>
+                  apply({
+                    ...draft,
+                    title: e.target.value,
+                    unresolved: resolve(draft, "title"),
+                  })
+                }
+                placeholder="Name this task"
+                aria-label="Task name"
+                maxLength={200}
+                className={`w-full bg-transparent text-sm font-medium text-primary outline-none placeholder:text-primary/35 ${
+                  draft.unresolved.includes("title")
+                    ? "rounded-md bg-brand/10 px-1.5 py-0.5"
+                    : ""
+                }`}
+              />
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {scheduleSummary(draft.spec)}
               </p>
@@ -288,30 +409,74 @@ export function ScheduleComposer({
 
           <textarea
             value={draft.prompt}
-            onChange={(e) => {
-              const next = { ...draft, prompt: e.target.value };
-              setDraft(next);
-              persist(turns, next);
-            }}
+            onChange={(e) =>
+              apply({
+                ...draft,
+                prompt: e.target.value,
+                unresolved: resolve(draft, "prompt"),
+              })
+            }
             rows={3}
             maxLength={8000}
             aria-label="Task instruction"
-            className="mt-3 w-full resize-y rounded-xl border border-border bg-card px-3 py-2.5 text-sm text-primary outline-none focus:border-brand/40"
+            placeholder="What should happen each time this runs?"
+            className={`mt-3 w-full resize-y rounded-xl border bg-card px-3 py-2.5 text-sm text-primary outline-none focus:border-brand/40 ${
+              draft.unresolved.includes("prompt")
+                ? "border-brand/40 bg-brand/[0.06]"
+                : "border-border"
+            }`}
           />
 
           <div className="mt-3">
             <ScheduleFields
               value={draft.spec}
-              highlight={draft.needs}
+              highlight={draft.unresolved}
               onChange={(spec) => {
-                const next = { ...draft, spec, needs: [] };
-                setDraft(next);
-                persist(turns, next);
+                // Touching the schedule answers its own gaps, except any the
+                // spec still genuinely has (a weekly with no day chosen yet).
+                const gaps = specGaps(spec);
+                const cleared = resolve(
+                  draft,
+                  "kind",
+                  "hour",
+                  "weekdays",
+                  "dayOfMonth",
+                  "runAt",
+                );
+                apply({
+                  ...draft,
+                  spec,
+                  unresolved: [...new Set([...cleared, ...gaps])],
+                });
               }}
             />
           </div>
 
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 px-1">
+            <Toggle
+              label="Email me each result"
+              checked={draft.emailOnSuccess}
+              onChange={(v) =>
+                apply({
+                  ...draft,
+                  emailOnSuccess: v,
+                  attachPdf: v ? draft.attachPdf : false,
+                })
+              }
+            />
+            {draft.emailOnSuccess && (
+              <Toggle
+                label="Attach a PDF"
+                checked={draft.attachPdf}
+                onChange={(v) => apply({ ...draft, attachPdf: v })}
+              />
+            )}
+          </div>
+
           <div className="mt-4 flex items-center justify-end gap-2">
+            {reason && (
+              <p className="mr-auto text-xs text-primary/60">{reason}</p>
+            )}
             <button
               type="button"
               onClick={discard}
@@ -322,7 +487,8 @@ export function ScheduleComposer({
             <button
               type="button"
               onClick={() => void confirm()}
-              disabled={phase === "creating"}
+              disabled={phase === "creating" || draft.unresolved.length > 0}
+              title={reason ?? undefined}
               className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:bg-brand/90 disabled:opacity-40"
             >
               {phase === "creating" ? "Creating…" : "Create task"}
@@ -331,6 +497,28 @@ export function ScheduleComposer({
         </div>
       )}
     </div>
+  );
+}
+
+function Toggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 text-xs text-primary/70">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-3.5 w-3.5 cursor-pointer accent-[hsl(var(--brand))]"
+      />
+      {label}
+    </label>
   );
 }
 
@@ -372,11 +560,14 @@ function specFromParsed(
     return {
       kind: "weekly",
       timezone: tz,
+      // NO DEFAULT DAY. This used to fall back to [0] — Monday — which is how
+      // "every sunday" became a Monday task. An undetermined day is reported
+      // through `specGaps` and blocks Create instead.
       weekdays: days.length
         ? days
         : previous.kind === "weekly"
           ? previous.weekdays
-          : [0],
+          : [],
       hour,
       minute,
       endsAt,

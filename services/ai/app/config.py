@@ -363,6 +363,14 @@ class Settings(BaseSettings):
     # provider does not accept at all, so every parse silently degraded to the
     # manual form.
     ai_default_model: str = "glm-5.2"
+    # The scheduling-intent parser's model, pinned SEPARATELY from the chat
+    # default so a future change to chat cannot silently degrade parsing into
+    # the fabricating manual-form fallback. Empty = follow ai_default_model.
+    ai_schedule_model: str = ""
+    # Tried once when the primary parser model's provider fails. A 502 from
+    # the upstream is what put every user into the raw-sentence fallback.
+    # Empty disables the second attempt.
+    ai_schedule_model_fallback: str = "glm-5.2"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
     # NOTE: gemini-2.0-flash-001 was RETIRED by OpenRouter (404 "No endpoints
     # found"); the live successor is gemini-2.5-flash-lite (multimodal, cheap).
@@ -658,6 +666,11 @@ class Settings(BaseSettings):
         if url.startswith(prefix):
             url = "postgresql+psycopg://" + url[len(prefix) :]
         return url
+
+    @property
+    def schedule_model(self) -> str:
+        """The parser's model: its own setting, else the chat default."""
+        return self.ai_schedule_model or self.ai_default_model
 
     def secrets(self) -> tuple[str, ...]:
         """Values the log redaction filter must never emit."""
