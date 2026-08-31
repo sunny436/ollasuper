@@ -214,6 +214,12 @@ const openRowMenu = async (page, title) => {
 
     // The card's fields are what gets created, so set them explicitly — this
     // step tests the pipeline, not the parser's accuracy.
+    //
+    // The NAME is set here too. The parser now writes a real label ("Daily AI
+    // News Bullet Points") instead of echoing the request, so a title can no
+    // longer be relied on to carry TAG — and cleanup finds this suite's rows
+    // by TAG.
+    await page.getByRole("textbox", { name: "Task name" }).fill(`${TAG} pipeline`);
     await page.getByRole("textbox", { name: "Task instruction" }).fill("Summarise my open items");
     const time = page.locator('input[type="time"]');
     if (await time.count()) await time.first().fill("08:00");
@@ -575,6 +581,9 @@ const openRowMenu = async (page, title) => {
     await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
     await compose(page, `${TAG} defaults probe — every day at 6pm`);
+    // Pin the name so cleanup can find it: the parser now writes its own label
+    // rather than echoing the request back.
+    await page.getByRole("textbox", { name: "Task name" }).fill(`${TAG} defaults probe`);
     await page.getByRole("button", { name: "Create task" }).click();
     await page.waitForURL(/\/scheduled\/[a-z0-9]+/i, { timeout: 20000 });
     const freshId = page.url().split("/scheduled/")[1].split(/[/?#]/)[0];
@@ -696,8 +705,12 @@ const openRowMenu = async (page, title) => {
     for (let i = 0; i < 6; i++) {
       const rows = taskRows(page);
       if ((await rows.count()) === 0) break;
+      // Case- and space-insensitive: a title that went through the parser may
+      // come back reformatted ("e2e-sched" -> "E2E Sched"), and a leftover row
+      // must still be recognised as this suite's.
+      const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
       const label = await rows.first().innerText();
-      if (!label.includes(TAG)) break;
+      if (!norm(label).includes(norm(TAG))) break;
       await openFirstRowMenu(page);
       await page.getByRole("menuitem", { name: "Delete" }).click();
       await page.waitForTimeout(700);
