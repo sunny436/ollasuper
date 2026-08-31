@@ -23,6 +23,28 @@ const errs = [];
 const results = [];
 const skipped = [];
 
+// Set by the runner so a failure can describe the page it happened on. A
+// production e2e that only says "hover timed out" costs a whole extra run to
+// diagnose; the URL, the task titles actually on screen, and a screenshot
+// usually settle it on the first try.
+let PAGE = null;
+const shot = async (name) => {
+  if (!PAGE) return "";
+  const slug = name.replace(/[^a-z0-9]+/gi, "-").slice(0, 50);
+  const file = `/tmp/p-scheduled-${slug}.png`;
+  try {
+    await PAGE.screenshot({ path: file });
+    const rows = await PAGE.locator("div.group")
+      .filter({ has: PAGE.getByRole("button", { name: "Task actions" }) })
+      .allInnerTexts()
+      .catch(() => []);
+    const titles = rows.map((t) => t.split("\n")[0]).join(" | ");
+    return `\n        url=${PAGE.url()}\n        rows=[${titles}]\n        shot=${file}`;
+  } catch {
+    return "";
+  }
+};
+
 const step = async (n, f) => {
   try {
     await f();
@@ -30,7 +52,7 @@ const step = async (n, f) => {
     console.log("PASS  " + n);
   } catch (e) {
     results.push(false);
-    console.log("FAIL  " + n + " — " + e.message.split("\n")[0]);
+    console.log("FAIL  " + n + " — " + e.message.split("\n")[0] + (await shot(n)));
   }
 };
 
@@ -99,6 +121,7 @@ const openRowMenu = async (page, title) => {
   });
   const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
+  PAGE = page;
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
   });
@@ -315,8 +338,21 @@ const openRowMenu = async (page, title) => {
     await page.waitForTimeout(400);
   });
 
-  await step("a paused task reads as Paused and keeps its row", async () => {
-    must(await page.getByText("Paused").count(), "no Paused state shown");
+  await step("a paused task KEEPS ITS ROW in the default view", async () => {
+    // getByText("Paused") used to be enough, and it was not: the pause toast
+    // contains the word too, so this passed while the row itself had vanished
+    // from the default filter. Assert the ROW, and that it says Paused.
+    await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2000);
+    const row = taskRows(page).filter({ hasText: editedTitle });
+    must(
+      await row.count(),
+      "the paused task disappeared from the default view — a user could not resume it",
+    );
+    must(
+      /Paused/.test(await row.first().innerText()),
+      "the row does not say it is paused",
+    );
   });
 
   await step("resume restores Run now", async () => {

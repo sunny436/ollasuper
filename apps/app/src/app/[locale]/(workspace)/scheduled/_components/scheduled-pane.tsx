@@ -53,10 +53,26 @@ export function ScheduledPane() {
     if (!tasks) return null;
     if (filter === "all") return tasks;
     if (filter === "paused") return tasks.filter((t) => t.status === "paused");
-    // "Active" includes completed tasks only when nothing else is left, so a
-    // finished one-time task does not silently vanish from the default view.
-    const active = tasks.filter((t) => t.status === "active");
-    return active.length || tasks.length === 0 ? active : tasks;
+    // "Active" means LIVE — running or paused — not `status === "active"`.
+    //
+    // Pausing used to remove a task from this view entirely, so the only way
+    // back to it was to discover the filter menu and switch to "Paused". You
+    // could pause a task and then be unable to find it to resume. Production
+    // e2e hit exactly that: the pause step worked, and every later step failed
+    // because the row had vanished.
+    //
+    // It hid because of a fallback that showed everything when nothing was
+    // active — which meant the bug only appeared once a SECOND task existed,
+    // and every single-task test passed. TaskRow already renders a "Paused"
+    // subtitle, which only makes sense if paused tasks belong here.
+    //
+    // Completed tasks are the ones this view omits, and "All" is where they live.
+    const live = tasks.filter(
+      (t) => t.status === "active" || t.status === "paused",
+    );
+    // …except when a completed task is all there is, so a finished one-time
+    // task never leaves the user staring at an empty page.
+    return live.length || tasks.length === 0 ? live : tasks;
   }, [tasks, filter]);
 
   return (
