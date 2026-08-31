@@ -90,7 +90,7 @@ const isEmpty = (v) =>
   await peer.mutation(anyApi.orgs.acceptInvite, { inviteId: invites[0]._id });
   const members = await peer.query(anyApi.orgs.members, { workspaceId: ws });
   must(
-    members.some((m) => String(m.email || "").startsWith()),
+    members.some((m) => String(m.email || "").includes(`schedpeer${ts}`)),
     "the peer is a real member of the owner's workspace",
     JSON.stringify(members.map((m) => m.email)).slice(0, 120),
   );
@@ -106,13 +106,16 @@ const isEmpty = (v) =>
   must(mine?.title === SECRET, "the owner can read their own task");
 
   // ── the peer sees nothing ────────────────────────────────────────────────
+  // Thunks, not promises. An array of already-started promises rejects before
+  // the loop reaches it, and Node kills the process on the unhandled rejection
+  // — which is exactly what happened the first time this ran.
   for (const [name, call] of [
-    ["get", peer.query(anyApi.scheduled.tasks.get, { taskId })],
-    ["history", peer.query(anyApi.scheduled.tasks.history, { taskId })],
-    ["activeRun", peer.query(anyApi.scheduled.tasks.activeRun, { taskId })],
-    ["deliveries", peer.query(anyApi.scheduled.tasks.deliveries, { taskId })],
+    ["get", () => peer.query(anyApi.scheduled.tasks.get, { taskId })],
+    ["history", () => peer.query(anyApi.scheduled.tasks.history, { taskId })],
+    ["activeRun", () => peer.query(anyApi.scheduled.tasks.activeRun, { taskId })],
+    ["deliveries", () => peer.query(anyApi.scheduled.tasks.deliveries, { taskId })],
   ]) {
-    const v = await call.catch((e) => `THREW ${e.message}`);
+    const v = await call().catch((e) => `THREW ${e.message}`);
     must(isEmpty(v), `a workspace peer reads nothing from ${name}`, JSON.stringify(v)?.slice(0, 80));
   }
 
@@ -135,20 +138,23 @@ const isEmpty = (v) =>
 
   // ── every write refuses, loudly ──────────────────────────────────────────
   for (const [name, call] of [
-    ["update", peer.mutation(anyApi.scheduled.tasks.update, { taskId, title: "pwned" })],
-    ["pause", peer.mutation(anyApi.scheduled.tasks.pause, { taskId })],
-    ["resume", peer.mutation(anyApi.scheduled.tasks.resume, { taskId })],
-    ["runNow", peer.mutation(anyApi.scheduled.tasks.runNow, { taskId })],
-    ["remove", peer.mutation(anyApi.scheduled.tasks.remove, { taskId })],
+    ["update", () => peer.mutation(anyApi.scheduled.tasks.update, { taskId, title: "pwned" })],
+    ["pause", () => peer.mutation(anyApi.scheduled.tasks.pause, { taskId })],
+    ["resume", () => peer.mutation(anyApi.scheduled.tasks.resume, { taskId })],
+    ["runNow", () => peer.mutation(anyApi.scheduled.tasks.runNow, { taskId })],
+    ["remove", () => peer.mutation(anyApi.scheduled.tasks.remove, { taskId })],
     [
       "setNotifyPrefs",
-      peer.mutation(anyApi.scheduled.tasks.setNotifyPrefs, {
-        taskId,
-        emailOnSuccess: true,
-      }),
+      () =>
+        peer.mutation(anyApi.scheduled.tasks.setNotifyPrefs, {
+          taskId,
+          emailOnSuccess: true,
+        }),
     ],
   ]) {
-    const r = await call.then(() => "RESOLVED").catch((e) => String(e.message || e));
+    const r = await call()
+      .then(() => "RESOLVED")
+      .catch((e) => String(e.message || e));
     must(/Not found/.test(r), `a peer cannot ${name} someone else's task`, r.slice(0, 90));
   }
 
