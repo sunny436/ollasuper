@@ -2,6 +2,12 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { eventFields, eventObject } from "./chat/events";
+import {
+  occurrenceKindValidator,
+  occurrenceStatusValidator,
+  scheduleSpecValidator,
+  taskStatusValidator,
+} from "./scheduled/schedule";
 
 // Multi-tenant: resources carry workspaceId. It is `optional` on pre-existing tables only so
 // deploys don't fail validation against pre-migration rows; the function layer always sets it.
@@ -202,9 +208,25 @@ export default defineSchema({
     body: v.optional(v.string()),
     read: v.boolean(),
     createdAt: v.number(),
+    // Phase 3 (Scheduled Tasks). All optional + additive, so every pre-existing
+    // notification row still validates.
+    //
+    // `dedupeKey` is the LOGICAL event identity — for a scheduled run it is the
+    // occurrenceKey, so a DBOS replay, a dispatch retry, a duplicate finalize
+    // and the reaper all collapse to ONE notification. Enforced by a read of
+    // by_user_dedupe inside the same mutation that writes the row: Convex
+    // mutations are serialisable, so that read joins the transaction's read set
+    // and a concurrent insert forces a retry rather than a duplicate.
+    dedupeKey: v.optional(v.string()),
+    // Deep link target. Kept as ids rather than a URL string so the UI owns
+    // routing; both survive the task being soft-deleted (the link then resolves
+    // to the "deleted" state rather than erroring).
+    taskId: v.optional(v.id("scheduledTasks")),
+    occurrenceKey: v.optional(v.string()),
   })
     .index("by_user", ["userId"])
-    .index("by_user_read", ["userId", "read"]),
+    .index("by_user_read", ["userId", "read"])
+    .index("by_user_dedupe", ["userId", "dedupeKey"]),
 
   // Maintained per-workspace counters (members/files/chatThreads/chatMessages),
   // kept current via bump() so nothing has to scan a whole table to count.
@@ -232,7 +254,18 @@ export default defineSchema({
       v.literal("active"),
       v.literal("archived"),
       v.literal("trashed"),
+      // Scheduled Tasks (Phase 2). A dedicated execution thread for ONE
+      // scheduled task. It is a distinct STATUS rather than a flag because
+      // every list/search path already filters on status with an equality
+      // index — `threads.list`, `listPinned` and both `search_title` sites all
+      // pin "active" — so this value excludes the thread from the whole chat
+      // surface with ZERO changes to threads.ts / search.ts.
+      v.literal("scheduled"),
     ),
+    // Set only on a `scheduled` thread: the task it executes. dispatchPayload
+    // branches on this to send NO history and NO summary, which is what stops a
+    // daily task accumulating a year of its own previous runs as context.
+    scheduledTaskId: v.optional(v.id("scheduledTasks")),
     pinned: v.boolean(),
     model: v.string(),
     systemPrompt: v.optional(v.string()),
@@ -652,6 +685,20 @@ export default defineSchema({
     // the chat rate window; optional + additive so pre-migration rows validate.
     seoRunWindowStart: v.optional(v.number()),
     seoRunWindowCount: v.optional(v.number()),
+    // Phase 3: a THIRD fixed-window counter, for the scheduling composer's
+    // parse calls. Same row, same index, same shape as the two above — a parse
+    // is a small model call, so it gets its own cheap budget rather than
+    // spending the chat allowance.
+    parseWindowStart: v.optional(v.number()),
+    parseWindowCount: v.optional(v.number()),
+    // Phase 4: a FOURTH fixed-window counter, for scheduled EXECUTION. Same row,
+    // same index, same shape as the three above. Scheduled runs bypass
+    // assertCanGenerate entirely (execution.ts calls startAssistantTurn direct),
+    // so before this they consumed no budget at all. Deliberately separate from
+    // rateWindow*: unattended work must never spend a user's interactive
+    // allowance, and exhausting one must never block the other.
+    schedRunWindowStart: v.optional(v.number()),
+    schedRunWindowCount: v.optional(v.number()),
     // Phase 6: long-term memory master switch (per-user-per-workspace). Optional
     // + additive so pre-migration rows validate; absent is treated as ENABLED at
     // read time (dispatchPayload). A user can turn memory off entirely here.
@@ -785,4 +832,226 @@ export default defineSchema({
     .index("by_user_ws_created", ["userId", "workspaceId", "createdAt"])
     .index("by_chat", ["chatId"]),
 
+  // ── Scheduled Tasks (Phase 1) ───────────────────────────────────────────────
+  // Three NEW tables; no existing table is touched. Convex is the AUTHORITATIVE
+  // LEDGER for scheduled work — task config, revisions, occurrence identity and
+  // execution outcome. DBOS (services/ai/app/scheduler) owns only workflow
+  // execution state, and reconciliation flows Convex -> DBOS, so losing the DBOS
+  // system database entirely loses NO occurrence.
+  scheduledTasks: defineTable({
+    userId: v.id("users"),
+    // Tenancy/billing only. Ownership is the USER, exactly like chatThreads —
+    // a same-workspace peer must not see someone's scheduled prompts.
+    workspaceId: v.id("workspaces"),
+    title: v.string(),
+    prompt: v.string(),
+    spec: scheduleSpecValidator,
+    status: taskStatusValidator,
+    // Monotonic revision counter. An occurrence pins the revision that created
+    // it, so editing a task never rewrites the meaning of past executions.
+    revision: v.number(),
+    // Optional ONLY because of insert ordering: a revision row needs its
+    // taskId, so create() inserts the task, inserts revision 1, then patches
+    // this — all inside one atomic mutation, so it is never observably absent.
+    currentRevisionId: v.optional(v.id("scheduledTaskRevisions")),
+    // EXCLUSIVE lower bound for occurrence enumeration, and the reason a
+    // three-day outage produces three executions instead of one: the recurrence
+    // timeline is preserved here, never recomputed from `now`.
+    cursorAt: v.number(),
+    // Advisory only (display + ordering); recomputed by the scheduler each tick
+    // and therefore stale while the scheduler is down. Never an authority.
+    nextRunAt: v.optional(v.number()),
+    pausedAt: v.optional(v.number()),
+    lastRunAt: v.optional(v.number()),
+    // Phase 3 notification preferences. ABSENT MEANS ENABLED — so every task
+    // created before Phase 3 notifies by default and no migration is needed.
+    // Read at emit time, so toggling affects the next run and never rewrites
+    // history. Cancellations follow notifyOnFailure.
+    notifyOnSuccess: v.optional(v.boolean()),
+    notifyOnFailure: v.optional(v.boolean()),
+    // Phase 4 EMAIL preferences. Note the inverted default: ABSENT MEANS
+    // DISABLED, the opposite of the in-app pair above. In-app notification is
+    // free and contained; email leaves the building and cannot be recalled, so
+    // deploying Phase 4 must not cause a single existing task to email anyone.
+    // Kept as separate fields rather than reusing notifyOn* because success and
+    // failure email have to be choosable independently of in-app notification.
+    emailOnSuccess: v.optional(v.boolean()),
+    emailOnFailure: v.optional(v.boolean()),
+    attachPdf: v.optional(v.boolean()),
+    // Phase 2: ONE dedicated execution thread per task, created lazily on the
+    // first run. Optional because a task created before its first execution has
+    // none, and because startRun re-creates it if it is ever trashed/purged.
+    executionThreadId: v.optional(v.id("chatThreads")),
+    // Why a task reached `completed` — e.g. "suppressed_by_pause" for a one-time
+    // task whose only instant fell inside an intentional pause window.
+    terminalReason: v.optional(v.string()),
+    // Set by the scheduler when Python cannot resolve the spec (e.g. an IANA
+    // zone this build's tzdata does not know). The task stops producing
+    // occurrences instead of failing silently.
+    invalidReason: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    // userId FIRST on every public index. As with chatThreads there is
+    // deliberately NO workspace-only index: with none, no query shape in this
+    // codebase can enumerate a tenant's scheduled tasks without pinning a user.
+    .index("by_user_updated", ["userId", "updatedAt"])
+    // Internal-only (the scheduler's work list, reached solely through
+    // ingress-secret-gated internal mutations). Never exposed to a public query.
+    .index("by_status_cursor", ["status", "cursorAt"]),
+
+  // Immutable snapshot of a task's meaning at one revision. Occurrences point
+  // here, so history never mutates: editing writes a NEW row, never a patch.
+  scheduledTaskRevisions: defineTable({
+    taskId: v.id("scheduledTasks"),
+    userId: v.id("users"),
+    revision: v.number(),
+    title: v.string(),
+    prompt: v.string(),
+    spec: scheduleSpecValidator,
+    createdAt: v.number(),
+  }).index("by_task_revision", ["taskId", "revision"]),
+
+  // ONE row per intended occurrence, forever. This is the "no silent loss"
+  // guarantee made physical: a missed occurrence is a row that has not run yet,
+  // never a counter. Retries move `attempts` and never create a second row.
+  scheduledTaskOccurrences: defineTable({
+    // `${taskId}:${kind}:${scheduledFor}` — deterministic and collision-safe.
+    // `kind` is in the key so a "run now" in the same millisecond as a
+    // scheduled instant cannot be swallowed by the idempotent insert.
+    occurrenceKey: v.string(),
+    taskId: v.id("scheduledTasks"),
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    // The revision this occurrence executes under — pinned at creation.
+    revisionId: v.id("scheduledTaskRevisions"),
+    revision: v.number(),
+    scheduledFor: v.number(),
+    kind: occurrenceKindValidator,
+    status: occurrenceStatusValidator,
+    // DISPATCH attempts (reaper requeues). Transient failures inside one
+    // attempt are handled by DBOS step retries and do NOT bump this.
+    attempts: v.number(),
+    // Phase 2 RESULT REFERENCE — and the replay-idempotency marker. Set by
+    // startRun. Their presence is what tells a DBOS-recovered workflow that this
+    // occurrence already has a turn, so it resumes polling instead of starting a
+    // second one. `messageId` is deliberately REUSED across dispatch attempts:
+    // toolExecutions/chatStreamEvents are keyed by_message, so reusing it is what
+    // lets completed + indeterminate tools be replayed rather than re-executed.
+    threadId: v.optional(v.id("chatThreads")),
+    messageId: v.optional(v.id("chatMessages")),
+    streamId: v.optional(v.string()),
+    // Backoff gate for `retrying`: the occurrence is re-claimable only once the
+    // clock passes this. Retrying is a REAL occupied state between a failed
+    // dispatch attempt and its requeue, not decoration.
+    nextAttemptAt: v.optional(v.number()),
+    // Server-minted holder token: only the current holder may advance this row.
+    // The reaper rotates it on requeue so a stale worker's late write is
+    // rejected. Never trusted from Python — Python only echoes it back.
+    leaseToken: v.optional(v.string()),
+    claimedAt: v.optional(v.number()),
+    // Liveness. Deliberately on the OCCURRENCE and never on scheduledTasks:
+    // a field that changes during a run must not sit on a row the task list
+    // subscribes to, or every heartbeat re-sends that list to every subscriber.
+    heartbeatAt: v.optional(v.number()),
+    cancelRequested: v.boolean(),
+    workflowId: v.optional(v.string()),
+    startedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+    errorCode: v.optional(v.string()),
+    terminalReason: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_occurrence_key", ["occurrenceKey"])
+    // Internal-only: the scheduler's global claim scan, oldest-first so a
+    // backlog drains in schedule order (10:00 before 11:00 before 12:00).
+    .index("by_status_scheduled", ["status", "scheduledFor"])
+    .index("by_task_scheduled", ["taskId", "scheduledFor"])
+    .index("by_task_status_scheduled", ["taskId", "status", "scheduledFor"])
+    .index("by_user_status", ["userId", "status"])
+    // Reaper: find running/queued rows whose holder stopped heartbeating.
+    .index("by_status_heartbeat", ["status", "heartbeatAt"]),
+
+  // Phase 4: ONE row per (occurrence, channel), and the delivery audit trail.
+  //
+  // Delivery is a SEPARATE state machine from execution, on purpose. A run that
+  // produced an answer has succeeded; whether an email about it left the
+  // building is a different question with different failure modes and a
+  // different retry budget. Keeping them in one row would make "email failed"
+  // indistinguishable from "the task failed", and would tempt a retry of the
+  // whole occurrence — re-running a model turn to resend an email.
+  scheduledDeliveries: defineTable({
+    // The logical identity, matching the notification dedupe key: all three
+    // dispatch attempts of one run collapse to a single delivery.
+    occurrenceKey: v.string(),
+    taskId: v.id("scheduledTasks"),
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    channel: v.literal("email"),
+    // `accepted` is NOT `delivered`. A 2xx from the mail provider means it took
+    // custody, nothing more; only a provider webhook can say what happened
+    // next. Naming them apart is what stops the UI claiming delivery it cannot
+    // observe. `indeterminate` is the honest state for a worker that died
+    // between "provider accepted" and "we recorded it".
+    status: v.union(
+      v.literal("pending"),
+      v.literal("sending"),
+      v.literal("accepted"),
+      v.literal("delivered"),
+      v.literal("bounced"),
+      v.literal("complained"),
+      v.literal("failed"),
+      v.literal("skipped"),
+      v.literal("indeterminate"),
+    ),
+    pdfStatus: v.union(
+      v.literal("none"),
+      v.literal("succeeded"),
+      v.literal("failed"),
+    ),
+    // Distinct from pdfStatus: a PDF can render perfectly and still be too big
+    // to attach. That is a successful render with an unattached email, not a
+    // failed one, and the artifact stays downloadable in-app either way.
+    attachment: v.union(
+      v.literal("none"),
+      v.literal("attached"),
+      v.literal("skipped_too_large"),
+      v.literal("skipped_pdf_failed"),
+    ),
+    // DECISION SNAPSHOT, written inside the same transaction as the terminal
+    // occurrence transition. Preferences are read once, here — never again at
+    // send time. Otherwise a pref toggle, a task edit, a task deletion or an
+    // email change between finalize and send would retarget or cancel work that
+    // was already decided, and an account takeover could redirect a pending
+    // report to a new address.
+    wantEmail: v.boolean(),
+    wantPdf: v.boolean(),
+    recipient: v.optional(v.string()),
+    outcome: v.string(),
+    // `${occurrenceKey}:email` — sent to the provider so a retry of a request it
+    // already accepted is suppressed on their side, not just ours.
+    idempotencyKey: v.string(),
+    providerMessageId: v.optional(v.string()),
+    // Classified codes only (`provider_5xx`, `invalid_recipient`, …), never raw
+    // provider text: this row is read by the UI and must not leak internals.
+    errorCode: v.optional(v.string()),
+    attempts: v.number(),
+    claimedAt: v.optional(v.number()),
+    pdfArtifactId: v.optional(v.id("chatArtifacts")),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    // Uniqueness is NOT enforced by this index — Convex has no unique
+    // constraints. It is enforced by reading through this index inside the same
+    // mutation that inserts, so the read joins the transaction's read set and a
+    // concurrent insert conflicts and retries. Same mechanism as notify()'s
+    // dedupeKey.
+    .index("by_occurrence_channel", ["occurrenceKey", "channel"])
+    // Reaper: rows stuck in `sending` past their lease, and `pending` rows whose
+    // scheduled action never ran (a thrown Convex action is not retried).
+    .index("by_status_claimed", ["status", "claimedAt"])
+    // Provider webhook: resolve an event back to its row.
+    .index("by_provider_message", ["providerMessageId"])
+    .index("by_user_created", ["userId", "createdAt"]),
 });

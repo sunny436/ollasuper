@@ -232,6 +232,15 @@ class GenerateRequest(BaseModel):
     # bounds the whole turn.
     attempt: int = 0
     deadlineAt: int = 0
+    # Phase 2 (Scheduled Tasks): this turn runs UNATTENDED — no human is present
+    # to approve anything. Two consequences downstream, both security-relevant:
+    #   * the agent is pinned to READ_ONLY scope regardless of the global
+    #     ai_agent_side_effect_enabled flag (an operator enabling side effects
+    #     for interactive chat must not silently elevate background jobs);
+    #   * a tool that needs approval is REFUSED, not parked — a parked turn would
+    #     hang until the approval reaper expired it.
+    # Defaulted False so extra="forbid" never 400s a caller that predates this.
+    unattended: bool = False
     completedTools: list[CompletedTool] = Field(default_factory=list, max_length=64)
     # Phase 2: side-effecting tools attempted with an UNKNOWN outcome (crash /
     # INDETERMINATE). Replayed as an 'outcome unknown; not retried' observation +

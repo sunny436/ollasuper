@@ -376,6 +376,149 @@ class ConvexClient:
         except ValueError:
             return {}
 
+    # ── Scheduled Tasks (Phase 1) ─────────────────────────────────────────────
+    # All ride the retrying ingress(): the mutations answer 200 with a
+    # {stale}/{cancel}/{unknown} envelope rather than a 404, so a transient
+    # Convex blip is retried instead of being treated as "this occurrence is
+    # gone". Identical contract to the chat ingest ops.
+
+    async def sched_list(self, *, limit: int) -> dict:
+        """The scheduler's work list. Carries NO task prompt or title."""
+        return await self.ingress({"op": "sched-list", "limit": limit})
+
+    async def sched_materialize(
+        self,
+        *,
+        task_id: str,
+        from_cursor: int,
+        to_cursor: int,
+        scheduled_for: list[int],
+        next_run_at: int | None = None,
+        invalid_reason: str | None = None,
+        schedule_ended: bool = False,
+    ) -> dict:
+        """Create occurrence rows and advance the cursor.
+
+        `from_cursor` is a compare-and-swap on the server: if another tick moved
+        the cursor first, nothing is written and {stale:true} comes back. That
+        is what stops two overlapping ticks skipping the gap between them.
+        """
+        body: dict = {
+            "op": "sched-materialize",
+            "taskId": task_id,
+            "fromCursor": from_cursor,
+            "toCursor": to_cursor,
+            "scheduledFor": scheduled_for,
+        }
+        if next_run_at is not None:
+            body["nextRunAt"] = next_run_at
+        if invalid_reason is not None:
+            body["invalidReason"] = invalid_reason
+        if schedule_ended:
+            body["scheduleEnded"] = True
+        return await self.ingress(body)
+
+    async def sched_claim(self, *, limit: int, max_per_user: int) -> dict:
+        """Take a lease on up to `limit` due occurrences, at most one per task."""
+        return await self.ingress(
+            {"op": "sched-claim", "limit": limit, "maxPerUser": max_per_user}
+        )
+
+    async def sched_verify(
+        self, *, occurrence_key: str, lease_token: str, workflow_id: str
+    ) -> dict:
+        """Re-validate before ANY side effect.
+
+        A workflow recovered from a stale DBOS system database lands here and is
+        refused, because Convex — not DBOS — is the ledger.
+        """
+        return await self.ingress(
+            {
+                "op": "sched-verify",
+                "occurrenceKey": occurrence_key,
+                "leaseToken": lease_token,
+                "workflowId": workflow_id,
+            }
+        )
+
+    async def sched_heartbeat(
+        self, *, occurrence_key: str, lease_token: str
+    ) -> dict:
+        """Prove liveness and learn about cancellation in the same round-trip."""
+        return await self.ingress(
+            {
+                "op": "sched-heartbeat",
+                "occurrenceKey": occurrence_key,
+                "leaseToken": lease_token,
+            }
+        )
+
+    async def sched_finalize(
+        self,
+        *,
+        occurrence_key: str,
+        lease_token: str,
+        outcome: str,
+        error_code: str | None = None,
+        retryable: bool = False,
+    ) -> dict:
+        """Terminal completion. Idempotent: a duplicate is a no-op server-side."""
+        body: dict = {
+            "op": "sched-finalize",
+            "occurrenceKey": occurrence_key,
+            "leaseToken": lease_token,
+            "outcome": outcome,
+            "retryable": retryable,
+        }
+        if error_code is not None:
+            body["errorCode"] = error_code[:200]
+        return await self.ingress(body)
+
+    # ── Scheduled Tasks execution (Phase 2) ───────────────────────────────────
+
+    async def sched_start_run(
+        self, *, occurrence_key: str, lease_token: str, deadline_ms: int
+    ) -> dict:
+        """Start / resume / retry the AI turn for one occurrence.
+
+        Convex decides which of the three it is from the occurrence's own
+        recorded stream — the caller never has to know, which is what makes a
+        DBOS-recovered workflow safe to re-enter.
+        """
+        return await self.ingress(
+            {
+                "op": "sched-start-run",
+                "occurrenceKey": occurrence_key,
+                "leaseToken": lease_token,
+                "deadlineMs": deadline_ms,
+            }
+        )
+
+    async def sched_run_status(
+        self, *, occurrence_key: str, lease_token: str
+    ) -> dict:
+        """Poll the turn. Terminal state + the message's durable error code."""
+        return await self.ingress(
+            {
+                "op": "sched-run-status",
+                "occurrenceKey": occurrence_key,
+                "leaseToken": lease_token,
+            }
+        )
+
+    async def sched_cancel_run(
+        self, *, occurrence_key: str, lease_token: str
+    ) -> dict:
+        """Ask the running turn to stop (the same durable flag the Stop button
+        sets; the worker sees it on its next ingress response)."""
+        return await self.ingress(
+            {
+                "op": "sched-cancel-run",
+                "occurrenceKey": occurrence_key,
+                "leaseToken": lease_token,
+            }
+        )
+
     async def set_file_status(
         self,
         ingest_id: str,

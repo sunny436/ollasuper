@@ -517,8 +517,14 @@ async def run_generation(
         # identity from the authenticated request (never the model). Single source
         # for the selection permission prefilter (F) AND the execution scope /
         # outbound tenant headers (B).
+        # `and not req.unattended` is LOAD-BEARING. ai_agent_side_effect_enabled
+        # is a GLOBAL flag: without this clause, an operator turning side effects
+        # on for interactive chat — where a human approves each one — would
+        # silently grant the same elevated scope to unattended scheduled runs,
+        # which have nobody to approve anything. Background jobs stay read-only.
+        elevated = settings.ai_agent_side_effect_enabled and not req.unattended
         agent_scope = replace(
-            WRITE_SCOPE if settings.ai_agent_side_effect_enabled else READ_SCOPE,
+            WRITE_SCOPE if elevated else READ_SCOPE,
             user_id=req.userId,
             workspace_id=req.workspaceId,
             tenant_id=req.workspaceId,
@@ -576,7 +582,7 @@ async def run_generation(
                 # above the ceiling and never surfaced.
                 se_ceiling = (
                     SideEffect.EXTERNAL_SIDE_EFFECT
-                    if settings.ai_agent_side_effect_enabled
+                    if elevated
                     else SideEffect.READ_ONLY
                 )
                 _filters = ToolFilters(
@@ -758,6 +764,7 @@ async def run_generation(
                         for a in req.approvals
                     },
                     force_approval_ids=settings.ai_agent_approval_test_tool_ids,
+                    unattended=req.unattended,
                     approval_ttl_ms=int(settings.ai_agent_approval_ttl_s * 1000),
                     # Phase 1: durable execution identity. run_id = streamId;
                     # run_attempt = the resume attempt so a resumed run's step ids

@@ -3,7 +3,31 @@
 import { api } from "@v1/backend/convex/_generated/api";
 import { useMutation, useQuery } from "convex/react";
 import { Bell } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
+
+/**
+ * Module scope, never nested inside NotificationsBell: a sub-component declared
+ * inside its parent is a new component type on every render, so React remounts
+ * it. Same rule the chat sidebar and auth form document.
+ */
+function NotificationBody({
+  notification,
+}: {
+  notification: { title: string; body?: string; createdAt: number };
+}) {
+  return (
+    <>
+      <p className="font-medium text-primary/80">{notification.title}</p>
+      {notification.body && (
+        <p className="text-xs text-primary/50">{notification.body}</p>
+      )}
+      <p className="mt-0.5 text-[10px] text-primary/30">
+        {new Date(notification.createdAt).toLocaleString()}
+      </p>
+    </>
+  );
+}
 
 export function NotificationsBell() {
   const notifications = useQuery(api.notifications.myNotifications);
@@ -44,15 +68,25 @@ export function NotificationsBell() {
             </div>
             <div className="max-h-80 divide-y divide-border/50 overflow-y-auto">
               {notifications?.length ? (
-                notifications.map((n) => (
-                  <div key={n._id} className="px-3 py-2 text-sm">
-                    <p className="font-medium text-primary/80">{n.title}</p>
-                    {n.body && <p className="text-xs text-primary/50">{n.body}</p>}
-                    <p className="mt-0.5 text-[10px] text-primary/30">
-                      {new Date(n.createdAt).toLocaleString()}
-                    </p>
-                  </div>
-                ))
+                notifications.map((n) =>
+                  n.taskId ? (
+                    // Scheduled-task updates deep-link to the task. If it has
+                    // since been deleted the route shows its "deleted" state —
+                    // safe, and never a raw error.
+                    <Link
+                      key={n._id}
+                      href={`/scheduled/${n.taskId}`}
+                      onClick={() => setOpen(false)}
+                      className="block px-3 py-2 text-sm transition hover:bg-primary/5"
+                    >
+                      <NotificationBody notification={n} />
+                    </Link>
+                  ) : (
+                    <div key={n._id} className="px-3 py-2 text-sm">
+                      <NotificationBody notification={n} />
+                    </div>
+                  ),
+                )
               ) : (
                 <div className="px-3 py-4 text-sm text-primary/40">
                   No notifications

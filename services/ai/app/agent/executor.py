@@ -209,6 +209,12 @@ class ToolExecContext:
     approvals: dict[str, dict] = field(default_factory=dict)
     force_approval_ids: frozenset[str] = frozenset()
     approval_ttl_ms: int = 900_000
+    # Phase 2 (Scheduled Tasks): nobody is present to approve anything. An
+    # approval-gated tool is REFUSED with a durable reason instead of parking the
+    # turn — a parked unattended turn would simply hang until the approval reaper
+    # expired it, burning the occurrence for nothing. The model receives the
+    # refusal as an observation and can still finish in text.
+    unattended: bool = False
     # Phase 1: execution identity. `run_id` = streamId; `run_attempt` = the resume
     # attempt (so a resumed run's step ids don't collide with the original's);
     # `step_counter` is bumped once per executor pass; `ledger` mints the durable
@@ -862,6 +868,29 @@ async def _run_one(
             return _tool_message(
                 call_id,
                 {"status": d["decision"], "reason": "not approved"},
+                status="error",
+            )
+        elif ctx.unattended:
+            # UNATTENDED: refuse rather than park. Same shape as the `denied`
+            # branch below — the execution is advanced to a real terminal state
+            # and a TOOL_RESULT is emitted, so the ledger stays honest and the
+            # reason is durable for the scheduled-task history.
+            _advance(execution, ExecutionState.FAILED)
+            await _emit(
+                ctx,
+                execution,
+                EventType.TOOL_RESULT,
+                call_id=call_id,
+                status="error",
+                result={"status": "approval_required_for_unattended_execution"},
+            )
+            return _tool_message(
+                call_id,
+                {
+                    "status": "approval_required_for_unattended_execution",
+                    "reason": decision.reason
+                    or "this tool requires human approval",
+                },
                 status="error",
             )
         else:
@@ -2377,7 +2406,12 @@ async def execute_tool_calls(
     # Pure pre-scan (registry + policy, no adapter/HTTP) over ALL calls FIRST: does
     # any need a fresh approval? If so, pause the whole action (before the fan-out
     # cap) rather than run any sibling.
-    if any(_fresh_approval_id(tc, ctx) is not None for tc in tool_calls):
+    # Unattended turns never park, so they must NOT divert here — each call
+    # falls through to the normal path and is refused individually with
+    # `approval_required_for_unattended_execution`.
+    if not ctx.unattended and any(
+        _fresh_approval_id(tc, ctx) is not None for tc in tool_calls
+    ):
         return await _park_all_for_approval(tool_calls, ctx, step_id)
     # Phase 6 fan-out cap: execute at most `max_tool_calls_per_step`; refuse the
     # rest with a paired error (pairing is order-independent, so appending the

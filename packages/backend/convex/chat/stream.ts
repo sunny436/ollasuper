@@ -410,7 +410,26 @@ export const dispatchPayload = internalQuery({
       )
       .unique();
 
-    const history = await buildHistory(ctx, stream.threadId, message.seq);
+    // Scheduled Tasks (Phase 2): a scheduled turn carries EXACTLY ONE message —
+    // its own pinned revision prompt — and nothing else.
+    //
+    // One thread per task accumulates every past run, so the normal
+    // buildHistory would feed a daily task a year of its own previous answers:
+    // unbounded context growth and cross-run contamination. Earlier runs stay in
+    // the thread purely as durable history for Phase 3 to display.
+    //
+    // It is bounded to 1 rather than emptied, and that distinction is
+    // load-bearing: `history` is ALSO how the current turn's user message
+    // reaches the model (runner.py pops the trailing user entry as `latest`,
+    // and gates skill/tool activation on it). An empty history would send no
+    // prompt at all and silently disable skills.
+    const isScheduled = thread.scheduledTaskId !== undefined;
+    const history = await buildHistory(
+      ctx,
+      stream.threadId,
+      message.seq,
+      isScheduled ? 1 : undefined,
+    );
     // Cheap existence check so the inference plane only pays the RAG embedding +
     // pgvector round-trip for users who actually have knowledge-base files.
     const ragFileCount = (await userHasReadyFiles(ctx, stream.userId)) ? 1 : 0;
@@ -488,10 +507,19 @@ export const dispatchPayload = internalQuery({
       systemPrompt: thread.systemPrompt ?? settings?.systemPrompt ?? null,
       customInstructionsAbout: settings?.customInstructionsAbout ?? null,
       customInstructionsStyle: settings?.customInstructionsStyle ?? null,
-      summary: thread.summary ?? null,
-      summaryThroughSeq: thread.summaryThroughSeq ?? 0,
+      summary: isScheduled ? null : (thread.summary ?? null),
+      summaryThroughSeq: isScheduled ? 0 : (thread.summaryThroughSeq ?? 0),
       history,
+      // The scheduled thread is created with titleSource "user" (its title is
+      // the task's), so this is already false for it — asserted in the tests
+      // rather than special-cased here.
       titleNeeded: thread.titleSource === "auto",
+      // UNATTENDED EXECUTION. Two things hang off this in the Python plane:
+      // the agent is pinned to READ_ONLY scope regardless of the global
+      // ai_agent_side_effect_enabled flag, and a tool that needs approval is
+      // REFUSED rather than parked (nobody is there to approve, and a parked
+      // turn would sit until the approval reaper expired it).
+      unattended: isScheduled,
       ragFileCount,
       memoryEnabled,
       memories,

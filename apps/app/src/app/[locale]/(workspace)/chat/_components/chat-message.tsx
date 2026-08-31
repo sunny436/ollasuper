@@ -105,6 +105,7 @@ function ChatMessageImpl({
   onShare,
   pendingApproval,
   onResolveApproval,
+  readOnly = false,
 }: {
   message: ChatMessageDoc;
   isStreaming: boolean;
@@ -120,6 +121,17 @@ function ChatMessageImpl({
     approvalId: string,
     decision: "approve" | "reject",
   ) => void;
+  /**
+   * Render the turn WITHOUT any mutating affordance. Default false, so every
+   * existing chat call site is byte-identical.
+   *
+   * Set by the Scheduled Tasks result viewer. Retry, Regenerate and Edit all
+   * call chat mutations that `assertCanGenerate` REFUSES on a scheduled thread,
+   * so without this the viewer would show three buttons that always throw
+   * "Not found". ErrorNotice's own Retry is suppressed for the same reason —
+   * and a failed run is exactly the state that renders it.
+   */
+  readOnly?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -224,8 +236,11 @@ function ChatMessageImpl({
         <ErrorNotice
           code={message.errorCode}
           message={message.error}
-          onRetry={() =>
-            guard(() => retry({ messageId: message._id }), "Retry failed")
+          onRetry={
+            readOnly
+              ? undefined
+              : () =>
+                  guard(() => retry({ messageId: message._id }), "Retry failed")
           }
         />
       )}
@@ -233,6 +248,7 @@ function ChatMessageImpl({
       {message.status === "aborted" && (
         <div className="mt-2 flex items-center gap-2 text-xs text-primary/45">
           <span>Stopped</span>
+          {!readOnly && (
           <button
             type="button"
             onClick={() => guard(() => retry({ messageId: message._id }), "Retry failed")}
@@ -240,6 +256,7 @@ function ChatMessageImpl({
           >
             <RotateCcw className="h-3 w-3" /> Continue
           </button>
+          )}
         </div>
       )}
 
@@ -248,17 +265,19 @@ function ChatMessageImpl({
           <IconButton label="Copy response" onClick={copy}>
             {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
           </IconButton>
-          <IconButton
-            label="Regenerate"
-            onClick={() =>
-              guard(
-                () => regenerate({ messageId: message._id }),
-                "Couldn't regenerate",
-              )
-            }
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-          </IconButton>
+          {!readOnly && (
+            <IconButton
+              label="Regenerate"
+              onClick={() =>
+                guard(
+                  () => regenerate({ messageId: message._id }),
+                  "Couldn't regenerate",
+                )
+              }
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </IconButton>
+          )}
           {onShare && message.role === "assistant" && (
             <IconButton
               label="Share response"
@@ -317,5 +336,8 @@ export const ChatMessage = memo(
     a.message.events?.at(-1)?.eventId === b.message.events?.at(-1)?.eventId &&
     // Phase 8: repaint when the pending approval appears/clears (Approve/Reject).
     (a.pendingApproval?.approvalId ?? null) ===
-      (b.pendingApproval?.approvalId ?? null),
+      (b.pendingApproval?.approvalId ?? null) &&
+    // Without this a memoised bubble could keep its interactive affordances
+    // after being re-rendered read-only — buttons that would then throw.
+    a.readOnly === b.readOnly,
 );

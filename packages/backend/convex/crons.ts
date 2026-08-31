@@ -73,4 +73,35 @@ crons.interval(
   {},
 );
 
+/**
+ * Scheduled Tasks: recover occurrences whose scheduler process died.
+ *
+ * DBOS recovers its own interrupted workflows on restart, but nothing recovers
+ * an occurrence whose holder was SIGKILLed and whose DBOS system database is
+ * unreachable or was rebuilt. This is the independent backstop, and it rotates
+ * the lease so the dead holder can never advance the row afterwards. Same role
+ * as "reap stalled chat streams" above.
+ */
+crons.interval(
+  "reap stalled scheduled occurrences",
+  { seconds: 60 },
+  internal.scheduled.occurrences.reapStalled,
+  {},
+);
+
+/**
+ * Scheduled Tasks: drive report delivery forward.
+ *
+ * This is not a tidy-up — it is the RETRY MECHANISM. A Convex action that
+ * throws is not retried, so a delivery whose action died leaves a row in
+ * `sending` (or a `pending` row nothing ever picked up) that only this cron
+ * will ever move again. Same role `dispatch` gives "reap stalled chat streams".
+ */
+crons.interval(
+  "reap scheduled deliveries",
+  { seconds: 60 },
+  internal.scheduled.delivery.reap,
+  {},
+);
+
 export default crons;

@@ -3,22 +3,57 @@ import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 
-/** Dependency-free helper to emit an in-app notification to a user. */
+const MAX_TITLE = 120;
+const MAX_BODY = 500;
+
+/**
+ * Dependency-free helper to emit an in-app notification to a user.
+ *
+ * `link` (Phase 3) carries an IDEMPOTENCY key plus a deep-link target. When
+ * `dedupeKey` is supplied the insert is skipped if a row already exists for
+ * (userId, dedupeKey) — and because Convex mutations are serialisable, that
+ * lookup joins the transaction's read set, so two concurrent callers cannot
+ * both pass the check: the loser conflicts, re-runs, and sees the row. This is
+ * what makes a DBOS replay / dispatch retry / duplicate finalize produce ONE
+ * notification rather than three.
+ *
+ * Title and body are hard-clamped so an unexpectedly large error string can
+ * never push the document over a Convex limit — which, inside the finalize
+ * transaction, would abort the occurrence's terminal transition.
+ */
 export async function notify(
   ctx: MutationCtx,
   userId: Id<"users">,
   type: string,
   title: string,
   body?: string,
-) {
+  link?: {
+    dedupeKey?: string;
+    taskId?: Id<"scheduledTasks">;
+    occurrenceKey?: string;
+  },
+): Promise<boolean> {
+  if (link?.dedupeKey) {
+    const existing = await ctx.db
+      .query("notifications")
+      .withIndex("by_user_dedupe", (q) =>
+        q.eq("userId", userId).eq("dedupeKey", link.dedupeKey),
+      )
+      .first();
+    if (existing) return false;
+  }
   await ctx.db.insert("notifications", {
     userId,
     type,
-    title,
-    body,
+    title: title.slice(0, MAX_TITLE),
+    body: body?.slice(0, MAX_BODY),
     read: false,
     createdAt: Date.now(),
+    dedupeKey: link?.dedupeKey,
+    taskId: link?.taskId,
+    occurrenceKey: link?.occurrenceKey,
   });
+  return true;
 }
 
 export const myNotifications = query({

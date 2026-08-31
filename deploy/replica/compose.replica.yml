@@ -1,0 +1,104 @@
+# The local full-stack replica: Convex on real PostgreSQL, the knowledge/DBOS
+# database, and Mailpit — everything the destructive drills need.
+#
+# WHY THIS EXISTS. Phase 1 only ever proved DBOS against SQLite, and production
+# is a single live VM with real users on it. Kill-drills, PostgreSQL restarts,
+# duplicate-worker tests and load runs all have to happen somewhere that is
+# allowed to break, against the SAME storage engine production uses — otherwise
+# "DBOS survives a crash" is a claim about SQLite, which is not what runs.
+#
+# WHAT IT IS NOT. This is not production-equivalent: one box, no tunnel, no
+# TLS, no GlitchTip, and resource limits that are the host's, not the VM's. It
+# proves BEHAVIOUR (durability, idempotency, recovery, concurrency semantics),
+# not capacity. Anything about headroom still has to be measured on the VM.
+#
+#   cd deploy/replica
+#   cp .env.example .env          # then fill INSTANCE_SECRET and the model keys
+#   docker compose -f compose.replica.yml up -d
+#   ../73-drills.sh               # the recovery matrix
+#
+# myos-ai and myos-scheduler run on the HOST against these containers (uv run),
+# not in compose: the drills need to SIGKILL them and watch them recover, and
+# doing that to a host process is both closer to the systemd reality and easier
+# to observe than restarting a container.
+
+name: myos-replica
+
+services:
+  # Convex's own storage. A separate instance from the knowledge/DBOS one, for
+  # the same reason production separates them: Convex's cluster is the highest
+  # risk surface and nothing else should share its blast radius.
+  convex-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: convex
+      POSTGRES_PASSWORD: ${CONVEX_DB_PASSWORD:-replica}
+      POSTGRES_DB: convex_self_hosted
+    # listen_addresses '*' mirrors the VM. Exposure is closed by binding the
+    # published port to loopback below, not by the bind address — the same
+    # reasoning CLAUDE.md records for production.
+    command: ["postgres", "-c", "listen_addresses=*"]
+    ports: ["127.0.0.1:5433:5432"]
+    volumes: ["convex-db:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U convex -d convex_self_hosted"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  convex-backend:
+    # Pin to the digest production runs. A silently newer backend can migrate
+    # the persistence layout of a live database on an unattended restart, and a
+    # drill against a different version proves the wrong thing.
+    image: ${CONVEX_IMAGE:-ghcr.io/get-convex/convex-backend:latest}
+    depends_on:
+      convex-db: { condition: service_healthy }
+    environment:
+      INSTANCE_NAME: ${CONVEX_INSTANCE_NAME:-myos-replica}
+      INSTANCE_SECRET: ${CONVEX_INSTANCE_SECRET:?set CONVEX_INSTANCE_SECRET in .env}
+      # ?sslmode=disable is REQUIRED, not cosmetic: DO_NOT_REQUIRE_SSL makes TLS
+      # optional, not unverified, so the driver still prefers TLS and dies on an
+      # unknown issuer. Same trap as the VM.
+      POSTGRES_URL: postgres://convex:${CONVEX_DB_PASSWORD:-replica}@convex-db:5432?sslmode=disable
+      DO_NOT_REQUIRE_SSL: "true"
+      CONVEX_CLOUD_ORIGIN: http://127.0.0.1:3210
+      CONVEX_SITE_ORIGIN: http://127.0.0.1:3211
+      RUST_LOG: info
+    ports:
+      - "127.0.0.1:3210:3210"
+      - "127.0.0.1:3211:3211"
+    volumes: ["convex-data:/convex/data"]
+
+  # Hosts BOTH myos_knowledge and myos_dbos, exactly as the VM does — so a drill
+  # that restarts "the database" hits the same blast radius production would,
+  # rather than a tidier arrangement that hides the coupling.
+  knowledge-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: myos_ai
+      POSTGRES_PASSWORD: ${KNOWLEDGE_DB_PASSWORD:-replica}
+      POSTGRES_DB: myos_knowledge
+    ports: ["127.0.0.1:5434:5432"]
+    volumes:
+      - "knowledge-db:/var/lib/postgresql/data"
+      - "./initdb:/docker-entrypoint-initdb.d:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myos_ai"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # The replica's mail sink. SCHEDULED_EMAIL_TRANSPORT=smtp is allowed HERE and
+  # refused on the production host — deploy/71 enforces that, because on the VM
+  # SMTP points at a catcher and choosing it would swallow real reports while
+  # reporting success.
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+
+volumes:
+  convex-db:
+  convex-data:
+  knowledge-db:

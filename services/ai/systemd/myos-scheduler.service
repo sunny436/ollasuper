@@ -1,0 +1,48 @@
+[Unit]
+Description=myos Scheduled Tasks scheduler (DBOS Transact, self-hosted)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/myos/services/ai
+EnvironmentFile=/opt/myos/services/ai/.env
+
+# A SEPARATE unit from myos-ai.service, deliberately.
+#
+# myos-ai.service is pinned to `--workers 1` because its in-process cancel
+# registry is chat-critical, and it carries every live chat stream. Embedding
+# DBOS there would put a recovery storm, a Postgres stall or a scheduler bug on
+# the same event loop as a user waiting for an answer — and would make
+# restarting the scheduler mean restarting chat. Same repo, same venv, same
+# .env; different blast radius.
+ExecStart=/opt/myos/services/ai/.venv/bin/python -m app.scheduler.main
+
+# on-failure, NOT always (myos-ai.service uses always because uvicorn never
+# exits cleanly on its own). This process DOES exit 0 deliberately: when
+# AI_SCHEDULED_TASKS_ENABLED is false it logs `sched.disabled` and stops. With
+# Restart=always that clean exit would become a restart loop every 5 seconds
+# for as long as the feature stayed off. A genuine crash still exits non-zero
+# and is still restarted.
+Restart=on-failure
+RestartSec=5
+
+# SIGINT, not systemd's default SIGTERM — same reason as myos-ai.service. The
+# process installs a SIGINT/SIGTERM handler that calls DBOS.destroy(), which
+# lets in-flight occurrence workflows checkpoint cleanly. Killed without it,
+# they are still safe (the Convex reaper rotates the lease and requeues), but
+# recovery is slower and noisier than it needs to be.
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# Matches the hardening on myos-ai.service. ProtectHome=true is why
+# deploy/54-ai-service.sh puts the uv interpreter outside $HOME
+# (UV_PYTHON_INSTALL_DIR=/opt/uv-python) — without that this dies 203/EXEC.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/myos/services/ai
+
+[Install]
+WantedBy=multi-user.target

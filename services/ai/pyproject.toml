@@ -75,6 +75,27 @@ dependencies = [
     "pandas>=2.2,<3",
     "scipy>=1.13,<2",
     "duckdb>=1.1,<2",
+    # --- Scheduled Tasks (durable scheduling foundation) ---
+    # DBOS Transact: durable workflows/queues backed by PostgreSQL, run entirely
+    # on our own infrastructure. It is a LIBRARY, not a service — no broker, no
+    # extra daemon — and DBOS Conductor (the hosted control plane) is opt-in via
+    # a `conductor_key` that app/scheduler/main.py never sets. It adds ZERO new
+    # transitive dependencies: sqlalchemy, psycopg, pyyaml, python-dateutil,
+    # websockets and click are all already resolved here.
+    # PINNED EXACTLY, not ranged. DBOS runs run_migrations() against the live
+    # `myos_dbos` on every launch, so the installed version decides the schema of
+    # a production database. A range means a routine `uv lock` refresh — adding
+    # any unrelated dependency does it — can migrate that database on the next
+    # unattended restart. Same reasoning as pinning the Convex backend image by
+    # digest (CLAUDE.md). Bumping this is a reviewed step: rehearse the migration
+    # against a restored copy of production first, then move the pin.
+    "dbos==2.31.0",
+    # DECLARED, not incidental. zoneinfo falls back to the host OS zone database
+    # and Windows ships none, so without this every ZoneInfo("Asia/Kolkata")
+    # raises and the scheduler silently stops producing occurrences. It arrives
+    # transitively via pandas today; a transitive pin is not a guarantee.
+    # NOTE: this pins DST RULES — a real-world timezone change needs a bump.
+    "tzdata>=2025.1",
 ]
 
 # Deliberately NOT langchain-anthropic: it speaks the native Anthropic Messages
@@ -96,6 +117,11 @@ filterwarnings = ["ignore::DeprecationWarning"]
 # Postgres+pgvector (>=0.8). The default `uv run pytest` stays hermetic/no-network.
 markers = [
     "db: requires a live Postgres+pgvector via TEST_DATABASE_URL",
+    # Phase 2 (Scheduled Tasks): hits the REAL model and the REAL Ollagraph API
+    # with the operator credentials at the repo root. Costs money and needs
+    # network, so it self-skips unless LIVE_AI_TESTS=1 — the default
+    # `uv run pytest` stays hermetic and offline, exactly like the db marker.
+    "live: requires LIVE_AI_TESTS=1 plus real model/Ollagraph credentials",
 ]
 
 [tool.ruff]

@@ -22,7 +22,8 @@ from app.clients.ollagraph import OllagraphAdapter
 from app.config import Settings, get_settings
 from app.db.engine import create_knowledge_engine
 from app.logging import configure, get_logger
-from app.routers import files, generate, health, tools
+from app.observability import init_sentry
+from app.routers import files, generate, health, report, schedule, tools
 from app.runtime.registry import Registry
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
@@ -142,41 +143,8 @@ async def lifespan(app: FastAPI):
         log.info("shutdown")
 
 
-def _init_sentry(settings: Settings) -> None:
-    """Phase 8: report unhandled inference-plane errors to GlitchTip/Sentry.
-
-    Guarded on the DSN AND an optional import, so nothing is required unless an
-    operator installs sentry-sdk and sets AI_SENTRY_DSN — CI, tests, and a
-    default deployment are all unaffected. Events are scrubbed through the same
-    redactor as the logs before they leave the box (no keys / data-URIs / bearer
-    tokens in a DSN-bound event)."""
-    dsn = settings.ai_sentry_dsn
-    if not dsn:
-        return
-    try:
-        import sentry_sdk
-    except ImportError:
-        log.warning("sentry_dsn_set_but_sdk_missing")
-        return
-    from app.logging import redact_text
-
-    def _before_send(event: dict, _hint: object) -> dict:
-        try:
-            if event.get("message"):
-                event["message"] = redact_text(str(event["message"]))
-            for exc in (event.get("exception") or {}).get("values", []) or []:
-                if exc.get("value"):
-                    exc["value"] = redact_text(str(exc["value"]))
-        except Exception:  # noqa: BLE001, S110 — redaction must never drop the report
-            pass
-        return event
-
-    sentry_sdk.init(dsn=dsn, traces_sample_rate=0.0, before_send=_before_send)
-    log.info("sentry_initialized")
-
-
 def create_app() -> FastAPI:
-    _init_sentry(get_settings())
+    init_sentry(get_settings(), component="myos-ai")
     app = FastAPI(
         title="myos AI inference plane",
         version="0.1.0",
@@ -189,6 +157,12 @@ def create_app() -> FastAPI:
     app.include_router(generate.router)
     app.include_router(files.router)
     app.include_router(tools.router)
+    # Scheduled Tasks composer. Parses text into a schedule and returns JSON —
+    # it holds no Convex client and can create nothing.
+    app.include_router(schedule.router)
+    # Scheduled-report PDF. Same shape as the parser: payload in, bytes out, no
+    # Convex client, no ingress secret, no write path of any kind.
+    app.include_router(report.router)
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:

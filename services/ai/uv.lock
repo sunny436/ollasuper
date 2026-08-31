@@ -270,6 +270,23 @@ wheels = [
 ]
 
 [[package]]
+name = "dbos"
+version = "2.31.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "python-dateutil" },
+    { name = "pyyaml" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0f/13/d8bb7b92102f98203f1b28aa3fd1b72f84660300a47a7b8a141c6b1b7138/dbos-2.31.0.tar.gz", hash = "sha256:7f5117385526a08aaaffa8c97016f920b9b9c6c8a25b4a08b51dfb15c5bb4fcb", size = 702185, upload-time = "2026-08-25T15:37:16.51Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/21/103dd5b76ce3bda956d171b153440a6a0a9800363b933cfa0f57dd74fc41/dbos-2.31.0-py3-none-any.whl", hash = "sha256:2a84930349ced724cfe2fa00b98b3ac80287ed28f65ee316139b37dae702fb37", size = 278387, upload-time = "2026-08-25T15:37:14.718Z" },
+]
+
+[[package]]
 name = "defusedxml"
 version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -880,6 +897,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "beautifulsoup4" },
+    { name = "dbos" },
     { name = "defusedxml" },
     { name = "duckdb" },
     { name = "fastapi" },
@@ -912,6 +930,7 @@ dependencies = [
     { name = "scipy" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "trafilatura" },
+    { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -926,6 +945,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.13,<2" },
     { name = "beautifulsoup4", specifier = ">=4.12,<5" },
+    { name = "dbos", specifier = "==2.31.0" },
     { name = "defusedxml", specifier = ">=0.7,<1" },
     { name = "duckdb", specifier = ">=1.1,<2" },
     { name = "fastapi", specifier = "==0.141.1" },
@@ -958,6 +978,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.13,<2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3" },
     { name = "trafilatura", specifier = ">=2,<3" },
+    { name = "tzdata", specifier = ">=2025.1" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.52.3" },
 ]
 

@@ -21,6 +21,69 @@ runtime in `services/ai`. **Full design reference: [`services/ai/ARCHITECTURE.md
   the orchestrated path, add durable Convex ROUTE/SKILL observability events — then prod headed-Chrome
   verification. Not production-ready merely because tests pass (see ARCHITECTURE.md "Known limitations").
 
+## Scheduled Tasks program (Phases 0–4) — 1–3 built, NOT deployed
+
+A four-phase program building self-hosted scheduled tasks. **Nothing in it is on the VM yet**;
+deployment is deliberately Phase 4, so `main`'s live behaviour is unchanged by phases 1–3.
+
+- **Phase 1 — durable scheduling foundation (built + tested).** DBOS Transact 2.31 on Postgres
+  (`myos_dbos`, its own `myos-scheduler.service`), driving three additive Convex tables
+  (`scheduledTasks` · immutable `scheduledTaskRevisions` · `scheduledTaskOccurrences`). The
+  no-silent-loss guarantee is the occurrence: every intended run gets a durable
+  `"<taskId>:<kind>:<scheduledForMs>"` identity, so N missed runs are N executions, never coalesced.
+  Same-task serialization is a DBOS partitioned queue (`partition_concurrency=1`); the claim mutation
+  is the authority, not process memory. Recurrence maths is pure stdlib `zoneinfo` — month-end clamp,
+  DST-gap bisection, `fold=0` for ambiguous times.
+- **Phase 2 — AI execution (built + live-verified locally).** An occurrence drives the *existing*
+  chat path (`startAssistantTurn` → `/v1/generate`); there is no second runtime. Scheduled turns are
+  `unattended`, which pins the tool scope read-only and refuses an approval park instead of hanging
+  a run forever. Scheduled threads are hidden from `threads.list`, `listPinned` and search.
+- **Phase 3 — UI, management, history, in-app updates (built + tested).** `/scheduled` and
+  `/scheduled/[taskId]` in the `(workspace)` group, sharing the conversation rail with chat (the rail
+  moved verbatim into `_components/workspace-rail.tsx`). A conversational composer parses natural
+  language via `POST /v1/schedule/parse` — a module that **structurally cannot create a task**: it
+  imports no Convex client and has no write path, and nothing is persisted before an explicit
+  Confirm on an editable card. Results render through the existing chat renderers behind a new
+  `readOnly` flag on `ChatMessage`, so the viewer offers no mutating action. `endsAt` on
+  daily/weekly/monthly is the **only** change to Phase 1 scheduler semantics.
+- **Verification (local only).** Convex `bun run test` → 304 passed / 1 skipped (19 files);
+  `services/ai` → 1015 passed / 16 skipped + `ruff` clean; `bun run typecheck` 7/7; `bun run lint`
+  clean; production build emits both new routes. The parse endpoint was probed live against the real
+  configured model (20/20: auth, size caps, all five recurrence kinds, `endsAt`, ambiguity, a
+  correction against a standing draft, and prompt injection in the scheduled text).
+- **Phase 4 — delivery, hardening (code COMPLETE + tested; NOTHING DEPLOYED).** PDF reports and
+  email delivery run as a state machine SEPARATE from execution (`scheduledDeliveries`), so a bounce
+  can never put a model turn back on the queue. `POST /v1/report/pdf` renders markdown → the existing
+  `filegen` reportlab pipeline and, like the Phase 3 parser, **has no write path at all** — payload
+  in, bytes out, no Convex client — so ownership never leaves Convex. Email is **opt-in per task**
+  (absent ⇒ off, the inverse of the in-app pair) and fail-closed: an unset Resend key is a recorded
+  failure, never a silent fall back to the VM's local Mailpit catcher. Plus the scheduled-execution
+  rate window (enforced at *claim*, so an exhausted budget queues rather than burning a retry),
+  loopback-only scheduler health that goes red when ticks stop, Sentry on the scheduler, and
+  systemd limits derived from the host's own memory.
+- **Four pre-existing defects found and fixed on the way:**
+  **(1) P0 — the nightly backup was archiving the wrong deployment.** `backup.sh` chose its target by
+  asking whether `/root/.cvx-cloud-key` exists; nothing ever deleted that file, so every backup since
+  the PostgreSQL cutover archived the frozen Cloud rollback copy while the live deployment went
+  unprotected. Target is now explicit (`BACKUP_TARGET`, defaulting to self-hosted), with structural
+  integrity checks and a checksum manifest. `deploy/backup.test.sh` covers it, 11/11.
+  **(2) P0 — the scheduler would have thrown on every tick in production.** Two log lines passed
+  `extra={"created": …}`; `created` is a reserved `LogRecord` field and `logging` raises rather than
+  overwriting it. Invisible in tests (INFO is off, so no record is built) and fatal at production's
+  log level. A static scan now covers every `extra={}` in the codebase.
+  **(3) P1 — `dbos` was a version RANGE** while DBOS migrates its system database at launch; pinned
+  exactly, with a startup gate. **(4) P1 — no restore path existed at all**; `deploy/72-restore-drill.sh`
+  now exists.
+- **Verification (local only).** Convex **347 passed** / 1 skipped (21 files); `services/ai` **1220
+  passed** / 16 skipped, `ruff` clean; `bun run typecheck` 7/7; `bun run lint` clean; production build
+  emits both routes.
+- **NOT VERIFIED — needs infrastructure this machine does not have.** Docker is not installed here, so
+  the local full-stack replica (`deploy/replica/compose.replica.yml`) has never been brought up, and
+  therefore: **DBOS has still only ever run against SQLite**, and none of the recovery drills
+  (`deploy/73-drills.sh`), the restore drill, or the load tests have been executed. Production access
+  was declined, so `deploy/71`, the deployment, the smoke test and `e2e/p-scheduled.js` have never
+  been run either. Real email has never been sent. See the 45-row acceptance form in the Phase 4 plan.
+
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
 

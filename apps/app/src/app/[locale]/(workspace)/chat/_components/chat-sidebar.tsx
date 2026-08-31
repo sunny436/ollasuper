@@ -1,5 +1,6 @@
 "use client";
 
+import { NotificationsBell } from "../../../(dashboard)/_components/notifications-bell";
 import { FilesSection } from "./files-section";
 import { IntelligenceCore } from "./intelligence-core";
 import { clearDisplayCaches } from "@/lib/display-cache";
@@ -15,6 +16,7 @@ import { useCachedThreads, type CachedThread } from "../_hooks/use-cached-thread
 import { useCachedUser } from "../_hooks/use-cached-user";
 import { prefetchThread, releasePrefetch } from "../_lib/prefetch";
 import {
+  CalendarClock,
   CreditCard,
   LogOut,
   MessageSquare,
@@ -28,7 +30,7 @@ import {
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { timeBucket } from "../_lib/format";
@@ -189,6 +191,10 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const convex = useConvex();
   const params = useParams<{ threadId?: string }>();
   const activeId = params?.threadId ?? null;
+  // The rail is shared by /chat and /scheduled, so the entry highlights from
+  // the pathname rather than from a chat-only param.
+  const pathname = usePathname();
+  const scheduledActive = (pathname ?? "").includes("/scheduled");
   const { current } = useWorkspace();
 
   // Defer the decorative rail orb's WebGL renderer until the workspace is ready
@@ -296,6 +302,25 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         </button>
 
         <FilesSection />
+
+        {/*
+          The workspace's second destination. Placed above the conversation
+          list so the rail reads as navigation-then-history, and given the same
+          active treatment a selected thread gets.
+        */}
+        <Link
+          href="/scheduled"
+          onClick={onNavigate}
+          aria-current={scheduledActive ? "page" : undefined}
+          className={`mt-2 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
+            scheduledActive
+              ? "bg-brand/10 font-medium text-brand-ink"
+              : "text-muted-foreground hover:bg-accent hover:text-primary"
+          }`}
+        >
+          <CalendarClock className="h-4 w-4 shrink-0" />
+          Scheduled
+        </Link>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
@@ -397,6 +422,16 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         )}
       </div>
 
+      {/*
+        The workspace has no topbar, so without this the notification bell — and
+        therefore every scheduled-task update — would be invisible on /chat and
+        /scheduled. Same component the dashboard topbar mounts; no second
+        notification surface.
+      */}
+      <div className="flex items-center justify-between border-t border-border px-3 py-2">
+        <span className="text-[11px] text-muted-foreground">Updates</span>
+        <NotificationsBell />
+      </div>
       <ProfileFooter onNavigate={onNavigate} />
     </div>
   );

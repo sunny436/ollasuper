@@ -563,6 +563,152 @@ http.route({
           return aiJson({ error: "unknown stream" }, 404);
         return aiJson(r);
       }
+      // ── Scheduled Tasks (Phase 1) ─────────────────────────────────────────
+      // The scheduler process (services/ai/app/scheduler, DBOS) drives these.
+      // They are occurrence-scoped, not stream-scoped, and deliberately return
+      // NO task prompt or title: AI_INGRESS_SECRET must not become a cross-user
+      // read capability over everyone's standing scheduled prompts.
+      case "sched-list": {
+        const limit =
+          typeof body.limit === "number" ? body.limit : undefined;
+        return aiJson(
+          await ctx.runQuery(
+            internal.scheduled.occurrences.listSchedulable,
+            { limit },
+          ),
+        );
+      }
+      case "sched-materialize": {
+        const taskId = typeof body.taskId === "string" ? body.taskId : null;
+        const fromCursor =
+          typeof body.fromCursor === "number" ? body.fromCursor : null;
+        const toCursor =
+          typeof body.toCursor === "number" ? body.toCursor : null;
+        if (!taskId || fromCursor === null || toCursor === null) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        const scheduledFor = Array.isArray(body.scheduledFor)
+          ? body.scheduledFor.filter((x): x is number => typeof x === "number")
+          : [];
+        return aiJson(
+          await ctx.runMutation(internal.scheduled.occurrences.materialize, {
+            taskId,
+            fromCursor,
+            toCursor,
+            scheduledFor,
+            nextRunAt:
+              typeof body.nextRunAt === "number" ? body.nextRunAt : undefined,
+            invalidReason:
+              typeof body.invalidReason === "string"
+                ? body.invalidReason
+                : undefined,
+            scheduleEnded: body.scheduleEnded === true ? true : undefined,
+          }),
+        );
+      }
+      case "sched-claim": {
+        const limit = typeof body.limit === "number" ? body.limit : 5;
+        const maxPerUser =
+          typeof body.maxPerUser === "number" ? body.maxPerUser : 1;
+        return aiJson(
+          await ctx.runMutation(internal.scheduled.occurrences.claim, {
+            limit,
+            maxPerUser,
+          }),
+        );
+      }
+      case "sched-verify":
+      case "sched-heartbeat": {
+        const occurrenceKey =
+          typeof body.occurrenceKey === "string" ? body.occurrenceKey : null;
+        const leaseToken =
+          typeof body.leaseToken === "string" ? body.leaseToken : null;
+        if (!occurrenceKey || !leaseToken) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        if (body.op === "sched-heartbeat") {
+          return aiJson(
+            await ctx.runMutation(internal.scheduled.occurrences.heartbeat, {
+              occurrenceKey,
+              leaseToken,
+            }),
+          );
+        }
+        return aiJson(
+          await ctx.runMutation(internal.scheduled.occurrences.verify, {
+            occurrenceKey,
+            leaseToken,
+            workflowId:
+              typeof body.workflowId === "string" ? body.workflowId : undefined,
+          }),
+        );
+      }
+      case "sched-finalize": {
+        const occurrenceKey =
+          typeof body.occurrenceKey === "string" ? body.occurrenceKey : null;
+        const leaseToken =
+          typeof body.leaseToken === "string" ? body.leaseToken : null;
+        const outcome = body.outcome;
+        if (
+          !occurrenceKey ||
+          !leaseToken ||
+          (outcome !== "succeeded" &&
+            outcome !== "failed" &&
+            outcome !== "cancelled")
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        return aiJson(
+          await ctx.runMutation(internal.scheduled.occurrences.finalize, {
+            occurrenceKey,
+            leaseToken,
+            outcome,
+            errorCode:
+              typeof body.errorCode === "string" ? body.errorCode : undefined,
+            retryable:
+              typeof body.retryable === "boolean" ? body.retryable : undefined,
+          }),
+        );
+      }
+      // ── Scheduled Tasks execution (Phase 2) ───────────────────────────────
+      // Occurrence-scoped and lease-guarded, exactly like the Phase 1 ops. They
+      // return NO task content: the prompt reaches the model through the normal
+      // dispatchPayload path, not through this surface.
+      case "sched-start-run":
+      case "sched-run-status":
+      case "sched-cancel-run": {
+        const occurrenceKey =
+          typeof body.occurrenceKey === "string" ? body.occurrenceKey : null;
+        const leaseToken =
+          typeof body.leaseToken === "string" ? body.leaseToken : null;
+        if (!occurrenceKey || !leaseToken) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        if (body.op === "sched-run-status") {
+          return aiJson(
+            await ctx.runMutation(internal.scheduled.execution.runStatus, {
+              occurrenceKey,
+              leaseToken,
+            }),
+          );
+        }
+        if (body.op === "sched-cancel-run") {
+          return aiJson(
+            await ctx.runMutation(internal.scheduled.execution.cancelRun, {
+              occurrenceKey,
+              leaseToken,
+            }),
+          );
+        }
+        return aiJson(
+          await ctx.runMutation(internal.scheduled.execution.startRun, {
+            occurrenceKey,
+            leaseToken,
+            deadlineMs:
+              typeof body.deadlineMs === "number" ? body.deadlineMs : undefined,
+          }),
+        );
+      }
       default:
         return aiJson({ error: `unknown op: ${body.op}` }, 400);
     }
@@ -800,6 +946,121 @@ http.route({
         "cache-control": "private, max-age=300",
       },
     });
+  }),
+});
+
+// --- Mail provider delivery outcomes (Phase 4, Scheduled Tasks) -------------
+/**
+ * What actually happened after the provider accepted a report email.
+ *
+ * A 2xx on send only means custody changed hands; delivery, bounce and
+ * complaint arrive later, or never. Without this route a delivery row stays
+ * `accepted` forever, which is the honest state — so this endpoint upgrades
+ * accuracy and is never load-bearing for correctness.
+ *
+ * PUBLIC and unauthenticated at the network level, so the signature IS the
+ * authentication. Resend signs with Svix headers over `${id}.${timestamp}.${body}`
+ * using a base64 secret prefixed `whsec_`. Verified here, before the body is
+ * parsed as anything meaningful.
+ */
+const WEBHOOK_TOLERANCE_MS = 5 * 60 * 1000;
+
+async function verifySvix(
+  secret: string,
+  id: string,
+  timestamp: string,
+  signatureHeader: string,
+  body: string,
+): Promise<boolean> {
+  // Replay window. Without it a captured request stays valid forever.
+  const ts = Number(timestamp) * 1000;
+  if (!Number.isFinite(ts)) return false;
+  if (Math.abs(Date.now() - ts) > WEBHOOK_TOLERANCE_MS) return false;
+
+  const raw = secret.startsWith("whsec_") ? secret.slice(6) : secret;
+  let keyBytes: Uint8Array;
+  try {
+    keyBytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
+  } catch {
+    return false;
+  }
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`${id}.${timestamp}.${body}`),
+  );
+  const expected = btoa(String.fromCharCode(...new Uint8Array(mac)));
+
+  // The header carries space-separated `v1,<sig>` entries. Compare every one in
+  // constant time — a length-independent early return would leak the prefix.
+  let matched = false;
+  for (const part of signatureHeader.split(" ")) {
+    const [version, sig] = part.split(",");
+    if (version !== "v1" || !sig) continue;
+    if (sig.length !== expected.length) continue;
+    let diff = 0;
+    for (let i = 0; i < sig.length; i++) {
+      diff |= sig.charCodeAt(i) ^ expected.charCodeAt(i);
+    }
+    if (diff === 0) matched = true;
+  }
+  return matched;
+}
+
+const PROVIDER_EVENTS: Record<string, "delivered" | "bounced" | "complained"> = {
+  "email.delivered": "delivered",
+  "email.bounced": "bounced",
+  "email.complained": "complained",
+};
+
+http.route({
+  path: "/mail/webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret = process.env.SCHEDULED_EMAIL_WEBHOOK_SECRET;
+    // Unconfigured means CLOSED, not open: an endpoint that accepts anything
+    // when a secret is missing is worse than one that does not exist.
+    if (!secret) return new Response("not configured", { status: 404 });
+
+    const id = req.headers.get("svix-id") ?? "";
+    const timestamp = req.headers.get("svix-timestamp") ?? "";
+    const signature = req.headers.get("svix-signature") ?? "";
+    if (!id || !timestamp || !signature) {
+      return new Response("unsigned", { status: 401 });
+    }
+    // Read the RAW body: re-serialising JSON would change the bytes the
+    // signature was computed over.
+    const body = await req.text();
+    if (!(await verifySvix(secret, id, timestamp, signature, body))) {
+      return new Response("bad signature", { status: 401 });
+    }
+
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(body) as Record<string, unknown>;
+    } catch {
+      return new Response("bad request", { status: 400 });
+    }
+
+    const event = PROVIDER_EVENTS[String(payload.type ?? "")];
+    const data = payload.data as { email_id?: unknown } | undefined;
+    const messageId = typeof data?.email_id === "string" ? data.email_id : "";
+    // An event we do not model, or one we cannot attribute, is acknowledged and
+    // dropped — answering non-2xx would make the provider retry it forever.
+    if (!event || !messageId) return new Response("ok", { status: 200 });
+
+    await ctx.runMutation(internal.scheduled.delivery.applyProviderEvent, {
+      providerMessageId: messageId,
+      event,
+    });
+    return new Response("ok", { status: 200 });
   }),
 });
 

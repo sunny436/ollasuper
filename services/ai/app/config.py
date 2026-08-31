@@ -595,6 +595,55 @@ class Settings(BaseSettings):
             return self.ollagraph_openapi_url
         return f"{self.ollagraph_base_url.rstrip('/')}/openapi.json"
 
+    # --- Scheduled Tasks (Phase 1: scheduling foundation only) -------------
+    # OFF by default => the scheduler process registers no schedule and no
+    # queue, so an unconfigured deployment is byte-identical to today. Phase 1
+    # executes NOTHING: the occurrence lifecycle runs end to end against a
+    # no-op executor, and Phase 2 swaps in the real AI execution behind the
+    # same OccurrenceExecutor seam.
+    ai_scheduled_tasks_enabled: bool = False
+    # DBOS system database. Postgres in production (a dedicated `myos_dbos`
+    # beside the knowledge DB); blank => an on-disk SQLite file, which is what
+    # the hermetic tests use. CARRIES A PASSWORD — listed in secrets() below.
+    scheduler_database_url: str = ""
+    # 6-field cron (seconds first). A 30s heartbeat bounds how late a due
+    # occurrence starts; correctness never depends on it, only latency.
+    scheduler_tick_cron: str = "*/30 * * * * *"
+    scheduler_queue_name: str = "scheduled_tasks"
+    # Cross-task parallelism. Deliberately far below the chat plane's
+    # ai_max_concurrent_global (32): scheduled work is unattended and must
+    # never be able to crowd out a user waiting on a live answer.
+    scheduler_global_concurrency: int = 4
+    # Per-task concurrency is ALWAYS 1 (queue partitioning) and is not
+    # configurable — overlapping runs of one task are a correctness bug, not a
+    # tuning choice. This is the per-USER ceiling.
+    scheduler_max_per_user: int = 1
+    # Occurrences materialised per task per tick. A long outage is CHUNKED
+    # across ticks, never dropped: the cursor parks on the last one written.
+    scheduler_materialize_limit: int = 200
+    scheduler_claim_limit: int = 5
+    scheduler_task_page: int = 100
+    # Liveness cadence. Must stay well under LEASE_TTL_MS in
+    # convex/scheduled/occurrences.ts or the reaper will steal live work.
+    scheduler_heartbeat_s: float = 30.0
+    # "chat" runs a real AI turn through the existing execution path; "noop" is
+    # the Phase 1 lifecycle-only executor, kept for tests.
+    scheduler_executor: str = "chat"
+    # Per-turn budget for a SCHEDULED run. Chat keeps its 300s cap; a scheduled
+    # deep-research or SEO audit legitimately runs longer. This value is written
+    # to chatStreams.deadlineAt, which is the whole chain: the Python runner
+    # adopts it (runner._compute_deadline_mono) and the Convex stall reaper fails
+    # a past-deadline turn. Phase 1's 300s lease is unaffected because the
+    # occurrence heartbeats every 30s throughout.
+    scheduler_turn_deadline_ms: int = 1_200_000
+    # How often the executor polls the turn for a terminal state. Coarse on
+    # purpose: this is a background job, and each poll is a Convex mutation.
+    scheduler_poll_interval_s: float = 3.0
+    # Loopback-only health/readiness for the scheduler. NOT DBOS own admin
+    # server: that one hard-binds 0.0.0.0 and exposes workflow recovery,
+    # garbage collection, global-timeout and deactivate with no auth.
+    scheduler_health_port: int = 8771
+
     @property
     def knowledge_engine_url(self) -> str:
         """SQLAlchemy async URL. psycopg3 takes libpq params (incl. sslmode)
@@ -617,6 +666,8 @@ class Settings(BaseSettings):
                 self.ai_ingress_secret,
                 # Carries the DB password — must never reach journalctl.
                 self.knowledge_database_url,
+                # Same: the DBOS system database URL embeds its password.
+                self.scheduler_database_url,
                 # Ollagraph Bearer key (osk_...). Discovery is key-less, but the
                 # key must never reach logs if a future execution path uses it.
                 self.ollagraph_api_key,

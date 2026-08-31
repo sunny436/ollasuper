@@ -8,6 +8,7 @@ import { bump } from "../counters";
 import { recordUsage } from "../usage";
 import { deleteArtifactsForMessage } from "./artifacts";
 import { bindAttachments } from "./attachments";
+import { toPublic } from "./public";
 import {
   assertAllowedModel,
   DEFAULT_MODEL,
@@ -38,53 +39,6 @@ const HISTORY_MAX_CHARS = 24_000;
 /** A message is "in flight" while the assistant is still producing it. */
 function isInFlight(m: Doc<"chatMessages">): boolean {
   return m.status === "pending" || m.status === "streaming";
-}
-
-async function toPublic(ctx: QueryCtx, m: Doc<"chatMessages">) {
-  const attachments = m.attachmentIds?.length
-    ? await Promise.all(
-        m.attachmentIds.map(async (id) => {
-          const a = await ctx.db.get(id);
-          if (!a) return null;
-          return {
-            _id: a._id,
-            name: a.name,
-            size: a.size,
-            contentType: a.contentType,
-            kind: a.kind,
-            // Minted here, after the enclosing thread ownership check.
-            // storageId is deliberately never exposed.
-            url: await ctx.storage.getUrl(a.storageId),
-          };
-        }),
-      )
-    : [];
-  return {
-    _id: m._id,
-    role: m.role,
-    seq: m.seq,
-    content: m.content,
-    status: m.status,
-    model: m.model ?? null,
-    reasoning: m.reasoning ?? null,
-    error: m.error ?? null,
-    errorCode: m.errorCode ?? null,
-    parentId: m.parentId ?? null,
-    variantIndex: m.variantIndex ?? null,
-    variantCount: m.variantCount ?? null,
-    activeVariantIndex: m.activeVariantIndex ?? null,
-    tokensIn: m.tokensIn ?? null,
-    tokensOut: m.tokensOut ?? null,
-    // Typed events (Phase 3). Empty for text-only / pre-Phase-3 messages, so
-    // the client renders them exactly as before.
-    events: m.events ?? [],
-    createdAt: m.createdAt,
-    // Exposed so the client can dedupe its optimistic user row against the
-    // settled one (the browser minted this id; returning it to its own author
-    // is not a capability leak). storageId, by contrast, is never exposed.
-    clientId: m.clientId ?? null,
-    attachments: attachments.filter(Boolean),
-  };
 }
 
 /**
@@ -194,6 +148,15 @@ async function assertCanGenerate(
   userId: Id<"users">,
   thread: Doc<"chatThreads">,
 ) {
+  // Scheduled Tasks (Phase 2). A scheduled task's execution thread is an
+  // INTERNAL history mechanism, not a conversation. Every interactive
+  // turn-start path — send, regenerate, retry, editUserMessage — funnels
+  // through here, so this single guard is what stops a user message ever
+  // contaminating a scheduled run's context. The scheduled path does not call
+  // this function; it goes through scheduled/execution.ts.
+  if (thread.status === "scheduled") {
+    throw new ConvexError("Not found");
+  }
   if (thread.streamingMessageId) {
     throw new ConvexError("This conversation is already generating a reply");
   }
@@ -223,7 +186,7 @@ async function assertCanGenerate(
  * Create the assistant placeholder + its stream control row and dispatch.
  * Shared by send / regenerate / retry so there is exactly one dispatch path.
  */
-async function startAssistantTurn(
+export async function startAssistantTurn(
   ctx: MutationCtx,
   thread: Doc<"chatThreads">,
   userId: Id<"users">,
@@ -233,6 +196,20 @@ async function startAssistantTurn(
     parentId?: Id<"chatMessages">;
     variantIndex?: number;
     reuseMessageId?: Id<"chatMessages">;
+    // Phase 2 (scheduled tasks only; both undefined on every chat turn).
+    //
+    // `deadlineMs` widens the per-turn budget — the Python runner adopts
+    // chatStreams.deadlineAt directly (runner.py `_compute_deadline_mono`), and
+    // stream.reapStalled fails a past-deadline turn, so this one field is the
+    // whole deadline chain.
+    //
+    // `attempts` is LOAD-BEARING on a scheduled retry. dispatchPayload computes
+    // `doResume = attempt > 0 || hasEvents`, and a fresh stream has neither —
+    // so without seeding this, a retry would NOT replay completedTools /
+    // attemptedTools and every side-effecting tool the previous attempt ran
+    // would execute a second time.
+    deadlineMs?: number;
+    attempts?: number;
   },
 ): Promise<{ assistantMessageId: Id<"chatMessages">; streamId: string }> {
   const now = Date.now();
@@ -290,8 +267,8 @@ async function startAssistantTurn(
     committedSeq: -1,
     heartbeatAt: now,
     startedAt: now,
-    attempts: 0,
-    deadlineAt: now + AGENT_TOTAL_DEADLINE_MS,
+    attempts: opts.attempts ?? 0,
+    deadlineAt: now + (opts.deadlineMs ?? AGENT_TOTAL_DEADLINE_MS),
   });
 
   await ctx.db.patch(thread._id, {
@@ -692,6 +669,11 @@ export async function buildHistory(
   ctx: QueryCtx,
   threadId: Id<"chatThreads">,
   beforeSeq: number,
+  // Phase 2: a scheduled execution thread passes 1 so the turn carries EXACTLY
+  // its own prompt. It cannot pass zero — `history` is also how the current
+  // turn's user message reaches the model (runner.py pops the last entry as
+  // `latest`), so an empty history would send no prompt at all.
+  maxMessages: number = HISTORY_MAX_MESSAGES,
 ) {
   const recent = await ctx.db
     .query("chatMessages")
@@ -699,7 +681,7 @@ export async function buildHistory(
       q.eq("threadId", threadId).lt("seq", beforeSeq),
     )
     .order("desc")
-    .take(HISTORY_MAX_MESSAGES);
+    .take(Math.max(1, maxMessages));
 
   // Walk newest→oldest accumulating a char budget, then flip to chronological.
   const picked: Doc<"chatMessages">[] = [];

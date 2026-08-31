@@ -18,7 +18,13 @@ export function ErrorNotice({
 }: {
   code?: string | null;
   message?: string | null;
-  onRetry: () => void;
+  /**
+   * Omitted in a READ-ONLY context (the Scheduled Tasks result viewer), where
+   * retrying would call a chat mutation that is refused on a scheduled thread.
+   * Absent means the Retry button is not rendered at all, rather than rendered
+   * and inert.
+   */
+  onRetry?: () => void;
 }) {
   const { message: friendly, retryable } = errorCopy(code, message);
   // Only show the raw details disclosure when we actually replaced the message
@@ -42,7 +48,7 @@ export function ErrorNotice({
           </p>
         </Disclosure>
       )}
-      {retryable && (
+      {retryable && onRetry && (
         <button
           type="button"
           onClick={onRetry}
