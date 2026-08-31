@@ -411,14 +411,31 @@ async def _serve() -> None:
     )
     # A tick queue of 1 keeps overlapping ticks from piling up under load.
     await DBOS.register_queue_async(TICK_QUEUE, global_concurrency=1)
-    await DBOS.create_schedule_async(
-        schedule_name=TICK_SCHEDULE_NAME,
-        workflow_fn=scheduler_tick,
-        schedule=settings.scheduler_tick_cron,
-        queue_name=TICK_QUEUE,
-        # OFF on purpose — see the module docstring. Per-task cursors do the
-        # timeline reconstruction; replaying thousands of ticks would not.
-        automatic_backfill=False,
+    # apply_schedules_async, NOT create_schedule_async.
+    #
+    # create_schedule raises  on
+    # the SECOND launch, because the row it writes lives in the DBOS system
+    # database and outlives the process. That made the scheduler a
+    # start-once service: it came up fine the first time and then crash-looped
+    # on every restart, so any deploy or reboot silently ended scheduled
+    # execution. Production hit exactly that — 51 restarts in a row.
+    #
+    # apply_schedules atomically creates OR REPLACES, which is what a service
+    # that declares its own schedule at boot actually needs, and it also makes a
+    # changed cron take effect instead of being ignored.
+    await DBOS.apply_schedules_async(
+        [
+            {
+                "schedule_name": TICK_SCHEDULE_NAME,
+                "workflow_fn": scheduler_tick,
+                "schedule": settings.scheduler_tick_cron,
+                "queue_name": TICK_QUEUE,
+                # OFF on purpose — see the module docstring. Per-task cursors do
+                # the timeline reconstruction; replaying thousands of ticks
+                # would not.
+                "automatic_backfill": False,
+            }
+        ]
     )
 
     health.mark_started()

@@ -441,3 +441,79 @@ async def test_an_interrupted_workflow_is_recovered_after_a_restart(env):
     assert fake.occ["k1"]["status"] == "succeeded"
     # It ran again after recovery — the occurrence was never lost.
     assert len(ex.calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# The scheduler must survive a RESTART.
+#
+# create_schedule_async raises `Schedule 'myos-scheduler-tick' already exists`
+# on the second launch, because the row lives in the DBOS system database and
+# outlives the process. That made this a start-once service: fine on first boot,
+# crash-looping on every restart after it — so any deploy or reboot silently
+# ended scheduled execution. Production hit it: 51 consecutive restarts.
+#
+# The behavioural test is the point. A static "does it call apply_schedules"
+# check would pass on any rename; registering the same schedule twice against
+# one database is the actual property.
+# ---------------------------------------------------------------------------
+
+
+async def _register_tick(url: str, settings: Settings) -> None:
+    """The launch path's schedule registration, in isolation."""
+    DBOS(
+        config={
+            "name": "myos-scheduler-restart-test",
+            "system_database_url": url,
+            "use_listen_notify": False,
+            "run_admin_server": False,
+            "enable_otlp": False,
+            "log_level": "WARNING",
+        }
+    )
+    DBOS.launch()
+    await DBOS.register_queue_async(sched.TICK_QUEUE, global_concurrency=1)
+    await DBOS.apply_schedules_async(
+        [
+            {
+                "schedule_name": sched.TICK_SCHEDULE_NAME,
+                "workflow_fn": sched.scheduler_tick,
+                "schedule": settings.scheduler_tick_cron,
+                "queue_name": sched.TICK_QUEUE,
+                "automatic_backfill": False,
+            }
+        ]
+    )
+
+
+@pytest.mark.anyio
+async def test_registering_the_tick_schedule_twice_is_idempotent(tmp_path):
+    """Boot, shut down, boot again against the SAME database — as a restart does."""
+    db = f"sqlite:///{(tmp_path / 'restart.sqlite').as_posix()}"
+    settings = Settings(scheduler_tick_cron="*/30 * * * * *")
+
+    await _register_tick(db, settings)
+    DBOS.destroy(destroy_registry=False)
+
+    # The second boot is the one that used to raise.
+    await _register_tick(db, settings)
+    schedule = await DBOS.get_schedule_async(sched.TICK_SCHEDULE_NAME)
+    assert schedule is not None
+    DBOS.destroy(destroy_registry=False)
+
+
+@pytest.mark.anyio
+async def test_a_changed_cron_takes_effect_on_restart(tmp_path):
+    """create_schedule would have ignored it; apply_schedules replaces it.
+
+    Worth pinning: a scheduler that silently kept running the OLD cron after an
+    operator changed it would be a slow, confusing failure.
+    """
+    db = f"sqlite:///{(tmp_path / 'cron.sqlite').as_posix()}"
+    await _register_tick(db, Settings(scheduler_tick_cron="*/30 * * * * *"))
+    DBOS.destroy(destroy_registry=False)
+
+    await _register_tick(db, Settings(scheduler_tick_cron="*/15 * * * * *"))
+    schedule = await DBOS.get_schedule_async(sched.TICK_SCHEDULE_NAME)
+    assert schedule is not None
+    assert "*/15" in str(getattr(schedule, "schedule", schedule))
+    DBOS.destroy(destroy_registry=False)
