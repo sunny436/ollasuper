@@ -607,13 +607,23 @@ export const deliver = internalAction({
           reason: "invalid_recipient",
         });
       }
-    } catch {
+    } catch (e) {
       // The catch-all that makes this action total. An uncaught throw would
       // strand the row in `sending`, and Convex does not retry a thrown action.
+      //
+      // It used to swallow the exception entirely and record a bare
+      // "delivery_error", which made a production failure undiagnosable: the row
+      // said something went wrong and nothing said what. Keep the CLASS of the
+      // error — a constructor name and a bounded message — so the next failure
+      // explains itself. Bounded and logged rather than stored raw, because this
+      // field is rendered in the UI.
+      const detail =
+        e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      console.error("scheduled delivery failed", detail.slice(0, 500));
       await ctx.runMutation(internal.scheduled.delivery.record, {
         deliveryId,
         status: "pending",
-        errorCode: "delivery_error",
+        errorCode: `delivery_error:${detail.slice(0, 80)}`,
         pdfStatus: pdf.pdfStatus,
         attachment: pdf.attachment,
         retryInMs: backoffMs(1),

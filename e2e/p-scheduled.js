@@ -122,8 +122,18 @@ const openRowMenu = async (page, title) => {
   const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   PAGE = page;
+  // Chrome reports some of its OWN policy decisions at console.error level.
+  // The beforeunload one fires because Playwright reloads without a preceding
+  // user gesture — it is Chrome saying it suppressed a dialog, links to
+  // chromestatus.com, and originates in no application code (we register no
+  // beforeunload handler anywhere). Counting it would mean the gate fails on
+  // browser behaviour instead of on ours. Narrow by design: anything without a
+  // chromestatus.com citation still counts.
+  const BROWSER_NOTICE = /chromestatus\.com/;
   page.on("console", (m) => {
-    if (m.type() === "error") errs.push(m.text());
+    if (m.type() === "error" && !BROWSER_NOTICE.test(m.text())) {
+      errs.push(m.text());
+    }
   });
   page.on("response", (r) => {
     if (r.status() >= 400 && !r.url().includes("favicon")) {
