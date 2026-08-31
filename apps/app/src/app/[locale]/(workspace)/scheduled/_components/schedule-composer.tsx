@@ -55,6 +55,12 @@ interface Draft {
   /** The subset of `unresolved` that came back filled but unsafely ("at 8"). */
   ambiguous: string[];
   question: string | null;
+  /**
+   * Which field `question` was written to answer. The parser is asked for one
+   * question about the FIRST thing it needs, so once that field is answered the
+   * question is stale — showing it anyway asks for something already given.
+   */
+  questionFor: string | null;
   emailOnSuccess: boolean;
   attachPdf: boolean;
 }
@@ -75,7 +81,11 @@ const FIELD_PROMPTS: Record<string, string> = {
 function blockingReason(draft: Draft): string | null {
   const first = draft.unresolved[0];
   if (!first) return null;
-  return draft.question ?? FIELD_PROMPTS[first] ?? "A few details are missing";
+  // The parser's own wording, but only while it still addresses what is
+  // missing. Once its field is answered the question is stale, and showing it
+  // asks the user for something they have already given.
+  if (draft.question && draft.questionFor === first) return draft.question;
+  return FIELD_PROMPTS[first] ?? "A few details are missing";
 }
 
 /** Remove one field from `unresolved` — the user just answered it. */
@@ -121,6 +131,7 @@ export function ScheduleComposer({
           unresolved: saved.draft.unresolved ?? [],
           ambiguous: saved.draft.ambiguous ?? [],
           question: saved.draft.question ?? null,
+          questionFor: saved.draft.questionFor ?? null,
           emailOnSuccess: saved.draft.emailOnSuccess ?? false,
           attachPdf: saved.draft.attachPdf ?? false,
         });
@@ -212,6 +223,7 @@ export function ScheduleComposer({
         unresolved: ["title", "prompt"],
         ambiguous: [],
         question: null,
+        questionFor: null,
         emailOnSuccess: false,
         attachPdf: false,
       };
@@ -261,6 +273,11 @@ export function ScheduleComposer({
       unresolved: [...unresolved],
       ambiguous: Array.isArray(res.ambiguous) ? (res.ambiguous as string[]) : [],
       question: typeof res.question === "string" ? res.question : null,
+      // The parser answers the first item of its OWN needs list.
+      questionFor:
+        Array.isArray(res.needs) && res.needs.length
+          ? (res.needs[0] as string)
+          : null,
       emailOnSuccess: draft?.emailOnSuccess ?? false,
       attachPdf: draft?.attachPdf ?? false,
     };
