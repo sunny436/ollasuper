@@ -66,7 +66,7 @@ async function codeFromMailpit(email) {
     await sleep(2000);
     const { page } = await u.query(anyApi.chat.messages.listPaged, {
       threadId,
-      limit: 10,
+      paginationOpts: { cursor: null, numItems: 10 },
     });
     const reply = page.find((m) => m.role === "assistant" && m.status === "complete");
     if (reply) {
