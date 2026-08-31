@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "../_generated/server";
+import { mutation, query, internalMutation } from "../_generated/server";
 import { requireMember } from "../orgs";
 import {
   DEFAULT_MODEL,
@@ -140,5 +140,56 @@ export const reset = mutation({
       )
       .unique();
     if (existing) await ctx.db.delete(existing._id);
+  },
+});
+
+/**
+ * Move settings off a model the provider has stopped serving.
+ *
+ * Changing DEFAULT_MODEL only helps users who never picked one. Anyone with a
+ * stored `defaultModel` keeps using it, and `assertAllowedModel` will not
+ * rescue them: the dead ids are still in the catalogue — they are valid models
+ * that happen to be failing upstream — so they pass the membership check and
+ * then 502 on every turn.
+ *
+ * Deliberately narrow. It rewrites ONLY the ids passed in, only when they match
+ * exactly, and it never touches a row that has chosen anything else. Someone's
+ * model choice is theirs; this is for the case where the thing they chose no
+ * longer exists to choose.
+ */
+export const remapDeadModels = internalMutation({
+  args: { from: v.array(v.string()), to: v.string() },
+  handler: async (ctx, { from, to }): Promise<{ scanned: number; moved: number }> => {
+    const dead = new Set(from);
+    const rows = await ctx.db.query("chatSettings").collect();
+    let moved = 0;
+    for (const row of rows) {
+      if (!dead.has(row.defaultModel)) continue;
+      await ctx.db.patch(row._id, { defaultModel: to, updatedAt: Date.now() });
+      moved++;
+    }
+    return { scanned: rows.length, moved };
+  },
+});
+
+/**
+ * The same for threads already created against a dead model.
+ *
+ * A scheduled task's execution thread is created ONCE and reused, so without
+ * this an existing task keeps dispatching to the dead model forever — the
+ * settings fix would only reach tasks created afterwards.
+ */
+export const remapDeadThreadModels = internalMutation({
+  args: { from: v.array(v.string()), to: v.string() },
+  handler: async (ctx, { from, to }): Promise<{ scanned: number; moved: number }> => {
+    const dead = new Set(from);
+    const rows = await ctx.db.query("chatThreads").take(2000);
+    let moved = 0;
+    for (const row of rows) {
+      if (!dead.has(row.model)) continue;
+      await ctx.db.patch(row._id, { model: to });
+      moved++;
+    }
+    return { scanned: rows.length, moved };
   },
 });

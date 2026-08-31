@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { DEFAULT_MODEL } from "./chat/authz";
 
 const modules = import.meta.glob(["./**/*.*s", "!./**/*.test.*"]);
 
@@ -1113,7 +1114,7 @@ describe("dispatch contract (Convex -> Python)", () => {
     const body = call?.body as Record<string, unknown>;
     expect(body.streamId).toBe(streamId);
     expect(body.threadId).toBe(threadId);
-    expect(body.model).toBe("gpt-5.6-luna");
+    expect(body.model).toBe(DEFAULT_MODEL);
     // History excludes the in-flight assistant row and includes the user turn.
     const history = body.history as Array<{ role: string; content: string }>;
     expect(history.map((h) => h.role)).toEqual(["user"]);

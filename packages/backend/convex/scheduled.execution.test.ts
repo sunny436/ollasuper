@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { DEFAULT_MODEL } from "./chat/authz";
 
 const modules = import.meta.glob(["./**/*.*s", "!./**/*.test.*"]);
 const as = (userId: string) => ({ subject: `${userId}|sess_${userId}` });
@@ -770,7 +771,7 @@ describe("the execution thread's model", () => {
       leaseToken: claim.leaseToken,
     });
     await drain(t);
-    expect((await threadOf(t, taskId))?.model).toBe("gpt-5.6-luna");
+    expect((await threadOf(t, taskId))?.model).toBe(DEFAULT_MODEL);
   });
 
   test("an unknown stored model degrades to the default rather than failing", async () => {

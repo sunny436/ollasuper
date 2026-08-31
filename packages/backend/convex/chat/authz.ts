@@ -142,7 +142,15 @@ export function timingSafeEqualStr(
  * serves — some catalogue ids are advertised but unserved ("not found in
  * model table"); this one is verified working.
  */
-export const DEFAULT_MODEL = "gpt-5.6-luna";
+// glm-5.2, not gpt-5.6-luna.
+//
+// The provider serves 11 of its 13 models; the two exceptions are exactly the
+// OpenAI-backed pair (gpt-5.6-luna and gpt-5.5), both returning 502 wrapping
+// `sidecar: Error 401 Unauthorized ... Provided authentication token is
+// expired` — an expired upstream credential on THEIR side, which we cannot fix
+// and should not depend on. The default was one of those two, so every new
+// user and every scheduled run failed while the rest of the catalogue was fine.
+export const DEFAULT_MODEL = "glm-5.2";
 
 /**
  * Validate a model against the cached OpenRouter catalogue.

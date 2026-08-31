@@ -358,7 +358,11 @@ class Settings(BaseSettings):
     # required unless an operator both installs sentry-sdk and sets this DSN.
     ai_sentry_dsn: str = ""
 
-    ai_default_model: str = "gpt-5.6-luna"
+    # Keep in step with DEFAULT_MODEL in convex/chat/authz.ts — this one drives
+    # the scheduling parser, and production had it set to a model id the
+    # provider does not accept at all, so every parse silently degraded to the
+    # manual form.
+    ai_default_model: str = "glm-5.2"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
     # NOTE: gemini-2.0-flash-001 was RETIRED by OpenRouter (404 "No endpoints
     # found"); the live successor is gemini-2.5-flash-lite (multimodal, cheap).

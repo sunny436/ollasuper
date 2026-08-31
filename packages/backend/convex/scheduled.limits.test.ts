@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { DEFAULT_MODEL } from "./chat/authz";
 
 /**
  * Phase 4 limits and the provider webhook.
@@ -87,7 +88,7 @@ async function exhaustWindow(
       await ctx.db.insert("chatSettings", {
         workspaceId: ws,
         userId,
-        defaultModel: "gpt-5.6-luna",
+        defaultModel: DEFAULT_MODEL,
         sendOnEnter: true,
         updatedAt: Date.now(),
         ...patch,
