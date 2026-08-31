@@ -81,9 +81,9 @@ describe("create / validate", () => {
       spec: DAILY,
     });
     const task = await u.query(api.scheduled.tasks.get, { taskId });
-    expect(task.status).toBe("active");
-    expect(task.revision).toBe(1);
-    expect(task.title).toBe("Daily digest"); // whitespace normalised
+    expect(task?.status).toBe("active");
+    expect(task?.revision).toBe(1);
+    expect(task?.title).toBe("Daily digest"); // whitespace normalised
     const row = await t.run(async (ctx) => ctx.db.get(taskId));
     // Nothing before creation can ever be enumerated, so a new task can never
     // backfill history.
@@ -107,7 +107,7 @@ describe("create / validate", () => {
       },
     });
     const task = await u.query(api.scheduled.tasks.get, { taskId });
-    expect(task.spec).toMatchObject({ kind: "weekly", weekdays: [1, 3, 5] });
+    expect(task?.spec).toMatchObject({ kind: "weekly", weekdays: [1, 3, 5] });
   });
 
   test("invalid schedules are refused at the boundary", async () => {
@@ -414,8 +414,12 @@ describe("delete", () => {
       "task_deleted",
     );
     expect(await u.query(api.scheduled.tasks.list, {})).toEqual([]);
+    // Hidden from reads by returning nothing, not by throwing: the deep link
+    // has to render the "deleted" panel without logging a console error.
+    expect(await u.query(api.scheduled.tasks.get, { taskId })).toBeNull();
+    // Still refused where it counts.
     await expect(
-      u.query(api.scheduled.tasks.get, { taskId }),
+      u.mutation(api.scheduled.tasks.runNow, { taskId }),
     ).rejects.toThrow(/Not found/);
   });
 

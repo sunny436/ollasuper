@@ -4,7 +4,11 @@ import type { Doc, Id } from "../_generated/dataModel";
 import { mutation, query } from "../_generated/server";
 import { toPublic } from "../chat/public";
 import { requireMember } from "../orgs";
-import { requireTaskAccess, requireUserId } from "./authz";
+import {
+  optionalTaskAccess,
+  requireTaskAccess,
+  requireUserId,
+} from "./authz";
 import {
   cancelOpenForTask,
   holdOpenForTask,
@@ -185,11 +189,16 @@ export const create = mutation({
 });
 
 export const get = query({
-  args: { taskId: v.id("scheduledTasks") },
+  // v.string() + normalizeId, never v.id(): this id comes from the URL, and a
+  // typo would raise ArgumentValidationError -> console.error -> a failed e2e
+  // run. Same rule chat follows for threadId.
+  args: { taskId: v.string() },
   handler: async (ctx, { taskId }) => {
-    const userId = await requireUserId(ctx);
-    const task = await requireTaskAccess(ctx, userId, taskId);
-    return publicTask(task);
+    const userId = await requireUserId(ctx).catch(() => null);
+    if (!userId) return null;
+    const task = await optionalTaskAccess(ctx, userId, taskId);
+    // null, not a throw — the panel has a not-found state and renders it.
+    return task ? publicTask(task) : null;
   },
 });
 
@@ -425,13 +434,19 @@ export const runNow = mutation({
  */
 export const history = query({
   args: {
-    taskId: v.id("scheduledTasks"),
+    // Mounted from a URL id alongside get/activeRun, so it degrades the same way.
+    taskId: v.string(),
     before: v.optional(v.number()),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, { taskId, before, limit }) => {
-    const userId = await requireUserId(ctx);
-    await requireTaskAccess(ctx, userId, taskId);
+    const userId = await requireUserId(ctx).catch(() => null);
+    const task = userId
+      ? await optionalTaskAccess(ctx, userId, taskId)
+      : null;
+    // An empty page, not a throw: the panel renders its deleted state and the
+    // browser console stays clean.
+    if (!task) return { page: [], nextCursor: null };
     const cap = Math.min(Math.max(limit ?? 25, 1), 100);
     // Over-fetch, because the in-flight filter below removes rows: a task with
     // a run in progress would otherwise hand back a short page.
@@ -440,8 +455,8 @@ export const history = query({
       .query("scheduledTaskOccurrences")
       .withIndex("by_task_scheduled", (q) =>
         before === undefined
-          ? q.eq("taskId", taskId)
-          : q.eq("taskId", taskId).lt("scheduledFor", before),
+          ? q.eq("taskId", task._id)
+          : q.eq("taskId", task._id).lt("scheduledFor", before),
       )
       .order("desc")
       .take(fetchCap);
@@ -471,15 +486,17 @@ export const history = query({
  * history list.
  */
 export const activeRun = query({
-  args: { taskId: v.id("scheduledTasks") },
+  args: { taskId: v.string() },
   handler: async (ctx, { taskId }) => {
-    const userId = await requireUserId(ctx);
-    await requireTaskAccess(ctx, userId, taskId);
+    const userId = await requireUserId(ctx).catch(() => null);
+    if (!userId) return null;
+    const task = await optionalTaskAccess(ctx, userId, taskId);
+    if (!task) return null;
     for (const status of ["running", "retrying"] as const) {
       const row = await ctx.db
         .query("scheduledTaskOccurrences")
         .withIndex("by_task_status_scheduled", (q) =>
-          q.eq("taskId", taskId).eq("status", status),
+          q.eq("taskId", task._id).eq("status", status),
         )
         .order("desc")
         .first();
@@ -641,10 +658,12 @@ export const setNotifyPrefs = mutation({
  * small extra subscription rather than a chatty one.
  */
 export const deliveries = query({
-  args: { taskId: v.id("scheduledTasks"), limit: v.optional(v.number()) },
+  args: { taskId: v.string(), limit: v.optional(v.number()) },
   handler: async (ctx, { taskId, limit }) => {
-    const userId = await requireUserId(ctx);
-    await requireTaskAccess(ctx, userId, taskId);
+    const userId = await requireUserId(ctx).catch(() => null);
+    if (!userId) return [];
+    const task = await optionalTaskAccess(ctx, userId, taskId);
+    if (!task) return [];
     const cap = Math.min(Math.max(limit ?? 50, 1), 200);
     const rows = await ctx.db
       .query("scheduledDeliveries")
@@ -652,7 +671,7 @@ export const deliveries = query({
       .order("desc")
       .take(cap * 3);
     return rows
-      .filter((r) => r.taskId === taskId)
+      .filter((r) => r.taskId === task._id)
       .slice(0, cap)
       .map((r) => ({
         occurrenceKey: r.occurrenceKey,

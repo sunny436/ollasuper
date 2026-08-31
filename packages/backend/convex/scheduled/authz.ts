@@ -46,6 +46,46 @@ export async function requireTaskAccess(
   return task;
 }
 
+/**
+ * The READ counterpart to requireTaskAccess: returns null instead of throwing.
+ *
+ * A page subscribes to these queries the moment it mounts, from an id that came
+ * out of the URL. Throwing there is wrong twice over: a malformed id hits the
+ * v.id() validator and raises ArgumentValidationError, and a valid-but-deleted
+ * one raises ConvexError("Not found"). Either way the Convex client reports it
+ * through console.error — so the ordinary act of opening a link to a task you
+ * just deleted logs an error, and every e2e run fails its zero-console-error
+ * gate. Production proved exactly this: five console errors, all
+ * Q(scheduled/tasks:get).
+ *
+ * So READS DEGRADE and MUTATIONS THROW. A mutation is an action with a
+ * consequence and its caller needs to hear "no"; a query backing a panel needs
+ * to render the not-found state the UI already has.
+ *
+ * Takes the RAW string and normalizes here — the same rule chat follows for
+ * threadId, so a typo'd URL can never reach a v.id() validator. Returning null
+ * for malformed, missing, someone-else's and deleted alike is also what stops
+ * the panel being an existence oracle.
+ */
+export async function optionalTaskAccess(
+  ctx: QueryCtx,
+  userId: Id<"users">,
+  rawTaskId: string,
+): Promise<Doc<"scheduledTasks"> | null> {
+  const taskId = ctx.db.normalizeId("scheduledTasks", rawTaskId);
+  if (!taskId) return null;
+  const task = await ctx.db.get(taskId);
+  if (!task || task.userId !== userId || task.status === "deleted") return null;
+  try {
+    await requireMember(ctx, userId, task.workspaceId);
+  } catch {
+    // An owner removed from the workspace since the task was created. Same
+    // answer as every other inaccessible case, for the same reason.
+    return null;
+  }
+  return task;
+}
+
 export async function requireOccurrenceAccess(
   ctx: QueryCtx,
   userId: Id<"users">,

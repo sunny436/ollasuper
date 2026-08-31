@@ -74,14 +74,26 @@ describe("scheduled tasks are private to the USER, not the workspace", () => {
     const taskId = await seedTask(t, owner, ws);
     const peer = t.withIdentity(as(member));
 
-    await expect(
-      peer.query(api.scheduled.tasks.get, { taskId }),
-    ).rejects.toThrow(/Not found/);
-    await expect(
-      peer.query(api.scheduled.tasks.history, { taskId }),
-    ).rejects.toThrow(/Not found/);
+    // Reads return NOTHING rather than throwing — the panel needs to render a
+    // not-found state without logging a console error. What matters for
+    // isolation is unchanged: the peer learns nothing and gets no data.
+    expect(await peer.query(api.scheduled.tasks.get, { taskId })).toBeNull();
+    expect(await peer.query(api.scheduled.tasks.history, { taskId })).toEqual({
+      page: [],
+      nextCursor: null,
+    });
+    expect(
+      await peer.query(api.scheduled.tasks.activeRun, { taskId }),
+    ).toBeNull();
+    expect(await peer.query(api.scheduled.tasks.deliveries, { taskId })).toEqual(
+      [],
+    );
     // The peer's own list must not contain it.
     expect(await peer.query(api.scheduled.tasks.list, {})).toEqual([]);
+    // And WRITES still refuse loudly, which is where refusing protects anything.
+    await expect(
+      peer.mutation(api.scheduled.tasks.pause, { taskId }),
+    ).rejects.toThrow(/Not found/);
   });
 
   test("a complete outsider gets the SAME error as a peer (no oracle)", async () => {
@@ -89,18 +101,37 @@ describe("scheduled tasks are private to the USER, not the workspace", () => {
     const { owner, member, outsider, ws } = await seedWorkspace(t);
     const taskId = await seedTask(t, owner, ws);
 
+    const peerRead = await t
+      .withIdentity(as(member))
+      .query(api.scheduled.tasks.get, { taskId });
+    const outsiderRead = await t
+      .withIdentity(as(outsider))
+      .query(api.scheduled.tasks.get, { taskId });
+    // A task id that was never real, for comparison.
+    const nonexistentRead = await t
+      .withIdentity(as(outsider))
+      .query(api.scheduled.tasks.get, { taskId: "not-a-real-id" });
+
+    // All three are IDENTICAL, so nothing distinguishes "not yours" from
+    // "does not exist" — the response cannot be used as an existence oracle for
+    // someone else's taskId. That property is what this test protects; whether
+    // the answer is a throw or a null is incidental to it.
+    expect(peerRead).toBeNull();
+    expect(outsiderRead).toBeNull();
+    expect(nonexistentRead).toBeNull();
+    expect(outsiderRead).toEqual(peerRead);
+
+    // The WRITE path is where the wording still has to match, because there the
+    // caller does get an error and it must not say more than "Not found".
     const peerErr = await t
       .withIdentity(as(member))
-      .query(api.scheduled.tasks.get, { taskId })
+      .mutation(api.scheduled.tasks.pause, { taskId })
       .catch((e: Error) => String(e));
     const outsiderErr = await t
       .withIdentity(as(outsider))
-      .query(api.scheduled.tasks.get, { taskId })
+      .mutation(api.scheduled.tasks.pause, { taskId })
       .catch((e: Error) => String(e));
-
     expect(peerErr).toMatch(/Not found/);
-    // Identical wording: the error cannot distinguish "not yours" from
-    // "does not exist", so it leaks nothing about someone else's taskId.
     expect(outsiderErr).toMatch(/Not found/);
     expect(outsiderErr).toEqual(peerErr);
   });
@@ -131,8 +162,8 @@ describe("scheduled tasks are private to the USER, not the workspace", () => {
     const task = await t
       .withIdentity(as(owner))
       .query(api.scheduled.tasks.get, { taskId });
-    expect(task.title).toBe("Daily digest");
-    expect(task.status).toBe("active");
+    expect(task?.title).toBe("Daily digest");
+    expect(task?.status).toBe("active");
   });
 
   test("a non-owner cannot cancel someone else's occurrence", async () => {

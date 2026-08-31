@@ -207,7 +207,7 @@ describe("optimistic concurrency on edit", () => {
         expectedRevision: 1,
       }),
     ).rejects.toThrow(/changed elsewhere/i);
-    expect((await u.query(api.scheduled.tasks.get, { taskId })).title).toBe(
+    expect((await u.query(api.scheduled.tasks.get, { taskId }))?.title).toBe(
       "From tab A",
     );
   });
@@ -217,7 +217,7 @@ describe("optimistic concurrency on edit", () => {
     const { userId, ws, u } = await seed(t);
     const taskId = await mkTask(t, userId, ws);
     await u.mutation(api.scheduled.tasks.update, { taskId, title: "No guard" });
-    expect((await u.query(api.scheduled.tasks.get, { taskId })).title).toBe(
+    expect((await u.query(api.scheduled.tasks.get, { taskId }))?.title).toBe(
       "No guard",
     );
   });
@@ -245,8 +245,8 @@ describe("endsAt", () => {
       scheduleEnded: true,
     });
     const task = await u.query(api.scheduled.tasks.get, { taskId });
-    expect(task.status).toBe("completed");
-    expect(task.terminalReason).toBe("schedule_ended");
+    expect(task?.status).toBe("completed");
+    expect(task?.terminalReason).toBe("schedule_ended");
   });
 
   test("an owed occurrence still runs before the task closes", async () => {
@@ -268,7 +268,7 @@ describe("endsAt", () => {
       scheduleEnded: true,
     });
     // Still active — work it already owed has not finished.
-    expect((await u.query(api.scheduled.tasks.get, { taskId })).status).toBe(
+    expect((await u.query(api.scheduled.tasks.get, { taskId }))?.status).toBe(
       "active",
     );
   });
@@ -370,8 +370,8 @@ describe("notifications", () => {
 
     const task = await u.query(api.scheduled.tasks.get, { taskId });
     // Absent means enabled — no migration needed for pre-Phase-3 tasks.
-    expect(task.notifyOnSuccess).toBe(true);
-    expect(task.notifyOnFailure).toBe(true);
+    expect(task?.notifyOnSuccess).toBe(true);
+    expect(task?.notifyOnFailure).toBe(true);
 
     await u.mutation(api.scheduled.tasks.setNotifyPrefs, {
       taskId,
@@ -559,12 +559,27 @@ describe("deleted tasks", () => {
     );
     expect(rows).toHaveLength(1);
 
-    // …but every read path refuses, by design. The UI renders a "deleted"
-    // state rather than an error, and the guard is never weakened.
+    // …and every read path DEGRADES rather than throwing.
+    //
+    // This assertion used to require a throw. Production showed why that was
+    // wrong: the panel mounts these three the moment the route renders, so a
+    // deleted task logged `ConvexError: Not found` on every render and the e2e
+    // run failed its zero-console-error gate with five of them. The UI already
+    // had the "deleted" state — the query never let it render.
+    expect(await u.query(api.scheduled.tasks.get, { taskId })).toBeNull();
+    expect(await u.query(api.scheduled.tasks.activeRun, { taskId })).toBeNull();
+    expect(await u.query(api.scheduled.tasks.history, { taskId })).toEqual({
+      page: [],
+      nextCursor: null,
+    });
+    expect(await u.query(api.scheduled.tasks.deliveries, { taskId })).toEqual([]);
+
+    // The guard itself is NOT weakened — it moved. Mutations still refuse
+    // loudly, which is where refusing actually protects anything.
     for (const call of [
-      u.query(api.scheduled.tasks.get, { taskId }),
-      u.query(api.scheduled.tasks.history, { taskId }),
-      u.query(api.scheduled.tasks.activeRun, { taskId }),
+      u.mutation(api.scheduled.tasks.pause, { taskId }),
+      u.mutation(api.scheduled.tasks.runNow, { taskId }),
+      u.mutation(api.scheduled.tasks.update, { taskId, title: "nope" }),
     ]) {
       await expect(call).rejects.toThrow(/Not found/);
     }
@@ -640,5 +655,80 @@ describe("schedule parser gate", () => {
         text: "every day at 9am",
       }),
     ).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reads degrade, mutations throw.
+//
+// Production found this the expensive way: opening a link to a deleted task
+// logged `ConvexError: Not found` from Q(scheduled/tasks:get) on every render,
+// and the e2e run failed its zero-console-error gate with 5 of them. The panel
+// already HAS a not-found state; the query just never let it render.
+// ---------------------------------------------------------------------------
+describe("panel queries never throw for an inaccessible task", () => {
+  test("a malformed taskId returns null, not an ArgumentValidationError", async () => {
+    const t = convexTest(schema, modules);
+    const { u } = await seed(t);
+    // A v.id() validator would reject this before the handler ever ran.
+    expect(await u.query(api.scheduled.tasks.get, { taskId: "not-a-real-id" }))
+      .toBeNull();
+    expect(
+      await u.query(api.scheduled.tasks.activeRun, { taskId: "not-a-real-id" }),
+    ).toBeNull();
+  });
+
+  test("a DELETED task's deep link resolves to null", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws, u } = await seed(t);
+    const taskId = await mkTask(t, userId, ws);
+    await u.mutation(api.scheduled.tasks.remove, { taskId });
+    expect(await u.query(api.scheduled.tasks.get, { taskId })).toBeNull();
+    expect(await u.query(api.scheduled.tasks.activeRun, { taskId })).toBeNull();
+  });
+
+  test("another user's task is null, not an error — and not an oracle", async () => {
+    const t = convexTest(schema, modules);
+    const owner = await seed(t);
+    const other = await seed(t);
+    const taskId = await mkTask(t, owner.userId, owner.ws);
+    // Indistinguishable from a task that does not exist, which is the point.
+    expect(await other.u.query(api.scheduled.tasks.get, { taskId })).toBeNull();
+    expect(
+      await other.u.query(api.scheduled.tasks.get, { taskId: "not-a-real-id" }),
+    ).toBeNull();
+  });
+
+  test("a signed-out read returns null rather than throwing", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws);
+    expect(await t.query(api.scheduled.tasks.get, { taskId })).toBeNull();
+  });
+
+  test("but MUTATIONS still refuse loudly", async () => {
+    // The asymmetry is deliberate: a mutation is an action with a consequence
+    // and its caller has to hear "no".
+    const t = convexTest(schema, modules);
+    const owner = await seed(t);
+    const other = await seed(t);
+    const taskId = await mkTask(t, owner.userId, owner.ws);
+    await expect(
+      other.u.mutation(api.scheduled.tasks.remove, { taskId }),
+    ).rejects.toThrow(/Not found/);
+    await expect(
+      other.u.mutation(api.scheduled.tasks.pause, { taskId }),
+    ).rejects.toThrow(/Not found/);
+    await expect(
+      other.u.mutation(api.scheduled.tasks.runNow, { taskId }),
+    ).rejects.toThrow(/Not found/);
+  });
+
+  test("a live task still reads normally", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws, u } = await seed(t);
+    const taskId = await mkTask(t, userId, ws);
+    const task = await u.query(api.scheduled.tasks.get, { taskId });
+    expect(task?.title).toBe("Daily digest");
   });
 });
