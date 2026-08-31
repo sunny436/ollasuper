@@ -331,18 +331,32 @@ const step = async (n, f) => {
     await trigger.click();
 
     // The picker filters rather than listing everything. Target a verified-working
-    // NON-default Ollima model (the default is gpt-5.6-luna; deepseek-v4-flash IS
-    // served, so the send below actually generates). NOTE: some catalogue ids
-    // (e.g. claude-*) are advertised but not served — do not target those.
+    // NON-default model (the default is deepseek-v4-pro; deepseek-v4-flash IS
+    // served, so the send below actually generates).
+    //
+    // Search still accepts the raw id — the filter matches modelId OR name — but
+    // the ROW no longer renders that id. The catalogue is a curated shortlist of
+    // eight, each rendered as a display name plus one line of description; the
+    // id used to sit under the name and read as the same thing twice.
     const search = page.getByLabel("Search models");
     await search.waitFor({ timeout: 8000 });
     await search.fill("deepseek-v4-flash");
     await page.waitForTimeout(600);
 
-    // Pick the first match that is not already selected.
-    const option = page.locator('[role="menu"] button').filter({ hasText: /deepseek-v4-flash/i }).first();
-    if (!(await option.count())) throw new Error("no catalogue models matched 'deepseek-v4-flash'");
-    const picked = (await option.innerText()).split("\n")[0].trim();
+    const option = page
+      .locator('[role="menu"] button')
+      .filter({ hasText: /DeepSeek V4 Flash/i })
+      .first();
+    if (!(await option.count())) {
+      throw new Error("searching the id 'deepseek-v4-flash' matched no catalogue row");
+    }
+    const rowText = await option.innerText();
+    // Regression guard for the shortlist: a row shows a name and a description,
+    // never the raw slug.
+    if (/deepseek-v4-flash/.test(rowText)) {
+      throw new Error(`the picker row still renders the raw model id: ${JSON.stringify(rowText)}`);
+    }
+    const picked = rowText.split("\n")[0].trim();
     await option.click();
     await page.waitForTimeout(800);
 
