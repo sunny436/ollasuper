@@ -707,3 +707,93 @@ describe("security and lifecycle", () => {
     expect(message?.status).toBe("complete");
   });
 });
+
+// ---------------------------------------------------------------------------
+// The execution thread uses the OWNER'S model, not the build-time constant.
+//
+// Hardcoding DEFAULT_MODEL made a scheduled task unfixable by its owner. When
+// that one model stopped serving, every scheduled run failed with an opaque
+// `internal` while the same user's chat — on a model they had picked — kept
+// working, and nothing in the product could route around it. Production did
+// exactly that: gpt-5.6-luna returned 502 from the provider's upstream while
+// three other models answered 200.
+// ---------------------------------------------------------------------------
+describe("the execution thread's model", () => {
+  async function threadOf(t: TestT, taskId: Id<"scheduledTasks">) {
+    return t.run(async (ctx) => {
+      const task = await ctx.db.get(taskId);
+      return task?.executionThreadId
+        ? await ctx.db.get(task.executionThreadId)
+        : null;
+    });
+  }
+
+  test("follows the owner's chosen model", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    // Written directly, and the catalogue seeded alongside it: convex-test has
+    // no network, so chatModels is empty and only DEFAULT_MODEL would validate.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("chatModels", {
+        modelId: "glm-5.2",
+        name: "GLM 5.2",
+        contextLength: 128000,
+        promptPrice: "0",
+        completionPrice: "0",
+        vision: false,
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("chatSettings", {
+        workspaceId: ws,
+        userId,
+        defaultModel: "glm-5.2",
+        sendOnEnter: true,
+        updatedAt: Date.now(),
+      });
+    });
+
+    const { taskId, claim } = await claimed(t, userId, ws);
+    await t.mutation(internal.scheduled.execution.startRun, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+    });
+    await drain(t);
+    expect((await threadOf(t, taskId))?.model).toBe("glm-5.2");
+  });
+
+  test("falls back to the default when the owner has chosen none", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    const { taskId, claim } = await claimed(t, userId, ws);
+    await t.mutation(internal.scheduled.execution.startRun, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+    });
+    await drain(t);
+    expect((await threadOf(t, taskId))?.model).toBe("gpt-5.6-luna");
+  });
+
+  test("an unknown stored model degrades to the default rather than failing", async () => {
+    // assertAllowedModel still guards dispatch, so a retired model id must not
+    // turn every future run of the task into an error.
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("chatSettings", {
+        workspaceId: ws,
+        userId,
+        defaultModel: "a-model-that-was-retired",
+        sendOnEnter: true,
+        updatedAt: Date.now(),
+      });
+    });
+    const { taskId, claim } = await claimed(t, userId, ws);
+    const res = await t.mutation(internal.scheduled.execution.startRun, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+    });
+    await drain(t);
+    expect(res.ok).toBe(true);
+    expect((await threadOf(t, taskId))?.model).toBeTruthy();
+  });
+});

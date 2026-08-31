@@ -89,6 +89,23 @@ async function ensureThread(
   if (existing && existing.status === "scheduled") return existing;
 
   const now = Date.now();
+  // The OWNER's chosen model, not the build-time constant.
+  //
+  // This used to hardcode DEFAULT_MODEL, which made a scheduled task
+  // unfixable by the person who owns it: when that one model stopped serving,
+  // every scheduled run failed with an opaque `internal` while the same user's
+  // chat — on a model they had picked — kept working. Production did exactly
+  // that (gpt-5.6-luna returning 502 from the provider's upstream), and there
+  // was no lever anywhere in the product to route around it.
+  //
+  // assertAllowedModel still validates at dispatch and falls back, so an
+  // unknown or retired model degrades rather than failing the run.
+  const settings = await ctx.db
+    .query("chatSettings")
+    .withIndex("by_user_workspace", (q) =>
+      q.eq("userId", task.userId).eq("workspaceId", task.workspaceId),
+    )
+    .unique();
   const threadId = await ctx.db.insert("chatThreads", {
     workspaceId: task.workspaceId,
     userId: task.userId,
@@ -99,7 +116,7 @@ async function ensureThread(
     status: "scheduled",
     scheduledTaskId: task._id,
     pinned: false,
-    model: DEFAULT_MODEL,
+    model: settings?.defaultModel || DEFAULT_MODEL,
     nextSeq: 0,
     messageCount: 0,
     tokensIn: 0,
