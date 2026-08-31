@@ -1,6 +1,5 @@
 "use client";
 
-import { NotificationsBell } from "../../../(dashboard)/_components/notifications-bell";
 import { FilesSection } from "./files-section";
 import { IntelligenceCore } from "./intelligence-core";
 import { clearDisplayCaches } from "@/lib/display-cache";
@@ -422,16 +421,6 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         )}
       </div>
 
-      {/*
-        The workspace has no topbar, so without this the notification bell — and
-        therefore every scheduled-task update — would be invisible on /chat and
-        /scheduled. Same component the dashboard topbar mounts; no second
-        notification surface.
-      */}
-      <div className="flex items-center justify-between border-t border-border px-3 py-2">
-        <span className="text-[11px] text-muted-foreground">Updates</span>
-        <NotificationsBell />
-      </div>
       <ProfileFooter onNavigate={onNavigate} />
     </div>
   );

@@ -1,10 +1,20 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 
 const MAX_TITLE = 120;
 const MAX_BODY = 500;
+/** One page of the notification centre. */
+const PAGE_SIZE = 20;
+/**
+ * Ceiling on a single markAllRead. A user's history is never pruned — there is
+ * no retention cron for this table — so an unbounded collect() grows without
+ * limit. Reading at most this many per call keeps the mutation bounded; the UI
+ * simply calls it again while a full page comes back.
+ */
+const MARK_ALL_LIMIT = 200;
 
 /**
  * Dependency-free helper to emit an in-app notification to a user.
@@ -31,6 +41,8 @@ export async function notify(
     dedupeKey?: string;
     taskId?: Id<"scheduledTasks">;
     occurrenceKey?: string;
+    occurrenceId?: Id<"scheduledTaskOccurrences">;
+    threadId?: Id<"chatThreads">;
   },
 ): Promise<boolean> {
   if (link?.dedupeKey) {
@@ -52,20 +64,44 @@ export async function notify(
     dedupeKey: link?.dedupeKey,
     taskId: link?.taskId,
     occurrenceKey: link?.occurrenceKey,
+    occurrenceId: link?.occurrenceId,
+    threadId: link?.threadId,
   });
   return true;
 }
 
 export const myNotifications = query({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    /**
+     * Cursor: return rows strictly older than this `createdAt`. Absent = the
+     * newest page. Optional so the existing call site keeps working unchanged.
+     */
+    before: v.optional(v.number()),
+  },
+  handler: async (ctx, { before }) => {
     const userId = await getAuthUserId(ctx);
-    if (!userId) return [];
-    return ctx.db
+    if (!userId) return { page: [], nextCursor: null };
+    // The cursor is applied INSIDE the query, not to the result: filtering a
+    // fixed newest-N slice afterwards would make every page after the first
+    // come back empty.
+    const base = ctx.db
       .query("notifications")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_user", (q) => q.eq("userId", userId));
+    const rows = await (
+      before === undefined
+        ? base
+        : base.filter((q) => q.lt(q.field("createdAt"), before))
+    )
       .order("desc")
-      .take(20);
+      // One extra row is the "is there more?" probe — cheaper and more accurate
+      // than comparing the page length to the page size.
+      .take(PAGE_SIZE + 1);
+    const page = rows.slice(0, PAGE_SIZE);
+    const nextCursor =
+      rows.length > PAGE_SIZE
+        ? (page[page.length - 1]?.createdAt ?? null)
+        : null;
+    return { page, nextCursor };
   },
 });
 
@@ -84,16 +120,39 @@ export const unreadCount = query({
   },
 });
 
+/**
+ * Mark ONE notification read, by its owner.
+ *
+ * The id comes from the browser, so ownership is re-derived from the
+ * authenticated context and compared before the patch — a notificationId is
+ * otherwise a cross-user write primitive. A foreign or missing id is a silent
+ * no-op rather than a throw: the id is not an existence oracle for someone
+ * else's row, the same rule chat/authz.ts follows for threads.
+ */
+export const markRead = mutation({
+  args: { notificationId: v.id("notifications") },
+  handler: async (ctx, { notificationId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return;
+    const row = await ctx.db.get(notificationId);
+    if (!row || row.userId !== userId || row.read) return;
+    await ctx.db.patch(notificationId, { read: true });
+  },
+});
+
 export const markAllRead = mutation({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
-    if (!userId) return;
+    if (!userId) return { remaining: false };
+    // by_user_read, not by_user + filter: the index is exact, so this reads only
+    // unread rows instead of scanning the user's whole history.
     const unread = await ctx.db
       .query("notifications")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .filter((q) => q.eq(q.field("read"), false))
-      .collect();
+      .withIndex("by_user_read", (q) => q.eq("userId", userId).eq("read", false))
+      .take(MARK_ALL_LIMIT);
     for (const n of unread) await ctx.db.patch(n._id, { read: true });
+    // Tells the caller to go again rather than silently leaving rows unread.
+    return { remaining: unread.length === MARK_ALL_LIMIT };
   },
 });

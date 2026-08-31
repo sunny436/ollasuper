@@ -667,6 +667,42 @@ async function onOccurrenceTerminal(
   }
 }
 
+/**
+ * A failure reason a person can act on.
+ *
+ * This used to emit `Reason: ${occ.errorCode}` verbatim, so users were shown
+ * "Reason: worker_lost_after_send" and "Reason: approval_expired" — internal
+ * vocabulary that says nothing about what to do next. Codes are matched from
+ * the values actually produced by the scheduler, the dispatcher and the Python
+ * worker; anything unrecognised falls back to a plain sentence rather than
+ * leaking the raw code.
+ */
+function failureSentence(code?: string): string {
+  switch (code) {
+    case "timeout":
+    case "deadline":
+      return "The run took too long and was stopped.";
+    case "stalled":
+    case "worker_lost_after_send":
+      return "The run stopped responding before it finished.";
+    case "dispatch_failed":
+    case "dispatch_unreachable":
+    case "provider_unreachable":
+    case "provider_error":
+      return "The AI service could not be reached. The next run will try again.";
+    case "approval_expired":
+      return "The run needed your approval and the request expired.";
+    case "thread_busy":
+      return "Another run for this task was still going, so this one was skipped.";
+    case "payload_unavailable":
+    case "stream_missing":
+    case "stale":
+      return "The run could not be resumed after an interruption.";
+    default:
+      return "The run didn't finish. Open it to see what happened.";
+  }
+}
+
 async function notifyRunFinished(
   ctx: MutationCtx,
   occ: Doc<"scheduledTaskOccurrences">,
@@ -694,13 +730,14 @@ async function notifyRunFinished(
       occ.userId,
       `scheduled.${outcome}`,
       `${task.title} ${label}`,
-      outcome === "failed" && occ.errorCode
-        ? `Reason: ${occ.errorCode}`
-        : undefined,
+      outcome === "failed" ? failureSentence(occ.errorCode) : undefined,
       {
         dedupeKey: occ.occurrenceKey,
         taskId: occ.taskId,
         occurrenceKey: occ.occurrenceKey,
+        // The occurrence itself, so the notification opens the RUN and not just
+        // the task. Occurrences are never deleted, so this cannot dangle.
+        occurrenceId: occ._id,
       },
     );
   } catch (e) {

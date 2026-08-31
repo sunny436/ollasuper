@@ -171,6 +171,9 @@ export const invite = mutation({
         "invite",
         "Workspace invitation",
         `You were invited as ${role}`,
+        // Re-inviting the same person must not stack duplicate rows. There is
+        // no accept surface in the app yet, so this carries no deep link.
+        { dedupeKey: `invite:${workspaceId}:${invitee._id}` },
       );
     }
     return id;

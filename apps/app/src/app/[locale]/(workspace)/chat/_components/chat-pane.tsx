@@ -10,6 +10,7 @@ import { MessageList } from "./message-list";
 import { useChatSidebar } from "./chat-shell";
 import { AmbienceSlider } from "./ambience-slider";
 import { ShareDialog } from "./share-dialog";
+import { NotificationsBell } from "../../../(dashboard)/_components/notifications-bell";
 
 export function ChatPane({ threadId }: { threadId: string | null }) {
   const { openSidebar, collapsed, toggleCollapsed } = useChatSidebar();
@@ -92,7 +93,10 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
           </span>
         </div>
 
-        {/* Share + Ambience — top-right of the chat header. */}
+        {/* Share + Notifications + Ambience — top-right of the chat header.
+            The bell sits between Share and the ambience (theme) control; it
+            used to live at the foot of the conversation rail, which predates
+            this header existing. */}
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {thread && (
             <button
@@ -105,6 +109,7 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
               <Share2 className="h-3.5 w-3.5" /> Share
             </button>
           )}
+          <NotificationsBell />
           <AmbienceSlider />
         </div>
       </header>

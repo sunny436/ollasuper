@@ -9,6 +9,7 @@ import {
   query,
 } from "../_generated/server";
 import { audit } from "../auditLog";
+import { notify } from "../notifications";
 import { getUserIdOrNull, requireThreadAccess, requireUserId } from "./authz";
 import { eventObject } from "./events";
 import { finalizeError } from "./ingest";
@@ -124,6 +125,25 @@ export const requestApproval = internalMutation({
     await audit(ctx, stream.workspaceId, stream.userId, "agent.approval_requested", {
       toolName: a.toolName,
     });
+    // The turn is now PARKED and will expire if nobody answers, so this is a
+    // real call to action rather than a status update. Deduped on the stable
+    // approvalId (tool + hash of args), so a redispatch cannot repeat it.
+    // Never throws: a notification must not stop the turn being parked.
+    try {
+      await notify(
+        ctx,
+        stream.userId,
+        "approval.required",
+        "Approval needed to continue",
+        "An action is waiting for your approval before it can run.",
+        {
+          dedupeKey: `approval:${a.approvalId}`,
+          threadId: stream.threadId,
+        },
+      );
+    } catch (e) {
+      console.error("approval notification failed", e);
+    }
     return { ok: true, decision: "pending" };
   },
 });
@@ -236,6 +256,23 @@ export const reapExpired = internalMutation({
           error: "The approval request expired",
           errorCode: "approval_expired",
         });
+        // finalizeError deliberately does NOT raise its generic turn-failure
+        // notification for this code — this one says what actually happened.
+        try {
+          await notify(
+            ctx,
+            stream.userId,
+            "approval.expired",
+            "Approval request expired",
+            "An action was waiting for your approval and timed out, so it didn't run.",
+            {
+              dedupeKey: `approval:${a.approvalId}:expired`,
+              threadId: stream.threadId,
+            },
+          );
+        } catch (e) {
+          console.error("approval expiry notification failed", e);
+        }
       }
       expired++;
     }

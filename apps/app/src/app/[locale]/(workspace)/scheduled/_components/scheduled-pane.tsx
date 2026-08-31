@@ -9,6 +9,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useChatSidebar } from "../../chat/_components/chat-shell";
 import { ScheduleComposer } from "./schedule-composer";
+import { NotificationsBell } from "../../../(dashboard)/_components/notifications-bell";
 import { TaskDetail } from "./task-detail";
 import { TaskRow } from "./task-row";
 
@@ -96,6 +97,12 @@ export function ScheduledPane() {
           >
             <PanelLeft className="h-4 w-4" />
           </button>
+          {/* This route has no header of its own, and it is where scheduled-run
+              notifications actually lead — so the bell must be reachable here
+              too, not only from the chat header. Same component. */}
+          <div className="ml-auto">
+            <NotificationsBell />
+          </div>
         </div>
 
         <div className="mx-auto w-full max-w-3xl px-5 pb-24">

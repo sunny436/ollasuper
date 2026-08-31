@@ -223,6 +223,16 @@ export default defineSchema({
     // to the "deleted" state rather than erroring).
     taskId: v.optional(v.id("scheduledTasks")),
     occurrenceKey: v.optional(v.string()),
+    // The occurrence ITSELF, not just its key. `?run=` in the task detail takes
+    // the occurrence _id, so without this a scheduled notification can only
+    // reach the task, never the run it is actually about. Occurrences are never
+    // deleted, so this link can never dangle.
+    occurrenceId: v.optional(v.id("scheduledTaskOccurrences")),
+    // Deep link for chat-side events (a failed turn, an approval). Threads CAN
+    // be hard-deleted by chat.threads.purgeTrashed, so the UI must treat a
+    // missing thread as a dead link and degrade, exactly as it does for a
+    // deleted task.
+    threadId: v.optional(v.id("chatThreads")),
   })
     .index("by_user", ["userId"])
     .index("by_user_read", ["userId", "read"])

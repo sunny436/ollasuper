@@ -4,6 +4,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { internalMutation } from "../_generated/server";
 import { audit } from "../auditLog";
+import { notify } from "../notifications";
 import { recordUsage } from "../usage";
 import { eventObject } from "./events";
 import { deleteExecutions } from "./executions";
@@ -433,6 +434,23 @@ export const finishStream = internalMutation({
         updatedAt: now,
       });
     }
+
+    // Only a LONG turn is worth announcing — a normal reply lands while the
+    // user is watching it, and notifying there is pure noise. The window is
+    // measured from the stream row's creation, so it includes any time spent
+    // queued behind the concurrency limits; a genuinely short generation that
+    // waited a long time can therefore qualify, which is acceptable for a
+    // "this took a while, here it is" nudge.
+    if (now - stream.startedAt >= LONG_RUN_MS) {
+      await notifyTurn(
+        ctx,
+        stream,
+        thread,
+        "chat.turn_done",
+        thread?.title ? `“${thread.title}” is ready` : "Your reply is ready",
+        "A long-running response finished.",
+      );
+    }
     if (args.tokensOut) {
       await recordUsage(
         ctx,
@@ -475,6 +493,48 @@ export const finishStream = internalMutation({
     return { ok: true };
   },
 });
+
+/**
+ * A turn only deserves a notification when the user was not there to see it.
+ *
+ * Two rules keep this from becoming noise, and both are load-bearing:
+ *
+ *  - A SCHEDULED thread is skipped. Scheduled execution reuses this exact chat
+ *    path (`scheduled/execution.ts` → `startAssistantTurn`), so without this
+ *    check every scheduled run would be announced twice: once here and once by
+ *    `notifyRunFinished`, which is the one that honours the task's
+ *    notifyOnSuccess/notifyOnFailure preferences. `status: "scheduled"` is a
+ *    distinct thread status precisely so scheduled threads fall out of chat
+ *    surfaces like this one.
+ *  - A turn the USER ended, or one already reported by a more specific
+ *    notification, is skipped by error code (see the call site).
+ *
+ * Never throws: this runs inside a terminal transition, and an aborted
+ * transition would hand the turn back to the reaper — turning a notification
+ * bug into a re-execution bug.
+ */
+const LONG_RUN_MS = 2 * 60_000;
+
+async function notifyTurn(
+  ctx: MutationCtx,
+  stream: Doc<"chatStreams">,
+  thread: Doc<"chatThreads"> | null,
+  type: "chat.turn_failed" | "chat.turn_done",
+  title: string,
+  body: string,
+): Promise<void> {
+  try {
+    if (!thread || thread.status === "scheduled") return;
+    await notify(ctx, stream.userId, type, title, body, {
+      // The stream is the logical turn, so a redispatch, a reaper re-entry and
+      // a duplicate finalize all collapse to one notification.
+      dedupeKey: `stream:${stream.streamId}`,
+      threadId: stream.threadId,
+    });
+  } catch (e) {
+    console.error("chat turn notification failed", e);
+  }
+}
 
 /**
  * The terminal-error write, WITHOUT the ingress guards. Keeps partial text and
@@ -529,6 +589,25 @@ export async function finalizeError(
       streamingMessageId: undefined,
       updatedAt: now,
     });
+  }
+
+  // A turn that died on its own is worth telling the user about; two cases are
+  // NOT, because the user already knows or a better notification covers it:
+  //   cancelled        — the user pressed stop (reapStalled also finalises a
+  //                      stopped turn through here with this code).
+  //   approval_expired — chat/approvals.ts raises `approval.expired`, which
+  //                      says what actually happened. This path is how expiry
+  //                      terminates the parked turn, so without the skip an
+  //                      expired approval would notify twice.
+  if (args.errorCode !== "cancelled" && args.errorCode !== "approval_expired") {
+    await notifyTurn(
+      ctx,
+      stream,
+      thread,
+      "chat.turn_failed",
+      thread?.title ? `“${thread.title}” didn't finish` : "A chat reply failed",
+      "The response stopped before it was complete. Open the conversation to try again.",
+    );
   }
 
   // Phase 8: audit a failed AGENT execution (agent turns only). errorCode only.

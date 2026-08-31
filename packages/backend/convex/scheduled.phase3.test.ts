@@ -404,7 +404,29 @@ describe("notifications", () => {
     const rows = await notifications(t, userId);
     expect(rows).toHaveLength(1);
     expect(rows[0].type).toBe("scheduled.failed");
-    expect(rows[0].body).toContain("deadline");
+    // This used to assert the body CONTAINED "deadline" — i.e. it locked in the
+    // raw errorCode being shown to the user. The property that actually matters
+    // is the opposite: the body explains the failure in words, and the internal
+    // code never leaves the system.
+    expect(rows[0].body).toBeTruthy();
+    expect(rows[0].body).not.toContain("deadline");
+    expect(rows[0].body).toMatch(/took too long/i);
+  });
+
+  test("an unrecognised error code still yields a readable body", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws);
+    const claim = await claimOne(t, userId, taskId);
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "failed",
+      errorCode: "some_code_nobody_mapped",
+    });
+    const rows = await notifications(t, userId);
+    expect(rows[0].body).not.toContain("some_code_nobody_mapped");
+    expect(rows[0].body).toMatch(/didn't finish/i);
   });
 
   test("an enormous error string cannot blow the notification document", async () => {
