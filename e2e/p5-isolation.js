@@ -88,10 +88,11 @@ const isEmpty = (v) =>
   });
   const invites = await peer.query(anyApi.orgs.myInvites, {});
   await peer.mutation(anyApi.orgs.acceptInvite, { inviteId: invites[0]._id });
-  const members = await peer.query(anyApi.orgs.listWorkspaces, {});
+  const members = await peer.query(anyApi.orgs.members, { workspaceId: ws });
   must(
-    members.some((w) => String(w._id) === String(ws)),
+    members.some((m) => String(m.email || "").startsWith()),
     "the peer is a real member of the owner's workspace",
+    JSON.stringify(members.map((m) => m.email)).slice(0, 120),
   );
 
   const SECRET = `ownersecret${ts}`;
