@@ -86,6 +86,42 @@ deployment is deliberately Phase 4, so `main`'s live behaviour is unchanged by p
   was declined, so `deploy/71`, the deployment, the smoke test and `e2e/p-scheduled.js` have never
   been run either. See the 45-row acceptance form in the Phase 4 plan.
 
+### Auth emails are branded HTML (2026-09-01)
+
+One-time codes went out as a single line of plain text. They now carry a branded HTML part
+**alongside** the text one — multipart, so a client that strips HTML still shows a usable code, and
+so the provider's OTP extractor still sees the shape it recognises.
+
+Every value comes from the auth implementation, not from the design reference, which was wrong on
+five counts: 6-digit code (**ours are 8**), 10-minute expiry (**ours is 15**), "Ollasuper" (**the
+wordmark is `OLLASUPER`**), Inter via Google Fonts (**the app uses self-hosted Plus Jakarta Sans**,
+which no mail client will load), and a Contact Support link (**no support address exists anywhere in
+this product** — omitted rather than invented).
+
+- **The expiry is not a constant.** `@convex-dev/auth` already hands every provider `expires` — the
+  value it computed from `maxAge` and the value it enforces — and all three were discarding it. The
+  email renders that, so it cannot drift from what the backend accepts. `maxAge` is untouched.
+- **Subjects are unchanged, deliberately.** Two e2e suites locate the code by matching the label in
+  the subject, and `p-mail.js` separates auth mail from report mail the same way.
+- `esc()` moved from `email.ts` into a new plain `emailTemplates.ts`: `authCodes.ts` is plain and
+  cannot import from a `"use node"` module. Same constraint that produced `ollastack.ts`.
+- Real-client details: `letter-spacing` rather than literal spaces (spaces make the code paste as
+  `8392 0174`); an explicit light `color-scheme` (Apple Mail and Outlook otherwise invert the card
+  into near-black on near-black); and a preheader carrying the expiry and **never** the code, since
+  that line is the phone's lock-screen preview.
+- The greeting is optional and never guessed — `deliverCode` knows only an address, and a magic-OTP
+  sign-in can precede any user row.
+- **Bug found and fixed:** the provider's OTP extractor ranks candidates heuristically and returned
+  `["1192","11923532"]` — a 4-digit **prefix** ahead of the real code. The e2e helper trusted
+  `codes[0]`. The assertion was right and stayed; the helper now picks the longest digit run.
+- **Deliverability gate PASSED:** branded auth mail lands in the normal inbox, verified against the
+  provider's `?spam=true` view. Only the two old SEO reports sit in spam.
+- **Prod-verified:** auth 7/7, auth edges **9/9** (now including the magic-OTP flow, previously
+  untested), scheduled report 7/7. All three templates confirmed in real received mail — "Verify your
+  email", "Reset your password", "Sign in to OllaSuper" — each with the real name, the real 8-digit
+  code and "expires in 15 minutes". 4.2 KB, no images, no webfont, no script, no tracking pixel.
+- **NOT verified:** Gmail/Outlook rendering — still needs a mailbox at each provider we can read.
+
 ### Mail: Ollastack is the outbound transport (2026-09-01)
 
 **The stated position above — "real email has never been sent" — was wrong in the worst direction.**
