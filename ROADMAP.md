@@ -51,7 +51,9 @@ deployment is deliberately Phase 4, so `main`'s live behaviour is unchanged by p
   clean; production build emits both new routes. The parse endpoint was probed live against the real
   configured model (20/20: auth, size caps, all five recurrence kinds, `endsAt`, ambiguity, a
   correction against a standing draft, and prompt injection in the scheduled text).
-- **Phase 4 — delivery, hardening (code COMPLETE + tested; NOTHING DEPLOYED).** PDF reports and
+- **Phase 4 — delivery, hardening. DEPLOYED AND PROVEN 2026-09-01** (this bullet said "NOTHING
+  DEPLOYED" while delivery was in fact armed in production and mailing into a local catcher —
+  see the Ollastack entry below). PDF reports and
   email delivery run as a state machine SEPARATE from execution (`scheduledDeliveries`), so a bounce
   can never put a model turn back on the queue. `POST /v1/report/pdf` renders markdown → the existing
   `filegen` reportlab pipeline and, like the Phase 3 parser, **has no write path at all** — payload
@@ -82,7 +84,45 @@ deployment is deliberately Phase 4, so `main`'s live behaviour is unchanged by p
   therefore: **DBOS has still only ever run against SQLite**, and none of the recovery drills
   (`deploy/73-drills.sh`), the restore drill, or the load tests have been executed. Production access
   was declined, so `deploy/71`, the deployment, the smoke test and `e2e/p-scheduled.js` have never
-  been run either. Real email has never been sent. See the 45-row acceptance form in the Phase 4 plan.
+  been run either. See the 45-row acceptance form in the Phase 4 plan.
+
+### Mail: Ollastack is the outbound transport (2026-09-01)
+
+**The stated position above — "real email has never been sent" — was wrong in the worst direction.**
+Delivery *was* armed in production (`SCHEDULED_DELIVERY_ENABLED=true`) with
+`SCHEDULED_EMAIL_TRANSPORT=smtp` pointing at `SMTP_HOST=172.18.0.1:1025`, the **Mailpit container**.
+So every scheduled report and every auth code — OTP, email verification, password reset — was
+delivered into a local catcher on the VM while the state machine recorded `accepted` and the UI
+showed the run as sent. Mailpit held 32 messages, including a real user's verification code.
+Mandatory email verification meant **no real user could complete signup or reset a password.**
+
+`deploy/71` had a guard against exactly this and it never fired: it grepped `services/ai/.env`, while
+the live value sits in the **Convex deployment env** — a store the Python service never reads.
+
+- **Transport:** `ollastack` is now a named transport for both mail paths, free tier, sending as
+  `auth@` / `reports@agent.ollastack.com`. Monthly send cap is **1500** (not uncapped);
+  `deploy/75-ollastack-mail.sh` warns past 80%.
+- **A 2xx is not a send.** The response carries the stored message, whose `deliveryStatus` may be
+  `dry_run` (accepted and discarded) or `failed`. Only `sent`/`sending` count as custody.
+- **Unknown transport names fail closed**, so a stale value cannot fall through to the catcher.
+- **The runtime refuses `smtp`** whenever `SITE_URL` is not loopback; `ALLOW_SMTP_TRANSPORT=1` is the
+  explicit replica opt-in. A deploy-time gate alone was already proven insufficient.
+- **No `Idempotency-Key` exists on this provider**, so a crashed send is never blind-retried. It goes
+  to `indeterminate`, and a new 5-minute `reconcile` cron resolves it against the provider's outbound
+  log: no match ⇒ safe re-queue, one match ⇒ real outcome, more than one ⇒ refuses to guess.
+- **No delivery webhook and no bounce feed exist** (`/failures` is the *inbound* trail), so
+  `delivered`/`bounced`/`complained` are states this system can no longer enter. `accepted` is the
+  strongest honest claim and the UI never exceeds it. Bounce-driven auto-disable survives only via a
+  send-time `invalid_recipient`. **Known limitation, deliberately not papered over.**
+- **Rollback is never `smtp` here** — that is Mailpit. Reports roll back to `disabled`; auth has no
+  fallback and fails visibly.
+- `mail.ollasuper.com` needs only a verified domain plus `OLLASTACK_MAIL_DOMAIN` — **no code change**.
+- **Also fixed:** the client-side signup domain allow-list had no `AUTH_EXTRA_ALLOWED_DOMAINS`
+  equivalent, so the browser rejected addresses the backend accepted. That is why the auth e2e could
+  never test against a real inbox, and so why a stack that could mail nobody kept passing.
+- **Prod-verified in headed Chrome:** auth 7/7, auth edges 8/8 (including a superseded code being
+  dead), scheduled report + PDF 7/7 across plain / tool / skill prompt classes, reconciliation
+  confirming rows at `accepted` on a 5-minute cadence, and Mailpit's count static throughout.
 
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
@@ -368,7 +408,9 @@ Convex stays the data plane; a separate **Python FastAPI + LangGraph** service a
   Self-hosted is kept as a rollback; `deploy/57-ollasuper-domain.sh` now refuses
   to repoint the app back unless `FORCE_CONVEX_URL=1`.
   Outstanding: Google redirect URI for `*.convex.site` must be registered, and
-  `RESEND_API_KEY` must be set so auth codes stop being written to logs.
+  a real mail transport must be configured. RESOLVED 2026-09-01: Ollastack Agent Mail is
+  the outbound transport for both auth codes and scheduled reports (see the Ollastack entry
+  under Done). Resend was never configured and its branch has been removed.
 - **Backups did not exist on the rebuilt VM (fixed 2026-08-18).** `/opt/backups` was absent,
   no cron was installed, there was no log, and `deploy/backup.sh` was not executable — so
   production had no recovery point at all, despite "nightly backup" being listed under Done.
@@ -404,7 +446,10 @@ Convex stays the data plane; a separate **Python FastAPI + LangGraph** service a
   `ufw allow from 172.18.0.0/16 to any port 8770 proto tcp`. ufw is active and currently allows only
   22/tcp, so net exposure stays effectively loopback-equivalent. Tighten the e2e assertion at the
   same time so this cannot regress silently again.
-- Email is **log-fallback** until Resend is configured (codes appear in Convex logs).
+- ~~Email is **log-fallback** until Resend is configured.~~ RESOLVED 2026-09-01: auth codes
+  and scheduled reports both go out over Ollastack Agent Mail. Before that, production was
+  worse than log-fallback: SMTP pointed at the local Mailpit catcher, so codes reached
+  neither a logfile nor a person.
 - `NEXT_PUBLIC_CONVEX_URL` is baked in at **build** time, so any change of Convex hostname needs a full
   `next build` — restarting the service is not enough, and a stale `.next` will keep serving the old origin.
   `deploy/57-ollasuper-domain.sh` clears `.next` before rebuilding and then greps the output to prove the new
