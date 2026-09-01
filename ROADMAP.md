@@ -2,6 +2,35 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Auth hardening — operator action still outstanding
+
+The second auth audit (Better Auth as the reference) is shipped and prod-verified, but two items
+cannot be closed from application code and are recorded here rather than implied as done.
+
+- **Cloudflare rate-limiting rule on `/__cvx` and `/api/auth`.** `apps/app/src/middleware.ts` now
+  throttles `/api/auth` per IP on `cf-connecting-ip` (verified on prod: 60×200 then 429). That is
+  defence in depth, **not** a closure. `NEXT_PUBLIC_CONVEX_URL` is public, so a caller can invoke
+  `auth:signIn` on `app.ollasuper.com/__cvx` directly and never touch Next — which is exactly what
+  `e2e/p-auth-oracle.js` does. Convex actions receive no request object, so no application-level
+  limit can cover that path. Only a Cloudflare rule spanning **both** paths can. Until it exists,
+  credential-stuffing across many accounts is bounded only per-account (5/hour), and the per-account
+  lockout DoS (5 failed code attempts against a named victim) has no IP-side brake.
+- **Convex returns full stack traces to unauthenticated callers.** Measured on production: a thrown
+  error reaches the client as `Server Error Uncaught ... at authorize (../../convex/
+  passwordProvider.ts:NNN)`. Using `ConvexError` gives a clean `.data` for the UI but does **not**
+  suppress the trace. It is no longer an enumeration oracle — every auth failure now throws the same
+  error from the same line — but the source-path disclosure is deployment-wide behaviour and needs a
+  Convex-level setting, not an app-level change.
+
+One finding is verified by unit test only, and deliberately so:
+
+- **`accountStatus` enforcement (suspended accounts).** Now checked at login and in `chat/authz.ts`,
+  covered by two convex-test cases against the real functions. It is **not** prod-verified, because
+  nothing in the product can set `accountStatus` to `"suspended"` — there is no admin surface, which
+  is precisely why the gap sat unnoticed with a single consumer in `scheduled/authz.ts`. Verifying it
+  on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
+  surface is built, add the prod check with it.
+
 ## Agentic runtime program (Phases 0–12) — architecture built + test-proven
 
 A separate 0–12 program (distinct from the product "Phase N" sections below) built an all-rounder agentic
