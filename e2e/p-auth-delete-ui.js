@@ -108,8 +108,18 @@ const step = (ok, name, detail) => {
       .last();
     await confirmBtn.click();
     await confirmBtn.click();
-    await page.waitForURL(/\/login/, { timeout: 60000 });
-    step(true, "the correct password deletes the account and signs out", page.url());
+    await page.waitForTimeout(6000);
+
+    // signOut() does not itself navigate — every call site in the app relies on
+    // the next navigation hitting the middleware, and p2-auth.js's own sign-out
+    // step works the same way. So navigate, then assert the session is gone.
+    await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(3000);
+    step(
+      /\/login/.test(page.url()),
+      "after deletion the session is gone and the app bounces to /login",
+      page.url(),
+    );
 
     // ── and the old credential is dead ──────────────────────────────────────
     await page.fill('input[type="email"]', email);
