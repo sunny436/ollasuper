@@ -25,10 +25,31 @@ const ALLOWED_SIGNUP_DOMAINS = new Set([
   "icloud.com", "proton.me", "protonmail.com", "zoho.com", "aol.com",
   "gmx.com", "mail.com",
 ]);
-const signUpEmail = email.refine(
-  (e) => ALLOWED_SIGNUP_DOMAINS.has(e.toLowerCase().split("@")[1] ?? ""),
-  "That email domain isn't supported. Use Gmail, Outlook, Yahoo, iCloud, Proton, Zoho, AOL, GMX or Mail.com.",
+
+/**
+ * Test/CI-only extension, mirroring AUTH_EXTRA_ALLOWED_DOMAINS on the server.
+ *
+ * Without this the mirror is not actually a mirror: the server had an escape
+ * hatch and the client did not, so a domain the backend accepts was still
+ * rejected in the browser before a request was ever sent. That made an
+ * end-to-end signup test against a real inbox impossible — which is how a stack
+ * that could not deliver mail to anyone kept passing its auth suite.
+ *
+ * NEXT_PUBLIC_ because it is evaluated in the browser, so it is inlined at BUILD
+ * time: changing it needs a rebuild, not just a restart. Empty in production,
+ * and the server remains the authority either way.
+ */
+const EXTRA_SIGNUP_DOMAINS = new Set(
+  (process.env.NEXT_PUBLIC_AUTH_EXTRA_ALLOWED_DOMAINS ?? "")
+    .split(",")
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean),
 );
+
+const signUpEmail = email.refine((e) => {
+  const domain = e.toLowerCase().split("@")[1] ?? "";
+  return ALLOWED_SIGNUP_DOMAINS.has(domain) || EXTRA_SIGNUP_DOMAINS.has(domain);
+}, "That email domain isn't supported. Use Gmail, Outlook, Yahoo, iCloud, Proton, Zoho, AOL, GMX or Mail.com.");
 
 /**
  * Sign-IN takes any non-empty password ON PURPOSE. Applying the sign-up policy
