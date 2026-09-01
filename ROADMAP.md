@@ -120,9 +120,24 @@ the live value sits in the **Convex deployment env** — a store the Python serv
 - **Also fixed:** the client-side signup domain allow-list had no `AUTH_EXTRA_ALLOWED_DOMAINS`
   equivalent, so the browser rejected addresses the backend accepted. That is why the auth e2e could
   never test against a real inbox, and so why a stack that could mail nobody kept passing.
-- **Prod-verified in headed Chrome:** auth 7/7, auth edges 8/8 (including a superseded code being
-  dead), scheduled report + PDF 7/7 across plain / tool / skill prompt classes, reconciliation
-  confirming rows at `accepted` on a 5-minute cadence, and Mailpit's count static throughout.
+- **Prod-verified, headed Chrome on `app.ollasuper.com` unless noted — 133 scenarios, 133 passed:**
+  auth 7/7 · auth edges 8/8 (including a superseded code being dead) · scheduled report + PDF 7/7 ×
+  **4 prompt classes** (plain, tools, skill, skill+tools) · scheduled UI 33/33 · chat 17/17 ·
+  chat isolation 13/13 · scheduled isolation 18/18 · scheduler restart drill 9/9 · browserless chat
+  probe 1/1. Backend 427 passed / 1 skipped; typecheck 7/7; lint + sherif clean.
+  Reconciliation observed confirming rows at `accepted` on its 5-minute cadence, and **Mailpit's
+  count stayed at exactly 32 from first deploy to last test** — nothing was swallowed locally.
+- **Deliverability, measured not assumed:** report content is *intermittently* classified as hard
+  spam on the receiving side (`ml_classifier+keyword`) — 2 of 3 SEO-shaped reports filtered; plain,
+  tool and blog reports never. An agent mailbox hides hard spam from the normal list, `/wait` and
+  webhooks, so a filtered message is indistinguishable from one never sent; `e2e/p-mail.js` now
+  checks the spam view and says which happened. This is the concrete case for `mail.ollasuper.com`.
+- **NOT verified:** inbox-vs-spam placement at Gmail and Outlook. That needs a mailbox at each
+  provider to read; none exists in this workspace, and sending to addresses we do not own would
+  bounce against a shared domain's reputation. Genuinely blocked on an operator-supplied address.
+- **Crash-during-send** is covered by unit tests and by the live reconciler; a real induced crash
+  belongs on the replica, which has never been brought up (no Docker on the dev machine). The
+  scheduler restart drill (9/9, a real service restart) is the closest non-destructive analogue.
 
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
