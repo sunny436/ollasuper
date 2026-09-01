@@ -209,13 +209,21 @@ export function browserZone(): string {
  *   Asia/Calcutta  in supportedValuesOf? yes
  *   UTC            in supportedValuesOf? NO      valid IANA? yes
  *
- * `browserZone()` reads `resolvedOptions().timeZone`, which is "Asia/Kolkata" on
- * modern Chrome — so a task created here stores a zone the picker could not
- * offer. An HTML <select> whose value matches no <option> falls back to
- * selectedIndex 0, and index 0 of that list is "Africa/Abidjan". That is exactly
- * what production showed: a Kolkata task whose dropdown read Africa/Abidjan
- * while the summary line beside it correctly read "Kolkata" (that one formats
- * spec.timezone directly instead of going through the options).
+ * An HTML <select> whose value matches no <option> falls back to selectedIndex
+ * 0, and index 0 of that list is "Africa/Abidjan" — which is also UTC+0, so it
+ * looks plausible enough to not be questioned. Production showed exactly that:
+ * a dropdown reading Africa/Abidjan beside a summary line correctly reading
+ * "Kolkata", because the summary formats spec.timezone directly instead of
+ * going through the options.
+ *
+ * It bites whenever a STORED zone is absent from that list, however it got
+ * there. Measured in Chromium 1234 (418 entries): `UTC` resolves to `UTC` and
+ * is absent, so any browser reporting UTC creates a task the picker cannot
+ * display — and production holds such rows. `Asia/Kolkata` is also absent, and
+ * production holds one of those too, though this engine canonicalises Kolkata
+ * to Calcutta in `resolvedOptions()`, so that row came from a different engine
+ * or from the schedule parser rather than from `browserZone()` here. The fix
+ * does not depend on knowing which: any stored zone is selectable.
  *
  * The fix is the union, NOT canonicalising on write: rewriting "Asia/Kolkata" to
  * the ICU-canonical "Asia/Calcutta" would start persisting a deprecated name for
