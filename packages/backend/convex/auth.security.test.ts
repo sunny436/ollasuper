@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
   INVALID_EMAIL_MESSAGE,
@@ -400,5 +400,103 @@ describe("required auth data is persistable", () => {
         .unique(),
     );
     expect(account?.userId).toBe(userId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B3/B4 — the account-existence oracle.
+// ---------------------------------------------------------------------------
+describe("accountExists is not reachable from the public API", () => {
+  /**
+   * It was declared `query`, i.e. callable as api.authSessions.accountExists,
+   * while its own comment claimed it never was. That single fact defeated
+   * requestPasswordReset, which exists purely so a known and an unknown address
+   * are indistinguishable. Anyone could skip the wrapper and ask the helper.
+   */
+  /**
+   * Asserted against the SOURCE, and that is deliberate — two runtime approaches
+   * were tried first and neither can prove this:
+   *
+   *   - `expect(api.authSessions.accountExists).toBeUndefined()` — the generated
+   *     `api` is a proxy that returns a FunctionReference for ANY path, so this
+   *     passes for real functions and absent ones alike. It proves nothing.
+   *   - calling it through `t.query(api…)` — convex-test dispatches by name and
+   *     does NOT model the public/internal boundary, so it resolves happily.
+   *     The boundary is real, but only the deployed server enforces it.
+   *
+   * So the honest regression guard is the registration itself: if someone
+   * changes this back to `query`, the enumeration oracle returns, and this fails.
+   */
+  test("it is registered as internalQuery, not query", () => {
+    const source = Object.values(
+      import.meta.glob("./authSessions.ts", { query: "?raw", import: "default", eager: true }),
+    )[0] as string;
+    expect(source).toContain("export const accountExists = internalQuery({");
+    expect(source).not.toContain("export const accountExists = query({");
+  });
+
+  test("it still answers correctly when called internally", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("users", {
+        email: "known@gmail.com",
+        emailNormalized: "known@gmail.com",
+        emailVerificationTime: Date.now(),
+      });
+    });
+    const yes = await t.query(internal.authSessions.accountExists, {
+      email: "known@gmail.com",
+    });
+    const no = await t.query(internal.authSessions.accountExists, {
+      email: "nobody@gmail.com",
+    });
+    expect(yes).toBe(true);
+    expect(no).toBe(false);
+  });
+
+  /** Case and whitespace must not slip past the normalised lookup. */
+  test("it normalises before comparing", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("users", {
+        email: "mixed@gmail.com",
+        emailNormalized: "mixed@gmail.com",
+      });
+    });
+    for (const probe of ["MIXED@gmail.com", "  mixed@GMAIL.com  "]) {
+      expect(
+        await t.query(internal.authSessions.accountExists, { email: probe }),
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * The legacy path used to `.collect()` the entire users table on every miss.
+   * Rows predating emailNormalized must still be found, but only those rows may
+   * be read — the index range is what bounds it.
+   */
+  test("a pre-emailNormalized row is still found, by the bounded path", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      // No emailNormalized, and mixed case — invisible to the fast index.
+      await ctx.db.insert("users", { email: "Legacy@Gmail.com" });
+      // Plenty of modern rows, which the bounded scan must NOT have to read.
+      for (let i = 0; i < 50; i++) {
+        await ctx.db.insert("users", {
+          email: `u${i}@gmail.com`,
+          emailNormalized: `u${i}@gmail.com`,
+        });
+      }
+    });
+    expect(
+      await t.query(internal.authSessions.accountExists, {
+        email: "legacy@gmail.com",
+      }),
+    ).toBe(true);
+    expect(
+      await t.query(internal.authSessions.accountExists, {
+        email: "absent@gmail.com",
+      }),
+    ).toBe(false);
   });
 });

@@ -1,7 +1,12 @@
 import { getAuthSessionId, getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
-import { api } from "./_generated/api";
-import { action, mutation, query } from "./_generated/server";
+import { api, internal } from "./_generated/api";
+import {
+  action,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
 import { normalizeEmail } from "./authPolicy";
 import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
 
@@ -60,8 +65,23 @@ export const heartbeat = mutation({
   },
 });
 
-/** Internal: does an account exist for this address? Never exposed publicly. */
-export const accountExists = query({
+/**
+ * Legacy rows only — those predating emailNormalized. The set shrinks on every
+ * sign-in, so this ceiling exists to bound a pathological case, not a normal one.
+ */
+const LEGACY_SCAN_LIMIT = 2000;
+
+/**
+ * Does an account exist for this address?
+ *
+ * `internalQuery`, and that is the whole point. This was declared `query` — i.e.
+ * publicly callable as `api.authSessions.accountExists` — while its own comment
+ * claimed it was never exposed. Anyone could ask it directly and get a yes/no,
+ * which defeated `requestPasswordReset` below: that action goes to real trouble
+ * to answer identically for known and unknown addresses, and this handed the
+ * answer over for free.
+ */
+export const accountExists = internalQuery({
   args: { email: v.string() },
   handler: async (ctx, { email }) => {
     const normalized = normalizeEmail(email);
@@ -71,15 +91,22 @@ export const accountExists = query({
       .withIndex("by_email_normalized", (q) => q.eq("emailNormalized", normalized))
       .first();
     if (hit) return true;
-    // Slow path, kept deliberately. Rows written before emailNormalized existed
-    // have it unset and are invisible to that index, and their raw email may be
-    // any case, which no index can match case-insensitively. Scanning here is
-    // the only answer that cannot regress an existing account — it just no
-    // longer runs for the overwhelmingly common case of a normalised hit.
-    const all = await ctx.db.query("users").collect();
-    return all.some(
-      (u) => (u.emailNormalized ?? normalizeEmail(u.email ?? "")) === normalized,
-    );
+    // Legacy path. Rows written before emailNormalized existed have it unset and
+    // are invisible to that index, and their raw email may be any case, which no
+    // index can match case-insensitively.
+    //
+    // This used to be `.collect()` over the WHOLE users table, so every probe
+    // for an unknown address scanned every user — cheap to trigger, and it grows
+    // until it hits Convex's per-query document limit and starts throwing. The
+    // index range `emailNormalized === undefined` selects exactly the legacy
+    // rows and nothing else, so the scan is bounded by the size of a set that
+    // only ever shrinks: afterUserCreatedOrUpdated backfills emailNormalized on
+    // every sign-in.
+    const legacy = await ctx.db
+      .query("users")
+      .withIndex("by_email_normalized", (q) => q.eq("emailNormalized", undefined))
+      .take(LEGACY_SCAN_LIMIT);
+    return legacy.some((u) => normalizeEmail(u.email ?? "") === normalized);
   },
 });
 
@@ -98,7 +125,7 @@ export const accountExists = query({
 export const requestPasswordReset = action({
   args: { email: v.string() },
   handler: async (ctx, { email }): Promise<{ ok: true }> => {
-    const exists: boolean = await ctx.runQuery(api.authSessions.accountExists, {
+    const exists: boolean = await ctx.runQuery(internal.authSessions.accountExists, {
       email,
     });
     if (exists) {
