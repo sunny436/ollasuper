@@ -78,6 +78,31 @@ function backoffMs(attempts: number): number {
   return RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1);
 }
 
+/** Never wait longer than this on a provider's say-so. */
+const MAX_PROVIDER_BACKOFF_MS = 15 * 60 * 1000;
+
+/**
+ * How long to wait before retrying a transient failure.
+ *
+ * On a 429 the provider tells us exactly how long to back off (`retryAfter`,
+ * seconds). Ignoring that and using our own curve is how a rate-limited sender
+ * keeps hammering and stays rate-limited — so honour it when it is offered.
+ *
+ * CLAMPED on both ends: a missing or nonsensical value falls back to the normal
+ * curve, and an absurd one cannot park a report for hours. The provider is
+ * trusted for advice here, not for control.
+ */
+export function retryDelayMs(retryAfterSeconds?: number): number {
+  if (
+    typeof retryAfterSeconds !== "number" ||
+    !Number.isFinite(retryAfterSeconds) ||
+    retryAfterSeconds <= 0
+  ) {
+    return backoffMs(1);
+  }
+  return Math.min(retryAfterSeconds * 1000, MAX_PROVIDER_BACKOFF_MS);
+}
+
 type Outcome = "succeeded" | "failed" | "cancelled";
 
 async function loadByOccurrence(
@@ -676,7 +701,9 @@ export const deliver = internalAction({
         errorCode: cls.code,
         pdfStatus: pdf.pdfStatus,
         attachment: pdf.attachment,
-        ...(cls.transient ? { retryInMs: backoffMs(1) } : {}),
+        ...(cls.transient
+          ? { retryInMs: retryDelayMs(sent.retryAfter) }
+          : {}),
       });
       if (cls.code === "invalid_recipient") {
         await ctx.runMutation(internal.scheduled.delivery.disableEmailForTask, {

@@ -4,6 +4,10 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import {
+  MAX_INFLIGHT_EMAIL,
+  retryDelayMs,
+} from "./scheduled/delivery";
 
 /**
  * Phase 4 delivery.
@@ -42,11 +46,16 @@ let nextEmailStatus = 200;
  * so tests drive this independently of the HTTP status.
  */
 let nextDeliveryStatus = "sent";
+let nextErrorCode = "PROVIDER_ERROR";
+/** Seconds the provider asks us to wait, on a 429. */
+let nextRetryAfter: number | undefined;
 
 beforeEach(() => {
   sent = [];
   nextEmailStatus = 200;
   nextDeliveryStatus = "sent";
+  nextErrorCode = "PROVIDER_ERROR";
+  nextRetryAfter = undefined;
   process.env.AI_BASE_URL = "http://ai.invalid:8000";
   process.env.AI_SERVICE_KEY = "test-service-key";
   process.env.SCHEDULED_DELIVERY_ENABLED = "true";
@@ -66,7 +75,9 @@ beforeEach(() => {
       });
       if (nextEmailStatus !== 200) {
         return new Response(
-          JSON.stringify({ error: { code: "PROVIDER_ERROR" } }),
+          JSON.stringify({
+            error: { code: nextErrorCode, retryAfter: nextRetryAfter },
+          }),
           { status: nextEmailStatus },
         );
       }
@@ -1130,5 +1141,111 @@ describe("email content is sanitised", () => {
     // Escaped, not stripped.
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("&lt;img");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider rate limiting, and the in-flight cap that keeps us under it.
+// ---------------------------------------------------------------------------
+describe("provider rate limiting", () => {
+  test("a 429 is TRANSIENT — the report is retried, not failed", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    nextEmailStatus = 429;
+    nextErrorCode = "RATE_LIMIT_EXCEEDED";
+    nextRetryAfter = 7;
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
+    const rows = await deliveries(t);
+    // `pending`, not `failed`: a rate limit is the provider asking us to wait,
+    // and giving up on it would silently drop a report the user asked for.
+    expect(rows[0].status).toBe("pending");
+    expect(rows[0].errorCode).toBe("provider_rate_limited");
+  });
+
+  test("a 401 is PERMANENT — bad credentials are not retried three times", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    nextEmailStatus = 401;
+    nextErrorCode = "AUTHENTICATION_ERROR";
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
+    const rows = await deliveries(t);
+    expect(rows[0].status).toBe("failed");
+    expect(rows[0].errorCode).toBe("provider_auth_failed");
+  });
+
+  /**
+   * The provider tells us how long to wait. Ignoring that and using our own
+   * curve is how a rate-limited sender keeps hammering and stays limited.
+   * Clamped at both ends: nonsense falls back, and an absurd value cannot park
+   * a report for hours.
+   */
+  test("retryDelayMs honours the provider's retryAfter, within bounds", () => {
+    expect(retryDelayMs(7)).toBe(7000);
+    expect(retryDelayMs(60)).toBe(60_000);
+    // Absurd: clamped to the ceiling rather than obeyed.
+    expect(retryDelayMs(86_400)).toBe(15 * 60 * 1000);
+    // Missing or nonsensical: fall back to our own first-attempt backoff.
+    expect(retryDelayMs(undefined)).toBe(30_000);
+    expect(retryDelayMs(0)).toBe(30_000);
+    expect(retryDelayMs(-5)).toBe(30_000);
+    expect(retryDelayMs(Number.NaN)).toBe(30_000);
+  });
+});
+
+describe("the in-flight cap defers rather than drops", () => {
+  test("over the cap a delivery stays pending and is re-scheduled", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
+
+    // Saturate the cap with rows that look like sends already in flight, then
+    // put our row back to `pending` and try to claim it.
+    const deliveryId = await t.run(async (ctx) => {
+      const row = (await ctx.db.query("scheduledDeliveries").collect())[0];
+      // Strip the system fields: insert() takes the document WITHOUT _id and
+      // _creationTime, and the store assigns its own.
+      const { _id, _creationTime, ...fields } = row;
+      for (let i = 0; i < MAX_INFLIGHT_EMAIL; i++) {
+        await ctx.db.insert("scheduledDeliveries", {
+          ...fields,
+          occurrenceKey: `${row.occurrenceKey}:filler${i}`,
+          status: "sending",
+          claimedAt: Date.now(),
+        });
+      }
+      await ctx.db.patch(row._id, { status: "pending", claimedAt: undefined });
+      return row._id;
+    });
+
+    const claimed = await t.mutation(internal.scheduled.delivery.claim, {
+      deliveryId,
+    });
+    expect(claimed.ok).toBe(false);
+    // DEFERRED, not dropped and not failed — the row is healthy and merely
+    // waiting its turn.
+    expect(claimed.reason).toBe("deferred");
+    const row = await t.run(async (ctx) => ctx.db.get(deliveryId));
+    expect(row?.status).toBe("pending");
   });
 });
