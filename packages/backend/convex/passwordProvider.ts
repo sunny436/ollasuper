@@ -162,9 +162,13 @@ export function OllaSuperPassword(config: OllaSuperPasswordConfig) {
         // server already collapses" them. It did not; only the browser did, and
         // the browser is not the trust boundary.
         //
-        // ConvexError (not Error) is deliberate: Convex delivers `.data` to the
-        // client and withholds the stack, so this replaces the leak rather than
-        // just narrowing it.
+        // ConvexError (not Error) is deliberate, but it does NOT hide the stack:
+        // verified against production, `e.message` still carries a trace naming
+        // this file and line. What it does give is a clean `e.data` the UI can
+        // show, and — the part that matters here — BOTH failure modes now throw
+        // the same error from the same line, so the trace is identical and no
+        // longer distinguishes them. The residual source-path disclosure is a
+        // deployment-wide Convex behaviour, not something this file can close.
         let retrieved: Awaited<ReturnType<typeof retrieveAccount>> | null = null;
         try {
           retrieved = await retrieveAccount(ctx, {

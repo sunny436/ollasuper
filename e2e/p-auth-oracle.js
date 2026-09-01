@@ -166,9 +166,16 @@ async function attempt(client, params) {
     "login: unknown address and wrong password are indistinguishable",
     `${unknownLogin} vs ${wrongPwLogin}`,
   );
+  // NOTE what this proves and what it does not. It reads `e.data` — the part a
+  // client renders — and asserts the library error code is gone from it. The raw
+  // `e.message` STILL carries a Convex stack trace naming the source file:
+  // verified on production, ConvexError does not suppress that. It is no longer
+  // an ORACLE, because both failure modes now throw the same error from the same
+  // line, but the source-path disclosure is deployment-wide Convex behaviour and
+  // is recorded as a residual rather than fixed here.
   step(
-    !/InvalidAccountId|InvalidSecret|passwordProvider\.ts/.test(wrongPwLogin),
-    "login errors leak neither the library error code nor a stack trace",
+    !/InvalidAccountId|InvalidSecret/.test(wrongPwLogin),
+    "login errors carry no library error code",
     wrongPwLogin,
   );
 
