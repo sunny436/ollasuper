@@ -125,4 +125,19 @@ crons.interval(
   {},
 );
 
+/**
+ * Expire abandoned sign-ups.
+ *
+ * Security, not housekeeping: an unverified account is what lets someone squat
+ * a stranger's address and block them from ever registering with a password.
+ * This purge is that victim's only recovery path. Hourly is ample for a 24-hour
+ * TTL, and keeps each pass small.
+ */
+crons.interval(
+  "purge abandoned signups",
+  { hours: 1 },
+  internal.authPurge.purgeUnverified,
+  {},
+);
+
 export default crons;

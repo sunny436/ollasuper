@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
@@ -17,6 +17,7 @@ import {
 import { generateNumericCode, hasMailTransport } from "./authCodes";
 import { ipPrefix, recordAuthEvent, revokeOtherSessions } from "./authEvents";
 import { reconcileDuplicateUsers } from "./authReconcile";
+import { UNVERIFIED_TTL_MS } from "./authPurge";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.*s", "!./**/*.test.*"]);
@@ -664,5 +665,124 @@ describe("duplicate account reconciliation", () => {
     );
     expect(passwordAccounts).toHaveLength(1);
     expect(passwordAccounts[0].secret).toBe("the-survivor-own-hash");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B5/B6 — abandoned sign-ups must expire, and nothing else may be touched.
+// ---------------------------------------------------------------------------
+describe("abandoned signup purge", () => {
+  const OLD = Date.now() - UNVERIFIED_TTL_MS - 60_000;
+
+  /** An unverified account whose creation time we can control. */
+  async function seedAbandoned(
+    t: ReturnType<typeof convexTest>,
+    email: string,
+    opts: { codeExpires?: number; session?: boolean } = {},
+  ) {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {
+        email,
+        emailNormalized: email,
+      });
+      const accountId = await ctx.db.insert("authAccounts", {
+        userId,
+        provider: "password",
+        providerAccountId: email,
+        secret: "hash",
+      });
+      if (opts.codeExpires !== undefined) {
+        await ctx.db.insert("authVerificationCodes", {
+          accountId,
+          provider: "verify-otp",
+          code: "hashed-code",
+          expirationTime: opts.codeExpires,
+        });
+      }
+      if (opts.session) {
+        await ctx.db.insert("authSessions", {
+          userId,
+          expirationTime: Date.now() + 60_000,
+        });
+      }
+      return { userId, accountId };
+    });
+  }
+
+  /** convex-test cannot backdate _creationTime, so age is simulated by the TTL. */
+  const purge = (t: ReturnType<typeof convexTest>) =>
+    t.mutation(internal.authPurge.purgeUnverified, {});
+
+  test("a young unverified account is NOT purged", async () => {
+    const t = convexTest(schema, modules);
+    const { userId } = await seedAbandoned(t, "young@gmail.com");
+    const result = await purge(t);
+    expect(result.purged).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.get(userId))).not.toBeNull();
+  });
+
+  test("a verified account is never a candidate at all", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) =>
+      ctx.db.insert("users", {
+        email: "verified@gmail.com",
+        emailNormalized: "verified@gmail.com",
+        emailVerificationTime: Date.now(),
+      }),
+    );
+    const result = await purge(t);
+    expect(result.scanned).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.get(userId))).not.toBeNull();
+  });
+
+  /**
+   * The guard that stops the purge deleting an account out from under someone
+   * who is typing the code they were just sent.
+   */
+  test("an account with a live verification code is skipped", async () => {
+    const t = convexTest(schema, modules);
+    const { userId } = await seedAbandoned(t, "typing@gmail.com", {
+      codeExpires: Date.now() + 10 * 60_000,
+    });
+    await purge(t);
+    expect(await t.run(async (ctx) => ctx.db.get(userId))).not.toBeNull();
+  });
+
+  /** Belt and braces: an unverified row with a session is a live user. */
+  test("an account with a session is skipped", async () => {
+    const t = convexTest(schema, modules);
+    const { userId } = await seedAbandoned(t, "session@gmail.com", {
+      session: true,
+    });
+    await purge(t);
+    expect(await t.run(async (ctx) => ctx.db.get(userId))).not.toBeNull();
+  });
+
+  /**
+   * Deleting only the user row would leave the authAccounts row, whose
+   * (provider, providerAccountId) pair still collides — recreating the
+   * squatting lockout in a new form instead of fixing it.
+   */
+  test("purging removes the account and its codes, not just the user", async () => {
+    const t = convexTest(schema, modules);
+    await seedAbandoned(t, "squatted@gmail.com", {
+      codeExpires: Date.now() - 60_000, // already expired
+    });
+    // Age the account past the TTL by moving the clock forward.
+    vi.setSystemTime(new Date(Date.now() + UNVERIFIED_TTL_MS + 120_000));
+    try {
+      const result = await purge(t);
+      expect(result.purged).toBe(1);
+      const [users, accounts, codes] = await t.run(async (ctx) => [
+        await ctx.db.query("users").collect(),
+        await ctx.db.query("authAccounts").collect(),
+        await ctx.db.query("authVerificationCodes").collect(),
+      ]);
+      expect(users).toHaveLength(0);
+      expect(accounts).toHaveLength(0);
+      expect(codes).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

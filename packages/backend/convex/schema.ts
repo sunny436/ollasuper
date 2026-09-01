@@ -37,7 +37,11 @@ export default defineSchema({
     passwordChangedAt: v.optional(v.number()),
   })
     .index("email", ["email"])
-    .index("by_email_normalized", ["emailNormalized"]),
+    .index("by_email_normalized", ["emailNormalized"])
+    // Additive, and purely so the abandoned-signup purge can select exactly the
+    // unverified rows. Without it the purge would scan the whole users table on
+    // every pass to find a set that is normally tiny.
+    .index("by_verification", ["emailVerificationTime"]),
 
   // Account-level security history. Deliberately NOT auditLogs: those are
   // workspace-scoped product actions with a required workspaceId, whereas these
