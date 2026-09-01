@@ -23,7 +23,10 @@ export type AuthEventType =
   | "password_changed"
   | "password_reset"
   | "session_revoked"
-  | "session_replaced";
+  | "session_replaced"
+  // An unverified duplicate account was absorbed into this one. Kept in the
+  // audit trail because it is a real identity change, not bookkeeping.
+  | "account_merged";
 
 /**
  * Truncate an IP to a network prefix — /24 for IPv4, /48 for IPv6.

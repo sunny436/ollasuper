@@ -11,6 +11,7 @@ import {
   normalizeEmail,
 } from "./authPolicy";
 import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
+import { reconcileDuplicateUsers } from "./authReconcile";
 import { ResendOTPReset, ResendOTPVerify } from "./passwordProviders";
 
 // Full auth: email+password (strength policy, email verification, password
@@ -153,6 +154,19 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
             ? { emailNormalized: normalizeEmail(user.email) }
             : {}),
           ...(user.accountStatus ? {} : { accountStatus: "active" }),
+        });
+      }
+
+      // One email, one user. Runs AFTER the row exists because that is the only
+      // hook available — see authReconcile for why absorbing an unverified
+      // account is safe (it can own nothing) and why two verified accounts are
+      // never merged.
+      const absorbed = await reconcileDuplicateUsers(ctx, args.userId);
+      if (absorbed > 0) {
+        await recordAuthEvent(ctx, {
+          type: "account_merged",
+          userId: args.userId,
+          meta: { absorbed },
         });
       }
 

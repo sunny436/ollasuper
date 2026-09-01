@@ -16,6 +16,7 @@ import {
 } from "./authPolicy";
 import { generateNumericCode, hasMailTransport } from "./authCodes";
 import { ipPrefix, recordAuthEvent, revokeOtherSessions } from "./authEvents";
+import { reconcileDuplicateUsers } from "./authReconcile";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.*s", "!./**/*.test.*"]);
@@ -498,5 +499,170 @@ describe("accountExists is not reachable from the public API", () => {
         email: "absent@gmail.com",
       }),
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B1 — one email, one user.
+// ---------------------------------------------------------------------------
+describe("duplicate account reconciliation", () => {
+  const EMAIL = "dupe@gmail.com";
+
+  /** An abandoned password sign-up: a user row plus its credential, unverified. */
+  async function seedUnverified(t: ReturnType<typeof convexTest>, name?: string) {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {
+        email: EMAIL,
+        emailNormalized: EMAIL,
+        ...(name ? { name } : {}),
+      });
+      await ctx.db.insert("authAccounts", {
+        userId,
+        provider: "password",
+        providerAccountId: EMAIL,
+        secret: "scrypt-hash",
+      });
+      return userId;
+    });
+  }
+
+  /** The verified account a later Google sign-in would create. */
+  async function seedVerified(t: ReturnType<typeof convexTest>) {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {
+        email: EMAIL,
+        emailNormalized: EMAIL,
+        emailVerificationTime: Date.now(),
+      });
+      await ctx.db.insert("authAccounts", {
+        userId,
+        provider: "google",
+        providerAccountId: "google-sub-123",
+      });
+      return userId;
+    });
+  }
+
+  /**
+   * The reported bug. uniqueUserWithVerifiedEmail filters on
+   * emailVerificationTime, so an unverified sign-up is invisible to it and
+   * Google creates a SECOND row — leaving the password credential on an
+   * orphan the user can still log into and find empty.
+   */
+  test("an unverified twin is absorbed, leaving exactly one user", async () => {
+    const t = convexTest(schema, modules);
+    const orphanId = await seedUnverified(t);
+    const survivorId = await seedVerified(t);
+
+    const absorbed = await t.run(async (ctx) =>
+      reconcileDuplicateUsers(ctx, survivorId),
+    );
+    expect(absorbed).toBe(1);
+
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
+    expect(users).toHaveLength(1);
+    expect(users[0]._id).toBe(survivorId);
+    expect(await t.run(async (ctx) => ctx.db.get(orphanId))).toBeNull();
+  });
+
+  /** The password chosen during the abandoned sign-up must keep working. */
+  test("the absorbed account's credential moves to the survivor", async () => {
+    const t = convexTest(schema, modules);
+    await seedUnverified(t);
+    const survivorId = await seedVerified(t);
+    await t.run(async (ctx) => reconcileDuplicateUsers(ctx, survivorId));
+
+    const accounts = await t.run(async (ctx) =>
+      ctx.db.query("authAccounts").collect(),
+    );
+    expect(accounts).toHaveLength(2);
+    expect(accounts.every((a) => a.userId === survivorId)).toBe(true);
+    expect(accounts.map((a) => a.provider).sort()).toEqual(["google", "password"]);
+  });
+
+  /** A name the survivor's own profile did not supply is worth keeping. */
+  test("a display name is carried over when the survivor has none", async () => {
+    const t = convexTest(schema, modules);
+    await seedUnverified(t, "Sunny");
+    const survivorId = await seedVerified(t);
+    await t.run(async (ctx) => reconcileDuplicateUsers(ctx, survivorId));
+    const survivor = await t.run(async (ctx) => ctx.db.get(survivorId));
+    expect(survivor?.name).toBe("Sunny");
+  });
+
+  /**
+   * TWO VERIFIED ACCOUNTS ARE NEVER MERGED. That is pre-existing data whose
+   * resolution is a human decision, and deleting either would destroy real work.
+   */
+  test("a verified twin is left completely alone", async () => {
+    const t = convexTest(schema, modules);
+    const otherId = await t.run(async (ctx) =>
+      ctx.db.insert("users", {
+        email: EMAIL,
+        emailNormalized: EMAIL,
+        emailVerificationTime: Date.now(),
+      }),
+    );
+    const survivorId = await seedVerified(t);
+
+    const absorbed = await t.run(async (ctx) =>
+      reconcileDuplicateUsers(ctx, survivorId),
+    );
+    expect(absorbed).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.get(otherId))).not.toBeNull();
+  });
+
+  /** An unverified survivor must not swallow anyone — that just moves the bug. */
+  test("an unverified survivor absorbs nothing", async () => {
+    const t = convexTest(schema, modules);
+    await seedUnverified(t);
+    const unverifiedSurvivor = await seedUnverified(t);
+    const absorbed = await t.run(async (ctx) =>
+      reconcileDuplicateUsers(ctx, unverifiedSurvivor),
+    );
+    expect(absorbed).toBe(0);
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
+    expect(users).toHaveLength(2);
+  });
+
+  /** Unrelated accounts must never be touched. */
+  test("a different address is untouched", async () => {
+    const t = convexTest(schema, modules);
+    const strangerId = await t.run(async (ctx) =>
+      ctx.db.insert("users", {
+        email: "stranger@gmail.com",
+        emailNormalized: "stranger@gmail.com",
+      }),
+    );
+    const survivorId = await seedVerified(t);
+    const absorbed = await t.run(async (ctx) =>
+      reconcileDuplicateUsers(ctx, survivorId),
+    );
+    expect(absorbed).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.get(strangerId))).not.toBeNull();
+  });
+
+  /** A duplicate credential for a provider the survivor already has is dropped. */
+  test("a clashing provider credential is discarded, not duplicated", async () => {
+    const t = convexTest(schema, modules);
+    await seedUnverified(t);
+    const survivorId = await seedVerified(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("authAccounts", {
+        userId: survivorId,
+        provider: "password",
+        providerAccountId: EMAIL,
+        secret: "the-survivor-own-hash",
+      });
+    });
+    await t.run(async (ctx) => reconcileDuplicateUsers(ctx, survivorId));
+
+    const passwordAccounts = await t.run(async (ctx) =>
+      (await ctx.db.query("authAccounts").collect()).filter(
+        (a) => a.provider === "password",
+      ),
+    );
+    expect(passwordAccounts).toHaveLength(1);
+    expect(passwordAccounts[0].secret).toBe("the-survivor-own-hash");
   });
 });
