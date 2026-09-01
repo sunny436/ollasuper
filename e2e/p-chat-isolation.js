@@ -143,7 +143,9 @@ async function signUp(email, password) {
     const authed = new ConvexHttpClient(CONVEX_URL);
     authed.setAuth(token);
     await authed.mutation(anyApi.users.updateUsername, {
-      username: email.split("@")[0].slice(0, 20),
+      // The address now carries a +tag, and usernames are alphanumeric
+      // only — strip it rather than letting a valid address fail validation.
+      username: email.split("@")[0].replace(/[^a-z0-9]/gi, "").slice(0, 20),
     });
     return authed;
   } finally {
