@@ -155,6 +155,40 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   });
 
   /**
+   * The THIRD auth email flow (`resend-otp`), reachable from the sign-in panel
+   * as "Sign in with a one-time email code". It has its own template heading,
+   * and until now nothing exercised it end to end.
+   */
+  await step("magic OTP: sign in with a one-time email code", async () => {
+    // The previous step left this context SIGNED IN, so /login would just
+    // redirect to /chat and the entry point would look missing.
+    await ctx.clearCookies();
+    await page.goto(BASE + "/login", { waitUntil: "domcontentloaded" });
+    await page.waitForURL(/login/, { timeout: 20000 });
+    await page.waitForTimeout(1200);
+    const link = page.getByText("Sign in with a one-time email code");
+    must(await link.count(), "no one-time-code entry point on the sign-in panel");
+    await link.first().click();
+    await page.waitForTimeout(800);
+    await page.locator('input[type="email"]').first().fill(EMAIL);
+    await page.click('button[type="submit"]');
+    await page.waitForSelector('input[name="code"]', { timeout: 30000 });
+    // Its subject carries the "OTP" label, which is also how the template
+    // selects the "Sign in to OllaSuper" heading.
+    const code = await ollastack.codeFromOllastack(TAG, "OTP", 120000);
+    must(code, "no one-time sign-in code arrived");
+    must(/^\d{8}$/.test(code), `code is not 8 digits: ${code}`);
+    await page.fill('input[name="code"]', code);
+    await page.click('button[type="submit"]');
+    await page.waitForTimeout(4500);
+    await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(3000);
+    cur = page.url();
+    must(!/login/.test(cur), `one-time code did not sign in: ${cur}`);
+    return code;
+  });
+
+  /**
    * authProbe.recordSend caps emailed codes at 6/hour per normalised address
    * and SKIPS silently past the cap — never throws, so the response stays
    * constant. The property under test is that rapid requests neither error nor
