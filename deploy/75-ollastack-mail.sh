@@ -158,7 +158,10 @@ E2E_ID=$(ensure_mailbox e2e)
 
 echo "[4/6] Convex deployment env"
 cd "$BACKEND"
-setenv() { "$NODE" "$CVX" env set -- "$1" "$2" >/dev/null && echo "  $1 set"; }
+# 2>&1, not just >/dev/null: `convex env set` prints
+# "Successfully set NAME to VALUE" on STDERR, which would echo the bearer token
+# into the deploy log in plaintext. Only the NAME is ever printed here.
+setenv() { "$NODE" "$CVX" env set -- "$1" "$2" >/dev/null 2>&1 && echo "  $1 set"; }
 setenv OLLASTACK_MAIL_TOKEN "$OLLASTACK_MAIL_TOKEN"
 setenv OLLASTACK_MAIL_BASE_URL "$BASE_URL"
 setenv OLLASTACK_AUTH_MAILBOX_ID "$AUTH_ID"
