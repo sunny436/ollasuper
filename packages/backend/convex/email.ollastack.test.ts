@@ -2,6 +2,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
+import { formatGeneratedAt } from "./email";
 import { hasMailTransport } from "./authCodes";
 import schema from "./schema";
 
@@ -190,6 +191,40 @@ describe("auth email over ollastack", () => {
   });
 });
 
+describe("the report header timestamp", () => {
+  /**
+   * Production shipped this as UTC on a task whose timezone was
+   * Asia/Kolkata: dateStyle/timeStyle cannot be combined with timeZoneName,
+   * so Intl THREW and the UTC fallback silently took over. The fallback is
+   * correct behaviour; losing the timezone is not.
+   */
+  test("renders in the task's timezone, not UTC", () => {
+    const at = Date.UTC(2026, 8, 1, 11, 1);
+    const out = formatGeneratedAt(at, "Asia/Kolkata");
+    expect(out).toContain("Generated");
+    // 11:01 UTC is 16:31 in Kolkata.
+    expect(out).toContain("16:31");
+    expect(out).not.toMatch(/UTC/);
+  });
+
+  test("a different zone gives a different local time", () => {
+    const at = Date.UTC(2026, 8, 1, 11, 1);
+    expect(formatGeneratedAt(at, "America/New_York")).toContain("07:01");
+    expect(formatGeneratedAt(at, "UTC")).toContain("11:01");
+  });
+
+  test("an invalid zone degrades to a UTC string rather than throwing", () => {
+    const at = Date.UTC(2026, 8, 1, 11, 1);
+    const out = formatGeneratedAt(at, "Not/AZone");
+    expect(out).toContain("Generated");
+    expect(out).toContain("UTC");
+  });
+
+  test("no timestamp yields no header text at all", () => {
+    expect(formatGeneratedAt(undefined, "UTC")).toBe("");
+    expect(formatGeneratedAt(Number.NaN, "UTC")).toBe("");
+  });
+});
 describe("the smtp transport is refused on production", () => {
   test("smtp + a production SITE_URL throws instead of reaching Mailpit", async () => {
     const t = convexTest(schema, modules);

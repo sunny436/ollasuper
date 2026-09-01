@@ -279,12 +279,21 @@ const REPORT_FONT =
  * Degrades to a plain UTC string, and then to nothing. A date format must never
  * be the reason a report email fails to go out.
  */
-function formatGeneratedAt(at?: number, timezone?: string): string {
+export function formatGeneratedAt(at?: number, timezone?: string): string {
   if (!at || !Number.isFinite(at)) return "";
   try {
+    // EXPLICIT COMPONENTS, not dateStyle/timeStyle. ECMA-402 forbids combining
+    // those with individual options like timeZoneName, and the call THROWS —
+    // which production proved by quietly falling back to UTC on a task whose
+    // timezone was Asia/Kolkata. The fallback hid the bug; the timezone was
+    // simply lost.
     return `Generated ${new Intl.DateTimeFormat("en-GB", {
-      dateStyle: "medium",
-      timeStyle: "short",
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
       timeZone: timezone || "UTC",
       timeZoneName: "short",
     }).format(new Date(at))}`;
