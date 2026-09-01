@@ -86,6 +86,50 @@ deployment is deliberately Phase 4, so `main`'s live behaviour is unchanged by p
   was declined, so `deploy/71`, the deployment, the smoke test and `e2e/p-scheduled.js` have never
   been run either. See the 45-row acceptance form in the Phase 4 plan.
 
+### Scheduled report emails render the report (2026-09-01)
+
+The report renderer understood **three** block types — headings, `-` bullets, paragraphs — and wrapped
+them in no layout at all. A real production email read:
+
+```html
+<h1>SEO Brief: Interaction to Next Paint (INP)</h1>
+<p>**INP (Interaction to Next Paint)** — the Core Web Vital…</p>
+<p>1. **Break up long tasks…** (`setTimeout`…)</p>
+```
+
+Literal asterisks, literal backticks, numbered items flattened, and a bare fragment with no branding.
+
+- **`convex/reportMarkdown.ts`** (new, plain, no deps) adds bold, italic, inline code, fenced code,
+  ordered lists with `start`, nested bullets, links, blockquotes, rules and GFM tables — inside the
+  **same shell as the auth email** (`renderShell`), so the two cannot drift.
+- **THE ESCAPING ORDER IS INVERTED, and that is the point.** The old renderer escaped the document
+  then looked for block shapes in the escaped text. That works only while the markers are characters
+  `esc` leaves alone; it **corrupts** any URL, turning `?a=1&b=2` into `?a=1&amp;b=2` before the href
+  is extracted. Structure is now parsed on the RAW text and every leaf escaped at emit: every text
+  node through `esc()`, every href through `safeUrl()` **then** `esc()`.
+- **`safeUrl` MOVED** from `apps/app` to `convex/urlGuard.ts` rather than being copied — chat and the
+  email renderer both need it and live in different packages. It had **zero tests** in the app and
+  now has 22, including the control-character bypass its own comment documents.
+- **Long reports** are cut between blocks — never inside a table or fence — and say so, with a link
+  to the full result. Distinct from the pre-existing `MAX_MARKDOWN_CHARS` cut, which is a different
+  event and now has its own wording.
+- **Three bugs caught before or during production verification:**
+  (1) a URL with balanced parentheses (every Wikipedia link) was truncated at the first `)`, leaving
+  a stray bracket in the prose; (2) a nested list was emitted as a **sibling** of its parent `<li>`,
+  invalid HTML that Outlook renders as an extra bullet; (3) **the timestamp silently fell back to
+  UTC** — ECMA-402 forbids combining `dateStyle`/`timeStyle` with `timeZoneName`, so `Intl` threw and
+  the fallback took over, losing the task's timezone. Found only by reading a real received email.
+- **Prod-verified deterministically**, by invoking the real send action with crafted fixtures so the
+  model's nondeterminism cannot make the assertions flaky: a formatting-heavy report (every block
+  type) and a hostile report. In the received mail, `<strong> <em> <code> <ol> <ul> <table> <th>
+  <blockquote> <pre> <hr> <a href>` all present; `**`, `](`, `|---|` all absent; every hostile
+  construct inert but still visible as escaped text; `?a=1&amp;b=2` and `Foo_(bar)` hrefs both
+  correct; `Generated 1 Sept 2026, 16:31 GMT+5:30` in the task's own zone.
+- **Spam gate passed** — the richer HTML did **not** increase classification; both new report emails
+  landed in the normal inbox, with only the two pre-existing SEO reports still in spam.
+- Backend **532 passed / 1 skipped**; typecheck 7/7; lint clean. The 30 auth-email tests pass
+  untouched, which is what proves the shell extraction changed nothing.
+
 ### Auth emails are branded HTML (2026-09-01)
 
 One-time codes went out as a single line of plain text. They now carry a branded HTML part
