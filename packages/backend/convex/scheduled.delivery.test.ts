@@ -23,29 +23,60 @@ const DAILY = { kind: "daily" as const, timezone: "UTC", hour: 9, minute: 0 };
 
 const realFetch = globalThis.fetch;
 
+/** The mailbox the report transport sends from, in tests. */
+const MAILBOX = "mb_test";
+/** Where the Ollastack send endpoint lives, for the fetch stub to match on. */
+const SEND_PATH = `/api/mailboxes/${MAILBOX}/send`;
+
 /** Records every outbound call so a test can assert how many emails were sent. */
-let sent: { url: string; idempotencyKey: string | null }[] = [];
+let sent: {
+  url: string;
+  idempotencyKey: string | null;
+  body: Record<string, unknown>;
+}[] = [];
 let nextEmailStatus = 200;
+/**
+ * What the provider claims about the message it just stored.
+ *
+ * A 2xx alone is NOT success — `dry_run` and `failed` both arrive with a 200 —
+ * so tests drive this independently of the HTTP status.
+ */
+let nextDeliveryStatus = "sent";
 
 beforeEach(() => {
   sent = [];
   nextEmailStatus = 200;
+  nextDeliveryStatus = "sent";
   process.env.AI_BASE_URL = "http://ai.invalid:8000";
   process.env.AI_SERVICE_KEY = "test-service-key";
   process.env.SCHEDULED_DELIVERY_ENABLED = "true";
-  process.env.SCHEDULED_EMAIL_TRANSPORT = "resend";
-  process.env.RESEND_API_KEY = "re_test_key";
+  process.env.SCHEDULED_EMAIL_TRANSPORT = "ollastack";
+  process.env.OLLASTACK_MAIL_TOKEN = "fmd_test_token";
+  process.env.OLLASTACK_REPORTS_MAILBOX_ID = MAILBOX;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.includes("api.resend.com")) {
+    if (url.includes(SEND_PATH)) {
       const headers = new Headers(init?.headers);
-      sent.push({ url, idempotencyKey: headers.get("Idempotency-Key") });
-      if (nextEmailStatus !== 200) {
-        return new Response("{}", { status: nextEmailStatus });
-      }
-      return new Response(JSON.stringify({ id: `msg_${sent.length}` }), {
-        status: 200,
+      sent.push({
+        url,
+        // Always null: the provider has no such header. Asserted explicitly
+        // below so the absence is a documented property, not an oversight.
+        idempotencyKey: headers.get("Idempotency-Key"),
+        body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
       });
+      if (nextEmailStatus !== 200) {
+        return new Response(
+          JSON.stringify({ error: { code: "PROVIDER_ERROR" } }),
+          { status: nextEmailStatus },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          success: true,
+          data: { id: `msg_${sent.length}`, deliveryStatus: nextDeliveryStatus },
+        }),
+        { status: 200 },
+      );
     }
     if (url.includes("/v1/report/pdf")) {
       return new Response(new Uint8Array([37, 80, 68, 70]), { status: 200 });
@@ -61,7 +92,11 @@ afterEach(() => {
     "AI_SERVICE_KEY",
     "SCHEDULED_DELIVERY_ENABLED",
     "SCHEDULED_EMAIL_TRANSPORT",
-    "RESEND_API_KEY",
+    "OLLASTACK_MAIL_TOKEN",
+    "OLLASTACK_REPORTS_MAILBOX_ID",
+    "OLLASTACK_MAIL_BASE_URL",
+    "SITE_URL",
+    "ALLOW_SMTP_TRANSPORT",
   ]) {
     delete process.env[k];
   }
@@ -467,10 +502,10 @@ describe("a delivery failure never re-runs the AI", () => {
 // every production report into Mailpit.
 // ---------------------------------------------------------------------------
 describe("email transport is fail-closed", () => {
-  test("resend with no key FAILS; it never falls back to SMTP", async () => {
+  test("ollastack with no token FAILS; it never falls back to SMTP", async () => {
     const t = convexTest(schema, modules);
     // biome-ignore lint/performance/noDelete: the only way to actually unset an env var
-    delete process.env.RESEND_API_KEY;
+    delete process.env.OLLASTACK_MAIL_TOKEN;
     process.env.SMTP_HOST = "127.0.0.1"; // a Mailpit-shaped trap
     const { userId, ws } = await seed(t);
     const taskId = await mkTask(t, userId, ws, { onSuccess: true });
@@ -482,13 +517,102 @@ describe("email transport is fail-closed", () => {
     });
     await drain(t);
     const rows = await deliveries(t);
-    expect(rows[0].errorCode).toBe("resend_key_missing");
-    expect(rows[0].status).not.toBe("accepted");
+    expect(rows[0].errorCode).toBe("ollastack_not_configured");
+    // Permanent, not transient: retrying a misconfigured transport only
+    // buries the fault three attempts deep.
+    expect(rows[0].status).toBe("failed");
     expect(sent).toEqual([]);
     // biome-ignore lint/performance/noDelete: the only way to actually unset an env var
     delete process.env.SMTP_HOST;
   });
 
+  test("a configured mailbox is required too, not just a token", async () => {
+    const t = convexTest(schema, modules);
+    // biome-ignore lint/performance/noDelete: the only way to actually unset an env var
+    delete process.env.OLLASTACK_REPORTS_MAILBOX_ID;
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
+    const rows = await deliveries(t);
+    expect(rows[0].errorCode).toBe("ollastack_not_configured");
+    expect(sent).toEqual([]);
+  });
+
+  /**
+   * The defect that was LIVE in production: SCHEDULED_EMAIL_TRANSPORT=smtp on a
+   * host whose SMTP_HOST is Mailpit. deploy/71 was supposed to prevent it and
+   * did not, so the refusal has to live in the sending path itself.
+   */
+  test("smtp is refused outright on a production deployment", async () => {
+    const t = convexTest(schema, modules);
+    process.env.SCHEDULED_EMAIL_TRANSPORT = "smtp";
+    process.env.SITE_URL = "https://app.ollasuper.com";
+    process.env.SMTP_HOST = "172.18.0.1"; // the real Mailpit address
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
+    const rows = await deliveries(t);
+    expect(rows[0].errorCode).toBe("smtp_refused_on_production");
+    expect(rows[0].status).toBe("failed");
+    // biome-ignore lint/performance/noDelete: the only way to actually unset an env var
+    delete process.env.SMTP_HOST;
+  });
+
+  test("smtp stays available on a loopback deployment (the replica)", async () => {
+    const t = convexTest(schema, modules);
+    process.env.SCHEDULED_EMAIL_TRANSPORT = "smtp";
+    process.env.SITE_URL = "http://localhost:3000";
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
+    const rows = await deliveries(t);
+    // No SMTP_HOST here, so it stops at "not configured" rather than at the
+    // production refusal — which is the distinction being asserted.
+    expect(rows[0].errorCode).toBe("smtp_not_configured");
+  });
+
+  /**
+   * A stale transport name must not degrade into the local catcher. This is
+   * the shape of the original defect: a value nobody rechecked, silently
+   * resolving to Mailpit.
+   */
+  test("an unknown transport name fails closed, it does not become smtp", async () => {
+    const t = convexTest(schema, modules);
+    process.env.SCHEDULED_EMAIL_TRANSPORT = "resend"; // a provider with no branch
+    process.env.SMTP_HOST = "172.18.0.1"; // the Mailpit trap
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
+    const rows = await deliveries(t);
+    expect(rows[0].errorCode).toBe("transport_unknown");
+    expect(rows[0].status).not.toBe("accepted");
+    // biome-ignore lint/performance/noDelete: the only way to actually unset an env var
+    delete process.env.SMTP_HOST;
+  });
   test("delivery disabled records skipped and sends nothing", async () => {
     const t = convexTest(schema, modules);
     process.env.SCHEDULED_DELIVERY_ENABLED = "false";
@@ -606,7 +730,16 @@ describe("accepted vs delivered", () => {
 // P5 — a thrown action is not retried, so the reaper IS the retry mechanism.
 // ---------------------------------------------------------------------------
 describe("the reaper is the retry mechanism", () => {
-  test("a row stuck in `sending` inside the idempotency window is retried", async () => {
+  /**
+   * The behaviour that CHANGED with the provider, and the reason it changed.
+   *
+   * With Resend, a crashed `sending` row inside the idempotency window was
+   * re-queued: the retry carried the same Idempotency-Key and the provider
+   * suppressed the duplicate. Ollastack has no such header, so the identical
+   * re-queue would send the report TWICE. It therefore goes straight to
+   * `indeterminate` — and `reconcile` is what rescues it from there.
+   */
+  test("on ollastack a crashed `sending` row is NEVER blind-retried", async () => {
     const t = convexTest(schema, modules);
     const { userId, ws } = await seed(t);
     const taskId = await mkTask(t, userId, ws, { onSuccess: true });
@@ -617,8 +750,45 @@ describe("the reaper is the retry mechanism", () => {
       outcome: "succeeded",
     });
     await drain(t);
-    // Simulate a worker that died mid-send, 3 minutes ago: past the lease, well
-    // inside the provider's idempotency window.
+    const before = sent.length;
+    // A worker that died mid-send 3 minutes ago: past the lease, and well
+    // inside what USED to be the provider's idempotency window.
+    await t.run(async (ctx) => {
+      const row = (await ctx.db.query("scheduledDeliveries").collect())[0];
+      await ctx.db.patch(row._id, {
+        status: "sending",
+        claimedAt: Date.now() - 3 * 60_000,
+        attempts: 1,
+      });
+    });
+    const res = await t.mutation(internal.scheduled.delivery.reap, {});
+    expect(res.requeued).toBe(0);
+    expect(res.indeterminate).toBe(1);
+    await drain(t);
+    // The point of all of it: no second email.
+    expect(sent.length).toBe(before);
+    const rows = await deliveries(t);
+    expect(rows[0].status).toBe("indeterminate");
+  });
+
+  /**
+   * The escape hatch stays honest: a provider that DOES honour the key still
+   * gets the cheaper retry, so this is a transport property and not a
+   * hard-coded regression.
+   */
+  test("a provider with idempotency still gets the in-window retry", async () => {
+    const t = convexTest(schema, modules);
+    process.env.SCHEDULED_EMAIL_TRANSPORT = "smtp";
+    process.env.ALLOW_SMTP_TRANSPORT = "1";
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
     await t.run(async (ctx) => {
       const row = (await ctx.db.query("scheduledDeliveries").collect())[0];
       await ctx.db.patch(row._id, {
@@ -693,7 +863,12 @@ describe("the reaper is the retry mechanism", () => {
 // The Idempotency-Key is what buys provider-side duplicate suppression.
 // ---------------------------------------------------------------------------
 describe("idempotency", () => {
-  test("the send carries a stable per-occurrence Idempotency-Key", async () => {
+  /**
+   * Ollastack has NO Idempotency-Key. Asserting its absence is the point: if
+   * someone later adds one back believing the provider honours it, the safety
+   * argument in `reap`/`reconcile` silently becomes false.
+   */
+  test("the send carries no Idempotency-Key — the provider has none", async () => {
     const t = convexTest(schema, modules);
     const { userId, ws } = await seed(t);
     const taskId = await mkTask(t, userId, ws, { onSuccess: true });
@@ -705,15 +880,56 @@ describe("idempotency", () => {
     });
     await drain(t);
     expect(sent).toHaveLength(1);
-    expect(sent[0].idempotencyKey).toBe(`${claim.occurrenceKey}:email`);
+    expect(sent[0].idempotencyKey).toBeNull();
   });
 
-  test("a 409 from the provider is treated as already-sent, not retried", async () => {
+  /**
+   * The whole reason this transport needed a second look: the provider answers
+   * 200 and reports that it threw the message away. A bare `res.ok` check would
+   * record `accepted` here and swallow every report — the exact Mailpit defect,
+   * on a different provider.
+   */
+  test("a 200 with deliveryStatus dry_run is a FAILURE, not an accept", async () => {
     const t = convexTest(schema, modules);
     const { userId, ws } = await seed(t);
     const taskId = await mkTask(t, userId, ws, { onSuccess: true });
     const claim = await claimOne(t, userId, taskId);
-    nextEmailStatus = 409;
+    nextDeliveryStatus = "dry_run";
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
+    const rows = await deliveries(t);
+    expect(rows[0].status).toBe("failed");
+    expect(rows[0].errorCode).toBe("provider_dry_run");
+  });
+
+  test("a 200 with deliveryStatus failed is a FAILURE too", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    nextDeliveryStatus = "failed";
+    await t.mutation(internal.scheduled.occurrences.finalize, {
+      occurrenceKey: claim.occurrenceKey,
+      leaseToken: claim.leaseToken,
+      outcome: "succeeded",
+    });
+    await drain(t);
+    const rows = await deliveries(t);
+    expect(rows[0].status).not.toBe("accepted");
+    expect(rows[0].errorCode).toBe("provider_status_failed");
+  });
+
+  /** `sending` means the provider's drain has it. That IS custody. */
+  test("deliveryStatus sending counts as accepted", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seed(t);
+    const taskId = await mkTask(t, userId, ws, { onSuccess: true });
+    const claim = await claimOne(t, userId, taskId);
+    nextDeliveryStatus = "sending";
     await t.mutation(internal.scheduled.occurrences.finalize, {
       occurrenceKey: claim.occurrenceKey,
       leaseToken: claim.leaseToken,
@@ -722,7 +938,6 @@ describe("idempotency", () => {
     await drain(t);
     const rows = await deliveries(t);
     expect(rows[0].status).toBe("accepted");
-    expect(sent).toHaveLength(1);
   });
 });
 
@@ -860,7 +1075,7 @@ describe("email content is sanitised", () => {
     let body: Record<string, unknown> = {};
     const base = globalThis.fetch;
     globalThis.fetch = (async (i: RequestInfo | URL, init?: RequestInit) => {
-      if (String(i).includes("api.resend.com")) {
+      if (String(i).includes(SEND_PATH)) {
         body = JSON.parse(String(init?.body ?? "{}"));
       }
       return base(i, init);
@@ -890,7 +1105,7 @@ describe("email content is sanitised", () => {
     let body: Record<string, unknown> = {};
     const base = globalThis.fetch;
     globalThis.fetch = (async (i: RequestInfo | URL, init?: RequestInit) => {
-      if (String(i).includes("api.resend.com")) {
+      if (String(i).includes(SEND_PATH)) {
         body = JSON.parse(String(init?.body ?? "{}"));
       }
       return base(i, init);

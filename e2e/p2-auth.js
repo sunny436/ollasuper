@@ -14,8 +14,16 @@ const CONVEX_DIR = process.env.CONVEX_DIR || "/opt/myos/packages/backend";
 const LOG_CMD =
   process.env.E2E_LOG_CMD ||
   "timeout 20 node /opt/myos/node_modules/convex/bin/main.js logs --history 200 || true";
+// Real-inbox delivery over the production transport. When it is configured this
+// script signs up at a REAL address and reads the code out of a REAL inbox —
+// the only version of this test that proves mail actually leaves the building.
+const ollastack = require("./_lib/ollastack");
 const ts = Date.now();
-const EMAIL = `authtest${ts}@myos.test`, PW = "TestUser#2026", NEWPW = "NewPass#2026";
+// Resolved in main(): the real address needs an API round-trip. Falls back to
+// the old synthetic address on a stack with no Ollastack mailbox.
+let EMAIL = `authtest${ts}@myos.test`;
+let TAG = null;
+const PW = "TestUser#2026", NEWPW = "NewPass#2026";
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
 // Fallback is for the EPHEMERAL CI stack only; set ADMIN_PASSWORD for any
 // internet-reachable deployment.
@@ -65,6 +73,17 @@ function codeFromLogs(label, email) {
 }
 
 async function getCode(label, email) {
+  // A real inbox is the strongest evidence available, so it goes first.
+  if (TAG) {
+    const viaReal = await ollastack
+      .codeFromOllastack(TAG, label, 90_000)
+      .catch(() => null);
+    if (viaReal) return viaReal;
+    // No silent downgrade to Mailpit: on a stack with a real transport, mail
+    // arriving in the local catcher instead would be the very defect under
+    // test, and falling back would hide it.
+    throw new Error(`no ${label} code in the real inbox for ${email}`);
+  }
   for (let i = 0; i < 12; i++) {
     const viaMail = await codeFromMailpit(label, email).catch(() => null);
     if (viaMail) return viaMail;
@@ -75,6 +94,20 @@ async function getCode(label, email) {
   throw new Error(`no ${label} code for ${email}`);
 }
 (async () => {
+  // Claim a real, run-isolated inbox address before anything signs up with it.
+  if (ollastack.enabled()) {
+    try {
+      TAG = ollastack.newTag();
+      EMAIL = ollastack.taggedAddress(await ollastack.mailboxAddress(), TAG);
+      console.log(`inbox  REAL — ${EMAIL}`);
+    } catch (e) {
+      TAG = null;
+      console.log(`inbox  Ollastack unavailable (${e.message}); using Mailpit`);
+    }
+  } else {
+    console.log("inbox  Mailpit (no OLLASTACK_E2E_MAILBOX_ID configured)");
+  }
+
   const b = await chromium.launch({ headless: !!process.env.CI, slowMo: process.env.CI ? 0 : 150 });
   const ctx = await b.newContext({ viewport: { width: 1366, height: 850 } });
   const page = await ctx.newPage();

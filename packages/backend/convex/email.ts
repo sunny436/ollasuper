@@ -3,18 +3,209 @@
 import { v } from "convex/values";
 import nodemailer from "nodemailer";
 import { internalAction } from "./_generated/server";
+import { reportSubject } from "./mailSubject";
+import {
+  isCustodyTaken,
+  OLLASTACK_TIMEOUT_MS,
+  ollastackConfig,
+} from "./ollastack";
 
 /**
- * SMTP sender (Node action). Auth providers dispatch here; if SMTP_HOST is unset it's a
- * no-op (providers still log the code, so dev/log-fallback keeps working).
- * Local inbox: point SMTP_HOST/SMTP_PORT at Mailpit (default :1025).
+ * MAIL TRANSPORTS. One module, three named transports, and never a silent
+ * fallback between them.
+ *
+ *   ollastack — Ollastack Agent Mail (production). HTTP, token + mailbox id.
+ *   smtp      — the local Mailpit catcher: dev and the replica ONLY.
+ *   disabled  — nothing is sent, and the caller records `skipped`.
+ *
+ * The transport is NAMED, never inferred from "is a credential present?".
+ * Choosing by presence-of-a-credential is exactly the bug that made
+ * deploy/backup.sh archive the wrong deployment for weeks.
+ */
+
+type OllastackAttachment = {
+  filename: string;
+  /** Base64 file bytes. Provider cap is 10MB across all attachments. */
+  content: string;
+  contentType?: string;
+};
+
+type TransportResult = {
+  ok: boolean;
+  providerMessageId?: string;
+  errorCode?: string;
+  /** HTTP status, when there was one — the caller classifies transient vs not. */
+  status?: number;
+  /** Provider-supplied backoff hint, in seconds, on RATE_LIMIT_EXCEEDED. */
+  retryAfter?: number;
+};
+
+/**
+ * Is the local SMTP catcher an acceptable transport on THIS deployment?
+ *
+ * On the production VM `SMTP_HOST` points at Mailpit, a catcher that swallows
+ * everything it is handed. deploy/71 has refused `smtp` on that host since it
+ * was written — and production was running `smtp` anyway, with 32 captured
+ * messages including a real user's verification code. A deploy-script guard is
+ * evidently not enough, so the refusal lives in the code path that actually
+ * sends.
+ *
+ * A loopback SITE_URL (or none at all) means a dev box or the replica, where
+ * Mailpit is the entire point. ALLOW_SMTP_TRANSPORT=1 is the same explicit
+ * escape hatch deploy/71 already uses.
+ */
+function smtpTransportAllowed(): boolean {
+  if (process.env.ALLOW_SMTP_TRANSPORT === "1") return true;
+  const site = process.env.SITE_URL ?? "";
+  if (!site) return true;
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/.test(site);
+}
+
+/**
+ * Send one message from an Ollastack mailbox.
+ *
+ * A 2xx is NOT proof that anything was transmitted. The response carries the
+ * stored outbound message, whose `deliveryStatus` may be `dry_run` — the
+ * provider accepted it and swallowed it — or `failed`. Treating a bare 2xx as
+ * success would reproduce the exact Mailpit defect this change exists to
+ * remove, on a different provider. So the accepted states are named outright
+ * and everything else is a failure.
+ *
+ * The token must never reach a returned or thrown message: authCodes.deliverCode
+ * logs `e.message` on the auth path.
+ */
+async function ollastackSend(
+  mailboxId: string | undefined,
+  body: {
+    to: string;
+    subject: string;
+    text: string;
+    html?: string;
+    attachments?: OllastackAttachment[];
+  },
+): Promise<TransportResult> {
+  const cfg = ollastackConfig();
+  if (!cfg || !mailboxId) {
+    // Fail-closed. A selected transport with missing configuration is an
+    // operator error that must surface, never a fall back to SMTP.
+    return { ok: false, errorCode: "ollastack_not_configured" };
+  }
+
+  try {
+    const res = await fetch(
+      `${cfg.base}/api/mailboxes/${encodeURIComponent(mailboxId)}/send`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${cfg.token}`,
+        },
+        // No Idempotency-Key: the provider has no such header. Duplicate
+        // suppression is therefore OURS — see scheduled/delivery.ts, where a
+        // crashed send is reconciled against the provider's own outbound log
+        // instead of being blind-retried.
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(OLLASTACK_TIMEOUT_MS),
+      },
+    );
+
+    const json = (await res.json().catch(() => ({}))) as {
+      data?: { id?: unknown; deliveryStatus?: unknown };
+      error?: { code?: unknown; retryAfter?: unknown };
+    };
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        errorCode:
+          typeof json.error?.code === "string" ? json.error.code : undefined,
+        retryAfter:
+          typeof json.error?.retryAfter === "number"
+            ? json.error.retryAfter
+            : undefined,
+      };
+    }
+
+    const deliveryStatus =
+      typeof json.data?.deliveryStatus === "string"
+        ? json.data.deliveryStatus
+        : "";
+    // `sent` = handed to the upstream provider; `sending` = claimed by their
+    // drain. Both mean custody changed hands. `dry_run`, `failed` and
+    // `scheduled` (which we never request) do not.
+    if (!isCustodyTaken(deliveryStatus)) {
+      return {
+        ok: false,
+        errorCode:
+          deliveryStatus === "dry_run"
+            ? "provider_dry_run"
+            : `provider_status_${deliveryStatus || "unknown"}`,
+      };
+    }
+
+    return {
+      ok: true,
+      providerMessageId:
+        typeof json.data?.id === "string" ? json.data.id : undefined,
+    };
+  } catch {
+    // Unreachable / timed out. No status, so the caller treats it as transient.
+    return { ok: false, errorCode: "provider_unreachable" };
+  }
+}
+
+/** Named transport for AUTH email. Unknown values fail closed. */
+function authTransport(): "smtp" | "ollastack" | "disabled" {
+  const named = process.env.AUTH_EMAIL_TRANSPORT ?? "smtp";
+  if (named === "ollastack") return "ollastack";
+  if (named === "disabled") return "disabled";
+  if (named !== "smtp") return "disabled";
+  if (!smtpTransportAllowed()) {
+    // Loud, not silent: deliverCode catches and logs this. A silent return is
+    // what let a dead transport hide in production in the first place.
+    throw new Error(
+      "auth email: smtp transport refused on this deployment (SMTP_HOST is a local catcher)",
+    );
+  }
+  return "smtp";
+}
+
+/**
+ * Auth code sender (OTP / email verification / password reset).
+ *
+ * Reached from authCodes.deliverCode via all three Email providers. Plain text
+ * on purpose: a one-time code needs no markup, and text-only mail is less
+ * likely to be filtered.
  */
 export const sendEmail = internalAction({
   args: { to: v.string(), subject: v.string(), text: v.string() },
   handler: async (_ctx, { to, subject, text }) => {
+    const transport = authTransport();
+    if (transport === "disabled") return;
+
+    if (transport === "ollastack") {
+      const sent = await ollastackSend(process.env.OLLASTACK_AUTH_MAILBOX_ID, {
+        to,
+        subject,
+        text,
+      });
+      if (!sent.ok) {
+        // THROW rather than return. deliverCode logs it. The previous
+        // SMTP-only implementation returned silently when unconfigured, which
+        // is how a deployment that could not mail anyone still looked healthy.
+        throw new Error(
+          `auth email send failed: ${sent.errorCode ?? sent.status ?? "unknown"}`,
+        );
+      }
+      return;
+    }
+
+    // transport === "smtp" — Mailpit on dev/replica. Local inbox: point
+    // SMTP_HOST/SMTP_PORT at Mailpit (default :1025).
     const host = process.env.SMTP_HOST;
     if (!host) return;
-    const transport = nodemailer.createTransport({
+    const nodemailerTransport = nodemailer.createTransport({
       host,
       port: Number(process.env.SMTP_PORT ?? "1025"),
       secure: false,
@@ -22,7 +213,7 @@ export const sendEmail = internalAction({
         ? { auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS ?? "" } }
         : {}),
     });
-    await transport.sendMail({
+    await nodemailerTransport.sendMail({
       from: process.env.SMTP_FROM ?? "auth@myos.local",
       to,
       subject,
@@ -32,21 +223,19 @@ export const sendEmail = internalAction({
 });
 
 /**
- * Scheduled-report email. ONE module, two transports — never a second email
- * abstraction, and never a silent fallback between them.
+ * Scheduled-report email.
  *
  * FAIL-CLOSED, and this is the whole point of the explicit setting. Production's
  * SMTP_HOST points at Mailpit, a local catcher that swallows everything it is
- * given. If this picked its transport by asking "is RESEND_API_KEY set?", then
- * an unset, rotated or typo'd key would silently route every report into that
- * catcher on the VM while this function returned ok and the UI showed the run
- * as delivered. Choosing by presence-of-a-credential is exactly the bug that
- * made deploy/backup.sh archive the wrong deployment for weeks.
+ * given. If this picked its transport by asking "is a credential set?", then an
+ * unset, rotated or typo'd credential would silently route every report into
+ * that catcher on the VM while this function returned ok and the UI showed the
+ * run as delivered.
  *
  * So the transport is named outright:
- *   resend   — RESEND_API_KEY required; missing ⇒ a recorded failure, never SMTP
- *   smtp     — the local replica only; deploy refuses this on the production host
- *   disabled — nothing is sent, and the caller records `skipped`
+ *   ollastack — Ollastack Agent Mail; missing config ⇒ a recorded failure
+ *   smtp      — the local replica only; refused on a production deployment
+ *   disabled  — nothing is sent, and the caller records `skipped`
  */
 type ReportResult = {
   ok: boolean;
@@ -54,23 +243,9 @@ type ReportResult = {
   errorCode?: string;
   /** HTTP status, when there was one — the caller classifies transient vs not. */
   status?: number;
+  /** Provider-supplied backoff hint, in seconds, on RATE_LIMIT_EXCEEDED. */
+  retryAfter?: number;
 };
-
-const MAX_SUBJECT = 120;
-
-/**
- * The task title is user-authored and lands in a mail header. Strip CR/LF and
- * control characters (header injection on the SMTP path, and cheap insurance on
- * the JSON one) and clamp the length.
- */
-function safeSubject(title: string): string {
-  const clean = title
-    // \p{Cc} is the Unicode control-character category: no literal control
-    // bytes in the source, which are invisible in a diff and easy to mangle.
-    .replace(/\p{Cc}+/gu, " ")
-    .trim();
-  return (clean || "Scheduled task").slice(0, MAX_SUBJECT);
-}
 
 const ESCAPES: Record<string, string> = {
   "&": "&amp;",
@@ -133,15 +308,29 @@ export const sendReportEmail = internalAction({
     noteTooLarge: v.optional(v.boolean()),
     notePdfFailed: v.optional(v.boolean()),
   },
-  handler: async (ctx, a): Promise<ReportResult> => {
+  handler: async (_ctx, a): Promise<ReportResult> => {
     const transport = process.env.SCHEDULED_EMAIL_TRANSPORT ?? "disabled";
     if (transport === "disabled") {
       return { ok: false, errorCode: "transport_disabled" };
     }
+    // FAIL CLOSED on anything we do not recognise. Without this, a stale value
+    // — `resend`, say, left over from a provider that no longer has a branch —
+    // would fall past every check and land in the SMTP path, i.e. Mailpit.
+    // That is precisely the silent-swallow this module exists to prevent, so an
+    // unknown transport must never be a synonym for "the local catcher".
+    if (transport !== "ollastack" && transport !== "smtp") {
+      return { ok: false, errorCode: "transport_unknown" };
+    }
+    if (transport === "smtp" && !smtpTransportAllowed()) {
+      // A recorded failure, NOT a throw: `deliver` is total and every exit must
+      // go through `record`. The UI then says email is misconfigured rather
+      // than claiming a report was sent into a local catcher.
+      return { ok: false, errorCode: "smtp_refused_on_production" };
+    }
 
-    const subject = safeSubject(
-      a.outcome === "succeeded" ? a.title : `${a.title} — ${a.outcome}`,
-    );
+    // Shared with scheduled/delivery.ts:reconcile, which must rebuild this
+    // byte-for-byte to find a crashed send in the provider's outbound log.
+    const subject = reportSubject(a.title, a.outcome);
     const notes: string[] = [];
     if (a.noteTooLarge) {
       notes.push(
@@ -168,86 +357,62 @@ export const sendReportEmail = internalAction({
       ? { filename: "report.pdf", content: a.attachmentBase64 }
       : undefined;
 
-    if (transport === "smtp") {
-      // Replica/dev only. deploy/71 refuses this value on the production host,
-      // because SMTP_HOST there is a local catcher.
-      const host = process.env.SMTP_HOST;
-      if (!host) return { ok: false, errorCode: "smtp_not_configured" };
-      const nodemailerTransport = nodemailer.createTransport({
-        host,
-        port: Number(process.env.SMTP_PORT ?? "1025"),
-        secure: false,
-        ...(process.env.SMTP_USER
-          ? {
-              auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASS ?? "",
-              },
-            }
-          : {}),
-      });
-      const info = await nodemailerTransport.sendMail({
-        from: process.env.SMTP_FROM ?? "reports@myos.local",
+    if (transport === "ollastack") {
+      return await ollastackSend(process.env.OLLASTACK_REPORTS_MAILBOX_ID, {
         to: a.to,
         subject,
         text,
         html,
+        // Provider cap is 10MB across all attachments; delivery.ts already
+        // drops anything over 5MB before it reaches here.
         ...(attachment
           ? {
               attachments: [
                 {
                   filename: attachment.filename,
                   content: attachment.content,
-                  encoding: "base64",
+                  contentType: "application/pdf",
                 },
               ],
             }
           : {}),
       });
-      return { ok: true, providerMessageId: String(info.messageId ?? "") };
     }
 
-    // transport === "resend"
-    const key = process.env.RESEND_API_KEY;
-    // The fail-closed branch. NOT a fallback to SMTP: a missing key is an
-    // operator error that must surface as a failed delivery, not as mail
-    // quietly diverted somewhere nobody reads.
-    if (!key) return { ok: false, errorCode: "resend_key_missing" };
-
-    try {
-      const res = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${key}`,
-          // Provider-side duplicate suppression, so a retry of a request they
-          // already accepted is dropped on their side and not just on ours.
-          "Idempotency-Key": a.idempotencyKey,
-        },
-        body: JSON.stringify({
-          from: process.env.SCHEDULED_EMAIL_FROM ?? "reports@ollasuper.com",
-          to: [a.to],
-          subject,
-          text,
-          html,
-          ...(attachment ? { attachments: [attachment] } : {}),
-        }),
-        signal: AbortSignal.timeout(30_000),
-      });
-
-      // A repeat of the SAME key with a DIFFERENT payload. The provider is
-      // telling us this occurrence's email already went out; resending would
-      // duplicate it, so treat it as sent and move on.
-      if (res.status === 409) {
-        return { ok: true, errorCode: "idempotency_conflict" };
-      }
-      if (!res.ok) return { ok: false, status: res.status };
-
-      const data = (await res.json().catch(() => ({}))) as { id?: string };
-      return { ok: true, providerMessageId: data.id };
-    } catch {
-      // Unreachable / timed out. No status, so the caller treats it as transient.
-      return { ok: false, errorCode: "provider_unreachable" };
-    }
+    // transport === "smtp" — replica/dev only, and only past the guard above.
+    const host = process.env.SMTP_HOST;
+    if (!host) return { ok: false, errorCode: "smtp_not_configured" };
+    const nodemailerTransport = nodemailer.createTransport({
+      host,
+      port: Number(process.env.SMTP_PORT ?? "1025"),
+      secure: false,
+      ...(process.env.SMTP_USER
+        ? {
+            auth: {
+              user: process.env.SMTP_USER,
+              pass: process.env.SMTP_PASS ?? "",
+            },
+          }
+        : {}),
+    });
+    const info = await nodemailerTransport.sendMail({
+      from: process.env.SMTP_FROM ?? "reports@myos.local",
+      to: a.to,
+      subject,
+      text,
+      html,
+      ...(attachment
+        ? {
+            attachments: [
+              {
+                filename: attachment.filename,
+                content: attachment.content,
+                encoding: "base64",
+              },
+            ],
+          }
+        : {}),
+    });
+    return { ok: true, providerMessageId: String(info.messageId ?? "") };
   },
 });

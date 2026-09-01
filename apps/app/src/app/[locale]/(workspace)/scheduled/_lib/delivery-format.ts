@@ -7,6 +7,16 @@
  * `accepted` and `delivered` are different words here, and the UI never
  * upgrades one into the other on its own — claiming delivery we cannot observe
  * is exactly the kind of small lie that costs someone a missed report.
+ *
+ * ON THE CURRENT TRANSPORT THAT DISTINCTION IS PERMANENT. Ollastack publishes
+ * no outbound delivery webhook and no bounce feed — its status vocabulary is
+ * `sent | failed | dry_run | scheduled | sending`, with no `delivered` and no
+ * `bounced`, and its `/failures` endpoint is the INBOUND lost-mail trail. So
+ * `delivered`, `bounced` and `complained` are states this system can no longer
+ * enter at all; they stay in the union because the rows and the webhook route
+ * still exist. `accepted` is the strongest true claim available, and
+ * reconciliation (scheduled/delivery.ts) can only ever move a row DOWN from it
+ * to `failed` — never up.
  */
 
 export type DeliveryStatus =
@@ -59,7 +69,15 @@ const REASONS: Record<string, string> = {
     "Verify your email address in Settings to receive these reports.",
   delivery_disabled: "Email delivery is turned off for this deployment.",
   transport_disabled: "Email delivery is not configured for this deployment.",
-  resend_key_missing: "Email is not configured — contact your administrator.",
+  ollastack_not_configured:
+    "Email is not configured — contact your administrator.",
+  // The provider answered "accepted" and then discarded the message. An
+  // operator has to fix it; there is nothing the user can do, and pretending it
+  // was sent is exactly the failure this state exists to expose.
+  provider_dry_run:
+    "The mail provider discarded the message — contact your administrator.",
+  smtp_refused_on_production:
+    "Email is misconfigured on this deployment — contact your administrator.",
   provider_auth_failed:
     "The mail provider rejected our credentials — contact your administrator.",
   invalid_recipient:
@@ -72,6 +90,14 @@ const REASONS: Record<string, string> = {
   attempts_exhausted: "Email failed after several attempts.",
   worker_lost_after_send:
     "The run was interrupted while sending, so we cannot confirm whether it arrived.",
+  // Learned after the fact, by asking the provider what became of a message it
+  // had already accepted. See scheduled/delivery.ts:reconcile.
+  reconciled_failed: "The mail provider could not deliver this email.",
+  provider_status_failed: "The mail provider could not deliver this email.",
+  // Two indistinguishable messages matched, so we will not claim either one is
+  // this report. Saying "unknown" is the honest answer; resending is not.
+  reconcile_ambiguous:
+    "We could not confirm whether this email was sent, so it was not re-sent.",
 };
 
 export function deliveryLabel(row: DeliveryRow): {

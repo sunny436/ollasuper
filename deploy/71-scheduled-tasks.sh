@@ -167,14 +167,34 @@ GATE_OK=1
 # The mail transport must be named, never inferred. SMTP on this host points at
 # Mailpit, a local catcher — selecting it in production would silently swallow
 # every report while the UI reported success.
-TRANSPORT=$(grep '^SCHEDULED_EMAIL_TRANSPORT=' "$ENVF" 2>/dev/null | head -1 | cut -d= -f2- || true)
-if [ "$TRANSPORT" = "smtp" ] && [ "${ALLOW_SMTP_TRANSPORT:-0}" != "1" ]; then
-  echo "  FAIL: SCHEDULED_EMAIL_TRANSPORT=smtp is refused on this host — SMTP_HOST is Mailpit," >&2
-  echo "        so reports would be swallowed locally. Use 'resend', or set" >&2
-  echo "        ALLOW_SMTP_TRANSPORT=1 if this really is the replica." >&2
-  GATE_OK=0
+#
+# THIS GUARD WAS BROKEN AND THE THING IT GUARDS AGAINST THEN HAPPENED. It read
+# SCHEDULED_EMAIL_TRANSPORT out of services/ai/.env, but that variable is read
+# by CONVEX, from the Convex deployment env — a completely different store that
+# the Python service never touches. So the check inspected a value nobody sets
+# and nobody reads, and stayed silent while the Convex env was set to `smtp`.
+# Production duly posted every report and every auth code into Mailpit for
+# weeks. Ask the deployment itself.
+#
+# The runtime now refuses this too (convex/email.ts:smtpTransportAllowed),
+# because a deploy-time gate is only as good as the last person to run it.
+CVX_MAIN="$REPO/node_modules/convex/bin/main.js"
+if [ -f "$CVX_MAIN" ]; then
+  TRANSPORT=$( (cd "$REPO/packages/backend" && node "$CVX_MAIN" env get SCHEDULED_EMAIL_TRANSPORT 2>/dev/null) || true )
+  AUTH_TRANSPORT=$( (cd "$REPO/packages/backend" && node "$CVX_MAIN" env get AUTH_EMAIL_TRANSPORT 2>/dev/null) || true )
+  for pair in "SCHEDULED_EMAIL_TRANSPORT=$TRANSPORT" "AUTH_EMAIL_TRANSPORT=$AUTH_TRANSPORT"; do
+    name=${pair%%=*}; value=${pair#*=}
+    if [ "$value" = "smtp" ] && [ "${ALLOW_SMTP_TRANSPORT:-0}" != "1" ]; then
+      echo "  FAIL: $name=smtp is refused on this host — SMTP_HOST is Mailpit, so" >&2
+      echo "        mail would be swallowed locally. Use 'ollastack' (deploy/75), or set" >&2
+      echo "        ALLOW_SMTP_TRANSPORT=1 if this really is the replica." >&2
+      GATE_OK=0
+    fi
+  done
+  echo "  convex env: SCHEDULED_EMAIL_TRANSPORT=${TRANSPORT:-<unset>} AUTH_EMAIL_TRANSPORT=${AUTH_TRANSPORT:-<unset>}"
+else
+  echo "  WARNING: convex CLI not found at $CVX_MAIN — mail transport NOT checked." >&2
 fi
-add_env SCHEDULED_EMAIL_TRANSPORT "disabled"
 add_env SCHEDULED_DELIVERY_ENABLED "false"
 chmod 600 "$ENVF"; chown root:root "$ENVF"
 

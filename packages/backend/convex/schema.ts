@@ -1042,8 +1042,13 @@ export default defineSchema({
     wantPdf: v.boolean(),
     recipient: v.optional(v.string()),
     outcome: v.string(),
-    // `${occurrenceKey}:email` — sent to the provider so a retry of a request it
-    // already accepted is suppressed on their side, not just ours.
+    // `${occurrenceKey}:email` — this row's logical key.
+    //
+    // It is NOT sent to the provider. Ollastack has no Idempotency-Key header,
+    // so there is no provider-side duplicate suppression to lean on: a crashed
+    // send is resolved by scheduled/delivery.ts:reconcile, which asks the
+    // provider whether the message actually exists, rather than by retrying
+    // blind and hoping the provider dedupes.
     idempotencyKey: v.string(),
     providerMessageId: v.optional(v.string()),
     // Classified codes only (`provider_5xx`, `invalid_recipient`, …), never raw
@@ -1051,6 +1056,12 @@ export default defineSchema({
     errorCode: v.optional(v.string()),
     attempts: v.number(),
     claimedAt: v.optional(v.number()),
+    // When reconciliation last reached a DEFINITE answer for this row from the
+    // provider's outbound log. Optional and additive: pre-existing rows have no
+    // value, which simply means "never reconciled". Set only on a definite
+    // outcome, so a provider blip leaves the row eligible for the next pass
+    // rather than silently retiring it.
+    reconciledAt: v.optional(v.number()),
     pdfArtifactId: v.optional(v.id("chatArtifacts")),
     createdAt: v.number(),
     updatedAt: v.number(),

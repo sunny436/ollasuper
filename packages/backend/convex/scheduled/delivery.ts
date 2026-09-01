@@ -7,7 +7,14 @@ import {
   internalMutation,
   internalQuery,
 } from "../_generated/server";
+import { reportSubject } from "../mailSubject";
 import { notify } from "../notifications";
+import {
+  fetchMessageById,
+  findOutbound,
+  isCustodyTaken,
+  ollastackConfig,
+} from "../ollastack";
 
 /**
  * Phase 4 delivery: PDF report + email, as a state machine SEPARATE from
@@ -37,8 +44,28 @@ export const DELIVERY_LEASE_MS = 120_000;
  * carries the same Idempotency-Key and the provider suppresses the duplicate;
  * outside it, that guarantee has expired and we prefer a possibly-lost email to
  * a possible duplicate. Conservative on purpose — see `reap`.
+ *
+ * Applies ONLY to a provider that honours the key. See `providerIsIdempotent`.
  */
 export const IDEMPOTENCY_WINDOW_MS = 20 * 60 * 1000;
+
+/**
+ * Does the configured provider suppress a duplicate send on its own?
+ *
+ * Resend did, via `Idempotency-Key`. Ollastack has no such header — verified
+ * against its OpenAPI spec, which accepts no headers beyond auth and no
+ * metadata field. So on that transport a retry of a send it already accepted
+ * would deliver the report TWICE.
+ *
+ * A crashed `sending` row is therefore never re-queued blind there. It goes
+ * straight to `indeterminate`, and `reconcile` resolves it by ASKING the
+ * provider whether the message exists — which is strictly better than either
+ * guessing or giving up.
+ */
+function providerIsIdempotent(): boolean {
+  return (process.env.SCHEDULED_EMAIL_TRANSPORT ?? "disabled") !== "ollastack";
+}
+
 /** Concurrent in-flight sends, to stay under the provider's rate limit. */
 export const MAX_INFLIGHT_EMAIL = 2;
 /** How long a deferred delivery waits before trying to claim again. */
@@ -262,6 +289,7 @@ export const reap = internalMutation({
       .take(REAP_SCAN);
     for (const row of stuck) {
       const withinWindow =
+        providerIsIdempotent() &&
         row.claimedAt !== undefined &&
         now - row.claimedAt < IDEMPOTENCY_WINDOW_MS;
       if (withinWindow && row.attempts < MAX_DELIVERY_ATTEMPTS) {
@@ -461,6 +489,20 @@ export const registerReportArtifact = internalMutation({
  * stops immediately, because retrying an invalid address or a bad credential
  * three times only burns sender reputation and hides the real fault.
  */
+/**
+ * Failures that arrive WITHOUT an HTTP status and that retrying cannot fix.
+ *
+ * `provider_dry_run` is the important one: the provider returned 200 and told
+ * us it discarded the message. That is a deployment fault, not a blip, and
+ * three more attempts would only bury it.
+ */
+const PERMANENT_NO_STATUS_CODES = new Set([
+  "ollastack_not_configured",
+  "provider_dry_run",
+  "smtp_refused_on_production",
+  "smtp_not_configured",
+]);
+
 function classify(status: number): { transient: boolean; code: string } {
   if (status === 429) return { transient: true, code: "provider_rate_limited" };
   if (status >= 500) return { transient: true, code: "provider_5xx" };
@@ -618,7 +660,15 @@ export const deliver = internalAction({
       const cls =
         sent.status !== undefined
           ? classify(sent.status)
-          : { transient: true, code: sent.errorCode ?? "provider_unreachable" };
+          : {
+              // A failure with no HTTP status is usually the network, which is
+              // worth retrying — but a misconfigured transport and a provider
+              // that says it threw the message away are not. Retrying those
+              // burns the attempt budget and buries the real fault three
+              // failures deep.
+              transient: !PERMANENT_NO_STATUS_CODES.has(sent.errorCode ?? ""),
+              code: sent.errorCode ?? "provider_unreachable",
+            };
 
       await ctx.runMutation(internal.scheduled.delivery.record, {
         deliveryId,
@@ -839,5 +889,293 @@ export const applyProviderEvent = internalMutation({
       }
     }
     return { ok: true };
+  },
+});
+
+/**
+ * RECONCILIATION — finding out what actually happened to a send.
+ *
+ * Ollastack publishes no outbound delivery webhook and no bounce feed: its
+ * `deliveryStatus` enum is `sent | failed | dry_run | scheduled | sending`,
+ * with no `delivered` and no `bounced`, and `/failures` is the INBOUND
+ * lost-mail trail, not an outbound one. So two things follow, and both are
+ * deliberate.
+ *
+ * FIRST, this never upgrades a row to `delivered`. `accepted` — the provider
+ * took custody — stays the strongest honest claim this system can make, which
+ * is exactly what delivery-format.ts already tells the user.
+ *
+ * SECOND, it is nonetheless REQUIRED rather than a nicety. A 2xx from `send`
+ * only means the message was stored; it can still end `failed`, and a worker
+ * that died between the send and `record` leaves a row that knows nothing at
+ * all. Without asking the provider, both are silent failures — the precise
+ * thing this whole change exists to eliminate.
+ *
+ * It is a separate cron from `reap` on purpose: `reap` is a MUTATION and the
+ * retry mechanism, so it cannot make network calls, and a bug in reconciliation
+ * must not be able to break retries.
+ */
+
+/** Rows examined per pass. Bounds both the scan and the provider calls. */
+const RECONCILE_SCAN = 25;
+/** Younger than this and the provider's drain may not have settled yet. */
+const RECONCILE_MIN_AGE_MS = 60_000;
+/** Older than this and we stop asking; the row keeps its honest status. */
+const RECONCILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** A provider status we did not get custody from, as a UI-safe code. */
+function reconcileErrorCode(deliveryStatus: string | null): string {
+  return deliveryStatus === "dry_run" ? "provider_dry_run" : "reconciled_failed";
+}
+
+/**
+ * Rows whose true outcome is still unknown, with everything the action needs.
+ *
+ * The subject is rebuilt here through the SAME `reportSubject` the sender uses,
+ * so the two cannot drift. A drifted subject would silently stop matching,
+ * which reads as "never sent" and would re-send the report — the one outcome
+ * worse than not knowing.
+ */
+export const reconcileCandidates = internalQuery({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<
+    Array<{
+      deliveryId: Id<"scheduledDeliveries">;
+      recipient: string;
+      subject: string;
+      providerMessageId: string | null;
+      since: number;
+    }>
+  > => {
+    const now = Date.now();
+    const out: Array<{
+      deliveryId: Id<"scheduledDeliveries">;
+      recipient: string;
+      subject: string;
+      providerMessageId: string | null;
+      since: number;
+    }> = [];
+
+    // `accepted` rows keep their claimedAt, so the index bounds the scan to a
+    // recent window directly.
+    const accepted = await ctx.db
+      .query("scheduledDeliveries")
+      .withIndex("by_status_claimed", (q) =>
+        q.eq("status", "accepted").gt("claimedAt", now - RECONCILE_MAX_AGE_MS),
+      )
+      .take(RECONCILE_SCAN * 2);
+
+    // `indeterminate` rows had claimedAt cleared by `reap`, so there is no
+    // range to bound them with. Newest first, so a backlog of ancient
+    // unresolvable rows cannot starve today's.
+    const stuck = await ctx.db
+      .query("scheduledDeliveries")
+      .withIndex("by_status_claimed", (q) => q.eq("status", "indeterminate"))
+      .order("desc")
+      .take(RECONCILE_SCAN * 2);
+
+    for (const row of [...accepted, ...stuck]) {
+      if (out.length >= RECONCILE_SCAN) break;
+      // Already concluded once. Only a provider blip leaves this unset, so a
+      // transient outage stays eligible for the next pass.
+      if (row.reconciledAt !== undefined) continue;
+      if (!row.recipient) continue;
+      const age = now - row.updatedAt;
+      if (age < RECONCILE_MIN_AGE_MS || age > RECONCILE_MAX_AGE_MS) continue;
+      const task = await ctx.db.get(row.taskId);
+      if (!task) continue;
+      out.push({
+        deliveryId: row._id,
+        recipient: row.recipient,
+        subject: reportSubject(task.title, row.outcome),
+        providerMessageId: row.providerMessageId ?? null,
+        since: row.claimedAt ?? row.createdAt,
+      });
+    }
+    return out;
+  },
+});
+
+/**
+ * Commit one reconciliation verdict.
+ *
+ * Refuses to act on a row that has moved on while we were asking the provider —
+ * only `accepted` and `indeterminate` are reconcilable states.
+ */
+export const applyReconciliation = internalMutation({
+  args: {
+    deliveryId: v.id("scheduledDeliveries"),
+    resolution: v.union(
+      v.literal("confirmed"),
+      v.literal("failed"),
+      v.literal("never_sent"),
+      v.literal("ambiguous"),
+    ),
+    providerMessageId: v.optional(v.string()),
+    errorCode: v.optional(v.string()),
+  },
+  handler: async (ctx, a): Promise<{ ok: boolean }> => {
+    const row = await ctx.db.get(a.deliveryId);
+    if (!row) return { ok: false };
+    if (row.status !== "accepted" && row.status !== "indeterminate") {
+      return { ok: false };
+    }
+    const now = Date.now();
+
+    if (a.resolution === "never_sent") {
+      // The provider has no record of it, so nothing left the building and a
+      // retry cannot duplicate. This is the ONLY safe re-queue on a transport
+      // with no idempotency key — and it is why `indeterminate` is a resolvable
+      // state here rather than a dead end.
+      if (row.attempts >= MAX_DELIVERY_ATTEMPTS) {
+        await ctx.db.patch(a.deliveryId, {
+          status: "failed",
+          errorCode: "attempts_exhausted",
+          reconciledAt: now,
+          updatedAt: now,
+        });
+        return { ok: true };
+      }
+      await ctx.db.patch(a.deliveryId, {
+        status: "pending",
+        claimedAt: undefined,
+        updatedAt: now,
+      });
+      await ctx.scheduler.runAfter(0, internal.scheduled.delivery.deliver, {
+        deliveryId: a.deliveryId,
+      });
+      return { ok: true };
+    }
+
+    if (a.resolution === "ambiguous") {
+      // More than one candidate matched. We will not guess which one is this
+      // row, and we will not resend. Retire it from future passes carrying the
+      // honest label the UI already renders as "Email status unknown".
+      await ctx.db.patch(a.deliveryId, {
+        status: "indeterminate",
+        errorCode: row.errorCode ?? "reconcile_ambiguous",
+        reconciledAt: now,
+        updatedAt: now,
+      });
+      return { ok: true };
+    }
+
+    if (a.resolution === "failed") {
+      await ctx.db.patch(a.deliveryId, {
+        status: "failed",
+        errorCode: a.errorCode ?? "reconciled_failed",
+        providerMessageId: a.providerMessageId ?? row.providerMessageId,
+        reconciledAt: now,
+        updatedAt: now,
+      });
+      return { ok: true };
+    }
+
+    // confirmed — the provider took custody. Deliberately still `accepted`:
+    // Ollastack reports neither delivery nor bounce, so this must NEVER become
+    // `delivered`.
+    await ctx.db.patch(a.deliveryId, {
+      status: "accepted",
+      providerMessageId: a.providerMessageId ?? row.providerMessageId,
+      reconciledAt: now,
+      updatedAt: now,
+    });
+    return { ok: true };
+  },
+});
+
+/**
+ * One reconciliation pass. Cron-driven, and a no-op on any other transport.
+ *
+ * Every provider call can return null (blip, timeout, 5xx); null always means
+ * "we learned nothing", and a row we learned nothing about is left exactly as
+ * it was. Reconciliation may only ever make the record MORE accurate.
+ */
+export const reconcile = internalAction({
+  args: {},
+  handler: async (
+    ctx: ActionCtx,
+  ): Promise<{ checked: number; resolved: number }> => {
+    if ((process.env.SCHEDULED_EMAIL_TRANSPORT ?? "disabled") !== "ollastack") {
+      return { checked: 0, resolved: 0 };
+    }
+    const cfg = ollastackConfig();
+    const mailboxId = process.env.OLLASTACK_REPORTS_MAILBOX_ID;
+    if (!cfg || !mailboxId) return { checked: 0, resolved: 0 };
+
+    const rows = await ctx.runQuery(
+      internal.scheduled.delivery.reconcileCandidates,
+      {},
+    );
+    let resolved = 0;
+
+    for (const row of rows) {
+      // EXACT path: we recorded a provider id, so ask about that one message.
+      // No ambiguity is possible here.
+      if (row.providerMessageId) {
+        const msg = await fetchMessageById(
+          cfg,
+          mailboxId,
+          row.providerMessageId,
+        );
+        if (!msg) continue;
+        const custody = isCustodyTaken(msg.deliveryStatus);
+        await ctx.runMutation(
+          internal.scheduled.delivery.applyReconciliation,
+          {
+            deliveryId: row.deliveryId,
+            resolution: custody ? "confirmed" : "failed",
+            ...(custody
+              ? {}
+              : { errorCode: reconcileErrorCode(msg.deliveryStatus) }),
+          },
+        );
+        resolved++;
+        continue;
+      }
+
+      // SEARCH path: a send that crashed before recording an id. Pinned to the
+      // instant we claimed the row, so the candidate set is tiny.
+      const matches = await findOutbound(cfg, mailboxId, {
+        recipient: row.recipient,
+        subject: row.subject,
+        since: new Date(row.since - 60_000),
+      });
+      if (matches === null) continue;
+
+      if (matches.length === 0) {
+        await ctx.runMutation(
+          internal.scheduled.delivery.applyReconciliation,
+          { deliveryId: row.deliveryId, resolution: "never_sent" },
+        );
+        resolved++;
+        continue;
+      }
+      if (matches.length > 1) {
+        await ctx.runMutation(
+          internal.scheduled.delivery.applyReconciliation,
+          { deliveryId: row.deliveryId, resolution: "ambiguous" },
+        );
+        resolved++;
+        continue;
+      }
+
+      const only = matches[0];
+      if (!only) continue;
+      const custody = isCustodyTaken(only.deliveryStatus);
+      await ctx.runMutation(internal.scheduled.delivery.applyReconciliation, {
+        deliveryId: row.deliveryId,
+        resolution: custody ? "confirmed" : "failed",
+        providerMessageId: only.id,
+        ...(custody
+          ? {}
+          : { errorCode: reconcileErrorCode(only.deliveryStatus) }),
+      });
+      resolved++;
+    }
+
+    return { checked: rows.length, resolved };
   },
 });

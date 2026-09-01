@@ -80,8 +80,10 @@ graphify-out/
 # help — rotate it in the Cloudflare dashboard.
 cf_tunnel_info.txt
 open_router_key.txt
+cloudflare.txt
 ollima.txt
 ollagraph_details.txt
+ollastack.txt
 google_auth.txt
 seo_endpoint.txt
 google_seo_analytics.txt

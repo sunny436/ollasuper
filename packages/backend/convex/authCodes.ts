@@ -38,7 +38,11 @@ export function generateNumericCode(length = DIGITS): string {
  * other way for a developer to receive them.
  */
 export function hasMailTransport(): boolean {
-  return Boolean(process.env.SMTP_HOST || process.env.RESEND_API_KEY);
+  return Boolean(
+    process.env.SMTP_HOST ||
+      process.env.RESEND_API_KEY ||
+      process.env.OLLASTACK_MAIL_TOKEN,
+  );
 }
 
 import { internal } from "./_generated/api";

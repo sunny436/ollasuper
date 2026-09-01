@@ -104,4 +104,25 @@ crons.interval(
   {},
 );
 
+/**
+ * Scheduled Tasks: find out what actually happened to a report email.
+ *
+ * SEPARATE from the reaper above, deliberately. `reap` is a mutation and the
+ * retry mechanism, so it cannot make network calls, and a fault in
+ * reconciliation must never be able to break retries.
+ *
+ * Ollastack accepts a send and reports `sent`/`failed` afterwards, with no
+ * delivery webhook and no bounce feed. Without this pass, a send that was
+ * accepted and then failed — and any send whose worker died before recording
+ * the provider id — is a silent failure. 5 minutes rather than 60 seconds: this
+ * upgrades accuracy after the fact, it is never on the critical path, and rows
+ * are ignored until they are a minute old anyway.
+ */
+crons.interval(
+  "reconcile scheduled deliveries",
+  { minutes: 5 },
+  internal.scheduled.delivery.reconcile,
+  {},
+);
+
 export default crons;
