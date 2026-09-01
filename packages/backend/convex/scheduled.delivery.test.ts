@@ -1131,10 +1131,15 @@ describe("email content is sanitised", () => {
     // The precise property: after removing the tags WE emit, no markup is left.
     // Asserting on substrings like "onerror" would be wrong — that word is fine
     // as escaped text, and the user should still see what the model wrote.
-    const withoutOurTags = html.replace(
-      /<\/?(?:h[1-3]|p|ul|ol|li|em|strong|code|pre|a)(?:\s[^>]*)?>/g,
-      "",
-    );
+    // The allowlist now has to cover the shared email shell too — the report
+    // is no longer a bare fragment, it is a full branded document.
+    const withoutOurTags = html
+      // Our own explanatory comments in the shell are not model content.
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(
+        /<[!?]?\/?(?:doctype|html|head|meta|title|style|body|div|span|table|thead|tbody|tr|th|td|h[1-6]|p|ul|ol|li|em|strong|code|pre|a|br|hr|blockquote)(?:\s[^>]*)?\/?>/gi,
+        "",
+      );
     expect(withoutOurTags).not.toContain("<");
     expect(html).not.toContain("<script");
     expect(html).not.toContain("<img");

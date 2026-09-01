@@ -10,48 +10,26 @@
  *
  * This guard covers the remaining vector: link and image hrefs, where
  * javascript: / data:text/html / vbscript: are still reachable.
+ *
+ * `safeUrl` and `normalise` MOVED to @v1/backend/convex/urlGuard and are
+ * re-exported here, so this module's import sites are unchanged. The report
+ * EMAIL renderer needs the same guard and runs in Convex, and one
+ * implementation of a security control beats two that can drift. It also gained
+ * the unit tests there that it never had here.
  */
 
-const SAFE_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+import { normalise, safeUrl } from "@v1/backend/convex/urlGuard";
 
-/**
- * Strip ASCII control characters and surrounding whitespace BEFORE parsing,
- * and return the stripped string rather than the caller's original.
- *
- * This is the whole trick, and getting it wrong is a live XSS. Consider a
- * NUL byte inside the scheme: `new URL("javascript\u0000:alert(1)", base)`
- * does NOT parse as javascript: — the NUL makes the scheme invalid, so URL
- * treats the whole thing as a relative path and resolves it against the https
- * base. A guard that checks the PARSED protocol but returns the ORIGINAL
- * string therefore emits href="javascript\u0000:alert(1)", which a browser
- * may strip back to javascript: when it parses the attribute. Same class of
- * bypass for \n, \r and \t inside the scheme.
- *
- * Normalising first means the string we validate is the string we return.
- */
-function normalise(url: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-  return url.replace(/[\u0000-\u001F\u007F]/g, "").trim();
-}
-
-export function safeUrl(url: string): string {
-  if (!url) return "";
-  const cleaned = normalise(url);
-  if (!cleaned) return "";
-  try {
-    // The base makes relative URLs parse; they resolve to https and are safe.
-    const u = new URL(cleaned, "https://relative.invalid");
-    return SAFE_PROTOCOLS.has(u.protocol) ? cleaned : "";
-  } catch {
-    return "";
-  }
-}
+export { safeUrl };
 
 /**
  * Images are stricter than links: https only.
  *
  * data: is refused even for images, because data:image/svg+xml can carry
  * script and an <img> is not a safe container for arbitrary SVG.
+ *
+ * Stays in the app: it resolves against NEXT_PUBLIC_CONVEX_URL, which only
+ * exists in the browser bundle.
  */
 export function safeImageUrl(url: string): string {
   if (!url) return "";

@@ -6,7 +6,8 @@ import { internalAction } from "./_generated/server";
 // `esc` lives in emailTemplates.ts (a PLAIN module) because authCodes.ts is
 // plain and cannot import from this one, which is "use node". node → plain is
 // legal, so both paths share the single escape implementation.
-import { esc } from "./emailTemplates";
+import { esc, renderShell } from "./emailTemplates";
+import { renderReportHtml } from "./reportMarkdown";
 import { reportSubject } from "./mailSubject";
 import {
   isCustodyTaken,
@@ -262,39 +263,48 @@ type ReportResult = {
   retryAfter?: number;
 };
 
+
+const REPORT_FONT =
+  "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+
 /**
- * Model-authored markdown becomes email HTML through an ESCAPE-FIRST allowlist:
- * every character is escaped, then a small set of block shapes is recognised in
- * the escaped text. Nothing the model writes can therefore emit a tag — which is
- * the same reason the chat renderer does not install rehype-raw.
+ * "Generated 1 Sep 2026, 09:00 GMT+5:30", in the TASK's timezone.
+ *
+ * Formatted HERE rather than in the plain template module on purpose. The only
+ * other `Intl.DateTimeFormat` in this codebase (`scheduled/schedule.ts`)
+ * constructs one to VALIDATE a zone and never calls `.format()`, so tz-aware
+ * formatting has never actually run in the default Convex runtime. This module
+ * is `"use node"` and has full Node ICU, where it certainly works.
+ *
+ * Degrades to a plain UTC string, and then to nothing. A date format must never
+ * be the reason a report email fails to go out.
  */
-function toHtml(markdown: string): string {
-  const out: string[] = [];
-  let list: string[] | null = null;
-  const flush = () => {
-    if (list?.length) out.push(`<ul>${list.join("")}</ul>`);
-    list = null;
-  };
-  for (const raw of markdown.split("\n")) {
-    const line = raw.trimEnd();
-    const heading = /^(#{1,3})\s+(.*)$/.exec(line);
-    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
-    if (heading) {
-      flush();
-      const level = heading[1]?.length ?? 1;
-      out.push(`<h${level}>${esc(heading[2] ?? "")}</h${level}>`);
-    } else if (bullet) {
-      list ??= [];
-      list.push(`<li>${esc(bullet[1] ?? "")}</li>`);
-    } else if (!line.trim()) {
-      flush();
-    } else {
-      flush();
-      out.push(`<p>${esc(line)}</p>`);
+function formatGeneratedAt(at?: number, timezone?: string): string {
+  if (!at || !Number.isFinite(at)) return "";
+  try {
+    return `Generated ${new Intl.DateTimeFormat("en-GB", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: timezone || "UTC",
+      timeZoneName: "short",
+    }).format(new Date(at))}`;
+  } catch {
+    try {
+      return `Generated ${new Date(at).toISOString().replace("T", " ").slice(0, 16)} UTC`;
+    } catch {
+      return "";
     }
   }
-  flush();
-  return out.join("\n");
+}
+
+/** The deep link to this run, or "" when SITE_URL is not configured. */
+function buildRunUrl(taskId?: string, occurrenceId?: string): string {
+  const site = (process.env.SITE_URL ?? "").replace(/\/$/, "");
+  if (!site || !taskId) return "";
+  const base = `${site}/en/scheduled/${encodeURIComponent(taskId)}`;
+  return occurrenceId
+    ? `${base}?run=${encodeURIComponent(occurrenceId)}`
+    : base;
 }
 
 export const sendReportEmail = internalAction({
@@ -310,6 +320,17 @@ export const sendReportEmail = internalAction({
     idempotencyKey: v.string(),
     noteTooLarge: v.optional(v.boolean()),
     notePdfFailed: v.optional(v.boolean()),
+    // The RESULT was already cut before it got here, because it exceeded
+    // MAX_MARKDOWN_CHARS. Distinct from this email being too long to carry the
+    // whole report — conflating the two would tell the user the wrong story.
+    resultTruncated: v.optional(v.boolean()),
+    // For the header line and the "view this run" link. All optional: an
+    // unconfigured SITE_URL simply omits the link rather than emitting a
+    // broken one.
+    timezone: v.optional(v.string()),
+    finishedAt: v.optional(v.number()),
+    taskId: v.optional(v.string()),
+    occurrenceId: v.optional(v.string()),
   },
   handler: async (_ctx, a): Promise<ReportResult> => {
     const transport = process.env.SCHEDULED_EMAIL_TRANSPORT ?? "disabled";
@@ -353,8 +374,55 @@ export const sendReportEmail = internalAction({
         : a.outcome === "succeeded"
           ? "This scheduled run finished without producing any text. Open OllaSuper to see the run."
           : `This scheduled run ${a.outcome}. Open OllaSuper to see the details.`;
+    // The report itself was cut before reaching us. Said separately from an
+    // email-length cut, because they are different events.
+    if (a.resultTruncated) {
+      notes.push(
+        "This result was long enough to be shortened before delivery; open it in OllaSuper for the full text.",
+      );
+    }
+
+    const rendered = renderReportHtml(body);
+    if (rendered.clipped) {
+      notes.push(
+        "This report was too long to include in full here; open it in OllaSuper to read the rest.",
+      );
+    }
+
+    // The text part stays the raw markdown: it is already lossless and
+    // readable, and every text-only client expects it. A de-markdown pass
+    // would lose information for no gain.
     const text = [body, ...notes].join("\n\n");
-    const html = [toHtml(body), ...notes.map((n) => `<p><em>${esc(n)}</em></p>`)].join("\n");
+
+    const generated = formatGeneratedAt(a.finishedAt, a.timezone);
+    const runUrl = buildRunUrl(a.taskId, a.occurrenceId);
+    const meta = [
+      a.outcome === "succeeded" ? "Scheduled report" : `Scheduled run — ${a.outcome}`,
+      generated,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+    const html = renderShell({
+      title: a.title,
+      // The preview line says what this is, not the first words of the report.
+      preheader: meta,
+      year: new Date(a.finishedAt ?? Date.now()).getUTCFullYear(),
+      body: [
+        `<p style="font-family:${REPORT_FONT};margin:0 0 6px;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;color:#8A90A0;">${esc(meta)}</p>`,
+        `<h1 style="font-family:${REPORT_FONT};margin:0 0 22px;font-size:22px;line-height:29px;font-weight:700;color:#12141A;word-break:break-word;">${esc(a.title)}</h1>`,
+        rendered.html,
+        ...notes.map(
+          (n) =>
+            `<p style="font-family:${REPORT_FONT};margin:18px 0 0;font-size:13px;line-height:20px;color:#8A90A0;">${esc(n)}</p>`,
+        ),
+        runUrl
+          ? `<p style="font-family:${REPORT_FONT};margin:26px 0 0;font-size:14px;"><a href="${esc(runUrl)}" style="color:#4F8BF0;text-decoration:underline;">View this run in OllaSuper</a></p>`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(String.fromCharCode(10)),
+    });
 
     const attachment = a.attachmentBase64
       ? { filename: "report.pdf", content: a.attachmentBase64 }

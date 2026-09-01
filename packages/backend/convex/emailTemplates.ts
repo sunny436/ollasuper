@@ -169,6 +169,68 @@ export function buildAuthEmail(input: {
   return { subject, text, html };
 }
 
+/**
+ * The OllaSuper email chrome: doctype, head, page ground, card, brand header
+ * and footer. Shared so the auth email and the scheduled-report email cannot
+ * drift into two different-looking products.
+ *
+ * `body` is injected as ALREADY-SAFE HTML — every caller is responsible for
+ * escaping its own text before it gets here.
+ */
+export function renderShell(v: {
+  title: string;
+  preheader: string;
+  year: number;
+  body: string;
+}): string {
+  const td = `font-family:${FONT};`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<!-- Light only. Without this, Apple Mail and Outlook auto-invert the card and
+     the near-black text lands on a near-black ground. -->
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>${esc(v.title)}</title>
+<style>
+  /* Progressive only: every rule below has an inline equivalent, because
+     Gmail's clipped view and Outlook drop or mangle <style>. */
+  @media only screen and (max-width:600px){
+    .p-outer{padding:16px 12px !important}
+    .p-inner{padding:28px 20px !important}
+    /* 8 digits, not the 6 a mock might assume — this has to fit 320px. */
+    .code{font-size:28px !important;letter-spacing:6px !important}
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background-color:${PAGE_BG};">
+<div style="display:none;font-size:1px;color:${PAGE_BG};line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${esc(v.preheader)}</div>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="${PAGE_BG}" style="background-color:${PAGE_BG};">
+<tr><td align="center" class="p-outer" style="padding:40px 20px;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:100%;max-width:600px;background-color:${CARD_BG};border:1px solid ${BORDER};border-radius:14px;">
+
+<tr><td style="${td}padding:26px 32px;border-bottom:1px solid ${BORDER};">
+<span style="${td}font-size:19px;font-weight:800;font-style:italic;letter-spacing:0.02em;color:${BRAND};text-transform:uppercase;">OLLASUPER</span>
+</td></tr>
+
+<tr><td class="p-inner" style="padding:34px 32px 30px;">
+${v.body}
+</td></tr>
+
+<tr><td align="center" style="${td}padding:20px 32px;border-top:1px solid ${BORDER};">
+<p style="${td}margin:0;font-size:12px;line-height:18px;color:${TEXT_MUTED};">&copy; ${v.year} OllaSuper. All rights reserved.</p>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+
 function renderHtml(v: {
   heading: string;
   intro: string;
@@ -187,62 +249,28 @@ function renderHtml(v: {
     ? `<p style="${td}margin:0 0 12px;font-size:16px;line-height:24px;color:${TEXT_SOFT};">${esc(v.greeting)}</p>`
     : "";
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="x-apple-disable-message-reformatting">
-<!-- Light only. Without this, Apple Mail and Outlook auto-invert the card and
-     the near-black text lands on a near-black ground. -->
-<meta name="color-scheme" content="light">
-<meta name="supported-color-schemes" content="light">
-<title>${esc(v.heading)}</title>
-<style>
-  /* Progressive only: every rule below has an inline equivalent, because
-     Gmail's clipped view and Outlook drop or mangle <style>. */
-  @media only screen and (max-width:600px){
-    .p-outer{padding:16px 12px !important}
-    .p-inner{padding:28px 20px !important}
-    /* 8 digits, not the 6 a mock might assume — this has to fit 320px. */
-    .code{font-size:28px !important;letter-spacing:6px !important}
-  }
-</style>
-</head>
-<body style="margin:0;padding:0;background-color:${PAGE_BG};">
-<div style="display:none;font-size:1px;color:${PAGE_BG};line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${preheader}</div>
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="${PAGE_BG}" style="background-color:${PAGE_BG};">
-<tr><td align="center" class="p-outer" style="padding:40px 20px;">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:100%;max-width:600px;background-color:${CARD_BG};border:1px solid ${BORDER};border-radius:14px;">
+  // The auth-specific body only. Chrome, brand header and footer come from
+  // renderShell, shared with the scheduled-report email.
+  const body = [
+    `<h1 style="${td}margin:0 0 18px;font-size:23px;line-height:30px;font-weight:700;color:${TEXT};">${esc(v.heading)}</h1>`,
+    greetingBlock,
+    `<p style="${td}margin:0 0 26px;font-size:16px;line-height:24px;color:${TEXT_SOFT};">${esc(v.intro)}</p>`,
+    `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">`,
+    `<tr><td align="center" bgcolor="${CODE_BG}" style="background-color:${CODE_BG};border:1px solid ${BORDER};border-radius:10px;padding:22px 12px;">`,
+    // letter-spacing ONLY. Literal spaces between digits would make the code
+    // copy as "1234 5678" and fail to paste into the input.
+    `<span class="code" style="font-family:${MONO};font-size:34px;line-height:42px;font-weight:700;letter-spacing:8px;color:${TEXT};">${esc(v.code)}</span>`,
+    "</td></tr></table>",
+    `<p style="${td}margin:26px 0 0;font-size:14px;line-height:21px;color:${TEXT_SOFT};">${esc(v.expiry)}</p>`,
+    `<p style="${td}margin:8px 0 0;font-size:14px;line-height:21px;color:${TEXT_MUTED};">If you did not request this, you can safely ignore this email. Your account stays unchanged.</p>`,
+  ]
+    .filter(Boolean)
+    .join(String.fromCharCode(10));
 
-<tr><td style="${td}padding:26px 32px;border-bottom:1px solid ${BORDER};">
-<span style="${td}font-size:19px;font-weight:800;font-style:italic;letter-spacing:0.02em;color:${BRAND};text-transform:uppercase;">OLLASUPER</span>
-</td></tr>
-
-<tr><td class="p-inner" style="padding:34px 32px 30px;">
-<h1 style="${td}margin:0 0 18px;font-size:23px;line-height:30px;font-weight:700;color:${TEXT};">${esc(v.heading)}</h1>
-${greetingBlock}
-<p style="${td}margin:0 0 26px;font-size:16px;line-height:24px;color:${TEXT_SOFT};">${esc(v.intro)}</p>
-
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
-<tr><td align="center" bgcolor="${CODE_BG}" style="background-color:${CODE_BG};border:1px solid ${BORDER};border-radius:10px;padding:22px 12px;">
-<!-- letter-spacing ONLY. Literal spaces between digits would make the code
-     copy as "1234 5678" and fail to paste into the input. -->
-<span class="code" style="font-family:${MONO};font-size:34px;line-height:42px;font-weight:700;letter-spacing:8px;color:${TEXT};">${esc(v.code)}</span>
-</td></tr>
-</table>
-
-<p style="${td}margin:26px 0 0;font-size:14px;line-height:21px;color:${TEXT_SOFT};">${esc(v.expiry)}</p>
-<p style="${td}margin:8px 0 0;font-size:14px;line-height:21px;color:${TEXT_MUTED};">If you did not request this, you can safely ignore this email. Your account stays unchanged.</p>
-</td></tr>
-
-<tr><td align="center" style="${td}padding:20px 32px;border-top:1px solid ${BORDER};">
-<p style="${td}margin:0;font-size:12px;line-height:18px;color:${TEXT_MUTED};">&copy; ${v.year} OllaSuper. All rights reserved.</p>
-</td></tr>
-
-</table>
-</td></tr>
-</table>
-</body>
-</html>`;
+  return renderShell({
+    title: v.heading,
+    preheader,
+    year: v.year,
+    body,
+  });
 }

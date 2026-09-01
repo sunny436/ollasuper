@@ -426,6 +426,10 @@ export const payload = internalQuery({
       errorCode: occ.errorCode ?? null,
       markdown: body,
       streamId: occ.streamId ?? null,
+      // The run deep link is `?run=<occurrenceId>` — task-detail.tsx mounts
+      // RunResult only under that param, so the task id alone lands on a page
+      // that does not show this run.
+      occurrenceId: occ._id,
       taskId: row.taskId,
     };
   },
@@ -666,6 +670,13 @@ export const deliver = internalAction({
         attachmentBase64: pdf.attachmentBase64 ?? undefined,
         idempotencyKey: p.idempotencyKey,
         noteTooLarge: pdf.attachment === "skipped_too_large",
+        // The RESULT was shortened before rendering. Distinct from the email
+        // being too long to carry it all — see sendReportEmail.
+        resultTruncated: p.truncated,
+        timezone: p.timezone,
+        finishedAt: p.finishedAt ?? undefined,
+        taskId: p.taskId,
+        occurrenceId: p.occurrenceId,
         notePdfFailed: pdf.attachment === "skipped_pdf_failed",
       });
 
