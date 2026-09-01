@@ -12,6 +12,7 @@
 //   cd /opt/myos/e2e && node p5-isolation.js
 const { ConvexHttpClient } = require("convex/browser");
 const { anyApi } = require("convex/server");
+const ollastack = require("./_lib/ollastack");
 
 const CONVEX_URL = process.env.CONVEX_URL || "http://127.0.0.1:3210";
 const MAILPIT = process.env.MAILPIT_URL || "http://127.0.0.1:8025";
@@ -42,6 +43,33 @@ async function codeFromMailpit(email) {
   return null;
 }
 
+/**
+ * A verification code, from wherever this deployment actually delivers mail.
+ *
+ * Ollastack first: once a real transport is configured, mail no longer reaches
+ * the local Mailpit catcher at all, so reading Mailpit would look exactly like
+ * "the code never arrived". Mailpit stays as the fallback for a replica.
+ */
+async function getVerificationCode(email) {
+  if (ollastack.enabled()) {
+    return await ollastack.codeForAddress(email, "verification", 120000);
+  }
+  return await codeFromMailpit(email);
+}
+
+/**
+ * A real, run-isolated address.
+ *
+ * The old `<prefix><ts>@gmail.com` shape was harmless while every message went
+ * to a local catcher. With a real transport it sends to NONEXISTENT Gmail
+ * addresses, and every one of those bounces against a shared sending domain's
+ * reputation. So the address has to be a mailbox that genuinely exists.
+ */
+async function testAddress(prefix) {
+  if (ollastack.enabled()) return await ollastack.addressFor(prefix);
+  return `${prefix}@${typeof DOMAIN === "string" ? DOMAIN : "myos.test"}`;
+}
+
 async function signUp(email, password) {
   const c = new ConvexHttpClient(CONVEX_URL);
   await c.action(anyApi.auth.signIn, {
@@ -50,7 +78,7 @@ async function signUp(email, password) {
   });
   let code = null;
   for (let i = 0; i < 14 && !code; i++) {
-    code = await codeFromMailpit(email);
+    code = await getVerificationCode(email);
     if (!code) await new Promise((r) => setTimeout(r, 1500));
   }
   if (!code) throw new Error("no verification code for " + email);
@@ -74,8 +102,10 @@ const isEmpty = (v) =>
 
 (async () => {
   const ts = Date.now();
-  const owner = await signUp(`schedowner${ts}@${DOMAIN}`, "SchedOwner#2026x");
-  const peer = await signUp(`schedpeer${ts}@${DOMAIN}`, "SchedPeer#2026x");
+  const ownerEmail = await testAddress(`schedowner${ts}`);
+  const peerEmailAddr = await testAddress(`schedpeer${ts}`);
+  const owner = await signUp(ownerEmail, "SchedOwner#2026x");
+  const peer = await signUp(peerEmailAddr, "SchedPeer#2026x");
   ok("two accounts created and verified");
 
   const ws = await owner.mutation(anyApi.orgs.createWorkspace, {
@@ -83,7 +113,7 @@ const isEmpty = (v) =>
   });
   await owner.mutation(anyApi.orgs.invite, {
     workspaceId: ws,
-    email: `schedpeer${ts}@${DOMAIN}`,
+    email: peerEmailAddr,
     role: "member",
   });
   const invites = await peer.query(anyApi.orgs.myInvites, {});

@@ -11,6 +11,7 @@
 const { execSync } = require("node:child_process");
 const { ConvexHttpClient } = require("convex/browser");
 const { anyApi } = require("convex/server");
+const ollastack = require("./_lib/ollastack");
 
 const CONVEX_URL = process.env.CONVEX_URL || "http://127.0.0.1:3210";
 const MAILPIT = process.env.MAILPIT_URL || "http://127.0.0.1:8025";
@@ -41,6 +42,33 @@ async function codeFromMailpit(email) {
   return null;
 }
 
+/**
+ * A verification code, from wherever this deployment actually delivers mail.
+ *
+ * Ollastack first: once a real transport is configured, mail no longer reaches
+ * the local Mailpit catcher at all, so reading Mailpit would look exactly like
+ * "the code never arrived". Mailpit stays as the fallback for a replica.
+ */
+async function getVerificationCode(email) {
+  if (ollastack.enabled()) {
+    return await ollastack.codeForAddress(email, "verification", 120000);
+  }
+  return await codeFromMailpit(email);
+}
+
+/**
+ * A real, run-isolated address.
+ *
+ * The old `<prefix><ts>@gmail.com` shape was harmless while every message went
+ * to a local catcher. With a real transport it sends to NONEXISTENT Gmail
+ * addresses, and every one of those bounces against a shared sending domain's
+ * reputation. So the address has to be a mailbox that genuinely exists.
+ */
+async function testAddress(prefix) {
+  if (ollastack.enabled()) return await ollastack.addressFor(prefix);
+  return `${prefix}@${typeof DOMAIN === "string" ? DOMAIN : "myos.test"}`;
+}
+
 async function signUp(email, password) {
   const c = new ConvexHttpClient(CONVEX_URL);
   await c.action(anyApi.auth.signIn, {
@@ -49,7 +77,7 @@ async function signUp(email, password) {
   });
   let code = null;
   for (let i = 0; i < 14 && !code; i++) {
-    code = await codeFromMailpit(email);
+    code = await getVerificationCode(email);
     if (!code) await sleep(1500);
   }
   if (!code) throw new Error("no verification code for " + email);
@@ -64,7 +92,7 @@ async function signUp(email, password) {
 
 (async () => {
   const ts = Date.now();
-  const user = await signUp(`schedrestart${ts}@${DOMAIN}`, "SchedRestart#2026x");
+  const user = await signUp(await testAddress(`schedrestart${ts}`), "SchedRestart#2026x");
   const ws = await user.mutation(anyApi.orgs.createWorkspace, {
     name: `Restart${ts}`,
   });

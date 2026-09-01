@@ -12,6 +12,7 @@
 //   CONVEX_URL=http://172.16.70.25:3210 node p-chat-isolation.js
 const { ConvexHttpClient } = require("convex/browser");
 const { anyApi } = require("convex/server");
+const ollastack = require("./_lib/ollastack");
 
 // Default to the local backend. The previous default was the OLD VM's address,
 // which still answers, so this suite silently exercised a different deployment
@@ -74,6 +75,33 @@ async function codeFromMailpit(email) {
 }
 
 /**
+ * A verification code, from wherever this deployment actually delivers mail.
+ *
+ * Ollastack first: once a real transport is configured, mail no longer reaches
+ * the local Mailpit catcher at all, so reading Mailpit would look exactly like
+ * "the code never arrived". Mailpit stays as the fallback for a replica.
+ */
+async function getVerificationCode(email) {
+  if (ollastack.enabled()) {
+    return await ollastack.codeForAddress(email, "verification", 120000);
+  }
+  return await codeFromMailpit(email);
+}
+
+/**
+ * A real, run-isolated address.
+ *
+ * The old `<prefix><ts>@gmail.com` shape was harmless while every message went
+ * to a local catcher. With a real transport it sends to NONEXISTENT Gmail
+ * addresses, and every one of those bounces against a shared sending domain's
+ * reputation. So the address has to be a mailbox that genuinely exists.
+ */
+async function testAddress(prefix) {
+  if (ollastack.enabled()) return await ollastack.addressFor(prefix);
+  return `${prefix}@${typeof DOMAIN === "string" ? DOMAIN : "myos.test"}`;
+}
+
+/**
  * Sign up and verify.
  *
  * The code is read from Mailpit, falling back to captured log output. The log
@@ -99,7 +127,7 @@ async function signUp(email, password) {
     });
     let code = null;
     for (let i = 0; i < 14 && !code; i++) {
-      code = await codeFromMailpit(email);
+      code = await getVerificationCode(email);
       if (!code) await new Promise((r) => setTimeout(r, 1500));
     }
     const m = code
@@ -125,13 +153,15 @@ async function signUp(email, password) {
 
 (async () => {
   const ts = Date.now();
-  const owner = await signUp(`chatowner${ts}@myos.test`, "ChatOwner#2026x");
-  const peer = await signUp(`chatpeer${ts}@myos.test`, "ChatPeer#2026x");
+  const ownerEmailAddr = await testAddress(`chatowner${ts}`);
+  const peerEmailAddr = await testAddress(`chatpeer${ts}`);
+  const owner = await signUp(ownerEmailAddr, "ChatOwner#2026x");
+  const peer = await signUp(peerEmailAddr, "ChatPeer#2026x");
 
   // Owner creates a workspace and invites the peer into it, so the peer is a
   // fully legitimate member — that is the whole point of the test.
   const ws = await owner.mutation(anyApi.orgs.createWorkspace, { name: "IsoWS" });
-  const peerEmail = `chatpeer${ts}@myos.test`;
+  const peerEmail = peerEmailAddr;
   await owner.mutation(anyApi.orgs.invite, {
     workspaceId: ws,
     email: peerEmail,

@@ -137,10 +137,39 @@ async function message(id) {
   return json?.data ?? null;
 }
 
+/** The +tag out of an address, or null when there isn't one. */
+function tagOf(address) {
+  const m = /\+([^@]+)@/.exec(String(address));
+  return m ? m[1] : null;
+}
+
+/**
+ * An isolated real address for a run, from a caller-chosen prefix.
+ *
+ * Every script that used to sign up at `<something><ts>@gmail.com` and read the
+ * code out of Mailpit can call this instead and get a mailbox that genuinely
+ * receives. Non-alphanumerics are stripped because the tag has to survive both
+ * the app's email normalisation and the provider's subaddress parsing.
+ */
+async function addressFor(prefix) {
+  const tag = String(prefix).replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return taggedAddress(await mailboxAddress(), tag);
+}
+
+/** The newest code sent to a +tag address minted by addressFor. */
+async function codeForAddress(address, subjectContains, timeoutMs = 90000) {
+  const tag = tagOf(address);
+  if (!tag) return null;
+  return await codeFromOllastack(tag, subjectContains, timeoutMs);
+}
+
 module.exports = {
   enabled,
   mailboxAddress,
   taggedAddress,
+  tagOf,
+  addressFor,
+  codeForAddress,
   newTag,
   codeFromOllastack,
   messagesForTag,
