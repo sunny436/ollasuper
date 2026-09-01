@@ -211,6 +211,43 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return `${body.length} chars`;
   });
 
+  /**
+   * The report has to arrive FORMATTED, not as raw markdown.
+   *
+   * Production used to send `**bold**` and literal backticks straight to the
+   * inbox because the renderer knew only headings, bullets and paragraphs. The
+   * model decides which constructs a given run emits, so this asserts the
+   * property that always holds — no markdown syntax survives — and checks real
+   * tags only for constructs actually present in this report.
+   */
+  await step("the report is rendered, not raw markdown", async () => {
+    must(mail, "no message to inspect");
+    const html = String(mail.htmlBody ?? "");
+    must(html.length > 200, "no HTML part on the report email");
+
+    must(html.includes("OLLASUPER"), "the email carries no OllaSuper branding");
+    must(html.includes("Scheduled report"), "no report header");
+
+    const md = String(mail.textBody ?? "");
+    const leaks = [];
+    // Only assert on syntax the model actually used in THIS report.
+    if (/\*\*\S/.test(md) && html.includes("**")) leaks.push("bold **");
+    if (/\]\(https?:/.test(md) && html.includes("](")) leaks.push("link ](");
+    if (/^\s*\|.*\|/m.test(md) && html.includes("|---")) leaks.push("table |---|");
+    if (/`[^`]+`/.test(md) && /`[^`]+`/.test(html)) leaks.push("inline code ``");
+    must(leaks.length === 0, `raw markdown reached the inbox: ${leaks.join(", ")}`);
+
+    const rendered = [];
+    if (/\*\*\S/.test(md)) rendered.push(html.includes("<strong") ? "" : "bold");
+    if (/^\s*\d+[.)]\s/m.test(md)) rendered.push(html.includes("<ol") ? "" : "ordered list");
+    if (/^\s*[-*+]\s/m.test(md)) rendered.push(html.includes("<ul") ? "" : "bullet list");
+    if (/\]\(https?:/.test(md)) rendered.push(html.includes("<a href") ? "" : "link");
+    const missing = rendered.filter(Boolean);
+    must(missing.length === 0, `present in the report but not rendered: ${missing.join(", ")}`);
+
+    return `${html.length} bytes of HTML`;
+  });
+
   await step("the PDF is attached, and is a real PDF", async () => {
     must(mail, "no message to inspect");
     const atts = mail.attachments ?? [];
