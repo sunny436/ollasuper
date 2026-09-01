@@ -1,5 +1,5 @@
 import Google from "@auth/core/providers/google";
-import { Password } from "@convex-dev/auth/providers/Password";
+import { OllaSuperPassword } from "./passwordProvider";
 import { convexAuth, getAuthSessionId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import { ResendOTP } from "./ResendOTP";
@@ -21,7 +21,7 @@ const INACTIVE_DURATION_MS = 1000 * 60 * 60 * 24 * 2;
 /** Hard ceiling regardless of activity, so no session is effectively permanent. */
 const TOTAL_DURATION_MS = 1000 * 60 * 60 * 24 * 30;
 
-const PasswordWithFlows = Password({
+const PasswordWithFlows = OllaSuperPassword({
   verify: ResendOTPVerify,
   reset: ResendOTPReset,
   // Without this, Password falls back to its defaultProfile, which returns
@@ -135,6 +135,20 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
           lastLoginAt: now,
           lastActivityAt: now,
           ...(isPasswordReset ? { passwordChangedAt: now } : {}),
+          // Backfill AND repair. `emailNormalized` was added later, so old rows
+          // lack it — but `email` itself also needs guarding, because the
+          // library writes the RAW identifier over it: createVerificationCodeImpl
+          // does `profile: { email }` from whatever it was handed and upserts
+          // that onto the user. Every sign-up typed with a capital letter
+          // therefore left `users.email` as "Foo@Gmail.com".
+          //
+          // That column is the one `uniqueUserWithVerifiedEmail` indexes, so a
+          // corrupted value makes the next provider fail to find the user and
+          // create a SECOND one. Repairing here covers every provider — magic
+          // OTP and Google included — because they all reach this callback.
+          ...(user.email && user.email !== normalizeEmail(user.email)
+            ? { email: normalizeEmail(user.email) }
+            : {}),
           ...(user.email && !user.emailNormalized
             ? { emailNormalized: normalizeEmail(user.email) }
             : {}),

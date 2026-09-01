@@ -444,3 +444,132 @@ describe("Google identity", () => {
     expect(after.email).not.toBe(before.email);
   });
 });
+
+// ---------------------------------------------------------------------------
+// B2 — sign-up must never be a password oracle.
+// ---------------------------------------------------------------------------
+describe("sign-up against an existing address", () => {
+  /** Bring an address to a fully verified, signed-in state. */
+  async function registerVerified(t: ReturnType<typeof convexTest>, email: string) {
+    const code = await captureCode(() =>
+      signIn(t, { email, password: PASSWORD, flow: "signUp" }),
+    );
+    await signIn(t, { email, code, flow: "email-verification" });
+  }
+
+  /**
+   * The critical one. The library returns the existing account when the secret
+   * MATCHES, so `flow: "signUp"` with a correct password used to hand back a
+   * session — turning the sign-up endpoint into a login that bypasses the
+   * 5/hour brute-force limiter entirely.
+   */
+  test("a CORRECT password does not produce a session", async () => {
+    const t = convexTest(schema, modules);
+    const email = "correct@gmail.com";
+    await registerVerified(t, email);
+
+    const result = await signIn(t, { email, password: PASSWORD, flow: "signUp" });
+    expect((result as { tokens: unknown } | null)?.tokens ?? null).toBeNull();
+  });
+
+  /**
+   * And the other half of the oracle: a wrong password used to THROW
+   * "Account <email> already exists" while a right one resolved. The two must
+   * now be indistinguishable.
+   */
+  test("a WRONG password behaves identically to a correct one", async () => {
+    const t = convexTest(schema, modules);
+    const email = "wrong@gmail.com";
+    await registerVerified(t, email);
+
+    const right = await signIn(t, { email, password: PASSWORD, flow: "signUp" });
+    const wrong = await signIn(t, {
+      email,
+      password: "C0mpletelyD1fferent!",
+      flow: "signUp",
+    });
+    expect(wrong).toEqual(right);
+  });
+
+  /** No password is ever compared, so neither answer can leak by throwing. */
+  test("neither outcome throws", async () => {
+    const t = convexTest(schema, modules);
+    const email = "nothrow@gmail.com";
+    await registerVerified(t, email);
+    await expect(
+      signIn(t, { email, password: "An0therWr0ng!", flow: "signUp" }),
+    ).resolves.toBeDefined();
+  });
+
+  /**
+   * A collision must send exactly ONE code, like a fresh sign-up. A second
+   * "someone tried to sign up" message would make the collision observable by
+   * volume alone, and would let an attacker burn the address's send budget.
+   */
+  test("a collision emails exactly one code, as a fresh sign-up does", async () => {
+    const t = convexTest(schema, modules);
+    const email = "onecode@gmail.com";
+    await registerVerified(t, email);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await signIn(t, { email, password: PASSWORD, flow: "signUp" });
+      const codes = warn.mock.calls
+        .map((c) => String(c[0] ?? ""))
+        .filter((line) => line.includes("code for"));
+      expect(codes).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * The escape hatch for the legitimate case: someone who forgot they had an
+   * account gets a code and can still get in with it. That is the same
+   * capability the magic-OTP provider already offers, so it grants nothing new.
+   */
+  test("the code from a collision still verifies the real owner in", async () => {
+    const t = convexTest(schema, modules);
+    const email = "owner@gmail.com";
+    await registerVerified(t, email);
+
+    const code = await captureCode(() =>
+      signIn(t, { email, password: "Wr0ngGuess!x", flow: "signUp" }),
+    );
+    const result = await signIn(t, { email, code, flow: "email-verification" });
+    expect((result as { tokens: unknown } | null)?.tokens).toBeTruthy();
+  });
+
+  /** A brand-new address must still register normally. */
+  test("a fresh address is unaffected", async () => {
+    const t = convexTest(schema, modules);
+    const code = await captureCode(() =>
+      signIn(t, { email: "fresh@gmail.com", password: PASSWORD, flow: "signUp" }),
+    );
+    expect(code).toMatch(/^\d{8}$/);
+    const result = await signIn(t, {
+      email: "fresh@gmail.com",
+      code,
+      flow: "email-verification",
+    });
+    expect((result as { tokens: unknown } | null)?.tokens).toBeTruthy();
+  });
+
+  /** Case and whitespace must land on the same account, not a second one. */
+  test("a case/whitespace variant collides rather than duplicating", async () => {
+    const t = convexTest(schema, modules);
+    await registerVerified(t, "casing@gmail.com");
+    await signIn(t, {
+      email: "  CASING@Gmail.com ",
+      password: "An0therWr0ng!",
+      flow: "signUp",
+    });
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
+    expect(users).toHaveLength(1);
+    // users.email must stay NORMALISED. The library overwrites it with the raw
+    // identifier, and that column is what uniqueUserWithVerifiedEmail indexes —
+    // a corrupted value is what makes a second provider create a second user.
+    expect(users[0].email).toBe("casing@gmail.com");
+    expect(users[0].emailNormalized).toBe("casing@gmail.com");
+  });
+});
