@@ -4,11 +4,9 @@ import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, useQuery } from "convex/react";
 import {
-  ArrowLeft,
   CalendarClock,
   History,
   Loader2,
-  MessageSquare,
   Pencil,
   X,
 } from "lucide-react";
@@ -24,19 +22,24 @@ import {
   scheduleSummary,
 } from "../_lib/schedule-format";
 import { EditTaskDialog } from "./edit-task-dialog";
-import { RunResult } from "./run-result";
-import { ScheduledTranscript } from "./scheduled-transcript";
+import { RunResultDialog } from "./run-result-dialog";
 
 /**
  * The right-hand task panel from the product reference.
  *
- * Header (title, "Paused · Daily", edit, close), a list of runs, and an
- * "Open chat" footer. Opening a run or the transcript stays INSIDE this panel:
- * the scheduled execution thread is hidden from /chat by design, and this
- * surface renders no composer, so there is no send path to expose.
+ * Header (title, "Paused · Daily", edit, close) and a list of runs. Opening a
+ * run raises a dedicated modal over this panel — it never navigates, and it
+ * never routes into /chat.
+ *
+ * The "Open chat" footer and its read-only transcript were removed: a scheduled
+ * result belongs to the Scheduled Tasks experience, not to a conversation. The
+ * backend `tasks.transcript` query is deliberately left in place — dropping a
+ * public Convex query mid-deploy breaks any client still holding the old
+ * bundle, and it costs nothing to keep.
  *
  * The selected run rides in a query param rather than component state, so a run
- * is deep-linkable and survives a refresh.
+ * is deep-linkable (the notifications bell links straight at one) and survives
+ * a refresh.
  */
 export function TaskDetail({
   taskId,
@@ -49,7 +52,6 @@ export function TaskDetail({
   const pathname = usePathname();
   const search = useSearchParams();
   const runId = search.get("run");
-  const showThread = search.get("view") === "thread";
   const [editing, setEditing] = useState(false);
 
   // `taskId` comes from the URL. It is only narrowed at the call site, and a
@@ -100,27 +102,7 @@ export function TaskDetail({
           />
         )}
 
-        {task && showThread && (
-          <div>
-            <BackButton
-              label="Back to runs"
-              onClick={() => setParam("view", null)}
-            />
-            <ScheduledTranscript taskId={taskId} />
-          </div>
-        )}
-
-        {task && !showThread && runId && (
-          <div>
-            <BackButton
-              label="Back to runs"
-              onClick={() => setParam("run", null)}
-            />
-            <RunResult taskId={taskId} occurrenceId={runId} />
-          </div>
-        )}
-
-        {task && !showThread && !runId && (
+        {task && (
           <>
             <p className="text-xs text-muted-foreground">
               {scheduleSummary(task.spec)}
@@ -196,17 +178,13 @@ export function TaskDetail({
         )}
       </div>
 
-      {task && !showThread && !runId && (
-        <div className="shrink-0 border-t border-border p-3">
-          <button
-            type="button"
-            onClick={() => setParam("view", "thread")}
-            className="flex w-full items-center justify-center gap-2 rounded-full bg-primary/5 py-2.5 text-sm font-medium text-primary transition hover:bg-primary/10"
-          >
-            <MessageSquare className="h-4 w-4" />
-            Open chat
-          </button>
-        </div>
+      {task && runId && (
+        <RunResultDialog
+          taskId={taskId}
+          occurrenceId={runId}
+          title={task.title}
+          onClose={() => setParam("run", null)}
+        />
       )}
 
       {task && editing && (
@@ -267,18 +245,6 @@ function Header({
   );
 }
 
-function BackButton({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="mb-3 flex items-center gap-1.5 text-xs text-primary/60 transition hover:text-primary"
-    >
-      <ArrowLeft className="h-3.5 w-3.5" />
-      {label}
-    </button>
-  );
-}
 
 function RunRow({
   run,

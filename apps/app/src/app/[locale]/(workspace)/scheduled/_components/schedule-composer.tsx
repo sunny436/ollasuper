@@ -11,6 +11,7 @@ import { useCachedUser } from "../../chat/_hooks/use-cached-user";
 import {
   type ScheduleSpec,
   browserZone,
+  isValidZone,
   scheduleSummary,
 } from "../_lib/schedule-format";
 import { ScheduleFields, emptySpec, specGaps } from "./schedule-fields";
@@ -549,10 +550,17 @@ function specFromParsed(
 ): ScheduleSpec {
   const num = (v: unknown, fallback: number) =>
     typeof v === "number" && Number.isFinite(v) ? v : fallback;
-  const tz =
+  // The parser is a MODEL, and a model asked to read a sentence will happily
+  // return a timezone nobody mentioned — production holds an "Asia/Aden" task
+  // created by a user who never typed it. The detected zone already travels to
+  // the parser, so anything it hands back that this engine does not recognise
+  // is discarded rather than persisted.
+  const parsedTz =
     typeof parsed.timezone === "string" && parsed.timezone
       ? parsed.timezone
-      : previous.timezone;
+      : null;
+  const tz =
+    parsedTz && isValidZone(parsedTz) ? parsedTz : previous.timezone;
   const prevHour = previous.kind === "once" ? 9 : previous.hour;
   const prevMinute = previous.kind === "once" ? 0 : previous.minute;
   const hour = num(parsed.hour, prevHour);

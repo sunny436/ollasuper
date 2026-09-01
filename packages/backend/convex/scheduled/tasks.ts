@@ -263,6 +263,21 @@ export const update = mutation({
       spec,
       createdAt: now,
     });
+    // A changed schedule invalidates the DENORMALISED nextRunAt.
+    //
+    // Nothing else clears it: tick.py skips a task whose window holds nothing
+    // due (`if upper <= task.cursor_at: continue`), so after editing a daily
+    // 8 AM task to 6 PM — or changing its timezone — the panel kept showing
+    // the OLD next run, confidently and wrongly, until the old instant came
+    // round. Execution was always correct; only this field lied.
+    //
+    // It is CLEARED, never recomputed. Calendar arithmetic lives in
+    // recurrence.py and must not be duplicated here (see schedule.ts) — the
+    // next materialise writes the true value. task-detail.tsx already guards
+    // on `task.nextRunAt`, so the line disappears rather than misinforming.
+    const specChanged =
+      args.spec !== undefined &&
+      JSON.stringify(spec) !== JSON.stringify(task.spec);
     await ctx.db.patch(args.taskId, {
       title,
       prompt,
@@ -272,6 +287,7 @@ export const update = mutation({
       // cursorAt is deliberately NOT reset. Resetting forward would drop an
       // occurrence that already came due; resetting back would backfill. The
       // timeline is independent of edits.
+      ...(specChanged ? { nextRunAt: undefined } : {}),
       invalidReason: undefined,
       updatedAt: now,
     });
@@ -569,6 +585,12 @@ export const runResult = query({
       // The prompt this run actually executed — the PINNED revision, never the
       // task's current one.
       prompt: revision?.prompt ?? null,
+      // ...and the zone it was scheduled in, for the same reason. The viewer
+      // used to format these instants as literal UTC, which is why a Kolkata
+      // task showed 18:44 beside a 00:14 chip. Reading it off the pinned
+      // revision rather than the task means editing a task's timezone later
+      // does not silently re-date every run that already happened.
+      timezone: revision?.spec?.timezone ?? null,
       revision: occ.revision,
       // null when the run never produced a message (claimed then cancelled, or
       // still starting). The viewer renders "no result yet" rather than failing.

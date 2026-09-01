@@ -52,28 +52,21 @@ export function ScheduledPane() {
 
   const visible = useMemo(() => {
     if (!tasks) return null;
+    // Each filter means exactly what it says, and matches the PERSISTED status.
+    //
+    // "Active" used to include paused tasks, and a fallback returned everything
+    // when the live set was empty. Both existed for a real reason — pausing
+    // removed the row from view and the only route back was to discover the
+    // filter menu — but the cure was worse: a paused task listed under Active
+    // makes the filter lie about the one thing a status filter exists to tell
+    // the truth about.
+    //
+    // The original concern is answered where it actually happens instead. Pause
+    // is triggered from THIS list's row menu, so TaskRow reports it and the
+    // filter moves to "All", keeping the row on screen and resumable.
     if (filter === "all") return tasks;
     if (filter === "paused") return tasks.filter((t) => t.status === "paused");
-    // "Active" means LIVE — running or paused — not `status === "active"`.
-    //
-    // Pausing used to remove a task from this view entirely, so the only way
-    // back to it was to discover the filter menu and switch to "Paused". You
-    // could pause a task and then be unable to find it to resume. Production
-    // e2e hit exactly that: the pause step worked, and every later step failed
-    // because the row had vanished.
-    //
-    // It hid because of a fallback that showed everything when nothing was
-    // active — which meant the bug only appeared once a SECOND task existed,
-    // and every single-task test passed. TaskRow already renders a "Paused"
-    // subtitle, which only makes sense if paused tasks belong here.
-    //
-    // Completed tasks are the ones this view omits, and "All" is where they live.
-    const live = tasks.filter(
-      (t) => t.status === "active" || t.status === "paused",
-    );
-    // …except when a completed task is all there is, so a finished one-time
-    // task never leaves the user staring at an empty page.
-    return live.length || tasks.length === 0 ? live : tasks;
+    return tasks.filter((t) => t.status === "active");
   }, [tasks, filter]);
 
   return (
@@ -184,6 +177,11 @@ export function ScheduledPane() {
                 task={task}
                 selected={task._id === selectedId}
                 onOpen={() => router.push(`/scheduled/${task._id}`)}
+                // Active now means active, so a task paused from this menu
+                // would drop out of view. Move to "All" rather than leaving
+                // the user hunting the filter menu for a task they just
+                // paused — the row stays put and stays resumable.
+                onPaused={() => setFilter("all")}
               />
             ))}
           </div>
@@ -219,14 +217,18 @@ function EmptyState({ filter }: { filter: Filterish }) {
     <div className="rounded-xl border border-dashed border-border px-6 py-12 text-center">
       <CalendarClock className="mx-auto h-6 w-6 text-primary/30" />
       <p className="mt-3 text-sm font-medium text-primary/80">
-        {filter === "paused"
-          ? "No paused tasks"
-          : "No scheduled tasks yet"}
+        {filter === "active"
+          ? "No active tasks"
+          : filter === "paused"
+            ? "No paused tasks"
+            : "No scheduled tasks yet"}
       </p>
       <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
-        {filter === "paused"
-          ? "Tasks you pause will appear here. They keep their history and stop running until you resume them."
-          : "Describe what you want to happen and when — for example “every weekday at 8 AM, summarise my inbox”."}
+        {filter === "active"
+          ? "Paused and finished tasks are still here — switch the filter to All to see them."
+          : filter === "paused"
+            ? "Tasks you pause will appear here. They keep their history and stop running until you resume them."
+            : "Describe what you want to happen and when — for example “every weekday at 8 AM, summarise my inbox”."}
       </p>
     </div>
   );

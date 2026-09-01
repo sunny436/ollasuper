@@ -57,10 +57,17 @@ export function TaskRow({
   task,
   selected,
   onOpen,
+  onPaused,
 }: {
   task: TaskRowData;
   selected: boolean;
   onOpen: () => void;
+  /**
+   * Fired after a successful pause. The list filters strictly on status, so
+   * without this the row a user just paused would vanish from the default
+   * view with no obvious way back to resume it.
+   */
+  onPaused?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -235,13 +242,18 @@ export function TaskRow({
                           );
                           toast.success("Task resumed");
                         } else {
-                          await guard(
+                          // guard() resolves to null when the mutation threw.
+                          const paused_ = await guard(
                             () => pause({ taskId: task._id }),
                             "Couldn't pause",
                           );
+                          if (!paused_) return;
                           toast.success(
                             "Task paused — any run in progress will finish",
                           );
+                          // Only on success: a refused pause must not move the
+                          // filter out from under the user.
+                          onPaused?.();
                         }
                       }}
                     />

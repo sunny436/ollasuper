@@ -115,7 +115,12 @@ export function ScheduleFields({
   /** Field names the parser could not determine, so they can be called out. */
   highlight?: string[];
 }) {
-  const zones = useMemo(() => timezoneOptions(), []);
+  // deps on the value: a task whose zone is not in supportedValuesOf (Asia/Kolkata,
+  // UTC) must still be selectable, and the dialog is reused across tasks.
+  const zones = useMemo(
+    () => timezoneOptions(value.timezone),
+    [value.timezone],
+  );
   const onceFields =
     value.kind === "once"
       ? utcToZonedFields(value.runAt, value.timezone)

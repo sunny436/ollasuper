@@ -106,6 +106,7 @@ function ChatMessageImpl({
   pendingApproval,
   onResolveApproval,
   readOnly = false,
+  hideExecutionMeta = false,
 }: {
   message: ChatMessageDoc;
   isStreaming: boolean;
@@ -132,6 +133,21 @@ function ChatMessageImpl({
    * and a failed run is exactly the state that renders it.
    */
   readOnly?: boolean;
+  /**
+   * Drop the EXECUTION chrome and render the answer only. Default false, so
+   * every chat call site is byte-identical.
+   *
+   * Set by the Scheduled Tasks result modal. It suppresses exactly two things:
+   * MessageMeta (the model name and time) and AgentActivity (step count, tool
+   * calls, the agent trace). Those are execution data, and a scheduled report
+   * is supposed to read as the finished report the user asked for.
+   *
+   * AgentSources is deliberately NOT suppressed: citations are part of the
+   * answer, not diagnostics, even though they are derived from the same
+   * events. Nothing is deleted from the database either — the execution
+   * record stays intact for observability, it is just not rendered here.
+   */
+  hideExecutionMeta?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -217,18 +233,22 @@ function ChatMessageImpl({
 
   return (
     <div className="group my-5">
-      <MessageMeta
-        assistant
-        orb={showOrb}
-        who={modelLabel(message.model)}
-        at={message.createdAt}
-      />
-      <AgentActivity
-        events={message.events}
-        isStreaming={isStreaming}
-        pendingApproval={pendingApproval}
-        onResolveApproval={onResolveApproval}
-      />
+      {!hideExecutionMeta && (
+        <MessageMeta
+          assistant
+          orb={showOrb}
+          who={modelLabel(message.model)}
+          at={message.createdAt}
+        />
+      )}
+      {!hideExecutionMeta && (
+        <AgentActivity
+          events={message.events}
+          isStreaming={isStreaming}
+          pendingApproval={pendingApproval}
+          onResolveApproval={onResolveApproval}
+        />
+      )}
       <StreamingText text={text} isStreaming={isStreaming} />
       <AgentSources events={message.events} />
 
@@ -339,5 +359,8 @@ export const ChatMessage = memo(
       (b.pendingApproval?.approvalId ?? null) &&
     // Without this a memoised bubble could keep its interactive affordances
     // after being re-rendered read-only — buttons that would then throw.
-    a.readOnly === b.readOnly,
+    a.readOnly === b.readOnly &&
+    // Same reasoning as readOnly above: a memoised bubble must not keep
+    // execution chrome after being re-rendered without it.
+    a.hideExecutionMeta === b.hideExecutionMeta,
 );

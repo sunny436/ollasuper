@@ -171,6 +171,25 @@ const FALLBACK_ZONES = [
   "Africa/Johannesburg",
 ];
 
+/**
+ * Does this engine recognise the zone at all?
+ *
+ * Deliberately NOT a membership test against `supportedValuesOf`: that list
+ * holds ICU-canonical ids only, so it rejects perfectly valid zones like
+ * "Asia/Kolkata" and "UTC". Asking Intl to build a formatter is the same check
+ * the backend makes (schedule.ts isPlausibleTimezone) and matches what
+ * ZoneInfo will accept on the Python side.
+ */
+export function isValidZone(tz: string): boolean {
+  if (!tz) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function browserZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -179,19 +198,48 @@ export function browserZone(): string {
   }
 }
 
-export function timezoneOptions(): string[] {
+/**
+ * `current` is the zone the task ACTUALLY holds, and it must always be in the
+ * returned list.
+ *
+ * THE BUG THIS FIXES. `Intl.supportedValuesOf("timeZone")` returns ICU-CANONICAL
+ * ids, which are not the ids anything else in this stack produces:
+ *
+ *   Asia/Kolkata   in supportedValuesOf? NO      valid IANA? yes
+ *   Asia/Calcutta  in supportedValuesOf? yes
+ *   UTC            in supportedValuesOf? NO      valid IANA? yes
+ *
+ * `browserZone()` reads `resolvedOptions().timeZone`, which is "Asia/Kolkata" on
+ * modern Chrome — so a task created here stores a zone the picker could not
+ * offer. An HTML <select> whose value matches no <option> falls back to
+ * selectedIndex 0, and index 0 of that list is "Africa/Abidjan". That is exactly
+ * what production showed: a Kolkata task whose dropdown read Africa/Abidjan
+ * while the summary line beside it correctly read "Kolkata" (that one formats
+ * spec.timezone directly instead of going through the options).
+ *
+ * The fix is the union, NOT canonicalising on write: rewriting "Asia/Kolkata" to
+ * the ICU-canonical "Asia/Calcutta" would start persisting a deprecated name for
+ * every Indian user. A duplicate-looking pair in the list is harmless — both
+ * resolve to the same offset — whereas a silently wrong stored zone is not.
+ */
+export function timezoneOptions(current?: string): string[] {
   const own = browserZone();
+  let supported: string[] | undefined;
   try {
-    const supported = (
+    supported = (
       Intl as unknown as {
         supportedValuesOf?: (k: string) => string[];
       }
     ).supportedValuesOf?.("timeZone");
-    if (supported?.length) return supported;
   } catch {
-    // fall through
+    supported = undefined;
   }
-  return Array.from(new Set([own, ...FALLBACK_ZONES])).sort();
+  const base = supported?.length ? supported : FALLBACK_ZONES;
+  // `current` first: whatever the task holds is always selectable, even when it
+  // is an alias, a deprecated id, or a zone this engine has never heard of.
+  return Array.from(
+    new Set([...(current ? [current] : []), own, ...base]),
+  ).sort();
 }
 
 /** Backend occurrence status -> the label the user reads. */

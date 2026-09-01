@@ -354,21 +354,52 @@ const openRowMenu = async (page, title) => {
     await page.waitForTimeout(400);
   });
 
-  await step("a paused task KEEPS ITS ROW in the default view", async () => {
-    // getByText("Paused") used to be enough, and it was not: the pause toast
-    // contains the word too, so this passed while the row itself had vanished
-    // from the default filter. Assert the ROW, and that it says Paused.
+  await step("the filters isolate Active from Paused", async () => {
+    // This step asserted the OPPOSITE until the Scheduled Tasks audit: that a
+    // paused task "KEEPS ITS ROW in the default view". It did, because Active
+    // was defined as active-or-paused plus a fallback that showed everything
+    // when the live set was empty. That made the filter lie about the one
+    // thing a status filter exists to report.
+    //
+    // The concern behind it was real — pause is triggered from this list's row
+    // menu, so a vanishing row is a task you cannot resume — and it is now
+    // answered by TaskRow moving the filter to "All" on a successful pause,
+    // covered separately below. On a FRESH load the default filter is Active,
+    // and a paused task must not be in it.
     await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
-    const row = taskRows(page).filter({ hasText: editedTitle });
+
+    const pick = async (label) => {
+      await page
+        .getByRole("button", { name: /^(Active|Paused|All)$/ })
+        .first()
+        .click();
+      await page.waitForTimeout(300);
+      await page.getByRole("menuitem", { name: label, exact: true }).click();
+      await page.waitForTimeout(1200);
+    };
+
+    const row = () => taskRows(page).filter({ hasText: editedTitle });
+
     must(
-      await row.count(),
-      "the paused task disappeared from the default view — a user could not resume it",
+      (await row().count()) === 0,
+      "a PAUSED task appeared under the Active filter",
+    );
+
+    await pick("Paused");
+    must(
+      await row().count(),
+      "the paused task is missing from the Paused filter",
     );
     must(
-      /Paused/.test(await row.first().innerText()),
+      /Paused/.test(await row().first().innerText()),
       "the row does not say it is paused",
     );
+
+    await pick("All");
+    must(await row().count(), "the paused task is missing from All");
+
+    // Leave the view on All so the later steps can still find the row.
   });
 
   await step("resume restores Run now", async () => {
@@ -494,14 +525,32 @@ const openRowMenu = async (page, title) => {
     must(false, `the run history settled on neither rows nor an empty state`);
   });
 
-  await soft("the result viewer offers no mutating action", async () => {
+  await soft("a run opens in a modal and offers no mutating action", async () => {
     const run = page
       .locator("aside button")
       .filter({ hasText: /Completed|Failed|Cancelled/i })
       .first();
     if ((await run.count()) === 0) return false;
+    const before = page.url();
     await run.click();
     await page.waitForTimeout(3000);
+    // Requirement 4: a dedicated dialog, not an inline panel view.
+    must(
+      await page.locator('[role="dialog"]').count(),
+      "the run did not open in a dialog",
+    );
+    // ...and opening it must not navigate away from Scheduled Tasks.
+    must(
+      new URL(page.url()).pathname === new URL(before).pathname,
+      "opening a run navigated away from the scheduled route",
+    );
+    // Requirement 5: the model, the step count and the tool trace are
+    // execution data and must not appear in the user-facing result.
+    const dialogText = await page.locator('[role="dialog"]').innerText();
+    must(
+      !/\bDone\b\s*·\s*\d+\s*steps?/i.test(dialogText),
+      "the result modal exposed the agent step count",
+    );
     // C1: ChatMessage renders readOnly, and ErrorNotice gets no onRetry.
     for (const name of ["Retry", "Regenerate", "Continue", "Edit message"]) {
       must(
@@ -511,22 +560,26 @@ const openRowMenu = async (page, title) => {
     }
   });
 
-  await soft("Open chat exposes no composer", async () => {
-    await page.goto(`${BASE}/en/scheduled/${taskId}`, { waitUntil: "domcontentloaded" });
+  await step("a scheduled task offers no route into chat", async () => {
+    // Replaces "Open chat exposes no composer". That button opened a read-only
+    // transcript inside the panel; the surface is gone entirely, so the check
+    // is now that it cannot be reached at all — including by the old URL, which
+    // must fall through to the ordinary run list rather than rendering a thread.
+    await page.goto(`${BASE}/en/scheduled/${taskId}?view=thread`, {
+      waitUntil: "domcontentloaded",
+    });
     await page.waitForTimeout(3000);
-    const open = page.getByRole("button", { name: "Open chat" });
-    if ((await open.count()) === 0) return false;
-    await open.click();
-    await page.waitForTimeout(3000);
-    // C4: the transcript mounts outside ChatShell, so no ChatInput exists at
-    // all — and even if one did, Phase 2's assertCanGenerate refuses the send.
+    must(
+      (await page.getByRole("button", { name: "Open chat" }).count()) === 0,
+      "the Open chat action is still present",
+    );
     must(
       (await page.locator("#chat-composer").count()) === 0,
-      "a composer rendered on a scheduled thread",
+      "a composer rendered on a scheduled task",
     );
     must(
       (await page.getByRole("button", { name: "Stop generating" }).count()) === 0,
-      "a generation control rendered on a scheduled thread",
+      "a generation control rendered on a scheduled task",
     );
   });
 

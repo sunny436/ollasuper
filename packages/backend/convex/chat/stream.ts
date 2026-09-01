@@ -25,6 +25,44 @@ import { contextWindowFor } from "./models";
  * heartbeat within this window. Python heartbeats every 5s, so 90s is ~18
  * missed beats — comfortably past a slow model warm-up or a brief GC pause.
  */
+/**
+ * Appended to the system prompt of a SCHEDULED run, never a live chat one.
+ *
+ * A scheduled result is read as a document — in an email, and in the run modal
+ * — hours after it was produced, with nobody watching it happen. Left alone the
+ * model opens the way it does in a conversation ("I'll search for the latest AI
+ * news… Let me dig into the specific stories…"), and that prose is part of
+ * message.content, not of the execution record. Hiding execution chrome in the
+ * viewer therefore cannot remove it; only not generating it can.
+ *
+ * Deliberately says nothing about tools, effort or structure beyond the opening
+ * and the ending: the run should still search, still use skills, and still
+ * choose its own shape.
+ */
+const SCHEDULED_OUTPUT_DIRECTIVE = [
+  "This is an unattended scheduled run. Its output is delivered as a standalone report, so write only the finished result.",
+  "Do not narrate your process, announce what you are about to do, or describe the searching, reading or tool use along the way. Begin directly with the content itself and end when the content ends: no preamble, no sign-off, no offer of follow-up questions.",
+].join(" ");
+
+/**
+ * The system prompt as sent, with the scheduled directive appended when the
+ * thread is a scheduled execution.
+ *
+ * APPENDS rather than replaces, which is the whole point: the caller resolves
+ * `thread.systemPrompt ?? settings?.systemPrompt`, so returning the directive
+ * on its own would silently discard whatever global system prompt the user has
+ * configured — for scheduled runs only, where they would never see it happen.
+ */
+function withScheduledDirective(
+  resolved: string | null,
+  isScheduled: boolean,
+): string | null {
+  if (!isScheduled) return resolved;
+  return resolved
+    ? `${resolved}\n\n${SCHEDULED_OUTPUT_DIRECTIVE}`
+    : SCHEDULED_OUTPUT_DIRECTIVE;
+}
+
 const STALL_MS = 90_000;
 // Phase 7: how many times the reaper re-dispatches a crashed turn before giving
 // up (mirrors userFiles MAX_ATTEMPTS). Bounds a crash-loop.
@@ -504,7 +542,21 @@ export const dispatchPayload = internalQuery({
       userId: stream.userId,
       workspaceId: stream.workspaceId,
       model: message.model ?? thread.model,
-      systemPrompt: thread.systemPrompt ?? settings?.systemPrompt ?? null,
+      // A scheduled run is read as a REPORT — in an email and in the run
+      // modal, with nobody watching it happen. Left alone the model narrates
+      // the way it does in a live chat, and that prose lands in
+      // message.content, so no amount of hiding execution chrome in the viewer
+      // can remove it. See SCHEDULED_OUTPUT_DIRECTIVE.
+      //
+      // APPENDED, never substituted. This used to read
+      // `thread.systemPrompt ?? settings?.systemPrompt` — a `??` — so setting
+      // thread.systemPrompt instead would have silently dropped the user's own
+      // global system prompt for scheduled runs only. Composing here also
+      // reaches threads that already exist, so nothing needs backfilling.
+      systemPrompt: withScheduledDirective(
+        thread.systemPrompt ?? settings?.systemPrompt ?? null,
+        isScheduled,
+      ),
       customInstructionsAbout: settings?.customInstructionsAbout ?? null,
       customInstructionsStyle: settings?.customInstructionsStyle ?? null,
       summary: isScheduled ? null : (thread.summary ?? null),

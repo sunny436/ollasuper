@@ -24,6 +24,12 @@ import {
  * transcript uses — so markdown, code, charts, mermaid, sources and artifacts
  * all work with no second renderer and no second result store.
  *
+ * `hideExecutionMeta` is what makes it a RESULT rather than a run log: it drops
+ * MessageMeta (the model name) and AgentActivity (step count, tool calls, the
+ * agent trace), so the reader sees the report they asked for. Sources survive —
+ * citations are part of the answer. None of it is deleted from the database;
+ * the execution record stays whole for observability, it is just not rendered.
+ *
  * `readOnly` is not cosmetic: ChatMessage wires retry / regenerate / edit
  * mutations, and every one of them is refused on a scheduled thread by the
  * Phase 2 guard. Without the flag the viewer would show three buttons that
@@ -65,7 +71,12 @@ export function RunResult({
     );
   }
 
-  const { occurrence, prompt, message } = result;
+  // The zone THIS run was scheduled in, off its pinned revision. These lines
+  // used to be formatted as literal "UTC", which is why a Kolkata task showed
+  // 18:44 against a 00:14 chip. Falling back to UTC only when the revision is
+  // genuinely gone keeps that honest rather than guessing the browser's zone.
+  const { occurrence, message, timezone } = result;
+  const zone = timezone ?? "UTC";
   const delivery =
     deliveries?.find((d) => d.occurrenceKey === occurrence.occurrenceKey) ??
     null;
@@ -78,22 +89,24 @@ export function RunResult({
           {occurrence.attempts > 1 && ` · ${occurrence.attempts} attempts`}
         </p>
         <dl className="mt-2 space-y-1 text-[11px] text-muted-foreground">
-          <Line label="Scheduled" value={formatInstant(occurrence.scheduledFor, "UTC")} />
+          <Line
+            label="Scheduled"
+            value={formatInstant(occurrence.scheduledFor, zone)}
+          />
           {occurrence.startedAt && (
-            <Line label="Started" value={formatInstant(occurrence.startedAt, "UTC")} />
+            <Line
+              label="Started"
+              value={formatInstant(occurrence.startedAt, zone)}
+            />
           )}
           {occurrence.finishedAt && (
-            <Line label="Finished" value={formatInstant(occurrence.finishedAt, "UTC")} />
+            <Line
+              label="Finished"
+              value={formatInstant(occurrence.finishedAt, zone)}
+            />
           )}
         </dl>
         {delivery && <DeliveryLine row={delivery} />}
-        {prompt && (
-          <p className="mt-2 border-t border-border pt-2 text-[11px] leading-relaxed text-primary/55">
-            {/* The PINNED revision's prompt — what this run actually executed,
-                not whatever the task says today. */}
-            <span className="uppercase tracking-wide">Ran</span> “{prompt}”
-          </p>
-        )}
       </div>
 
       {(occurrence.status === "failed" ||
@@ -111,6 +124,7 @@ export function RunResult({
             message={message as unknown as ChatMessageDoc}
             isStreaming={false}
             readOnly
+            hideExecutionMeta
           />
         </div>
       ) : (
