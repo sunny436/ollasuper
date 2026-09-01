@@ -13,6 +13,12 @@
 // PROMPT= selects what the task asks for, so the same harness covers a plain
 // prompt, a tool-using one and a skill-using one:
 //   PROMPT=plain|tools|skill|combo   (default: plain)
+//
+// RUN ONE AT A TIME. Two headed browsers on one machine slow the page enough
+// that the composer's 30s action timeout expires, which reports as
+// "locator.click: Timeout" and looks exactly like a missing control. The
+// timeout is deliberately NOT inflated to paper over that — a genuinely slow
+// composer is worth failing on.
 
 const { chromium } = require("playwright");
 const ollastack = require("./_lib/ollastack");
