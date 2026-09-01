@@ -240,6 +240,12 @@ async function sha256Hex(input: string): Promise<string> {
     .join("");
 }
 
+type Factor = {
+  passwordHash: string | null;
+  email: string | null;
+  userExists: boolean;
+};
+
 const DELETION_CODE_TTL_MS = 15 * 60 * 1000;
 const DELETION_CODE_MAX_ATTEMPTS = 5;
 
@@ -263,6 +269,9 @@ export const deletionFactorForUser = internalQuery({
     return {
       passwordHash: account?.secret ?? null,
       email: user?.email ?? null,
+      // getAuthUserId is a bare cast of the JWT subject, so a caller whose row
+      // is already gone still arrives here with a real-looking userId.
+      userExists: user !== null,
     };
   },
 });
@@ -344,8 +353,11 @@ export const requestAccountDeletionCode = action({
   handler: async (ctx): Promise<{ ok: true }> => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new ConvexError("Not authenticated");
-    const factor: { passwordHash: string | null; email: string | null } =
-      await ctx.runQuery(internal.users.deletionFactorForUser, { userId });
+    const factor: Factor = await ctx.runQuery(
+      internal.users.deletionFactorForUser,
+      { userId },
+    );
+    if (!factor.userExists) return { ok: true };
     // A password user re-authenticates with their password; issuing a code as
     // well would add a second, weaker route to the same irreversible action.
     if (factor.passwordHash || !factor.email) return { ok: true };
@@ -384,8 +396,17 @@ export const deleteCurrentUserAccount = action({
     // memories, the SEO ledger and research runs, and the only guard used to be
     // useDoubleCheck in the settings page — i.e. clicking the button twice. A
     // borrowed or stolen session destroyed the account in one call.
-    const factor: { passwordHash: string | null; email: string | null } =
-      await ctx.runQuery(internal.users.deletionFactorForUser, { userId });
+    const factor: Factor = await ctx.runQuery(
+      internal.users.deletionFactorForUser,
+      { userId },
+    );
+    // Already deleted. Deletion has to be idempotent: the access token stays
+    // valid for its remaining lifetime after the row is gone, so a retry — a
+    // double-click, a second tab, a client that retries on a dropped response —
+    // lands here with nothing left to remove. Without this it fell through to
+    // the no-password branch and demanded an emailed code for an account that
+    // no longer exists, which is both a dead end and a confusing error.
+    if (!factor.userExists) return;
     if (factor.passwordHash) {
       if (!args.password) {
         throw new ConvexError("Enter your password to delete your account.");

@@ -989,3 +989,39 @@ async function sha256Hex(input: string): Promise<string> {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
+
+describe("deletion is idempotent", () => {
+  /**
+   * getAuthUserId is a bare cast of the JWT subject, so a caller whose row is
+   * already gone still reaches the handler with a real-looking userId. Without
+   * a userExists check the handler fell through to the no-password branch and
+   * demanded an emailed code for an account that no longer exists — a dead end,
+   * and a confusing error on an ordinary double-click or client retry.
+   */
+  test("the factor query reports a vanished user rather than looking password-less", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) =>
+      ctx.db.insert("users", { email: "vanish@gmail.com" }),
+    );
+    await t.run(async (ctx) =>
+      ctx.db.insert("authAccounts", {
+        userId,
+        provider: "password",
+        providerAccountId: "vanish@gmail.com",
+        secret: "hashed",
+      }),
+    );
+
+    const before = await t.query(internal.users.deletionFactorForUser, { userId });
+    expect(before.userExists).toBe(true);
+    expect(before.passwordHash).toBe("hashed");
+
+    await t.mutation(internal.users.deleteUserAccount, { userId });
+
+    const after = await t.query(internal.users.deletionFactorForUser, { userId });
+    expect(after.userExists).toBe(false);
+    // The trap: passwordHash is null here too, which is exactly what a
+    // Google-only account looks like.
+    expect(after.passwordHash).toBeNull();
+  });
+});
