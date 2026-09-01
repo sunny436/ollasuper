@@ -120,7 +120,7 @@ the live value sits in the **Convex deployment env** — a store the Python serv
 - **Also fixed:** the client-side signup domain allow-list had no `AUTH_EXTRA_ALLOWED_DOMAINS`
   equivalent, so the browser rejected addresses the backend accepted. That is why the auth e2e could
   never test against a real inbox, and so why a stack that could mail nobody kept passing.
-- **Prod-verified, headed Chrome on `app.ollasuper.com` unless noted — 133 scenarios, 133 passed:**
+- **Prod-verified, headed Chrome on `app.ollasuper.com` unless noted — 134 scenarios, 134 passed:**
   auth 7/7 · auth edges 8/8 (including a superseded code being dead) · scheduled report + PDF 7/7 ×
   **4 prompt classes** (plain, tools, skill, skill+tools) · scheduled UI 33/33 · chat 17/17 ·
   chat isolation 13/13 · scheduled isolation 18/18 · scheduler restart drill 9/9 · browserless chat
