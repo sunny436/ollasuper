@@ -1,12 +1,52 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { normalizeEmail } from "./authPolicy";
 import { asyncMap } from "convex-helpers";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { action, internalMutation, mutation, query } from "./_generated/server";
+import {
+  action,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
 import { deleteResearchRunsForUser } from "./researchRuns";
 import { deleteMutationsForUser } from "./seoMutations";
 import { polar } from "./subscriptions";
 import { username } from "./utils/validators";
+
+/**
+ * The display name behind an address, for addressing an auth email.
+ *
+ * INTERNAL and deliberately minimal: it returns a name or null and nothing
+ * else, so it can never become an account-existence oracle — every caller
+ * (authCodes.deliverCode) already knows the address, and a missing name and a
+ * missing account are indistinguishable in the result.
+ *
+ * Falls back to the non-normalised `email` index for rows created before
+ * `emailNormalized` existed; those are exactly the pre-migration users who
+ * would otherwise silently never get a greeting.
+ */
+export const nameByEmail = internalQuery({
+  args: { email: v.string() },
+  handler: async (ctx, { email }): Promise<string | null> => {
+    const normalized = normalizeEmail(email);
+    const byNormalized = await ctx.db
+      .query("users")
+      .withIndex("by_email_normalized", (q) =>
+        q.eq("emailNormalized", normalized),
+      )
+      .first();
+    const user =
+      byNormalized ??
+      (await ctx.db
+        .query("users")
+        .withIndex("email", (q) => q.eq("email", email))
+        .first());
+    const name = user?.name?.trim();
+    return name ? name : null;
+  },
+});
 
 export const getUser = query({
   handler: async (ctx) => {

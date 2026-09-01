@@ -46,10 +46,15 @@ export function hasMailTransport(): boolean {
 }
 
 import { internal } from "./_generated/api";
+import { buildAuthEmail } from "./emailTemplates";
 
 type Ctx = {
   runAction: (ref: unknown, args: unknown) => Promise<unknown>;
   runMutation?: (ref: unknown, args: unknown) => Promise<unknown>;
+  // @convex-dev/auth actually hands `sendVerificationRequest` a full ActionCtx
+  // (GenericActionCtxWithAuthConfig), so this is available at runtime — it is
+  // optional here only so the type stays honest for callers that pass less.
+  runQuery?: (ref: unknown, args: unknown) => Promise<unknown>;
 };
 
 /**
@@ -70,6 +75,13 @@ export async function deliverCode(
   email: string,
   token: string,
   sendEmail: unknown,
+  /**
+   * The library's own expiry for this code, passed straight through from
+   * `sendVerificationRequest`. Rendering THIS rather than a copy of `maxAge`
+   * is what stops the email ever claiming a duration the backend does not
+   * enforce.
+   */
+  expires?: Date,
 ): Promise<void> {
   // Per-email send throttle (cooldown + hourly cap). SKIP silently when over
   // the limit — never throw, so requestPasswordReset and the library's signIn
@@ -84,11 +96,33 @@ export async function deliverCode(
   if (!hasMailTransport()) {
     console.warn(`[auth] ${label} code for ${email}: ${token}`);
   }
+  // A greeting is a nicety, never a precondition. Resolved AFTER the throttle
+  // so a suppressed send costs no read, and swallowed on failure because an
+  // auth email must never fail over how it says hello. `deliverCode` only knows
+  // an address — a magic-OTP sign-in can precede any user row — so an absent
+  // name simply drops the greeting line rather than guessing one.
+  let name: string | null = null;
+  if (ctx && typeof ctx.runQuery === "function") {
+    try {
+      name = (await ctx.runQuery(internal.users.nameByEmail, {
+        email,
+      })) as string | null;
+    } catch {
+      name = null;
+    }
+  }
+
+  const mail = buildAuthEmail({ label, code: token, expires, name });
+
   try {
     await ctx?.runAction(sendEmail, {
       to: email,
-      subject: `Your ${label} code`,
-      text: `Your ${label} code is ${token}`,
+      subject: mail.subject,
+      // Both parts, always. The HTML is the presentation; the text is what
+      // keeps the code usable if a client strips it, and is the shape the
+      // provider's OTP extractor already recognises.
+      text: mail.text,
+      html: mail.html,
     });
   } catch (e) {
     // Never include the token in an error path.

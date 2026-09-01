@@ -20,10 +20,21 @@ export const ResendOTPVerify = Email({
   maxAge: 60 * 15,
   generateVerificationToken: async () => generateNumericCode(),
   sendVerificationRequest: async (
-    { identifier, token }: { identifier: string; token: string },
+    {
+      identifier,
+      token,
+      expires,
+    }: { identifier: string; token: string; expires?: Date },
     ctx?: Ctx,
   ): Promise<void> => {
-    await deliverCode(ctx, "email verification", identifier, token, internal.email.sendEmail);
+    await deliverCode(
+      ctx,
+      "email verification",
+      identifier,
+      token,
+      internal.email.sendEmail,
+      expires,
+    );
   },
 });
 
@@ -33,9 +44,20 @@ export const ResendOTPReset = Email({
   maxAge: 60 * 15,
   generateVerificationToken: async () => generateNumericCode(),
   sendVerificationRequest: async (
-    { identifier, token }: { identifier: string; token: string },
+    {
+      identifier,
+      token,
+      expires,
+    }: { identifier: string; token: string; expires?: Date },
     ctx?: Ctx,
   ): Promise<void> => {
-    await deliverCode(ctx, "password reset", identifier, token, internal.email.sendEmail);
+    await deliverCode(
+      ctx,
+      "password reset",
+      identifier,
+      token,
+      internal.email.sendEmail,
+      expires,
+    );
   },
 });

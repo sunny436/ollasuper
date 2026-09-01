@@ -100,6 +100,31 @@ describe("auth email over ollastack", () => {
     expect(sent[0].body.html).toBeUndefined();
   });
 
+  /**
+   * MULTIPART. The HTML is presentation; the text part is what keeps the code
+   * usable when a client strips HTML, and is the shape the provider's OTP
+   * extractor recognises. Dropping either one silently breaks a real reader.
+   */
+  test("passes an html part through alongside the text", async () => {
+    const t = convexTest(schema, modules);
+    await t.action(internal.email.sendEmail, {
+      to: "user@example.com",
+      subject: "Your email verification code",
+      text: "Your email verification code is 12345678",
+      html: "<p>12345678</p>",
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body.text).toContain("12345678");
+    expect(sent[0].body.html).toBe("<p>12345678</p>");
+  });
+
+  test("omits html entirely when the caller sends none", async () => {
+    const t = convexTest(schema, modules);
+    await send(t);
+    // Absent, not empty-string: an empty html part is a rendered blank message
+    // in some clients, which is worse than no html part at all.
+    expect(sent[0].body).not.toHaveProperty("html");
+  });
   test("uses the auth mailbox, never the reports one", async () => {
     const t = convexTest(schema, modules);
     process.env.OLLASTACK_REPORTS_MAILBOX_ID = "mb_reports";

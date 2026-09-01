@@ -3,6 +3,10 @@
 import { v } from "convex/values";
 import nodemailer from "nodemailer";
 import { internalAction } from "./_generated/server";
+// `esc` lives in emailTemplates.ts (a PLAIN module) because authCodes.ts is
+// plain and cannot import from this one, which is "use node". node → plain is
+// legal, so both paths share the single escape implementation.
+import { esc } from "./emailTemplates";
 import { reportSubject } from "./mailSubject";
 import {
   isCustodyTaken,
@@ -179,8 +183,17 @@ function authTransport(): "smtp" | "ollastack" | "disabled" {
  * likely to be filtered.
  */
 export const sendEmail = internalAction({
-  args: { to: v.string(), subject: v.string(), text: v.string() },
-  handler: async (_ctx, { to, subject, text }) => {
+  args: {
+    to: v.string(),
+    subject: v.string(),
+    text: v.string(),
+    // MULTIPART, and the text part is never dropped. A one-time code has to
+    // survive a client that strips HTML, and plain text is also what the
+    // provider's own OTP extractor recognises. Optional so a caller that omits
+    // it keeps exactly the previous behaviour.
+    html: v.optional(v.string()),
+  },
+  handler: async (_ctx, { to, subject, text, html }) => {
     const transport = authTransport();
     if (transport === "disabled") return;
 
@@ -189,6 +202,7 @@ export const sendEmail = internalAction({
         to,
         subject,
         text,
+        ...(html ? { html } : {}),
       });
       if (!sent.ok) {
         // THROW rather than return. deliverCode logs it. The previous
@@ -218,6 +232,7 @@ export const sendEmail = internalAction({
       to,
       subject,
       text,
+      ...(html ? { html } : {}),
     });
   },
 });
@@ -246,18 +261,6 @@ type ReportResult = {
   /** Provider-supplied backoff hint, in seconds, on RATE_LIMIT_EXCEEDED. */
   retryAfter?: number;
 };
-
-const ESCAPES: Record<string, string> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;",
-};
-
-function esc(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ESCAPES[c] ?? c);
-}
 
 /**
  * Model-authored markdown becomes email HTML through an ESCAPE-FIRST allowlist:

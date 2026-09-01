@@ -16,9 +16,20 @@ export const ResendOTP = Email({
   maxAge: 60 * 15,
   generateVerificationToken: async () => generateNumericCode(),
   async sendVerificationRequest(
-    { identifier: email, token }: { identifier: string; token: string },
+    {
+      identifier: email,
+      token,
+      expires,
+    }: { identifier: string; token: string; expires?: Date },
     ctx?: { runAction: (ref: unknown, args: unknown) => Promise<unknown> },
   ): Promise<void> {
-    await deliverCode(ctx, "OTP", email, token, internal.email.sendEmail);
+    await deliverCode(
+      ctx,
+      "OTP",
+      email,
+      token,
+      internal.email.sendEmail,
+      expires,
+    );
   },
 });
