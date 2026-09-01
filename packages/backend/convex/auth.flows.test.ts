@@ -58,6 +58,18 @@ async function captureCode(fn: () => Promise<unknown>): Promise<string> {
 const signIn = (t: ReturnType<typeof convexTest>, params: Record<string, unknown>) =>
   t.action(api.auth.signIn, { provider: "password", params });
 
+/**
+ * Magic-OTP send. Used where a test needs to emit a code to the SAME address
+ * repeatedly: a repeated sign-up no longer does that, because a collision now
+ * deliberately sends nothing (see "sign-up against an existing address").
+ */
+const otpSend = (t: ReturnType<typeof convexTest>, email: string) =>
+  t.action(api.auth.signIn, { provider: "resend-otp", params: { email } });
+
+/** Ask for a fresh verification code on an existing, unverified account. */
+const resendVerification = (t: ReturnType<typeof convexTest>, email: string) =>
+  signIn(t, { email, flow: "email-verification" });
+
 /** Sign up and verify, leaving a usable account. Returns the user id. */
 async function createVerifiedUser(
   t: ReturnType<typeof convexTest>,
@@ -133,9 +145,9 @@ describe("email verification codes", () => {
     const first = await captureCode(() =>
       signIn(t, { email, password: PASSWORD, flow: "signUp" }),
     );
-    const second = await captureCode(() =>
-      signIn(t, { email, password: PASSWORD, flow: "signUp" }),
-    );
+    // The resend path is `email-verification` with no code — NOT a repeated
+    // sign-up, which is now a collision and deliberately sends nothing.
+    const second = await captureCode(() => resendVerification(t, email));
     expect(second).not.toBe(first);
 
     // Only one code may be outstanding per account, so the older one is dead.
@@ -315,31 +327,27 @@ describe("emailed-code send throttle", () => {
   test("caps codes per address, then skips silently (anti-bombing)", async () => {
     const t = convexTest(schema, modules);
     const email = "bomb@gmail.com";
-    // The first 6 (re)sends within the hour each deliver a code.
+    // Driven through magic-OTP rather than repeated sign-up: a sign-up
+    // collision now sends nothing, so it can no longer exercise the cap.
+    // Every emailed code funnels through the same deliverCode gate.
     for (let i = 0; i < 6; i++) {
-      const code = await captureCode(() =>
-        signIn(t, { email, password: PASSWORD, flow: "signUp" }),
-      );
+      const code = await captureCode(() => otpSend(t, email));
       expect(code).toMatch(/^\d{8}$/);
     }
     // The 7th is skipped: no code is emitted, yet sign-in still "starts" (the
     // throttle never throws), so the flow — and any constant response — is intact.
-    await expect(
-      captureCode(() => signIn(t, { email, password: PASSWORD, flow: "signUp" })),
-    ).rejects.toThrow(/no code emitted/);
+    await expect(captureCode(() => otpSend(t, email))).rejects.toThrow(
+      /no code emitted/,
+    );
   });
 
   test("a different address has its own budget", async () => {
     const t = convexTest(schema, modules);
     for (let i = 0; i < 6; i++) {
-      await captureCode(() =>
-        signIn(t, { email: "filler@gmail.com", password: PASSWORD, flow: "signUp" }),
-      );
+      await captureCode(() => otpSend(t, "filler@gmail.com"));
     }
     // Not throttled: distinct normalized email → fresh bucket.
-    const code = await captureCode(() =>
-      signIn(t, { email: "other@gmail.com", password: PASSWORD, flow: "signUp" }),
-    );
+    const code = await captureCode(() => otpSend(t, "other@gmail.com"));
     expect(code).toMatch(/^\d{8}$/);
   });
 });
@@ -502,11 +510,20 @@ describe("sign-up against an existing address", () => {
   });
 
   /**
-   * A collision must send exactly ONE code, like a fresh sign-up. A second
-   * "someone tried to sign up" message would make the collision observable by
-   * volume alone, and would let an attacker burn the address's send budget.
+   * A collision must send NOTHING and touch nothing.
+   *
+   * This asserted the opposite until the Better Auth comparison: it used to
+   * dispatch a verification code for the EXISTING account, and that is an
+   * account-takeover path. An unverified account belongs to whoever squatted
+   * the address, and completing its code marks it verified
+   * (mutations/verifyCodeAndSignIn.js:105-109) — so the real owner following
+   * the emailed instructions ACTIVATES the squatter's password on their own
+   * account. Overwriting the credential instead just mirrors the bug.
+   *
+   * Better Auth's sign-up route never compares, modifies or links the existing
+   * account; it returns a synthetic look-alike response. Same here.
    */
-  test("a collision emails exactly one code, as a fresh sign-up does", async () => {
+  test("a collision emails nothing at all", async () => {
     const t = convexTest(schema, modules);
     const email = "onecode@gmail.com";
     await registerVerified(t, email);
@@ -517,27 +534,75 @@ describe("sign-up against an existing address", () => {
       const codes = warn.mock.calls
         .map((c) => String(c[0] ?? ""))
         .filter((line) => line.includes("code for"));
-      expect(codes).toHaveLength(1);
+      expect(codes).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }
   });
 
-  /**
-   * The escape hatch for the legitimate case: someone who forgot they had an
-   * account gets a code and can still get in with it. That is the same
-   * capability the magic-OTP provider already offers, so it grants nothing new.
-   */
-  test("the code from a collision still verifies the real owner in", async () => {
+  /** ...and the existing credential is left exactly as it was. */
+  test("a collision does not alter the existing credential", async () => {
     const t = convexTest(schema, modules);
-    const email = "owner@gmail.com";
+    const email = "untouched@gmail.com";
     await registerVerified(t, email);
-
-    const code = await captureCode(() =>
-      signIn(t, { email, password: "Wr0ngGuess!x", flow: "signUp" }),
+    const before = await t.run(async (ctx) =>
+      (await ctx.db.query("authAccounts").collect()).find(
+        (a) => a.provider === "password",
+      ),
     );
-    const result = await signIn(t, { email, code, flow: "email-verification" });
+
+    await signIn(t, { email, password: "Attacker0wns!", flow: "signUp" });
+
+    const after = await t.run(async (ctx) =>
+      (await ctx.db.query("authAccounts").collect()).find(
+        (a) => a.provider === "password",
+      ),
+    );
+    expect(after?.secret).toBe(before?.secret);
+    // And the attacker's password must not work.
+    await expect(
+      signIn(t, { email, password: "Attacker0wns!", flow: "signIn" }),
+    ).rejects.toThrow();
+  });
+
+  /**
+   * THE RECOVERY PATH, now that a collision is silent.
+   *
+   * A squatter registers a stranger's address and never verifies. The real
+   * owner must still be able to take it, and the squatter's password must stop
+   * working when they do. Password reset is the route, and it is the only one
+   * that satisfies the invariant: the code and the NEW password arrive in the
+   * same call, so the credential that goes live belongs to whoever proved they
+   * own the inbox.
+   */
+  test("a squatted address is recovered by its real owner via reset", async () => {
+    const t = convexTest(schema, modules);
+    const email = "squatted@gmail.com";
+    const SQUATTER = "Squ4tterPass!";
+    const OWNER = "0wnerTakesIt!";
+
+    // 1. Squatter registers the address and abandons it, unverified.
+    await signIn(t, { email, password: SQUATTER, flow: "signUp" });
+
+    // 2. The real owner signs up: silent, nothing changes.
+    await signIn(t, { email, password: OWNER, flow: "signUp" });
+
+    // 3. They recover it through reset, which emails the code to THEIR inbox.
+    const code = await captureCode(() =>
+      signIn(t, { email, flow: "reset" }),
+    );
+    const result = await signIn(t, {
+      email,
+      code,
+      newPassword: OWNER,
+      flow: "reset-verification",
+    });
     expect((result as { tokens: unknown } | null)?.tokens).toBeTruthy();
+
+    // 4. The squatter's password is dead.
+    await expect(
+      signIn(t, { email, password: SQUATTER, flow: "signIn" }),
+    ).rejects.toThrow();
   });
 
   /** A brand-new address must still register normally. */
@@ -571,5 +636,149 @@ describe("sign-up against an existing address", () => {
     // a corrupted value is what makes a second provider create a second user.
     expect(users[0].email).toBe("casing@gmail.com");
     expect(users[0].emailNormalized).toBe("casing@gmail.com");
+  });
+});
+
+// ------------------------------------------- enumeration on every flow (N2/N3)
+
+describe("no flow reveals whether an address is registered", () => {
+  /**
+   * Measured against production before the fix: `signIn` threw
+   * "InvalidAccountId" for an unknown address and "InvalidSecret" for a wrong
+   * password, WITH a stack trace naming the source file and line. Only the
+   * browser collapsed them, and the browser is not the trust boundary.
+   */
+  test("login answers identically for an unknown address and a wrong password", async () => {
+    const t = convexTest(schema, modules);
+    await createVerifiedUser(t, "real@gmail.com");
+
+    const outcome = async (email: string, password: string) => {
+      try {
+        await signIn(t, { email, password, flow: "signIn" });
+        return "resolved";
+      } catch (e) {
+        return String((e as { data?: unknown }).data ?? (e as Error).message);
+      }
+    };
+
+    const unknown = await outcome("nobody@gmail.com", "Wr0ngPass!x");
+    const wrongPw = await outcome("real@gmail.com", "Wr0ngPass!x");
+    expect(unknown).toBe(wrongPw);
+    expect(unknown).toContain("Invalid email or password");
+  });
+
+  /**
+   * `flow: "reset"` was an UNRATED oracle: the library's brute-force limiter
+   * only engages when a secret is supplied, so an attacker could test an email
+   * list against this endpoint at full speed. authSessions.requestPasswordReset
+   * answered constantly, but only for the UI — the raw action stayed callable.
+   */
+  test("reset resolves identically for known and unknown addresses", async () => {
+    const t = convexTest(schema, modules);
+    await createVerifiedUser(t, "known@gmail.com");
+
+    const known = await signIn(t, { email: "known@gmail.com", flow: "reset" });
+    const unknown = await signIn(t, {
+      email: "missing@gmail.com",
+      flow: "reset",
+    });
+    expect(unknown).toEqual(known);
+  });
+
+  test("email-verification resolves identically for known and unknown addresses", async () => {
+    const t = convexTest(schema, modules);
+    await createVerifiedUser(t, "known2@gmail.com");
+
+    const known = await signIn(t, {
+      email: "known2@gmail.com",
+      flow: "email-verification",
+    });
+    const unknown = await signIn(t, {
+      email: "missing2@gmail.com",
+      flow: "email-verification",
+    });
+    expect(unknown).toEqual(known);
+  });
+
+  /** A reset for an unknown address must not email anyone. */
+  test("an unknown reset sends nothing", async () => {
+    const t = convexTest(schema, modules);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await signIn(t, { email: "ghost@gmail.com", flow: "reset" });
+      expect(
+        warn.mock.calls
+          .map((c) => String(c[0] ?? ""))
+          .filter((l) => l.includes("code for")),
+      ).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+// ------------------------------------------------ password length bound (G3)
+
+describe("password length is bounded at both ends", () => {
+  /** scrypt is deliberately slow; an unbounded password is a CPU DoS. */
+  test("129 characters is refused on sign-up, 128 is accepted", async () => {
+    const t = convexTest(schema, modules);
+    const long = `Aa1!${"x".repeat(125)}`;
+    expect(long).toHaveLength(129);
+    await expect(
+      signIn(t, { email: "long@gmail.com", password: long, flow: "signUp" }),
+    ).rejects.toThrow(/128 characters or fewer/);
+
+    const ok = long.slice(0, 128);
+    await expect(
+      signIn(t, { email: "ok@gmail.com", password: ok, flow: "signUp" }),
+    ).resolves.toBeDefined();
+  });
+
+  /** The same rule runs on reset, which is the other place a password is set. */
+  test("129 characters is refused on password reset", async () => {
+    const t = convexTest(schema, modules);
+    const email = "resetlong@gmail.com";
+    await createVerifiedUser(t, email);
+    const code = await captureCode(() => signIn(t, { email, flow: "reset" }));
+    await expect(
+      signIn(t, {
+        email,
+        code,
+        newPassword: `Aa1!${"x".repeat(125)}`,
+        flow: "reset-verification",
+      }),
+    ).rejects.toThrow(/128 characters or fewer/);
+  });
+});
+
+// --------------------------------------------- suspended accounts (N5)
+
+describe("a suspended account cannot authenticate", () => {
+  /**
+   * users.accountStatus was declared in the schema and read in exactly ONE
+   * place — scheduled/authz.ts. Suspending someone stopped their scheduled
+   * tasks and nothing else: they kept signing in and using the product.
+   */
+  test("login is refused, with the same message a stranger gets", async () => {
+    const t = convexTest(schema, modules);
+    const email = "suspended@gmail.com";
+    const userId = await createVerifiedUser(t, email);
+    await t.run(async (ctx) =>
+      ctx.db.patch(userId, { accountStatus: "suspended" }),
+    );
+
+    await expect(
+      signIn(t, { email, password: PASSWORD, flow: "signIn" }),
+    ).rejects.toThrow(/Invalid email or password/);
+  });
+
+  test("an active account is unaffected", async () => {
+    const t = convexTest(schema, modules);
+    const email = "active@gmail.com";
+    await createVerifiedUser(t, email);
+    await expect(
+      signIn(t, { email, password: PASSWORD, flow: "signIn" }),
+    ).resolves.toBeDefined();
   });
 });

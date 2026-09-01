@@ -273,7 +273,15 @@ export function AuthPanel() {
         setPending(true);
         const toVerify = () => {
           setEmail(value.email);
-          toast.success("Account created. Enter the code we emailed you.");
+          // Deliberately covers BOTH outcomes in one constant sentence. A
+          // sign-up against an address that already exists now sends nothing
+          // at all (see convex/passwordProvider.ts), so a message promising a
+          // code would strand the real owner on this screen — while any
+          // message that distinguished the two cases would re-open the
+          // enumeration oracle the silence exists to close.
+          toast.success(
+            "If that address is new, your code is on the way. Already registered? Use Forgot password.",
+          );
           setMode("verify");
         };
         try {

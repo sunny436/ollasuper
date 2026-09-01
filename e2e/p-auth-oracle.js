@@ -69,6 +69,12 @@ async function attempt(client, params) {
   });
   step(Boolean(verified?.tokens), "target account is registered and verified");
 
+  // Baseline the mailbox: the collision assertions below are about what does
+  // NOT arrive, and codeForAddress returns the newest code whether or not a
+  // new one was sent, so counting messages is the only honest measure.
+  const tagMail = () => ollastack.messagesForTag(tag);
+  const before = (await tagMail()).length;
+
   // ── the oracle ─────────────────────────────────────────────────────────────
   const right = await attempt(c, { email, password: PASSWORD, flow: "signUp" });
   const wrong = await attempt(c, { email, password: WRONG, flow: "signUp" });
@@ -117,13 +123,110 @@ async function attempt(client, params) {
   }
   step(!exposed, "accountExists is not callable from the public API");
 
-  // ── the legitimate path still works ───────────────────────────────────────
-  const owner = await ollastack.codeForAddress(email, "verification", 120000);
+  // ── a collision must send NOTHING ─────────────────────────────────────────
+  //
+  // This asserted the opposite until the Better Auth comparison: a collision
+  // used to email a verification code for the EXISTING account, and completing
+  // that code marks the account verified. An unverified account belongs to
+  // whoever squatted the address, so the real owner following those
+  // instructions would ACTIVATE the squatter's password on their own account.
+  // The assertion below is the inverse, and the recovery path it replaces is
+  // covered by the reset check further down.
+  await new Promise((r) => setTimeout(r, 8000));
+  const after = (await tagMail()).length;
   step(
-    Boolean(owner && /^\d{8}$/.test(owner)),
-    "the collision still emails the real owner a usable code",
-    owner || "none",
+    after === before,
+    "a sign-up collision emails NOTHING",
+    `${before} -> ${after}`,
   );
+
+  // ── login must not distinguish unknown-address from wrong-password ────────
+  //
+  // Measured on production before the fix: retrieveAccount threw
+  // "InvalidAccountId" vs "InvalidSecret", with a stack trace, straight to the
+  // client. Only the browser collapsed them.
+  const loginOutcome = async (addr, password) => {
+    try {
+      await c.action(anyApi.auth.signIn, {
+        provider: "password",
+        params: { email: addr, password, flow: "signIn" },
+      });
+      return "resolved";
+    } catch (e) {
+      return String(e.data ?? e.message ?? e);
+    }
+  };
+  const unknownLogin = await loginOutcome(
+    ollastack.taggedAddress(await ollastack.mailboxAddress(), ollastack.newTag()),
+    "Wr0ngGuess#2026",
+  );
+  const wrongPwLogin = await loginOutcome(email, "Wr0ngGuess#2026");
+  step(
+    unknownLogin === wrongPwLogin,
+    "login: unknown address and wrong password are indistinguishable",
+    `${unknownLogin} vs ${wrongPwLogin}`,
+  );
+  step(
+    !/InvalidAccountId|InvalidSecret|passwordProvider\.ts/.test(wrongPwLogin),
+    "login errors leak neither the library error code nor a stack trace",
+    wrongPwLogin,
+  );
+
+  // ── the reset flow must not be an oracle either ───────────────────────────
+  //
+  // This one was never rate-limited: the library's brute-force limiter only
+  // engages when a secret is supplied, so it could be swept at full speed.
+  const resetOutcome = async (addr) => {
+    try {
+      const r = await c.action(anyApi.auth.signIn, {
+        provider: "password",
+        params: { email: addr, flow: "reset" },
+      });
+      return `resolved:${JSON.stringify(r)}`;
+    } catch (e) {
+      return String(e.data ?? e.message ?? e);
+    }
+  };
+  const unknownReset = await resetOutcome(
+    ollastack.taggedAddress(await ollastack.mailboxAddress(), ollastack.newTag()),
+  );
+  const knownReset = await resetOutcome(email);
+  step(
+    unknownReset === knownReset,
+    "reset: known and unknown addresses are indistinguishable",
+    `${unknownReset} vs ${knownReset}`,
+  );
+
+  // ── recovery: reset is the route back into a colliding address ────────────
+  const resetCode = await ollastack.codeForAddress(email, "reset", 120000);
+  step(
+    Boolean(resetCode && /^\d{8}$/.test(resetCode)),
+    "the reset above emailed the real owner a usable code",
+    resetCode || "none",
+  );
+  if (resetCode) {
+    const NEW_PASSWORD = "Rec0veredPass#2026";
+    const recovered = await c.action(anyApi.auth.signIn, {
+      provider: "password",
+      params: {
+        email,
+        code: resetCode,
+        newPassword: NEW_PASSWORD,
+        flow: "reset-verification",
+      },
+    });
+    step(
+      Boolean(recovered?.tokens),
+      "the owner recovers the address with the reset code",
+    );
+    // And the password that was there before must be dead.
+    const oldPw = await loginOutcome(email, PASSWORD);
+    step(
+      oldPw !== "resolved",
+      "the previous password stops working after the reset",
+      oldPw,
+    );
+  }
 
   const pass = results.filter((r) => r[0]).length;
   console.log(`\n===== AUTH ORACLE: ${pass}/${results.length} =====`);

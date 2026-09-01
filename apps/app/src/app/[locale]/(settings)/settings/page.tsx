@@ -35,12 +35,19 @@ export default function ProfileSection() {
   const removeUserImage = useMutation(api.users.removeUserImage);
   const generateUploadUrl = useMutation(api.users.generateUploadUrl);
   const deleteCurrentUserAccount = useAction(api.users.deleteCurrentUserAccount);
+  const requestDeletionCode = useAction(api.users.requestAccountDeletionCode);
+  // Which factor this account can actually re-authenticate with. A Google-only
+  // user has no password to re-enter, so they confirm by email instead.
+  const deletionFactor = useQuery(api.users.deletionFactor);
   const { doubleCheck, getButtonProps } = useDoubleCheck();
 
   const [displayName, setDisplayName] = useState("");
   const [username, setUsername] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleteSecret, setDeleteSecret] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [codeSent, setCodeSent] = useState(false);
 
   // getUser resolves async; seed the fields once it arrives.
   useEffect(() => {
@@ -57,10 +64,38 @@ export default function ProfileSection() {
         .storageId,
     });
 
+  const needsCode = deletionFactor?.needs === "code";
+
+  const handleSendDeletionCode = async () => {
+    try {
+      await requestDeletionCode();
+      setCodeSent(true);
+      toast.success("We emailed you a confirmation code.");
+    } catch {
+      toast.error("Couldn't send the code. Try again.");
+    }
+  };
+
+  // The password/code is verified SERVER-SIDE in deleteCurrentUserAccount. The
+  // double-check button and this field are convenience, not the control: the
+  // action refuses outright when the factor is missing or wrong.
   const handleDeleteAccount = async () => {
-    await deleteCurrentUserAccount();
-    clearDisplayCaches();
-    signOut();
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      await deleteCurrentUserAccount(
+        needsCode ? { code: deleteSecret } : { password: deleteSecret },
+      );
+      clearDisplayCaches();
+      signOut();
+    } catch (err) {
+      const data = (err as { data?: unknown })?.data;
+      toast.error(
+        typeof data === "string" ? data : "Couldn't delete your account.",
+      );
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const dirty =
@@ -233,17 +268,40 @@ export default function ProfileSection() {
           <p className="text-sm font-normal text-primary/60">
             {t("deleteAccount.warning")}
           </p>
-          <Button
-            size="sm"
-            variant="destructive"
-            {...getButtonProps({
-              onClick: doubleCheck ? handleDeleteAccount : undefined,
-            })}
-          >
-            {doubleCheck
-              ? t("deleteAccount.confirmButton")
-              : t("deleteAccount.deleteButton")}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {needsCode && !codeSent ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={handleSendDeletionCode}
+              >
+                Email me a code
+              </Button>
+            ) : (
+              <Input
+                type={needsCode ? "text" : "password"}
+                value={deleteSecret}
+                autoComplete={needsCode ? "one-time-code" : "current-password"}
+                inputMode={needsCode ? "numeric" : undefined}
+                placeholder={needsCode ? "Emailed code" : "Your password"}
+                onChange={(e) => setDeleteSecret(e.target.value)}
+                className="h-9 w-44 bg-transparent"
+              />
+            )}
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={deleting || !deleteSecret}
+              {...getButtonProps({
+                onClick: doubleCheck ? handleDeleteAccount : undefined,
+              })}
+            >
+              {doubleCheck
+                ? t("deleteAccount.confirmButton")
+                : t("deleteAccount.deleteButton")}
+            </Button>
+          </div>
         </div>
       </div>
     </div>

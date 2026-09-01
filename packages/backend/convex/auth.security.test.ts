@@ -566,8 +566,17 @@ describe("duplicate account reconciliation", () => {
     expect(await t.run(async (ctx) => ctx.db.get(orphanId))).toBeNull();
   });
 
-  /** The password chosen during the abandoned sign-up must keep working. */
-  test("the absorbed account's credential moves to the survivor", async () => {
+  /**
+   * The absorbed account's credential must be DESTROYED, not inherited.
+   *
+   * This asserted the opposite — that the password chosen during the abandoned
+   * sign-up keeps working. That is the wrong outcome whenever the abandoned
+   * sign-up was hostile, and anyone can create an unverified account for a
+   * stranger's address: moving the credential grafts an attacker-chosen
+   * password onto a real, verified account. Nothing is lost, because the
+   * survivor already has a working credential of its own.
+   */
+  test("the absorbed account's credential is destroyed, not inherited", async () => {
     const t = convexTest(schema, modules);
     await seedUnverified(t);
     const survivorId = await seedVerified(t);
@@ -576,9 +585,9 @@ describe("duplicate account reconciliation", () => {
     const accounts = await t.run(async (ctx) =>
       ctx.db.query("authAccounts").collect(),
     );
-    expect(accounts).toHaveLength(2);
     expect(accounts.every((a) => a.userId === survivorId)).toBe(true);
-    expect(accounts.map((a) => a.provider).sort()).toEqual(["google", "password"]);
+    // Only the survivor's own credential survives; the twin's is gone.
+    expect(accounts.map((a) => a.provider).sort()).toEqual(["google"]);
   });
 
   /** A name the survivor's own profile did not supply is worth keeping. */
@@ -786,3 +795,197 @@ describe("abandoned signup purge", () => {
     }
   });
 });
+
+// --------------------------------------------- account deletion cascade (N4)
+
+describe("account deletion tears down all auth state", () => {
+  /**
+   * deleteUserAccount used to delete ONLY the google authAccount, leaving the
+   * password credential, every session and every refresh token behind. Two
+   * things followed, both provable from the library:
+   *
+   *  - the deleted user stayed authenticated, because refreshTokenIfValid
+   *    checks only token and session expiry and never the user;
+   *  - the address became permanently unregisterable, because the orphaned
+   *    password account is found on the next sign-up and upsertUserAndAccount
+   *    then patches a deleted user id.
+   */
+  async function seedFullyLoadedUser(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {
+        email: "gone@gmail.com",
+        emailNormalized: "gone@gmail.com",
+      });
+      const password = await ctx.db.insert("authAccounts", {
+        userId,
+        provider: "password",
+        providerAccountId: "gone@gmail.com",
+        secret: "hashed",
+      });
+      await ctx.db.insert("authAccounts", {
+        userId,
+        provider: "google",
+        providerAccountId: "sub-123",
+      });
+      const sessionId = await ctx.db.insert("authSessions", {
+        userId,
+        expirationTime: Date.now() + 100000,
+      });
+      await ctx.db.insert("authRefreshTokens", {
+        sessionId,
+        expirationTime: Date.now() + 100000,
+      });
+      await ctx.db.insert("authVerificationCodes", {
+        accountId: password,
+        provider: "password-reset",
+        code: "hash",
+        expirationTime: Date.now() + 100000,
+      });
+      await ctx.db.insert("authRateLimits", {
+        identifier: password,
+        attemptsLeft: 1,
+        lastAttemptTime: Date.now(),
+      });
+      await ctx.db.insert("authRateLimits", {
+        identifier: "gone@gmail.com",
+        attemptsLeft: 1,
+        lastAttemptTime: Date.now(),
+      });
+      return userId;
+    });
+  }
+
+  test("every credential, session, refresh token, code and limit is removed", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await seedFullyLoadedUser(t);
+
+    await t.mutation(internal.users.deleteUserAccount, { userId });
+
+    const left = await t.run(async (ctx) => ({
+      users: await ctx.db.query("users").collect(),
+      accounts: await ctx.db.query("authAccounts").collect(),
+      sessions: await ctx.db.query("authSessions").collect(),
+      refresh: await ctx.db.query("authRefreshTokens").collect(),
+      codes: await ctx.db.query("authVerificationCodes").collect(),
+      limits: await ctx.db.query("authRateLimits").collect(),
+    }));
+    expect(left.users).toHaveLength(0);
+    // The password account in particular: leaving it made the address
+    // permanently unregisterable.
+    expect(left.accounts).toHaveLength(0);
+    expect(left.sessions).toHaveLength(0);
+    // An orphaned refresh token still mints access tokens.
+    expect(left.refresh).toHaveLength(0);
+    expect(left.codes).toHaveLength(0);
+    expect(left.limits).toHaveLength(0);
+  });
+});
+
+// ------------------------------------------ deletion confirmation codes (G4)
+
+describe("account-deletion confirmation codes", () => {
+  async function seedUser(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("users", { email: "del@gmail.com" }),
+    );
+  }
+
+  test("a wrong code is refused, counted, and never consumes the row", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t);
+    await t.mutation(internal.users.putDeletionCode, {
+      userId,
+      codeHash: await sha256Hex("12345678"),
+    });
+
+    const bad = await t.mutation(internal.users.consumeDeletionCode, {
+      userId,
+      code: "00000000",
+    });
+    expect(bad).toBe(false);
+    const row = await t.run(async (ctx) =>
+      ctx.db.query("accountDeletionCodes").first(),
+    );
+    expect(row?.attempts).toBe(1);
+  });
+
+  test("the right code works exactly once", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t);
+    await t.mutation(internal.users.putDeletionCode, {
+      userId,
+      codeHash: await sha256Hex("12345678"),
+    });
+
+    expect(
+      await t.mutation(internal.users.consumeDeletionCode, {
+        userId,
+        code: "12345678",
+      }),
+    ).toBe(true);
+    // Replay is refused: the row is gone.
+    expect(
+      await t.mutation(internal.users.consumeDeletionCode, {
+        userId,
+        code: "12345678",
+      }),
+    ).toBe(false);
+  });
+
+  /**
+   * The reason this lives in its own table rather than authVerificationCodes:
+   * a code minted for one user must never be spendable by another, and the
+   * lookup here is BY USER, never by the code value.
+   */
+  test("a code minted for one user cannot be spent by another", async () => {
+    const t = convexTest(schema, modules);
+    const victim = await seedUser(t);
+    const attacker = await t.run(async (ctx) =>
+      ctx.db.insert("users", { email: "attacker@gmail.com" }),
+    );
+    await t.mutation(internal.users.putDeletionCode, {
+      userId: victim,
+      codeHash: await sha256Hex("12345678"),
+    });
+
+    expect(
+      await t.mutation(internal.users.consumeDeletionCode, {
+        userId: attacker,
+        code: "12345678",
+      }),
+    ).toBe(false);
+  });
+
+  test("attempts are capped", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t);
+    await t.mutation(internal.users.putDeletionCode, {
+      userId,
+      codeHash: await sha256Hex("12345678"),
+    });
+    for (let i = 0; i < 5; i++) {
+      await t.mutation(internal.users.consumeDeletionCode, {
+        userId,
+        code: "00000000",
+      });
+    }
+    // Even the CORRECT code is refused once the cap is hit.
+    expect(
+      await t.mutation(internal.users.consumeDeletionCode, {
+        userId,
+        code: "12345678",
+      }),
+    ).toBe(false);
+  });
+});
+
+/** Mirrors users.ts sha256Hex; the test needs the same digest to seed a row. */
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}

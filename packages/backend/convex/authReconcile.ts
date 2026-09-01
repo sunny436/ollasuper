@@ -60,26 +60,27 @@ export async function reconcileDuplicateUsers(
     // Never touch a verified account.
     if (other.emailVerificationTime !== undefined) continue;
 
-    // Move the credentials, so the password chosen during the abandoned
-    // sign-up keeps working against the surviving account.
+    // DELETE the twin's credentials. Never move them.
+    //
+    // This used to re-point them at the survivor "so the password chosen during
+    // the abandoned sign-up keeps working". That is precisely the wrong outcome
+    // when the abandoned sign-up was hostile: an unverified account is one
+    // ANYONE can create for a stranger's address, so moving its credential
+    // grafts an attacker-chosen password onto a real, verified account.
+    //
+    // Same invariant as the sign-up collision branch in passwordProvider.ts: a
+    // credential may become live on an account only when the actor who supplied
+    // it also proved inbox ownership. The twin's owner proved nothing.
+    //
+    // Nothing is lost. The survivor is verified and already has its own working
+    // credential; someone who genuinely owns the address and wants the password
+    // they typed during the abandoned sign-up can set it via password reset.
     const accounts = await ctx.db
       .query("authAccounts")
       .withIndex("userIdAndProvider", (q) => q.eq("userId", other._id))
       .collect();
     for (const account of accounts) {
-      // A credential for a provider the survivor already has would be a
-      // duplicate (provider, userId) pair — drop it rather than create one.
-      const clash = await ctx.db
-        .query("authAccounts")
-        .withIndex("userIdAndProvider", (q) =>
-          q.eq("userId", survivorId).eq("provider", account.provider),
-        )
-        .first();
-      if (clash) {
-        await ctx.db.delete(account._id);
-        continue;
-      }
-      await ctx.db.patch(account._id, { userId: survivorId });
+      await ctx.db.delete(account._id);
     }
 
     // Keep a display name the survivor's own profile did not supply.

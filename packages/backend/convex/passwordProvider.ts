@@ -8,6 +8,7 @@ import {
   signInViaProvider,
 } from "@convex-dev/auth/server";
 import { Scrypt } from "lucia";
+import { ConvexError } from "convex/values";
 import type { GenericActionCtxWithAuthConfig } from "@convex-dev/auth/server";
 import type { DataModel } from "./_generated/dataModel";
 
@@ -108,29 +109,33 @@ export function OllaSuperPassword(config: OllaSuperPasswordConfig) {
         }
 
         if (existing !== null) {
-          if (!config.verify) {
-            // Without a verify provider there is no indistinguishable answer to
-            // give, so refuse rather than leak. Unreachable in this deployment.
-            throw new Error("Account already exists");
-          }
-          // Take the SAME branch a fresh sign-up ends on, with the same
-          // arguments. The response is identical because it is literally the
-          // same call — not a fabricated look-alike that could drift or be
-          // fingerprinted by timing or by the number of emails sent.
+          // COLLISION. Touch NOTHING and send NOTHING — just return the shape a
+          // fresh sign-up returns.
           //
-          // The owner receives one verification code, exactly as a fresh
-          // sign-up would send. That code IS the notification, which is why no
-          // separate "someone tried to sign up" email is sent: a second message
-          // would make the collision case observably different from a fresh
-          // one, and would let an attacker burn the address's send budget.
+          // The earlier version dispatched a verification code for the EXISTING
+          // account. That is an account-takeover path: an unverified account
+          // belongs to whoever squatted the address, and verifyCodeAndSignIn
+          // patches `emailVerified: true` onto it (mutations/verifyCodeAndSignIn.js
+          // :105-109), so the real owner completing that code ACTIVATES the
+          // squatter's password on their own account.
           //
-          // Entering that code proves inbox ownership and signs the real owner
-          // in — the same capability the existing magic-OTP provider already
-          // offers, so this grants nothing new.
-          return await signInViaProvider(ctx, config.verify, {
-            accountId: existing.account._id,
-            params: verifyParams,
-          });
+          // Overwriting the squatter's credential with this sign-up's password is
+          // the same bug mirrored: an attacker signs up over a victim's unverified
+          // account, the victim gets the code, verifies, and the ATTACKER's
+          // password is live. Deleting and recreating fails identically.
+          //
+          // The invariant that survives all three: A CREDENTIAL MAY BECOME LIVE ON
+          // AN ACCOUNT ONLY WHEN THE ACTOR WHO SUPPLIED IT ALSO PROVED INBOX
+          // OWNERSHIP IN THE SAME FLOW. Sign-up + emailed code cannot satisfy it,
+          // because the credential was chosen earlier and possibly by someone
+          // else. Password reset does satisfy it — the code and the new password
+          // arrive together — so reset remains the recovery path for a squatted
+          // address, and it works immediately rather than after authPurge's TTL.
+          //
+          // Returning null is byte-identical to a fresh sign-up: signInViaProvider
+          // returns null for an email provider (implementation/index.js:406-417
+          // via signIn.js:99), so both cases resolve as { signedIn: null }.
+          return null;
         }
 
         const created = await createAccount(ctx, {
@@ -145,24 +150,66 @@ export function OllaSuperPassword(config: OllaSuperPasswordConfig) {
         if (secret === undefined) {
           throw new Error("Missing `password` param for `signIn` flow");
         }
-        const retrieved = await retrieveAccount(ctx, {
-          provider,
-          account: { id: email, secret },
-        });
+        // ONE answer for every failure. retrieveAccount throws three DIFFERENT
+        // messages — "InvalidAccountId" (no such address), "InvalidSecret" (wrong
+        // password) and "TooManyFailedAttempts" — see
+        // mutations/retrieveAccountWithCredentials.js:23,27,31. Measured against
+        // production, those reach an unauthenticated caller in full, WITH a stack
+        // trace naming this file and line, so login was an account-existence
+        // oracle for anyone calling the action directly.
+        //
+        // auth-panel.tsx collapsed them in the UI and its comment claimed "the
+        // server already collapses" them. It did not; only the browser did, and
+        // the browser is not the trust boundary.
+        //
+        // ConvexError (not Error) is deliberate: Convex delivers `.data` to the
+        // client and withholds the stack, so this replaces the leak rather than
+        // just narrowing it.
+        let retrieved: Awaited<ReturnType<typeof retrieveAccount>> | null = null;
+        try {
+          retrieved = await retrieveAccount(ctx, {
+            provider,
+            account: { id: email, secret },
+          });
+        } catch {
+          retrieved = null;
+        }
         if (retrieved === null) {
-          throw new Error("Invalid credentials");
+          throw new ConvexError("Invalid email or password.");
         }
         ({ account, user } = retrieved);
+        // A suspended account must not be able to authenticate. Same generic
+        // message: whether an account is suspended is not the caller’s business
+        // until they have proven they own it.
+        if (user?.accountStatus && user.accountStatus !== "active") {
+          throw new ConvexError("Invalid email or password.");
+        }
       } else if (flow === "reset") {
         if (!config.reset) {
           throw new Error(`Password reset is not enabled for ${provider}`);
         }
-        const { account: resetAccount } = await retrieveAccount(ctx, {
-          provider,
-          account: { id: email },
-        });
+        // Unknown address => return the SAME null the known path returns, rather
+        // than letting retrieveAccount throw "InvalidAccountId". Verified against
+        // production: this threw for unknown addresses and resolved for known
+        // ones, so `signIn(flow:"reset")` was a free, UNRATED account-enumeration
+        // oracle — the library’s brute-force limiter only engages when a secret
+        // is supplied (mutations/retrieveAccountWithCredentials.js:25).
+        //
+        // authSessions.requestPasswordReset already answered identically for both
+        // cases, but it only covered the UI; the raw action stayed callable, and
+        // p-auth-oracle.js only exercised signUp, so this passed unnoticed.
+        let resetAccount: { _id: string } | null = null;
+        try {
+          ({ account: resetAccount } = await retrieveAccount(ctx, {
+            provider,
+            account: { id: email },
+          }));
+        } catch {
+          return null;
+        }
+        if (resetAccount === null) return null;
         return await signInViaProvider(ctx, config.reset, {
-          accountId: resetAccount._id,
+          accountId: resetAccount._id as never,
           params: verifyParams,
         });
       } else if (flow === "reset-verification") {
@@ -190,12 +237,19 @@ export function OllaSuperPassword(config: OllaSuperPasswordConfig) {
         if (!config.verify) {
           throw new Error(`Email verification is not enabled for ${provider}`);
         }
-        const { account: verifyAccount } = await retrieveAccount(ctx, {
-          provider,
-          account: { id: email },
-        });
+        // Same oracle as `reset` above, same answer.
+        let verifyAccount: { _id: string } | null = null;
+        try {
+          ({ account: verifyAccount } = await retrieveAccount(ctx, {
+            provider,
+            account: { id: email },
+          }));
+        } catch {
+          return null;
+        }
+        if (verifyAccount === null) return null;
         return await signInViaProvider(ctx, config.verify, {
-          accountId: verifyAccount._id,
+          accountId: verifyAccount._id as never,
           params: verifyParams,
         });
       } else {

@@ -63,6 +63,11 @@ const PasswordWithFlows = OllaSuperPassword({
   validatePasswordRequirements: (password: string) => {
     if (password.length < 8)
       throw new ConvexError("Password must be at least 8 characters.");
+    // Upper bound, matching Better Auth. scrypt is deliberately expensive, so an
+    // unbounded password is a CPU denial-of-service against an endpoint that
+    // needs no authentication to reach.
+    if (password.length > 128)
+      throw new ConvexError("Password must be 128 characters or fewer.");
     if (!/[a-z]/.test(password))
       throw new ConvexError("Password must include a lowercase letter.");
     if (!/[A-Z]/.test(password))

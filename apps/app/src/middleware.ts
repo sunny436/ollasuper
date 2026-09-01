@@ -35,15 +35,36 @@ function shareRateLimited(ip: string): boolean {
   return e.count > SHARE_MAX;
 }
 
-// Best-effort per-IP throttle for the auth surface (the /login route). The real
-// credential/attempt limiting is server-side on Convex (per-account 5/hr +
-// per-email send throttle); the raw signIn action goes straight to Convex and
-// never reaches this middleware, so this layer bounds automated hammering of the
-// login page from a single IP. In-memory + per-instance, like shareRateLimited.
+// Per-IP throttle for the auth surface.
+//
+// The comment that used to sit here said the raw signIn action "goes straight to
+// Convex and never reaches this middleware". That was WRONG, and it is why this
+// throttle only ever covered GETs of /login. The browser's signIn POSTs to
+// /api/auth (@convex-dev/auth/dist/nextjs/client.js:9), the matcher below does
+// match that path, and convexAuthNextjsMiddleware intercepts and proxies it
+// (dist/nextjs/server/index.js:58-63) BEFORE the custom handler runs — so the
+// check has to happen outside that wrapper, which is what the default export
+// does now.
+//
+// HONEST LIMIT: this is defence in depth, not a closure. NEXT_PUBLIC_CONVEX_URL
+// is public (app.ollasuper.com/__cvx), so a caller can invoke auth:signIn on the
+// Convex deployment directly and never touch Next — exactly what
+// e2e/p-auth-oracle.js does. Convex actions get no request object, so no
+// application-level limit can cover that path; only a Cloudflare rate-limiting
+// rule spanning /__cvx and /api/auth can. See ROADMAP.md.
 const AUTH_WINDOW_MS = 60_000;
+/** Page loads. */
 const AUTH_MAX = 40;
+/**
+ * /api/auth POSTs. Deliberately generous rather than Better Auth's 3-per-10s:
+ * this one bucket carries sign-in, sign-out AND token refresh, and it is keyed
+ * on an IP that a whole office or mobile carrier can share behind NAT. A limit
+ * tight enough to be interesting to a stuffing attack would lock out real users,
+ * and the Cloudflare rule above is the control that can afford to be strict.
+ */
+const AUTH_API_MAX = 60;
 const authHits = new Map<string, { start: number; count: number }>();
-function authRateLimited(ip: string): boolean {
+function authRateLimited(ip: string, max: number = AUTH_MAX): boolean {
   const now = Date.now();
   const e = authHits.get(ip);
   if (!e || now - e.start >= AUTH_WINDOW_MS) {
@@ -52,7 +73,32 @@ function authRateLimited(ip: string): boolean {
     return false;
   }
   e.count += 1;
-  return e.count > AUTH_MAX;
+  return e.count > max;
+}
+
+/**
+ * The client IP, from the one header that cannot be forged here.
+ *
+ * This deployment sits behind a Cloudflare Tunnel, which sets cf-connecting-ip
+ * itself and strips any client-supplied copy. x-forwarded-for — which the share
+ * and login throttles read — is client-supplied and spoofable, so an attacker
+ * rotates the header value and the limit does nothing. It is kept for those two
+ * best-effort cases and deliberately not used here.
+ *
+ * IPv6 is bucketed to a /64 because a single subscriber is routinely handed a
+ * whole /64; limiting one address alone would be evaded by using the next.
+ */
+function trustedIp(request: Request): string {
+  const raw = request.headers.get("cf-connecting-ip")?.trim();
+  if (!raw) return "anon";
+  if (raw.includes(":")) return `${raw.split(":").slice(0, 4).join(":")}::/64`;
+  return raw;
+}
+
+/** The proxy route the browser's signIn/signOut actually POST to. */
+function isAuthApi(request: Request): boolean {
+  const p = new URL(request.url).pathname;
+  return p === "/api/auth" || p === "/api/auth/";
 }
 
 /**
@@ -98,7 +144,7 @@ async function isAuthenticated(token: string | undefined): Promise<boolean> {
   }
 }
 
-export default convexAuthNextjsMiddleware(
+const authMiddleware = convexAuthNextjsMiddleware(
   async (request, { convexAuth }) => {
     // Public share pages bypass the auth gate entirely (still get the locale
     // rewrite). Access is authorized server-side by the token + expiry/revocation.
@@ -143,6 +189,25 @@ export default convexAuthNextjsMiddleware(
   // public URL — the library passes no `url` for those.)
   { convexUrl: SERVER_CONVEX_URL },
 );
+
+/**
+ * Rate-limit the auth API BEFORE the library gets the request.
+ *
+ * convexAuthNextjsMiddleware short-circuits /api/auth into its own proxy at the
+ * top of its handler, so anything placed inside the custom handler never sees
+ * auth traffic. This wrapper is the only place the check can run.
+ */
+export default async function middleware(
+  ...args: Parameters<typeof authMiddleware>
+) {
+  const [request] = args;
+  if (isAuthApi(request)) {
+    if (authRateLimited(trustedIp(request), AUTH_API_MAX)) {
+      return new Response("Too many requests", { status: 429 });
+    }
+  }
+  return authMiddleware(...args);
+}
 
 export const config = {
   matcher: [

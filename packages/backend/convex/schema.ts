@@ -61,6 +61,21 @@ export default defineSchema({
     .index("by_user_at", ["userId", "at"])
     .index("by_at", ["at"]),
 
+  // Confirmation codes for irreversible account deletion.
+  //
+  // DELIBERATELY NOT authVerificationCodes. A row in that table is redeemable by
+  // `auth:signIn` for a real session (verifyCodeAndSignIn finds codes by hash
+  // alone), so putting a deletion code there would mint a second, weaker way to
+  // log in. This table is read by exactly one function and grants exactly one
+  // capability.
+  accountDeletionCodes: defineTable({
+    userId: v.id("users"),
+    // sha256, never the code itself — same rule the auth tables follow.
+    codeHash: v.string(),
+    expirationTime: v.number(),
+    attempts: v.number(),
+  }).index("by_user", ["userId"]),
+
   // Per-normalized-email throttle for emailed one-time codes (verification /
   // reset / OTP). Bounds resend/verification/reset email-bombing. One row per
   // email, reused; no PII beyond the address that requested a code.
