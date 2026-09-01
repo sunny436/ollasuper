@@ -108,7 +108,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     cur = page.url();
     const box = page.getByRole("textbox", { name: "Schedule a task" });
     await box.waitFor({ timeout: 20000 });
-    await box.click();
+    // A sign-up/verification toast renders over the composer and INTERCEPTS the
+    // click — the element is visible, enabled and stable, so Playwright retries
+    // until it times out and the failure looks like a missing selector rather
+    // than an overlay. Let it clear, then fill directly: fill() focuses the
+    // field itself, so the separate click bought nothing but a hit test.
+    await page
+      .locator("[data-sonner-toaster] li")
+      .first()
+      .waitFor({ state: "detached", timeout: 20000 })
+      .catch(() => {});
     await box.fill(PROMPTS[KIND] || PROMPTS.plain);
     await page.getByRole("button", { name: "Interpret schedule" }).click();
     const card = page.getByRole("textbox", { name: "Task instruction" });
@@ -119,15 +128,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     if (await titleBox.count()) {
       await titleBox.fill(TITLE);
     }
+    // "Attach a PDF" is rendered ONLY once emailOnSuccess is true, so it cannot
+    // be clicked in the same breath as the toggle that reveals it.
     await page.getByText("Email me each result").click();
-    await page.getByText("Attach a PDF").click();
+    const pdfToggle = page.getByText("Attach a PDF");
+    await pdfToggle.waitFor({ state: "visible", timeout: 10000 });
+    await pdfToggle.click();
     await page.waitForTimeout(400);
 
-    const confirm = page
-      .getByRole("button", { name: /Schedule|Confirm|Create/i })
-      .last();
+    // Exact name. A loose /Schedule|Confirm|Create/ regex also matches the
+    // composer's own "Schedule a task" control, and .last() then resolves to
+    // whichever happened to be last in the DOM — which is why this passed for
+    // some prompts and timed out for others.
+    const confirm = page.getByRole("button", { name: "Create task" });
+    await confirm.waitFor({ state: "visible", timeout: 15000 });
     await confirm.click();
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(5000);
     return TITLE;
   });
 
@@ -156,20 +172,32 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ── the actual proof ─────────────────────────────────────────────────────
   let mail = null;
+  const notAuthMail = (m) =>
+    !/verification|password reset|OTP/i.test(String(m.subject ?? ""));
+
   await step("the report email arrives in the REAL inbox", async () => {
-    const deadline = Date.now() + 420000; // model turn + PDF render + send
+    const deadline = Date.now() + 600000; // model turn + PDF render + send
     while (Date.now() < deadline) {
       const msgs = await ollastack.messagesForTag(TAG).catch(() => []);
-      const hit = msgs.find(
-        (m) => !/verification|password reset|OTP/i.test(String(m.subject ?? "")),
-      );
+      const hit = msgs.find(notAuthMail);
       if (hit) {
         mail = await ollastack.message(hit.id);
         if (mail) return `subject: ${mail.subject}`;
       }
       await sleep(10000);
     }
-    throw new Error("no report email arrived within 7 minutes");
+    // Before calling this "never arrived", check the spam view. A hard-spam
+    // message is excluded from the normal list, so the two failures are
+    // indistinguishable from here — and they are opposite problems: a transport
+    // fault versus content that tripped a filter. Say which.
+    const spam = (await ollastack.messagesForTag(TAG, { spam: true }).catch(() => []))
+      .filter(notAuthMail);
+    if (spam.length > 0) {
+      throw new Error(
+        `DELIVERED BUT FILTERED AS SPAM (${spam[0].spamReason}): "${spam[0].subject}" — the provider sent it; the receiving side quarantined it`,
+      );
+    }
+    throw new Error("no report email arrived within 10 minutes, and none in spam");
   });
 
   await step("the email carries the run's actual result", async () => {

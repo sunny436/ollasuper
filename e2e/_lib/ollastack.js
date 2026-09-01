@@ -110,9 +110,19 @@ async function codeFromOllastack(tag, subjectContains, timeoutMs = 90_000) {
   return null;
 }
 
-/** Every message this run received, for assertions about content. */
-async function messagesForTag(tag) {
+/**
+ * Every message this run received, for assertions about content.
+ *
+ * `spam: true` switches to the SPAM view. That view is not a curiosity — an
+ * agent mailbox excludes hard spam from the normal list, /wait and webhooks
+ * entirely, so a filtered message is invisible to every other call here and
+ * reads exactly like "never sent". Telling those two apart is the difference
+ * between "the transport is broken" and "the content got filtered", which are
+ * opposite problems with opposite fixes.
+ */
+async function messagesForTag(tag, opts = {}) {
   const qs = new URLSearchParams({ direction: "inbound", limit: "50", tag });
+  if (opts.spam) qs.set("spam", "true");
   const json = await api(
     `/api/mailboxes/${encodeURIComponent(MAILBOX)}/messages?${qs}`,
   );
