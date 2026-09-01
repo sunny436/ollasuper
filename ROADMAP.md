@@ -86,6 +86,41 @@ deployment is deliberately Phase 4, so `main`'s live behaviour is unchanged by p
   was declined, so `deploy/71`, the deployment, the smoke test and `e2e/p-scheduled.js` have never
   been run either. See the 45-row acceptance form in the Phase 4 plan.
 
+### Auth hardening — six defects, one critical (2026-09-01)
+
+A two-pass audit of the real code, including `@convex-dev/auth`'s internals. Of the three symptoms
+reported, two were real with a **different root cause than assumed** and one was **refuted**: OTP *is*
+the final gate (`Password.js:142` denies a session to any account whose email is unverified), and
+case/whitespace **cannot** bypass uniqueness (both providers normalise).
+
+| # | Defect | Fix |
+|---|---|---|
+| **B2** *(CRITICAL)* | `flow: "signUp"` against an existing account ran a real scrypt comparison, then threw `Account <email> already exists` on a wrong password or **returned a session** on a correct one. The library's limiter lives only in `retrieveAccountWithCredentials` and `verifyCodeAndSignIn`, so `maxFailedAttempsPerHour: 5` never applied — unlimited password guessing plus enumeration, on a public endpoint. | Password provider replaced by a near-verbatim copy on `ConvexCredentials`, differing in one branch: the account is looked up **without** a secret and the flow takes the same `signInViaProvider(verify)` branch a fresh sign-up ends on. |
+| **B1** | Linking matches only a **verified** user, so password-signup-then-Google made a second `users` row; the password stayed on the orphan. | Post-hoc reconcile in `afterUserCreatedOrUpdated`. Safe because an unverified account **can own nothing** — verified three ways. Two verified accounts are never merged. |
+| **B3** | `accountExists` was `query`, i.e. publicly callable, while its own comment claimed otherwise — defeating the enumeration-safe `requestPasswordReset` beside it. | `internalQuery`. |
+| **B4** | Its fallback `.collect()`-ed the whole users table per unknown-email probe. | Bounded index range over pre-migration rows only. |
+| **B5/B6** | Squat an address, never verify, and the owner can never register — no expiry, no recovery. | Hourly purge, 24-hour TTL, skipping live codes and sessions, deleting `users` + `authAccounts` + codes together. |
+
+**Found during implementation, and live in production:** `createVerificationCodeImpl` does
+`profile: { email }` from the **raw** identifier and upserts it, so every sign-up typed with a capital
+letter overwrote `users.email` with `"Foo@Gmail.com"`. That column is the one
+`uniqueUserWithVerifiedEmail` indexes — a direct cause of B1. Fixed at both ends.
+
+**Three cheaper fixes for B2 were tried and rejected with reasons:** a wrapper around `auth:signIn`
+(the library's action must stay public for login, OTP, OAuth and refresh, so it is bypassable by
+name), `profile()` (invoked synchronously, so it cannot read the database), and
+`afterUserCreatedOrUpdated` (never fires on a correct-password collision).
+
+**Prod-verified:** `p-auth-oracle` **7/7** — browserless against the real deployment, because the
+defect was never reachable through the UI: correct and wrong passwords now return byte-identical
+responses, a registered address is indistinguishable from a fresh one, and `accountExists` is no
+longer publicly callable. Plus auth **7/7**, auth edges **9/9**, chat isolation **13/13**, scheduled
+isolation **18/18**, chat answering. Backend **555 passed / 1 skipped**; typecheck 7/7; lint clean.
+
+**Known limitations, stated rather than implied:** no rate limit anywhere has an **IP dimension**, so
+spraying across many addresses is unbounded; and **Convex has no unique constraints**, so "one email,
+one user" is an application invariant held by a serialised read-then-write, not a database guarantee.
+
 ### Scheduled report emails render the report (2026-09-01)
 
 The report renderer understood **three** block types — headings, `-` bullets, paragraphs — and wrapped
