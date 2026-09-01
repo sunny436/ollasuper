@@ -90,7 +90,17 @@ async function codeFromOllastack(tag, subjectContains, timeoutMs = 90_000) {
       ) {
         continue;
       }
-      let codes = Array.isArray(m.codes) ? m.codes : [];
+      // NEVER trust codes[0].
+      //
+      // The provider ranks its candidates "best match first", and that ranking
+      // is a heuristic: an 8-digit code has been observed extracted as
+      // ["1192","11923532"] — a 4-digit PREFIX ahead of the real code. Taking
+      // the first entry then fails an 8-digit assertion with a value that is
+      // not a code at all. A prefix is never the right answer when a longer
+      // candidate exists, so pick the longest digit run.
+      let codes = (Array.isArray(m.codes) ? m.codes : [])
+        .filter((c) => /^\d+$/.test(String(c)))
+        .sort((a, b) => String(b).length - String(a).length);
       if (codes.length === 0) {
         try {
           const full = await api(
