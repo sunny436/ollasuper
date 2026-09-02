@@ -1023,9 +1023,12 @@ async def _run_one(
         await ctx.writer.record_execution(execution, side_effect=str(tool.side_effect))
         return _tool_message(call_id, {"status": "cancelled"}, status="error")
 
+    # The provider's own Retry-After for THIS attempt, when it sent one.
+    retry_after: float | None = None
     for attempt in range(ctx.tool_max_retries + 1):
         if ctx.writer.cancel_requested:
             return await _cancelled()
+        retry_after = None
         execution.begin_attempt()
         try:
             # Provider-neutral dispatch: prefer the per-provider adapter, fall back
@@ -1048,6 +1051,7 @@ async def _run_one(
             err_payload = {"error": "timeout", "retryable": True}
         except ToolError as e:
             err_payload = e.as_dict()
+            retry_after = e.retry_after_s
             if not e.retryable:
                 break  # non-retryable: do not retry
         # Phase 2 AT-MOST-ONCE: never auto-retry an AMBIGUOUS outcome
@@ -1062,8 +1066,23 @@ async def _run_one(
         if attempt < ctx.tool_max_retries:
             if ctx.writer.cancel_requested:
                 return await _cancelled()  # C2: don't burn the backoff on a stop
-            backoff = ctx.tool_retry_base_s * (2**attempt)
-            await asyncio.sleep(backoff * (0.75 + 0.5 * random.random()))  # noqa: S311
+            if retry_after is not None:
+                # The provider TOLD us how long its window is (429/503). Our own
+                # 0.5s/1.0s exponential lands every remaining attempt inside that
+                # same window, so all of them fail — which is why rate-limiting
+                # dominates tool failures. Honour the header instead.
+                #
+                # But a wait longer than a whole tool-execution budget is worse than
+                # returning now: it would park a concurrency slot doing nothing while
+                # the turn's own no-progress watchdog runs. Give up and let the model
+                # re-decide with the rate_limited result in hand.
+                if retry_after > timeout:
+                    break
+                delay = retry_after + 0.25 * random.random()  # noqa: S311
+            else:
+                backoff = ctx.tool_retry_base_s * (2**attempt)
+                delay = backoff * (0.75 + 0.5 * random.random())  # noqa: S311
+            await asyncio.sleep(delay)
             log.info(
                 "agent.tool_retry",
                 extra={
@@ -2444,13 +2463,25 @@ async def execute_tool_calls(
         _fresh_approval_id(tc, ctx) is not None for tc in tool_calls
     ):
         return await _park_all_for_approval(tool_calls, ctx, step_id)
-    # Phase 6 fan-out cap: execute at most `max_tool_calls_per_step`; refuse the
-    # rest with a paired error (pairing is order-independent, so appending the
-    # refusals is valid). Bounds a degenerate many-tool message — a 50-fan-out
-    # would otherwise run 50 provider calls inside one step budget.
+    # Fan-out is QUEUED, not refused. A batch wider than the concurrency budget
+    # simply waits for a slot below — the semaphore already bounds simultaneity,
+    # which is the only thing a count cap was ever protecting.
+    #
+    # Refusing the overflow was actively harmful: it punished the exact batching
+    # PARALLEL_TOOL_GUIDANCE asks the model for, surfaced the overflow as FAILED
+    # tool runs ("Some steps didn't complete"), and cost another step to re-emit
+    # work we had already decided to do. The natural bound on one message's
+    # fan-out is the model's own output-token ceiling, not a product constant.
+    #
+    # `max_tool_calls_per_step` survives as an explicitly-configured emergency
+    # backstop (0 = off, the default) for a degenerate model, never as routine policy.
     refused: list[ToolMessage] = []
     cap = ctx.max_tool_calls_per_step
     if cap and len(tool_calls) > cap:
+        log.warning(
+            "agent.fanout_capped",
+            extra={"run_id": ctx.run_id, "requested": len(tool_calls), "cap": cap},
+        )
         for j, tc in enumerate(tool_calls[cap:]):
             cid = tc.get("id") or f"call_{cap + j}"
             refused.append(

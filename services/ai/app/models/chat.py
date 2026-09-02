@@ -294,6 +294,18 @@ class GenerateRequest(BaseModel):
     # bounds the whole turn.
     attempt: int = 0
     deadlineAt: int = 0
+    # How many orchestration STEPS (executor passes) the previous attempts already
+    # consumed — distinct `toolExecutions.stepId`, which is 1:1 with the graph's
+    # one-pass-one-budget accounting.
+    #
+    # LOAD-BEARING UNIT. The step budget used to be seeded by subtracting
+    # len(completedTools), a count of individual tool CALLS, from a budget spent one
+    # per PASS. A resumed turn that had legitimately made more calls than
+    # ai_agent_max_steps therefore got a budget of ZERO, silently lost every tool,
+    # and could neither finish its work nor emit another tool event. 0 (the default)
+    # means a pre-Phase Convex omitted it; the runner then falls back to the old
+    # call-count so behaviour is unchanged rather than unbounded.
+    completedSteps: int = 0
     # Phase 2 (Scheduled Tasks): this turn runs UNATTENDED — no human is present
     # to approve anything. Two consequences downstream, both security-relevant:
     #   * the agent is pinned to READ_ONLY scope regardless of the global

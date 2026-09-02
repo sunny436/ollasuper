@@ -871,3 +871,109 @@ describe("Phase 4 approval + cancellation controls", () => {
     expect(left).toHaveLength(0);
   });
 });
+
+describe("long-running execution", () => {
+  test("streamed text rolls the total-execution deadline", async () => {
+    const t = convexTest(schema, modules);
+    const before = Date.now() + 5_000;
+    const { streamId } = await seedStream(t, {
+      heartbeatAt: Date.now(),
+      deadlineAt: before,
+    });
+    await t.mutation(internal.chat.ingest.appendDeltas, {
+      streamId,
+      deltas: [{ seq: 0, text: "a long final answer" }],
+    });
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("chatStreams")
+        .withIndex("by_streamId", (q) => q.eq("streamId", streamId))
+        .unique(),
+    );
+    // Without this, the final long-form answer of a tool-heavy turn (which emits
+    // no tool events, and runs once the step budget is spent so none is even
+    // possible) sits under a deadline frozen at the last tool call.
+    expect(row?.deadlineAt ?? 0).toBeGreaterThan(before);
+  });
+
+  test("appendEvent does not rewrite the stream row when nothing changed", async () => {
+    const t = convexTest(schema, modules);
+    const hb = Date.now();
+    const { streamId, messageId } = await seedStream(t, { heartbeatAt: hb });
+    await t.run(async (ctx) => {
+      const s = await ctx.db
+        .query("chatStreams")
+        .withIndex("by_streamId", (q) => q.eq("streamId", streamId))
+        .unique();
+      if (s) await ctx.db.patch(s._id, { hasEvents: true });
+    });
+    const ev = (seq: number) => ({
+      eventId: `ev${seq}`,
+      seq,
+      type: "CITATION" as const,
+      v: 1,
+      ts: Date.now(),
+      payload: JSON.stringify({ source_id: `s${seq}`, title: "t", url: "u" }),
+    });
+    await t.mutation(internal.chat.ingest.appendEvent, {
+      streamId,
+      events: [ev(1)],
+    });
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("chatStreams")
+        .withIndex("by_streamId", (q) => q.eq("streamId", streamId))
+        .unique(),
+    );
+    // heartbeatAt has its own 5s beat; rewriting it here made appendEvent the
+    // single largest source of OCC write-conflicts against upsertExecution —
+    // the write-ahead gate a side-effecting tool must clear before it may fire.
+    expect(row?.heartbeatAt).toBe(hb);
+    // The event itself still landed.
+    const events = await t.run(async (ctx) =>
+      ctx.db
+        .query("chatStreamEvents")
+        .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+        .collect(),
+    );
+    expect(events).toHaveLength(1);
+  });
+
+  test("resume reports consumed STEPS, not tool-call count", async () => {
+    const t = convexTest(schema, modules);
+    const { streamId, messageId } = await seedStream(t, { attempts: 1 });
+    // 30 completed CALLS spread over 3 executor PASSES.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 30; i++) {
+        await ctx.db.insert("toolExecutions", {
+          executionId: `e${i}`,
+          streamId,
+          messageId,
+          threadId: (await ctx.db.get(messageId))!.threadId,
+          workspaceId: (await ctx.db.get(messageId))!.workspaceId,
+          userId: (await ctx.db.get(messageId))!.userId,
+          stepId: `run:a0:s${i % 3}`,
+          toolCallId: `c${i}`,
+          toolId: "search_web",
+          attemptId: `a${i}`,
+          attempt: 0,
+          actionType: "tool",
+          sideEffect: "read_only",
+          state: "succeeded",
+          inputHash: `h${i}`,
+          args: { q: `${i}` },
+          resultContent: "{}",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+    });
+    const payload = await t.query(internal.chat.stream.dispatchPayload, {
+      streamId,
+    });
+    expect(payload?.completedTools).toHaveLength(30);
+    // The step budget is spent one per PASS. Seeding it with the CALL count made
+    // max(0, 12 - 30) = 0, which silently unbound every tool on the resumed turn.
+    expect(payload?.completedSteps).toBe(3);
+  });
+});

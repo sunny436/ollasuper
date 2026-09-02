@@ -42,7 +42,7 @@ async def _discover_tools_best_effort(app: FastAPI, settings: Settings) -> None:
     reg = getattr(app.state, "tool_registry", None)
     if reg is None:
         return
-    client = OllagraphAdapter.build_http_client()
+    client = OllagraphAdapter.build_http_client(settings)
     try:
         result = await OllagraphAdapter(settings, client).discover()
         reg.replace_all(result.definitions, result.components, result.report)
@@ -96,7 +96,9 @@ async def lifespan(app: FastAPI):
     # selector's search index self-caches by registry.version, so the same
     # instance is reused by the introspection route.
     app.state.ollagraph_http = (
-        OllagraphAdapter.build_http_client() if settings.ollagraph_enabled else None
+        OllagraphAdapter.build_http_client(settings)
+        if settings.ollagraph_enabled
+        else None
     )
     app.state.tool_selector = (
         ToolSelector(app.state.tool_registry)

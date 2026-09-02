@@ -279,6 +279,12 @@ async function collectCompletedTools(
     .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
     .collect();
   let maxSeq = -1;
+  // Distinct orchestration STEPS already consumed. The step budget is spent one
+  // per executor PASS, so a resume must be seeded in passes — seeding it with a
+  // count of individual tool CALLS zeroes the budget of any turn that legitimately
+  // made more calls than ai_agent_max_steps. `step_id` rides every TOOL_CALL /
+  // TOOL_RESULT payload (models/execution.py event_fields).
+  const steps = new Set<string>();
   // Per model call_id: the TOOL_CALL facts, and the TOOL_RESULT facts (if any).
   const calls = new Map<
     string,
@@ -296,6 +302,7 @@ async function collectCompletedTools(
     } catch {
       continue;
     }
+    if (typeof body.step_id === "string") steps.add(body.step_id);
     const cid = body.call_id;
     if (typeof cid !== "string") continue;
     if (e.type === "TOOL_CALL" && typeof body.tool_id === "string") {
@@ -354,7 +361,12 @@ async function collectCompletedTools(
     // state in {failed, timed_out, deduped, cancelled} (or no-state non-success)
     // -> drop; let the model re-decide.
   }
-  return { completedTools, attemptedTools, eventSeqBaseline: maxSeq + 1 };
+  return {
+    completedTools,
+    attemptedTools,
+    completedSteps: steps.size,
+    eventSeqBaseline: maxSeq + 1,
+  };
 }
 
 /**
@@ -378,6 +390,10 @@ function classifyExecutions(
   rows: Doc<"toolExecutions">[],
   approvalsByRef: Map<string, { decision: string; token: string | null }>,
 ) {
+  // Every row belongs to an executor pass that ALREADY RAN, whatever its terminal
+  // state — so the consumed-step count is over all rows, not just the replayable
+  // ones. This is the unit the graph spends `tool_budget` in (one per pass).
+  const steps = new Set(rows.map((r) => r.stepId));
   const groups = new Map<string, Doc<"toolExecutions">>();
   for (const r of rows) {
     const key = `${r.toolId}:${r.inputHash}`;
@@ -427,7 +443,7 @@ function classifyExecutions(
     }
     // failed / timed_out / cancelled / deduped / pending → drop; model re-decides.
   }
-  return { completedTools, attemptedTools, approvedPending };
+  return { completedTools, attemptedTools, approvedPending, completedSteps: steps.size };
 }
 
 export const dispatchPayload = internalQuery({
@@ -514,7 +530,12 @@ export const dispatchPayload = internalQuery({
     // (the writer's independent seq space) — so collectCompletedTools still runs.
     const events = doResume
       ? await collectCompletedTools(ctx, stream.messageId)
-      : { completedTools: [], attemptedTools: [], eventSeqBaseline: 0 };
+      : {
+          completedTools: [],
+          attemptedTools: [],
+          completedSteps: 0,
+          eventSeqBaseline: 0,
+        };
     const execRows = doResume
       ? await ctx.db
           .query("toolExecutions")
@@ -533,6 +554,7 @@ export const dispatchPayload = internalQuery({
       completedTools: useTable ? exec.completedTools : events.completedTools,
       attemptedTools: useTable ? exec.attemptedTools : events.attemptedTools,
       approvedPending: exec.approvedPending, // only the table durably holds parked args
+      completedSteps: useTable ? exec.completedSteps : events.completedSteps,
       eventSeqBaseline: events.eventSeqBaseline,
     };
 
@@ -597,6 +619,9 @@ export const dispatchPayload = internalQuery({
       deadlineAt: stream.deadlineAt ?? 0,
       completedTools: resume.completedTools,
       attemptedTools: resume.attemptedTools,
+      // Consumed orchestration STEPS (see collectCompletedTools) — the unit the
+      // Python runner seeds `tool_budget` in.
+      completedSteps: resume.completedSteps,
       // Phase 3 durable approval CONTINUATION (execute directly, no model re-emit).
       approvedPending: resume.approvedPending,
       eventSeqBaseline: resume.eventSeqBaseline,

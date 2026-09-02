@@ -36,12 +36,18 @@ class ToolError(RuntimeError):
         tool_id: str | None = None,
         status: int | None = None,
         retryable: bool | None = None,
+        retry_after_s: float | None = None,
     ) -> None:
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.tool_id = tool_id
         self.status = status
+        # The provider's OWN backoff instruction (RFC 9110 `Retry-After`). A
+        # rate-limited caller that ignores this and retries on its own short
+        # exponential just spends its remaining attempts inside the same window
+        # — every one of them failing. None when the provider did not say.
+        self.retry_after_s = retry_after_s
         self.retryable = (
             retryable
             if retryable is not None
@@ -56,9 +62,14 @@ class ToolError(RuntimeError):
 
     def as_dict(self) -> dict:
         """Safe, user-facing shape. Never includes provider text/credentials."""
-        return {
+        out = {
             "kind": str(self.kind),
             "message": self.message,
             "tool_id": self.tool_id,
             "retryable": self.retryable,
         }
+        # Only present when the provider actually sent one, so every other error
+        # payload keeps its existing shape.
+        if self.retry_after_s is not None:
+            out["retry_after_s"] = self.retry_after_s
+        return out

@@ -8,6 +8,9 @@ cases use the FakeLLM + run_generation harness (mirrors test_agent_runner.py).
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+import time
 
 import httpx
 from langchain_core.messages import AIMessage
@@ -330,3 +333,231 @@ async def test_resume_seeds_budget_and_event_seq(monkeypatch):
     await run_generation(req, settings, convex)
     finals = _ops(convex, "finalize")
     assert len(finals) == 1 and finals[0]["status"] == "done"
+
+
+# ---- 6. long-running execution -----------------------------------------------
+#
+# Regressions for the failure mode where a legitimately long, tool-heavy turn
+# could not finish: the step budget was seeded in the wrong UNIT on resume, and
+# the no-progress deadline only counted TOOL activity.
+
+
+async def test_resume_seeds_budget_in_steps_not_tool_calls(monkeypatch):
+    """A resumed turn that had made MORE tool calls than ai_agent_max_steps must
+    keep a real budget and still be able to call tools.
+
+    The budget is spent one per executor PASS, but it used to be seeded by
+    subtracting len(completedTools) — a count of individual CALLS. 35 calls against
+    a 12-step budget produced max(0, 12 - 35) = 0, which silently unbound every
+    tool: the model could no longer call generate_file (or anything else), and
+    with no tool able to run it could never emit another tool event to roll its
+    own deadline either. This asserts the tool actually runs.
+    """
+
+    async def fake_embed(settings, q):
+        return [0.0] * settings.embedding_dimensions
+
+    async def fake_retrieve(engine, **kw):
+        return []
+
+    from app.ingest import retrieve
+
+    monkeypatch.setattr(retrieve.embed, "embed_query", fake_embed)
+    monkeypatch.setattr(retrieve.store, "retrieve", fake_retrieve)
+
+    tc = {"name": "search_web", "args": {"q": "fresh"}, "id": "c-new"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain"),
+            [AIMessage(content="", tool_calls=[tc]), AIMessage(content="answer")],
+        ),
+    )
+    settings = make_settings(
+        "http://x",
+        ai_agent_enabled=True,
+        ollagraph_base_url="https://api.ollagraph.test",
+        ollagraph_api_key="osk_test_key_123456",
+    )
+    from app.tools.registry import ToolRegistry
+    from app.tools.selection import ToolSelector
+
+    reg = ToolRegistry()
+    reg.register(_web_tool())
+    adapter_calls = {"n": 0}
+
+    def handler(req):
+        adapter_calls["n"] += 1
+        return httpx.Response(200, json={"hits": ["a"]})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    convex = RecordingConvex()
+    # 35 completed CALLS that were made across only 3 executor PASSES.
+    completed = [
+        CompletedTool(toolId="search_web", args={"q": str(i)}, resultContent="{}")
+        for i in range(35)
+    ]
+    req = _req(
+        "keep going",
+        attempt=1,
+        completedTools=completed,
+        completedSteps=3,
+        eventSeqBaseline=80,
+    )
+    assert len(req.completedTools) == 35
+    assert settings.ai_agent_max_steps < len(req.completedTools)  # the trap
+    try:
+        await run_generation(
+            req,
+            settings,
+            convex,
+            tool_registry=reg,
+            tool_selector=ToolSelector(reg),
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+    # Budget was 12 - 3 = 9, NOT max(0, 12 - 35) = 0, so tools stayed bound.
+    assert adapter_calls["n"] == 1
+    finals = _ops(convex, "finalize")
+    assert len(finals) == 1 and finals[0]["status"] == "done"
+
+
+async def test_completed_steps_falls_back_to_call_count_when_absent():
+    """A Convex that predates `completedSteps` omits it. The runner must fall back
+    to the old call-count (conservative) rather than treating it as zero consumed."""
+    req = _req("x", attempt=1, completedTools=[])
+    assert req.completedSteps == 0  # additive + defaulted: extra="forbid" is safe
+
+
+async def test_streamed_text_rolls_the_total_deadline():
+    """Deltas are forward progress. Without this the final long-form answer of a
+    tool-heavy turn — which emits NO tool events, and runs precisely when the step
+    budget is spent so none is even possible — sat under a deadline frozen at the
+    last tool call and was killed mid-generation."""
+    s = make_settings("http://x")
+    convex = RecordingConvex()
+    w = DeltaWriter(convex, "s1", s)
+    rolled = {"n": 0}
+    w.on_progress = lambda: rolled.__setitem__("n", rolled["n"] + 1)
+    await w.push("some streamed answer text")
+    await w.flush(force=True)
+    assert rolled["n"] == 1
+    assert _ops(convex, "delta")
+
+
+async def test_background_heartbeat_does_not_kill_a_turn_making_text_progress():
+    """End-to-end of the same invariant at the watchdog: a turn whose deadline is
+    rolled by text keeps running; one that goes silent is still cancelled."""
+    s = make_settings("http://x")
+    convex = RecordingConvex()
+    w = DeltaWriter(convex, "s1", s)
+
+    async def never_ends():
+        await asyncio.sleep(3)
+
+    # Deadline already in the past and never rolled -> the watchdog must fire.
+    task = asyncio.create_task(never_ends())
+    flag = {"hit": False, "mono": time.monotonic() - 1}
+    hb = asyncio.create_task(_background_heartbeat(w, 10, task, flag))
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    hb.cancel()
+    assert flag["hit"] is True
+
+
+# ---- 7. provider rate limiting (429) -----------------------------------------
+#
+# 429 is by far the most common Ollagraph failure in production. Retrying it on
+# our own 0.5s/1.0s exponential lands every remaining attempt inside the same rate
+# window, so all of them fail and the work is silently lost.
+
+
+async def test_retry_after_longer_than_the_tool_budget_is_not_retried():
+    """Waiting longer than a whole tool execution would park a concurrency slot
+    doing nothing. Give up and let the model re-decide with the result in hand."""
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return httpx.Response(429, headers={"retry-after": "999"}, json={"e": "slow"})
+
+    ctx, client = _retry_ctx(handler, retries=2)  # default_timeout_s=5.0
+    try:
+        out = await execute_tool_calls([_tc()], ctx)
+    finally:
+        await client.aclose()
+    assert calls["n"] == 1, "a doomed wait must not burn the remaining attempts"
+    payload = json.loads(out[0].content)
+    assert payload["kind"] == "rate_limited"
+    assert payload["retry_after_s"] == 999.0
+
+
+async def test_retry_after_within_budget_is_honoured_and_succeeds():
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"retry-after": "0.02"}, json={})
+        return httpx.Response(200, json={"hits": ["a"]})
+
+    ctx, client = _retry_ctx(handler, retries=2)
+    t0 = time.monotonic()
+    try:
+        out = await execute_tool_calls([_tc()], ctx)
+    finally:
+        await client.aclose()
+    elapsed = time.monotonic() - t0
+    assert calls["n"] == 2
+    # Slept the PROVIDER's window (0.02s), not the 0.001s test exponential.
+    assert elapsed >= 0.02
+    assert "hits" in out[0].content
+
+
+async def test_a_malformed_retry_after_never_parks_the_turn():
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return httpx.Response(
+            429, headers={"retry-after": "Wed, 21 Oct 2099 07:28:00 GMT"}, json={}
+        )
+
+    ctx, client = _retry_ctx(handler, retries=1)
+    try:
+        await execute_tool_calls([_tc()], ctx)
+    finally:
+        await client.aclose()
+    # Unparseable -> ignored, falls back to the bounded exponential (still retried).
+    assert calls["n"] == 2
+
+
+# ---- 8. fan-out is queued, never refused -------------------------------------
+
+
+async def test_a_wide_fanout_runs_every_call_instead_of_refusing_the_overflow():
+    """Refusing the overflow punished exactly the batching PARALLEL_TOOL_GUIDANCE
+    asks the model for: it surfaced as FAILED tool runs and cost another step to
+    re-emit work already decided on. A wide batch must simply queue."""
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return httpx.Response(200, json={"hits": ["a"]})
+
+    ctx, client = _retry_ctx(handler, retries=0)
+    assert ctx.max_tool_calls_per_step == 0, "the count cap is off by default"
+    n = 30  # comfortably over the old cap of 24
+    # DISTINCT args: identical (tool, args) inside one turn are deduped on purpose
+    # (the read-only loop guard), which is a different mechanism from the fan-out.
+    batch = [
+        {"name": "search_web", "args": {"q": f"q{i}"}, "id": f"c{i}"} for i in range(n)
+    ]
+    try:
+        out = await execute_tool_calls(batch, ctx)
+    finally:
+        await client.aclose()
+    assert calls["n"] == n
+    assert len(out) == n  # the tool_call<->result pairing lock still holds
+    assert not any("too many tool calls" in str(m.content) for m in out)

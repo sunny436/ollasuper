@@ -78,3 +78,105 @@ async def test_emit_final_and_error_use_the_finalize_op():
     await w.emit_error({"code": "x", "message": "y"}, text="partial")
     finals = _ops(convex, "finalize")
     assert [f["status"] for f in finals] == ["done", "error"]
+
+
+# ---- event coalescing --------------------------------------------------------
+#
+# One ingress round-trip per event cost ~126ms of MEASURED loopback latency, and
+# the executor emits two per tool call — ~252ms of serialization per call, which
+# dominated any wide fan-out. Events are coalesced now, but coalescing must never
+# ADD latency: the first event of a burst still goes out immediately.
+
+
+class SlowConvex(RecordingConvex):
+    """Lets a burst pile up behind an in-flight POST, like the real ingress."""
+
+    def __init__(self, delay: float = 0.02) -> None:
+        super().__init__()
+        self._delay = delay
+
+    async def ingress(self, body: dict) -> dict:
+        import asyncio
+
+        await asyncio.sleep(self._delay)
+        return await super().ingress(body)
+
+
+async def test_a_lone_event_is_not_delayed_by_coalescing():
+    w, convex = _writer()
+    await w.emit_event(EventType.TOOL_CALL, tool_name="t", call_id="c1", arguments={})
+    # Posted during the await, with no drain/flush needed.
+    assert len(_ops(convex, "event")) == 1
+
+
+async def test_a_burst_coalesces_into_far_fewer_round_trips():
+    import asyncio
+
+    convex = SlowConvex()
+    w = DeltaWriter(convex, "s1", make_settings("http://x"))  # type: ignore[arg-type]
+    await asyncio.gather(
+        *(
+            w.emit_event(
+                EventType.TOOL_RESULT, call_id=f"c{i}", status="success", result={}
+            )
+            for i in range(200)
+        )
+    )
+    await w.flush_events()
+    posts = _ops(convex, "event")
+    sent = sum(len(p["events"]) for p in posts)
+    assert sent == 200, "every event must still reach Convex"
+    # 200 events used to cost 200 round-trips; now it is a small handful.
+    assert len(posts) < 20, f"expected coalescing, got {len(posts)} round-trips"
+
+
+async def test_no_batch_exceeds_the_convex_slice_cap():
+    """chat/ingest.ts does `events.slice(0, MAX_EVENTS_PER_BATCH)` and SILENTLY
+    drops the excess. Events are the resume checkpoint's fallback authority, so an
+    oversized body would lose TOOL_RESULTs and cause duplicate execution."""
+    import asyncio
+
+    from app.runtime.writer import _EVENT_BATCH_MAX
+
+    convex = SlowConvex()
+    w = DeltaWriter(convex, "s1", make_settings("http://x"))  # type: ignore[arg-type]
+    await asyncio.gather(
+        *(
+            w.emit_event(EventType.TOOL_RESULT, call_id=f"c{i}", status="success")
+            for i in range(300)
+        )
+    )
+    await w.flush_events()
+    posts = _ops(convex, "event")
+    assert posts and all(len(p["events"]) <= _EVENT_BATCH_MAX for p in posts)
+    assert sum(len(p["events"]) for p in posts) == 300
+
+
+async def test_side_effecting_tool_call_still_posts_synchronously():
+    """The executor's WRITE-AHEAD: a side-effecting call may not touch the provider
+    until its intent is durably recorded, so this one event cannot be buffered and
+    its returned bool must describe ITSELF."""
+    w, convex = _writer()
+    landed = await w.emit_event(
+        EventType.TOOL_CALL,
+        tool_name="t",
+        call_id="c1",
+        arguments={},
+        side_effect="external_side_effect",
+    )
+    assert landed is True
+    posts = _ops(convex, "event")
+    assert len(posts) == 1 and len(posts[0]["events"]) == 1
+
+
+async def test_buffered_events_are_drained_before_finalize():
+    """finalize folds chatStreamEvents into the message server-side, so anything
+    still buffered would vanish from the fold and from resume's fallback."""
+    convex = SlowConvex()
+    w = DeltaWriter(convex, "s1", make_settings("http://x"))  # type: ignore[arg-type]
+    await w.emit_event(EventType.TOOL_RESULT, call_id="c1", status="success")
+    await w.emit_event(EventType.TOOL_RESULT, call_id="c2", status="success")
+    await w.finalize("done")
+    sent = sum(len(p["events"]) for p in _ops(convex, "event"))
+    assert sent == 2
+    assert _ops(convex, "finalize")

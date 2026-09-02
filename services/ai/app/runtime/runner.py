@@ -195,9 +195,10 @@ async def run_generation(
     started = time.monotonic()
     hb_task: asyncio.Task | None = None
     # `mono` is the LIVE total-execution deadline (monotonic seconds), read every
-    # heartbeat tick. A TOOL event rolls it forward (below) so a skill/agent turn
-    # that legitimately runs many tools is bounded by tool INACTIVITY, not a fixed
-    # wall-clock; a plain no-tool turn never rolls it and keeps the hard deadline.
+    # heartbeat tick. ANY forward progress rolls it forward (below) — a tool event
+    # OR streamed text — so the turn is bounded by INACTIVITY rather than a fixed
+    # wall-clock. A turn that produces neither for the full window is genuinely
+    # stuck and is still cancelled.
     deadline_flag = {"hit": False, "mono": 0.0}
 
     def _extend_deadline() -> None:
@@ -209,6 +210,11 @@ async def run_generation(
     # The shared writer is reused by every delegated sub-agent, so a sub-agent's
     # tool events roll the parent turn's deadline too (the deep-audit case).
     writer.on_tool_activity = _extend_deadline
+    # Streamed TEXT is forward progress too. Tool events alone left the final
+    # long-form answer — which emits no tool events, and runs precisely when the
+    # step budget is spent so none is even possible — under a deadline frozen at
+    # the last tool call. That is what killed long deliverables mid-generation.
+    writer.on_progress = _extend_deadline
     tools_ctx: ToolExecContext | None = None  # defined pre-try for the finally
 
     try:
@@ -1126,7 +1132,13 @@ async def run_generation(
 
         state = {"messages": messages, "system_prompt": system}
         if tools_ctx is not None:
-            state["tool_budget"] = max(0, settings.ai_agent_max_steps - completed_steps)
+            # Spend the budget in the SAME unit the graph spends it in: one per
+            # executor PASS. `req.completedSteps` is the distinct-stepId count from
+            # the durable ledger; `completed_steps` (a count of individual tool
+            # CALLS) is only the fallback for a Convex that predates the field, and
+            # over-counting there is safe-but-conservative, never unbounded.
+            already = req.completedSteps or completed_steps
+            state["tool_budget"] = max(0, settings.ai_agent_max_steps - already)
             # Phase 6 (B3): the per-step re-fit budget for the in-graph model node.
             state["fit_budget"] = fit_budget
             # Phase 12b (Stage 1): seed the dynamic working set so the model node

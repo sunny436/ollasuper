@@ -72,6 +72,23 @@ class Settings(BaseSettings):
     ollagraph_discovery_timeout_s: float = 15.0
     # Default per-tool timeout when a tool's request schema declares none.
     ollagraph_default_tool_timeout_s: float = 30.0
+    # The PROCESS-WIDE outbound tool-connection pool (app.state.ollagraph_http is a
+    # singleton, so this is shared by every concurrent stream, not a per-turn
+    # budget). This is the ONE genuine infrastructure limit on Ollagraph
+    # concurrency — sockets and in-flight response buffers — which is why
+    # `ai_agent_max_concurrent_tools` is aligned to it rather than being a second,
+    # independent cap. The value is httpx's own library default; the previous 16
+    # was an OllaSuper choice that silently throttled every stream in the process.
+    ollagraph_max_connections: int = 100
+    # How long a QUEUED call may wait for a free connection. Deliberately separate
+    # from the tool's execution timeout: httpx applies a bare float to every phase,
+    # so pool waiting used to be charged to the tool's own budget (see call_tool).
+    ollagraph_pool_acquire_timeout_s: float = 30.0
+    # Floor for the adaptive concurrency gate. The gate halves in-flight
+    # concurrency on a provider 429 and re-grows on sustained success (AIMD), so
+    # the provider's real capacity — not a configured guess — decides how wide the
+    # fan-out runs. This floor only stops it collapsing to zero.
+    ollagraph_min_concurrency: int = 2
 
     # --- Tool discovery / selection (Phase 2: metadata-only, provider-agnostic)
     # Deterministic selection over the cached Tool Registry. No execution, no LLM.
@@ -94,18 +111,24 @@ class Settings(BaseSettings):
     # fix/rescore cycles) use the headroom. The blog fix loop caps itself at 3 cycles
     # in-prompt, so this never becomes unbounded regeneration.
     ai_agent_max_steps: int = 12
-    # Phase 6: max tool calls executed in ONE step (assistant message). A model
-    # that emits more gets the first N run and the rest refused with a paired
-    # error — bounds a degenerate 50-fan-out (duration/ledger/memory). Generous:
-    # real turns emit a handful. 0 = unlimited.
-    ai_agent_max_tool_calls_per_step: int = 24
-    # Phase 7: max tool calls that run SIMULTANEOUSLY within one step. The batched
-    # (independent) calls of one assistant message run concurrently, bounded by
-    # this semaphore. Sized to the Ollagraph adapter pool (16 conns) so a whole
-    # step's independent checks run at once; beyond the pool concurrency just
-    # queues. 0/1 = sequential (no concurrency). Kept in lockstep with
-    # ExecutionPolicy/DEFAULT_AGENT (spec.py) + the grounding test (test_agent.py).
-    ai_agent_max_concurrent_tools: int = 16
+    # Emergency backstop ONLY — 0 (the default) means unlimited, and unlimited is
+    # the intended operating mode. A batch wider than the concurrency budget is
+    # QUEUED by the executor's semaphore, not refused; the natural bound on one
+    # assistant message's fan-out is the model's own output-token ceiling.
+    #
+    # This used to default to 24 and REFUSE the overflow with a paired error, which
+    # punished exactly the batching PARALLEL_TOOL_GUIDANCE asks for, surfaced as
+    # failed tool runs in the UI, and cost another step to re-emit work already
+    # decided on. Set non-zero only to contain a genuinely degenerate model.
+    ai_agent_max_tool_calls_per_step: int = 0
+    # Max tool calls that run SIMULTANEOUSLY within one step. Aligned to
+    # `ollagraph_max_connections` so a whole step's independent calls launch at
+    # once and the CONNECTION POOL (plus the adaptive 429 gate) is the single real
+    # limiter — not a second, independent product cap that silently throttled a
+    # step to 16 while 32 streams oversubscribed the same 16-socket pool.
+    # 0/1 = sequential. Kept in lockstep with ExecutionPolicy/DEFAULT_AGENT
+    # (spec.py) + the grounding test (test_agent.py).
+    ai_agent_max_concurrent_tools: int = 100
     # Per-tool result is truncated to this many chars of serialized JSON before
     # it re-enters the context as a ToolMessage (bounds runaway tool output).
     ai_agent_tool_result_max_chars: int = 8000

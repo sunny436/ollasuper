@@ -38,15 +38,27 @@ const MAX_DELTA_CHARS = 16_000;
 const MAX_EVENTS_PER_BATCH = 64;
 const MAX_EVENT_PAYLOAD_CHARS = 100_000;
 /**
- * The fixed total-execution deadline (mirror of AGENT_TOTAL_DEADLINE_MS in
- * chat/messages.ts) bounds a plain no-tool reply. A turn that is actively RUNNING
- * TOOLS (a skill/agent task, e.g. a deep SEO audit) rolls its deadline forward on
- * each tool event — see the deadline roll in `appendEvent` — so it is bounded by
- * tool INACTIVITY, not a fixed wall-clock, and neither the reaper nor a resume
- * kills it mid-audit. A no-tool turn emits no tool events, so it is unchanged.
+ * The total-execution deadline (mirror of AGENT_TOTAL_DEADLINE_MS in
+ * chat/messages.ts) is a NO-PROGRESS watchdog, not a wall-clock cap. Any forward
+ * progress rolls it: a tool event (`appendEvent`) OR streamed text (`appendDeltas`).
+ *
+ * Tool events alone were not enough. The final long-form answer of a tool-heavy
+ * turn — the slowest phase, and the one that produces the deliverable — emits
+ * tokens and NO tool events, and it runs exactly when the step budget is spent so
+ * no further tool event is even possible. That left the most valuable phase under
+ * a deadline frozen at the last tool call, which is what killed it.
  */
 const AGENT_TOTAL_DEADLINE_MS = 300_000;
 const TOOL_EVENT_TYPES = new Set(["TOOL_CALL", "TOOL_RESULT", "TOOL_PROGRESS"]);
+/**
+ * `appendEvent` was the single largest source of Convex OCC write-conflicts (68/68
+ * observed in 24h, retried at 47-77ms each) because it patched this stream row on
+ * EVERY call — and its victims included `upsertExecution`, the write-ahead gate a
+ * side-effecting tool must clear before it may fire. `heartbeatAt` has its own
+ * dedicated 5s beat, so refreshing it here is redundant unless it has genuinely
+ * aged; this bound keeps a 6x margin under the reaper's STALL_MS (90s).
+ */
+const HEARTBEAT_COALESCE_MS = 15_000;
 /**
  * A single delta with seq 1e9 would trigger compaction, set committedSeq to
  * 1e9, and then silently drop every legitimate delta that followed via the
@@ -234,6 +246,10 @@ export const appendDeltas = internalMutation({
     const patch: Partial<Doc<"chatStreams">> = {
       chunkSeq: maxSeq,
       heartbeatAt: now,
+      // Streamed text IS forward progress. Without this, a turn that has spent its
+      // step budget can no longer emit a tool event, so its deadline freezes at the
+      // last tool call and the final answer is killed mid-generation.
+      deadlineAt: Math.max(stream.deadlineAt ?? 0, now + AGENT_TOTAL_DEADLINE_MS),
     };
     if (stream.status === "queued") patch.status = "running";
 
@@ -330,24 +346,27 @@ export const appendEvent = internalMutation({
       });
     }
 
+    // Write the hot stream row ONLY when a field genuinely changes. Every write
+    // here is an OCC conflict opportunity against upsertExecution / heartbeat /
+    // appendDeltas, which all touch this same document (see HEARTBEAT_COALESCE_MS).
     const patch: {
-      hasEvents: true;
-      heartbeatAt: number;
+      hasEvents?: true;
+      heartbeatAt?: number;
       status?: "running";
       deadlineAt?: number;
-    } = { hasEvents: true, heartbeatAt: now };
+    } = {};
+    if (!stream.hasEvents) patch.hasEvents = true;
+    if (now - stream.heartbeatAt >= HEARTBEAT_COALESCE_MS) patch.heartbeatAt = now;
     if (stream.status === "queued") patch.status = "running";
     // Roll the total-execution deadline forward on tool activity so a legitimately
     // long tool/skill turn is not failed by the reaper (nor instant-failed when it
-    // resumes past the original deadline). Only tool events extend it — a plain
-    // no-tool reply never does, so its hard deadline is preserved.
+    // resumes past the original deadline). `appendDeltas` rolls it for streamed
+    // text; between them, any forward progress keeps the turn alive.
     if (events.some((e) => TOOL_EVENT_TYPES.has(e.type))) {
-      patch.deadlineAt = Math.max(
-        stream.deadlineAt ?? 0,
-        now + AGENT_TOTAL_DEADLINE_MS,
-      );
+      const rolled = now + AGENT_TOTAL_DEADLINE_MS;
+      if (rolled > (stream.deadlineAt ?? 0)) patch.deadlineAt = rolled;
     }
-    await ctx.db.patch(stream._id, patch);
+    if (Object.keys(patch).length > 0) await ctx.db.patch(stream._id, patch);
     if (stream.status === "queued") {
       await ctx.db.patch(stream.messageId, {
         status: "streaming",

@@ -326,8 +326,11 @@ async def test_grounding_default_agent_reproduces_runner_assembly():
     ctx, specs = Agent.build_context(DEFAULT_AGENT, env)
     assert ctx is not None
     s = _settings()
-    assert ctx.max_concurrent_tools == s.ai_agent_max_concurrent_tools == 16
-    assert ctx.max_tool_calls_per_step == s.ai_agent_max_tool_calls_per_step == 24
+    # Concurrency is aligned to the connection pool (the real limit); the per-step
+    # COUNT cap is off by default — a wide batch queues, it is never refused.
+    assert ctx.max_concurrent_tools == s.ai_agent_max_concurrent_tools == 100
+    assert ctx.max_concurrent_tools == s.ollagraph_max_connections
+    assert ctx.max_tool_calls_per_step == s.ai_agent_max_tool_calls_per_step == 0
     assert ctx.tool_max_retries == s.ai_agent_tool_max_retries == 2
     assert ctx.result_max_chars == s.ai_agent_tool_result_max_chars == 8000
     assert ctx.run_id == "run_1" and ctx.run_attempt == 0

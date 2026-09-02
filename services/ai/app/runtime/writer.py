@@ -52,6 +52,12 @@ _TOOL_EVENT_TYPES = frozenset(
     {EventType.TOOL_CALL, EventType.TOOL_RESULT, EventType.TOOL_PROGRESS}
 )
 
+# Convex `appendEvent` hard-caps ONE ingress body at MAX_EVENTS_PER_BATCH and
+# SILENTLY `.slice()`s the excess away (chat/ingest.ts). Events are the resume
+# checkpoint's fallback authority, so a dropped TOOL_RESULT is not cosmetic —
+# chunk client-side at exactly that number and never send more in one body.
+_EVENT_BATCH_MAX = 64
+
 log = get_logger(__name__)
 
 
@@ -115,6 +121,24 @@ class DeltaWriter:
         # sub-agent, since they share this one writer. A no-tool turn emits no tool
         # events, so its deadline is untouched.
         self.on_tool_activity: Callable[[], None] | None = None
+        # Rolls the total-execution deadline on ANY forward progress, not just tool
+        # work. A turn streaming a long final answer emits no tool events, so
+        # `on_tool_activity` alone leaves the slowest, most valuable phase of a
+        # tool-heavy turn under a FROZEN deadline. Bound to the same callback.
+        self.on_progress: Callable[[], None] | None = None
+        # Typed events are COALESCED (like deltas) instead of costing one ingress
+        # round-trip each: at the measured ~126ms loopback floor, 2 events per tool
+        # call is ~252ms of serialized bookkeeping per call, which dominates a wide
+        # fan-out. Drained by flush()/heartbeat()/finalize(), on a size or age
+        # trigger, and synchronously whenever a caller needs the durable landed bool.
+        self._events: list[dict] = []
+        # True while a drain is mid-POST. Coalescing NEVER delays an event: the
+        # first one goes out immediately, and only what piles up BEHIND an in-flight
+        # POST is batched. A low-rate turn stays byte-identical to one-POST-per-event
+        # while a wide fan-out collapses hundreds of round-trips into a handful.
+        self._event_draining = False
+        # Held ONLY to swap the buffer, never across the network round-trip.
+        self._event_lock = asyncio.Lock()
         self._first_failure_at: float | None = None
         self.stats = WriterStats()
 
@@ -191,6 +215,9 @@ class DeltaWriter:
             await self.flush()
 
     async def flush(self, force: bool = False) -> None:
+        # Piggyback the event drain on the text path so a turn that is streaming
+        # keeps its activity timeline live without its own timer.
+        await self.flush_events()
         async with self._lock:
             if not self._buf and not self._pending:
                 return
@@ -236,6 +263,12 @@ class DeltaWriter:
                 ) * 1000
             if resp.get("cancel"):
                 self._cancel_requested = True
+            # Deltas ARE forward progress. Rolling the deadline here is what keeps a
+            # long final answer — which by definition emits no tool events — from
+            # being killed mid-generation by a deadline frozen at the last tool call.
+            if self.on_progress is not None:
+                with contextlib.suppress(Exception):  # never fatal
+                    self.on_progress()
         _ = force
 
     def _evict_if_needed(self) -> None:
@@ -251,6 +284,9 @@ class DeltaWriter:
     async def heartbeat(self) -> None:
         """Keep the stall reaper at bay while the model thinks or a tool runs,
         and pick up a cancellation during a no-token gap."""
+        # A wide tool fan-out produces events but no text, so this beat is the
+        # drain that keeps the activity pill live between model steps.
+        await self.flush_events()
         try:
             resp = await self._convex.ingress(
                 {"op": "heartbeat", "streamId": self._stream_id}
@@ -275,6 +311,11 @@ class DeltaWriter:
         but a lost finalize leaves the message spinning in the UI until the
         Convex reaper fires 90s later.
         """
+        # Terminal folds `chatStreamEvents` into the message, so anything still
+        # buffered here would be lost from the fold (and from resume's fallback
+        # authority). Drain first; a failure is swallowed exactly like a lost delta.
+        with contextlib.suppress(Exception):
+            await self.flush_events()
         body: dict = {
             "op": "finalize",
             "streamId": self._stream_id,
@@ -555,24 +596,68 @@ class DeltaWriter:
             **body,
         )
         self._event_seq += 1
-        async with self._lock:
-            try:
-                resp = await self._convex.ingress(
-                    {
-                        "op": "event",
-                        "streamId": self._stream_id,
-                        "events": [envelope.to_wire()],
-                    }
-                )
-            except ConvexUnavailable:
-                return False  # transient; the answer text is unaffected
-            except ConvexRejected:
-                log.error("event_rejected", extra={"stream_id": self._stream_id})
-                return False
-            if resp.get("cancel"):
-                self._cancel_requested = True
-            # Landed iff Convex actually persisted the row AND the stream is live.
-            return bool(resp.get("persisted")) and not resp.get("unknown")
+        wire = envelope.to_wire()
+        # A side-effecting TOOL_CALL is the executor's WRITE-AHEAD: it may not touch
+        # the provider until the intent is durably recorded, so it needs the REAL
+        # landed bool. Drain anything queued first (to keep wire order tidy), then
+        # POST this one event alone so the returned bool unambiguously describes IT.
+        if (
+            type is EventType.TOOL_CALL
+            and str(body.get("side_effect") or "read_only") != "read_only"
+        ):
+            await self.flush_events()
+            return await self._post_events([wire])
+        async with self._event_lock:
+            self._events.append(wire)
+            start_drain = not self._event_draining
+        # Only the first event of a burst pays a round-trip; the rest ride its wake.
+        if start_drain:
+            await self.flush_events()
+        return True
+
+    async def _post_events(self, batch: list[dict]) -> bool:
+        """POST one chunk. Returns whether Convex durably persisted it AND the
+        stream is live — the write-ahead signal. Best-effort on transport failure,
+        exactly like a delta: `toolExecutions` is the recovery AUTHORITY, and the
+        terminal state is folded server-side at finalize."""
+        try:
+            resp = await self._convex.ingress(
+                {"op": "event", "streamId": self._stream_id, "events": batch}
+            )
+        except ConvexUnavailable:
+            return False  # transient; the answer text is unaffected
+        except ConvexRejected:
+            log.error("event_rejected", extra={"stream_id": self._stream_id})
+            return False
+        if resp.get("cancel"):
+            self._cancel_requested = True
+        return bool(resp.get("persisted")) and not resp.get("unknown")
+
+    async def flush_events(self) -> bool:
+        """Drain buffered typed events, re-looping so anything that arrives behind
+        an in-flight POST rides the next chunk instead of costing its own round-trip.
+
+        Chunks are swapped under a short lock and POSTed OUTSIDE it. Ordering
+        correctness does not depend on wire order (Convex keys events by seq, so a
+        reordered POST self-heals — see the note on `_lock`); holding a mutex across
+        the round-trip only serialized the fan-out, at ~126ms of measured loopback
+        latency per event.
+        """
+        landed = False
+        try:
+            while True:
+                async with self._event_lock:
+                    if not self._events:
+                        return landed
+                    batch = self._events[:_EVENT_BATCH_MAX]
+                    del self._events[:_EVENT_BATCH_MAX]
+                    self._event_draining = True
+                landed = await self._post_events(batch)
+        finally:
+            # ALWAYS clear the in-flight marker, including on the CancelledError
+            # the deadline watchdog raises mid-POST. Leaving it set would make
+            # every later emit buffer without ever starting a drain of its own.
+            self._event_draining = False
 
     async def request_approval(
         self,

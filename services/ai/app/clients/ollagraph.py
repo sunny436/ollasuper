@@ -17,6 +17,8 @@ unscrubbed) and never reach the browser.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 
 import httpx
@@ -28,6 +30,82 @@ from app.tools.discovery import DiscoveryResult, discover_from_spec
 from app.tools.errors import ToolError, ToolErrorKind
 
 log = get_logger(__name__)
+
+
+class AdaptiveGate:
+    """Process-wide, provider-feedback concurrency gate for outbound tool calls.
+
+    OllaSuper imposes NO configured ceiling on how much Ollagraph work an agent may
+    do — a task that genuinely needs 200 calls makes 200. What it must not do is
+    fire them faster than the provider will accept: 429 is by far the most common
+    Ollagraph failure in production, and a rate-limited call is work the model
+    silently does not get. A fixed cap cannot solve that (too low throttles honest
+    work, too high converts throughput into errors), so the width is discovered
+    from the provider instead of configured: AIMD — halve on a 429, grow by one per
+    sustained-success round, floored so it can never collapse to nothing.
+
+    Deliberately process-wide, like the httpx pool it fronts: the executor's
+    per-step semaphore is per-turn, so without a shared gate N concurrent streams
+    would each believe they owned the whole pool.
+    """
+
+    def __init__(self, maximum: int, minimum: int) -> None:
+        self._max = max(1, maximum)
+        self._min = max(1, min(minimum, self._max))
+        self._limit = self._max
+        self._in_flight = 0
+        self._ok = 0
+        self._cond = asyncio.Condition()
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    @contextlib.asynccontextmanager
+    async def slot(self):
+        async with self._cond:
+            while self._in_flight >= self._limit:
+                await self._cond.wait()
+            self._in_flight += 1
+        try:
+            yield
+        finally:
+            async with self._cond:
+                self._in_flight -= 1
+                self._cond.notify()
+
+    async def on_rate_limited(self) -> None:
+        """Multiplicative decrease: the provider just told us we are too wide."""
+        async with self._cond:
+            before = self._limit
+            self._limit = max(self._min, self._limit // 2)
+            self._ok = 0
+        if before != self._limit:
+            log.info("tool.gate_narrowed", extra={"from": before, "to": self._limit})
+
+    async def on_success(self) -> None:
+        """Additive increase, one slot per `limit` consecutive successes, so the
+        gate probes back toward the pool size without immediately re-tripping."""
+        async with self._cond:
+            self._ok += 1
+            if self._ok >= self._limit and self._limit < self._max:
+                self._limit += 1
+                self._ok = 0
+                self._cond.notify()
+
+
+_gate: AdaptiveGate | None = None
+
+
+def tool_gate(settings: Settings) -> AdaptiveGate:
+    """The shared gate every outbound Ollagraph call passes through. Lazy, so it
+    binds to the running loop (mirrors ingest/governor.py)."""
+    global _gate
+    if _gate is None:
+        _gate = AdaptiveGate(
+            settings.ollagraph_max_connections, settings.ollagraph_min_concurrency
+        )
+    return _gate
 
 _JSON_TYPES = {
     "string": str,
@@ -63,13 +141,24 @@ class OllagraphAdapter:
         self._c = client
 
     @staticmethod
-    def build_http_client() -> httpx.AsyncClient:
+    def build_http_client(settings: Settings | None = None) -> httpx.AsyncClient:
         # Mirrors ConvexClient.build_http_client(); tool endpoints can be slow
         # (scraping/rendering), so the read timeout is generous but bounded.
+        #
+        # This client is a PROCESS-WIDE singleton (app.state.ollagraph_http), so
+        # `max_connections` is shared by every concurrent stream — it is not a
+        # per-turn budget. It is the one genuine infrastructure limit on outbound
+        # tool concurrency, which is why the executor's semaphore is derived from
+        # the same setting rather than being an independent second cap.
+        n = (
+            settings.ollagraph_max_connections
+            if settings is not None
+            else Settings.model_fields["ollagraph_max_connections"].default
+        )
         return httpx.AsyncClient(
             limits=httpx.Limits(
-                max_connections=16,
-                max_keepalive_connections=8,
+                max_connections=n,
+                max_keepalive_connections=max(1, n // 2),
                 keepalive_expiry=30,
             ),
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
@@ -263,10 +352,27 @@ class OllagraphAdapter:
         # argument can redirect the outbound call (no SSRF from this plane).
         url = f"{self._s.ollagraph_base_url.rstrip('/')}{tool.path}"
         timeout = tool.timeout or self._s.ollagraph_default_tool_timeout_s
+        gate = tool_gate(self._s)
         try:
-            r = await self._c.request(
-                tool.method.upper(), url, json=payload, headers=headers, timeout=timeout
-            )
+            # An explicit Timeout, NOT a bare float: httpx applies a bare float to
+            # every phase including `pool`, which made waiting for a free connection
+            # consume the tool's own EXECUTION budget — so a queued call could burn
+            # its whole allowance before its first byte, time out, and be retried,
+            # adding yet more pool pressure. Connect/read/write keep the tool's
+            # budget; pool acquisition gets its own, separately bounded wait.
+            async with gate.slot():
+                r = await self._c.request(
+                    tool.method.upper(),
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=httpx.Timeout(
+                        connect=5.0,
+                        read=timeout,
+                        write=10.0,
+                        pool=self._s.ollagraph_pool_acquire_timeout_s,
+                    ),
+                )
         except httpx.TimeoutException as e:
             raise ToolError(
                 ToolErrorKind.TIMEOUT, "tool call timed out", tool_id=tool.tool_id
@@ -276,7 +382,29 @@ class OllagraphAdapter:
                 ToolErrorKind.UNAVAILABLE, "tool unreachable", tool_id=tool.tool_id
             ) from e
 
+        # Feed the provider's verdict back BEFORE normalization turns it into an
+        # exception, so the gate learns from every call including the failed ones.
+        if r.status_code == 429:
+            await gate.on_rate_limited()
+        elif r.status_code < 400:
+            await gate.on_success()
         return self._normalize_response(tool, r)
+
+    @staticmethod
+    def _retry_after(r: httpx.Response) -> float | None:
+        """RFC 9110 `Retry-After`, as seconds. Accepts the delta-seconds form
+        (what rate limiters send); an HTTP-date form is ignored rather than
+        mis-parsed into a wrong wait. Negative/absurd values are dropped so a
+        malformed header can never park a turn.
+        """
+        raw = (r.headers.get("retry-after") or "").strip()
+        if not raw:
+            return None
+        try:
+            secs = float(raw)
+        except ValueError:
+            return None
+        return secs if 0 <= secs <= 3600 else None
 
     def _normalize_response(self, tool: ToolDefinition, r: httpx.Response) -> dict:
         sc = r.status_code
@@ -320,15 +448,25 @@ class OllagraphAdapter:
                 status=sc,
             )
         if sc == 429:
+            # 429 is by far the most common Ollagraph failure in production, so the
+            # provider's own backoff instruction is carried through rather than
+            # discarded — retrying on a 0.5s/1.0s exponential just lands all three
+            # attempts inside the same rate window and fails all three.
             raise ToolError(
-                ToolErrorKind.RATE_LIMITED, "tool rate limited", tool_id=tid, status=sc
+                ToolErrorKind.RATE_LIMITED,
+                "tool rate limited",
+                tool_id=tid,
+                status=sc,
+                retry_after_s=self._retry_after(r),
             )
         if sc >= 500:
+            # 503 commonly carries Retry-After too; honour it when present.
             raise ToolError(
                 ToolErrorKind.UPSTREAM_ERROR,
                 "tool upstream error",
                 tool_id=tid,
                 status=sc,
+                retry_after_s=self._retry_after(r),
             )
         raise ToolError(
             ToolErrorKind.UPSTREAM_ERROR, "tool error", tool_id=tid, status=sc
