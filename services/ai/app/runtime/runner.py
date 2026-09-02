@@ -720,7 +720,13 @@ async def run_generation(
             mem_ctx = MemoryContext(memories=req.memories, settings=settings)
         if file_gen:
             specs.append(GENERATE_FILE_TOOL_SPEC)
-        if compiled is not None:
+        # Bound once the thread HAS state worth enriching, and never on an
+        # unattended run. Binding it on every turn instead was tried and reverted:
+        # it changes the tool set of a plain turn, which broke the
+        # finalize-without-tools contract, and it did not actually help — the
+        # model declined to call this across ten production scenarios either way.
+        # See the honest note in the commit; the FLOOR is unaffected by any of it.
+        if compiled is not None and not req.unattended:
             specs.append(RECORD_CONTEXT_TOOL_SPEC)
         if research_as_tool:
             specs.append(RECORD_RESEARCH_TOOL_SPEC)
@@ -823,7 +829,7 @@ async def run_generation(
                     research=research_ctx,
                     data=data_ctx,
                     conversation=(
-                        conversation_state if compiled is not None else None
+                        None if req.unattended else conversation_state
                     ),
                     approvals={
                         a.approvalId: {"decision": a.decision, "token": a.token}

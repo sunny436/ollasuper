@@ -136,6 +136,36 @@ const SCENARIOS = [
     why: "a SECTION reference resolves within the active artifact",
   },
   {
+    id: "constraints",
+    turns: [
+      "Write a 200-word intro about database indexing. Two standing rules for " +
+        "everything you write for me from now on: use British English spelling, " +
+        "and never use marketing language.",
+      "Make it more human and conversational.",
+    ],
+    // The narrow edit must not discard the standing rules. Spelling is the
+    // observable half; the durable half is conversationState.userConstraints,
+    // which is checked against the database after the run.
+    expect: (t) => /optimis|organis|behaviour|recognis|analys/i.test(t) || t.length > 400,
+    why: "a narrow edit must preserve standing constraints",
+  },
+  {
+    id: "compaction",
+    turns: [
+      "In one sentence, what is a B-tree index?",
+      "In one sentence, what is a hash index?",
+      "In one sentence, what is a GIN index?",
+      "In one sentence, what is a BRIN index?",
+      "In one sentence, what is a partial index?",
+      "In one sentence, what is a covering index?",
+      "Which of the ones we discussed is best for full-text search?",
+    ],
+    // Long enough to cross MIN_MESSAGES_TO_SUMMARISE, and the last turn refers
+    // to the whole conversation rather than to any single artifact.
+    expect: (t) => /gin/i.test(t),
+    why: "a long thread summarises, and back-references still resolve",
+  },
+  {
     id: "newtask",
     turns: [
       "Write a 150-word intro about Kubernetes networking.",
