@@ -37,6 +37,7 @@ from app.runtime.context_manager import (
     derive_artifact,
     resolve_reference,
 )
+from app.runtime.context_tool import ContextToolState
 
 
 def artifact(
@@ -472,3 +473,47 @@ def test_a_modify_supersedes_and_keeps_the_original_identity() -> None:
     assert d.supersedes_artifact_id == "art_1"
     assert d.subject == "Cloud WireGuard VPN"
     assert d.kind == "blog"
+
+
+# ---------------------------------------------------------- enrichment tool
+
+
+def test_record_context_accumulates_and_dedupes() -> None:
+    """Enrichment only, bounded, and idempotent across repeated turns."""
+    st = ContextToolState()
+    st.merge(
+        constraints=["technically accurate", "SEO-friendly"],
+        decisions=None,
+        open_loops=None,
+    )
+    # A later turn restating the same constraint must not grow the list.
+    st.merge(
+        constraints=["SEO-friendly", "British English"], decisions=None, open_loops=None
+    )
+    assert st.constraints == [
+        "technically accurate",
+        "SEO-friendly",
+        "British English",
+    ]
+    assert st.called is True
+
+
+def test_record_context_ignores_junk_and_caps_length() -> None:
+    st = ContextToolState()
+    st.merge(
+        constraints=[123, None, "  spaced  ", "x" * 500],  # type: ignore[list-item]
+        decisions=None,
+        open_loops=None,
+    )
+    assert "spaced" in st.constraints
+    assert all(len(c) <= 240 for c in st.constraints)
+    assert not any(c == "" for c in st.constraints)
+
+
+def test_a_turn_that_records_nothing_sends_nothing() -> None:
+    """The absent-field rule: silence must not erase an earlier constraint."""
+    st = ContextToolState()
+    assert st.called is False
+    assert st.constraints == []
+    assert st.decisions == []
+    assert st.open_loops == []

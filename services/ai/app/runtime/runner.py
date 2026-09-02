@@ -80,6 +80,10 @@ from app.runtime.context_manager import (
     compile_context,
     derive_artifact,
 )
+from app.runtime.context_tool import (
+    RECORD_CONTEXT_TOOL_SPEC,
+    ContextToolState,
+)
 from app.runtime.env_factory import build_live_agent_env
 from app.runtime.roster import (
     build_delegate_spec,
@@ -185,6 +189,9 @@ async def run_generation(
     # before the compile.
     compiled = None
     turn_operation: str | None = None
+    # Enrichment accumulator for record_context. Initialised before the try so
+    # the post-finalize persist in the finally cannot NameError.
+    conversation_state = ContextToolState()
     started = time.monotonic()
     hb_task: asyncio.Task | None = None
     # `mono` is the LIVE total-execution deadline (monotonic seconds), read every
@@ -713,6 +720,8 @@ async def run_generation(
             mem_ctx = MemoryContext(memories=req.memories, settings=settings)
         if file_gen:
             specs.append(GENERATE_FILE_TOOL_SPEC)
+        if compiled is not None:
+            specs.append(RECORD_CONTEXT_TOOL_SPEC)
         if research_as_tool:
             specs.append(RECORD_RESEARCH_TOOL_SPEC)
         if data_as_tool:
@@ -813,6 +822,9 @@ async def run_generation(
                     memory=mem_ctx,
                     research=research_ctx,
                     data=data_ctx,
+                    conversation=(
+                        conversation_state if compiled is not None else None
+                    ),
                     approvals={
                         a.approvalId: {"decision": a.decision, "token": a.token}
                         for a in req.approvals
@@ -1303,7 +1315,11 @@ async def run_generation(
             # cannot delay a reply; it swallows its own failures, so it cannot
             # fail a turn that already succeeded. Only on a completed turn: a
             # cancelled or errored turn has no new state worth recording.
-            if status == "done":
+            # An UNATTENDED run carries exactly its own prompt by design (history
+            # is capped at 1) and dispatch sends it no conversationContext, so
+            # anything registered here could never be read back. Skip it rather
+            # than accumulate rows nothing will ever resolve against.
+            if status == "done" and not req.unattended:
                 # THE ARTIFACT FLOOR. Derived from the turn the application
                 # just produced, and written whether or not the model called
                 # anything — because a registration that depended on model
@@ -1327,12 +1343,31 @@ async def run_generation(
                             subject=derived.subject,
                             supersedes_artifact_id=derived.supersedes_artifact_id,
                         )
+                    # Enrichment rides the SAME write as the floor. Each list is
+                    # sent only when the model actually contributed something —
+                    # an absent field leaves the stored value standing, so a turn
+                    # that says nothing cannot erase a constraint set earlier.
                     await convex.context_state(
                         stream_id=req.streamId,
                         through_seq=max((h.seq for h in req.history), default=0),
                         operation=(turn_operation or ANSWER),
                         active_subject=(
                             derived.subject if derived is not None else None
+                        ),
+                        user_constraints=(
+                            conversation_state.constraints
+                            if conversation_state.constraints
+                            else None
+                        ),
+                        user_decisions=(
+                            conversation_state.decisions
+                            if conversation_state.decisions
+                            else None
+                        ),
+                        open_loops=(
+                            conversation_state.open_loops
+                            if conversation_state.open_loops
+                            else None
                         ),
                     )
                 except Exception:  # noqa: BLE001 - never fail a finished turn

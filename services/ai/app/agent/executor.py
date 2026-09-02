@@ -80,6 +80,10 @@ from app.research.tool import (
     clean_finding_args,
     clean_plan_args,
 )
+from app.runtime.context_tool import (
+    RECORD_CONTEXT_TOOL_NAME,
+    ContextToolState,
+)
 from app.runtime.writer import DeltaWriter
 from app.sales.tool import SALES_FORECAST_TOOL_NAME, compute_forecast
 from app.tools.errors import ToolError, ToolErrorKind
@@ -107,6 +111,7 @@ _RESERVED_BUILTINS = frozenset(
         FILE_GEN_TOOL_NAME,
         DOCUMENT_OPS_TOOL_NAME,
         RECORD_RESEARCH_TOOL_NAME,
+        RECORD_CONTEXT_TOOL_NAME,
         SALES_FORECAST_TOOL_NAME,
         FINANCE_CALC_TOOL_NAME,
         FINANCE_REFERENCE_TOOL_NAME,
@@ -199,6 +204,11 @@ class ToolExecContext:
     # dataset). Holds the per-turn dataset map (name→ref; storageId never reaches the
     # model). None otherwise ⇒ byte-identical.
     data: DataContext | None = None
+    # Conversational context: the per-turn accumulator for `record_context`.
+    # Enrichment ONLY — constraints, decisions, open loops. The floor is derived
+    # in code and this cannot reach it. None on a turn where the tool is not
+    # bound ⇒ byte-identical.
+    conversation: ContextToolState | None = None
     # Provider-neutral adapter map (empty => use the single `adapter` slot above,
     # preserving every existing single-provider call site + test byte-for-byte).
     adapters: dict[str, ToolAdapter] = field(default_factory=dict)
@@ -674,6 +684,27 @@ async def _run_one(
             execution,
             _run_forget(ctx, call_id, args),
             side_effect="external_side_effect",
+        )
+
+    # Conversational context: the reserved enrichment tool. It writes NOTHING
+    # itself — it accumulates into the per-turn holder that the post-finalize
+    # context-state POST already sends, so there is exactly one write path and
+    # one place the floor-wins merge happens. Read-only from the world's point
+    # of view, hence no side-effect classification.
+    if ctx.conversation is not None and bound_name == RECORD_CONTEXT_TOOL_NAME:
+        ctx.conversation.merge(
+            constraints=args.get("constraints"),
+            decisions=args.get("decisions"),
+            open_loops=args.get("open_loops"),
+        )
+        return _tool_message(
+            call_id,
+            {
+                "status": "ok",
+                "constraints": len(ctx.conversation.constraints),
+                "decisions": len(ctx.conversation.decisions),
+                "open_loops": len(ctx.conversation.open_loops),
+            },
         )
 
     # Deep Research: the reserved checkpoint tool, routed before registry.get. It
