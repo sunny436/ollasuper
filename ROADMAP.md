@@ -614,3 +614,41 @@ Convex stays the data plane; a separate **Python FastAPI + LangGraph** service a
   `deploy/57-ollasuper-domain.sh` clears `.next` before rebuilding and then greps the output to prove the new
   origin is actually in the bundle. This is also why the old ephemeral `trycloudflare` URLs were painful: they
   changed on every `cloudflared` restart and each change required a rebuild.
+
+## Long-running / Ollagraph-heavy execution — what the perf work left open
+
+The throughput + deadline work (see `perf(agent):` commits) removed the artificial
+step / fan-out / tool-discovery ceilings and fixed the frozen deadline. These were
+measured on production during that work and deliberately NOT fixed in it.
+
+- **`dispatch_unreachable` is the largest error class (101 all-time)** — bigger than
+  `internal` (58) and `deadline_exceeded` (13). It is Convex failing to reach the
+  inference plane at dispatch. It is NOT explained by the service dying: `NRestarts=0`
+  and zero OOM kills over the 14 days examined. Nobody has looked at what it actually
+  is, and it dwarfs the timeout problem that prompted the perf work.
+- **`model_stream_fallback` fires ~480×/14d.** Ollima streams tool-call deltas in a
+  shape langchain's accumulator rejects, so the graph re-issues the whole call against
+  the non-streaming twin — a SECOND full model call, at roughly 10% of model calls.
+  The recovery is correct; the cost is not accounted for anywhere.
+- **`record_execution` is still one un-batched ingress round-trip per state change**
+  (two per tool call, ~126ms of measured loopback each). Typed events were coalesced;
+  executions were not, because the RUNNING write is the write-ahead a side-effecting
+  tool must clear before it may fire. A read-only tool's execution rows carry no such
+  constraint and could ride the same batching — that is where the next chunk of
+  fan-out latency lives.
+- **Residual Convex OCC is now sourced at `heartbeat` / `appendDeltas`**, not
+  `appendEvent` (which was 68/68 before and is ~2/14 after). Lower volume and a
+  different shape; not investigated.
+- **`qa-seo-audit.js` tests a capability that is not in this codebase.** It waits for
+  `[aria-label="SEO audit report"]`, which only the durable SEO-run subsystem renders.
+  `AI_SEO_RUNS_ENABLED=true` on the VM, but `seoRuns`/`seoRunSteps`/`seoArtifacts` do
+  not exist in `packages/backend/convex` at all, and `seo_run_enqueue/finalize/report`
+  exist ONLY as definitions in `app/clients/convex.py` with no caller anywhere. So the
+  suite reports 3/5 permanently while the audit itself completes correctly (measured:
+  168s, 40+ real SEO tool calls, `status: done`, and the Deep Research suite's own SEO
+  regression step passes). Either wire the subsystem or retarget the assertion — as it
+  stands it is a standing red that trains people to ignore it.
+- **`qa-blog-verify.js` asserts model PROSE** ("Blog Quality Score", a `NN → NN`
+  progression). The same config scored 6/8 and 8/8 on consecutive runs, so the suite
+  cannot distinguish a real regression from output variance at n=1. Anything load-
+  bearing that it guards needs either a deterministic signal or replicate runs.
