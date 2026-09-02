@@ -1328,6 +1328,8 @@ async def run_generation(
                 "attempt": req.attempt,
                 "chars_out": writer.stats.chars,
                 "flushes": writer.stats.flushes,
+                "events": writer.stats.events,
+                "event_posts": writer.stats.event_posts,
                 "dropped": writer.stats.dropped,
                 "ttft_ms": writer.stats.first_flush_ms,
                 "total_ms": round((time.monotonic() - started) * 1000),

@@ -74,6 +74,11 @@ class _Pending:
 @dataclass
 class WriterStats:
     flushes: int = 0
+    # Typed events EMITTED vs ingress round-trips actually spent delivering them.
+    # The ratio is the coalescing win and the thing to watch when a fan-out gets
+    # slow: one round-trip per event is ~126ms of measured loopback latency each.
+    events: int = 0
+    event_posts: int = 0
     chars: int = 0
     dropped: int = 0
     first_flush_ms: float | None = None
@@ -596,6 +601,7 @@ class DeltaWriter:
             **body,
         )
         self._event_seq += 1
+        self.stats.events += 1
         wire = envelope.to_wire()
         # A side-effecting TOOL_CALL is the executor's WRITE-AHEAD: it may not touch
         # the provider until the intent is durably recorded, so it needs the REAL
@@ -620,6 +626,7 @@ class DeltaWriter:
         stream is live — the write-ahead signal. Best-effort on transport failure,
         exactly like a delta: `toolExecutions` is the recovery AUTHORITY, and the
         terminal state is folded server-side at finalize."""
+        self.stats.event_posts += 1
         try:
             resp = await self._convex.ingress(
                 {"op": "event", "streamId": self._stream_id, "events": batch}
