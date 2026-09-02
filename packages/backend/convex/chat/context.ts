@@ -250,17 +250,21 @@ export const registerArtifact = internalMutation({
       lineageId ?? `art_${threadId}_${message.seq}_${args.kind}`;
     const version = (previous?.version ?? 0) + 1;
 
-    // Idempotency: same lineage, same version, same message ⇒ already recorded.
-    const existing = await ctx.db
+    // IDEMPOTENCY IS KEYED ON THE MESSAGE, not on (artifact, version).
+    //
+    // One message IS one version — messages are append-only, so a message can
+    // never be a second version of anything. Keying on (artifact, version) looked
+    // right and was not: a retried finalize re-derives version = head + 1, and by
+    // then the head is already the row the first attempt wrote, so the retry
+    // minted v3 from v2. Caught by chat.contextstate.test.ts.
+    const already = await ctx.db
       .query("conversationArtifacts")
-      .withIndex("by_thread_artifact", (q) =>
-        q
-          .eq("threadId", threadId)
-          .eq("artifactId", artifactId)
-          .eq("version", version),
-      )
-      .unique();
-    if (existing) return { ok: true as const, artifactId, version };
+      .withIndex("by_thread_seq", (q) => q.eq("threadId", threadId))
+      .collect();
+    const dup = already.find((a) => a.messageId === message._id);
+    if (dup) {
+      return { ok: true as const, artifactId: dup.artifactId, version: dup.version };
+    }
 
     // The previous head stops being active BEFORE the new head exists, in the
     // same transaction, so a reader can never observe two active heads.
