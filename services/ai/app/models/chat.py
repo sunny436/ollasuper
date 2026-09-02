@@ -61,6 +61,64 @@ class HistoryMessage(BaseModel):
     attachments: list[Attachment] = Field(default_factory=list)
 
 
+class ArtifactRef(BaseModel):
+    """One version of a generated artifact, as METADATA.
+
+    `messageId`/`seq` locate the content rather than carrying it: the text
+    lives in exactly one place (the chatMessages row) and is matched out of
+    `history` by seq. `activeArtifactText` on the request covers the case where
+    that message has aged out of the history window.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifactId: str
+    version: int
+    kind: str
+    subject: str
+    status: str
+    messageId: str
+    seq: int
+    supersedesId: str | None = None
+
+
+class EntityRef(BaseModel):
+    """A subject this conversation has produced work about, with the seq at
+    which it was last ACTIVATED (created, or named again by the user) — which is
+    not the same as last mentioned. See convex/chat/context.ts:deriveEntities."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    activatedAtSeq: int
+
+
+class ConversationContext(BaseModel):
+    """Authoritative conversational state, derived in Convex.
+
+    The floor fields here are a pure function of rows the application owns, so
+    they cannot be stale or absent because a model declined to record them. The
+    enrichment fields (constraints/decisions/openLoops) are the only ones a model
+    contributes, and nothing in the resolver reads them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    activeArtifactId: str | None = None
+    activeArtifactVersion: int | None = None
+    activeSubject: str | None = None
+    entities: list[EntityRef] = Field(default_factory=list)
+    artifacts: list[ArtifactRef] = Field(default_factory=list, max_length=64)
+    lastOperation: str | None = None
+    userConstraints: list[str] = Field(default_factory=list, max_length=32)
+    userDecisions: list[str] = Field(default_factory=list, max_length=32)
+    openLoops: list[str] = Field(default_factory=list, max_length=32)
+    # The active artifact's TEXT, supplied only when its message fell outside
+    # the history window — so a long conversation can still expand an article
+    # written forty turns ago without a second round trip.
+    activeArtifactText: str | None = None
+
+
 class MemoryItem(BaseModel):
     """One long-term memory pre-loaded into the turn by Convex dispatchPayload.
 
@@ -213,6 +271,10 @@ class GenerateRequest(BaseModel):
     customInstructionsStyle: str | None = Field(default=None, max_length=2000)
     summary: str | None = Field(default=None, max_length=8000)
     summaryThroughSeq: int = 0
+    # Platform conversational context. Defaults to None so `extra="forbid"`
+    # never 400s a Convex deploy that predates this layer, and so the runner
+    # degrades to exactly its previous behaviour when it is absent.
+    conversationContext: ConversationContext | None = None
     history: list[HistoryMessage] = Field(default_factory=list, max_length=200)
     titleNeeded: bool = False
     # >0 when the user has ready knowledge-base files; gates RAG retrieval so

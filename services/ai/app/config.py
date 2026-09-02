@@ -384,6 +384,15 @@ class Settings(BaseSettings):
     # 1M would be $5.00 per message. A 32k window holds ~60 turns of ordinary
     # chat, far past the point where a rolling summary is the better tool.
     ai_context_budget_tokens: int = 32_000
+    # Tokens reserved for the RESOLVED ARTIFACT pinned into the system prompt.
+    #
+    # It is pinned there rather than left in history because trim_messages
+    # trims history OLDEST-FIRST, so the one message a follow-up is about is
+    # the first thing evicted; the system prompt is a fixed cost that trimming
+    # never touches. Counted into system_tokens, so budget_for still sees the
+    # true remainder and the window cannot be overrun — this reserve DISPLACES
+    # history rather than adding to it.
+    ai_context_artifact_reserve_tokens: int = 6_000
     # The budget above bounds PRIOR turns. This bounds the newest one, which is
     # where every user-controlled byte actually is: MAX_CONTENT (100k chars) +
     # 6 attachments x MAX_PDF_CHARS (60k) = 460k chars ~ 115k input tokens, or

@@ -289,6 +289,66 @@ class ConvexClient:
             body["summary"] = summary
         return await self.ingress(body)
 
+    async def register_artifact(
+        self,
+        *,
+        stream_id: str,
+        kind: str,
+        subject: str,
+        supersedes_artifact_id: str | None = None,
+    ) -> dict:
+        """Register what this turn produced as an addressable artifact.
+
+        Keyed on the stream, which is also the authorization: Convex resolves
+        the thread and the message from it, so a turn can only ever register
+        work against its own message.
+        """
+        body: dict = {
+            "op": "artifact",
+            "streamId": stream_id,
+            "kind": kind,
+            "subject": subject,
+        }
+        if supersedes_artifact_id:
+            body["supersedesArtifactId"] = supersedes_artifact_id
+        return await self.ingress(body)
+
+    async def context_state(
+        self,
+        *,
+        stream_id: str,
+        through_seq: int,
+        operation: str | None = None,
+        active_subject: str | None = None,
+        user_constraints: list[str] | None = None,
+        user_decisions: list[str] | None = None,
+        open_loops: list[str] | None = None,
+    ) -> dict:
+        """Persist the turn's context state.
+
+        `operation` is floor-owned — the classifier that produced it is
+        deterministic code — so it is always sent. The enrichment fields are
+        omitted unless supplied, because an absent field leaves the stored
+        value standing: a turn that says nothing must not be able to erase a
+        constraint the user set several turns ago.
+        """
+        body: dict = {
+            "op": "context-state",
+            "streamId": stream_id,
+            "throughSeq": through_seq,
+        }
+        if operation is not None:
+            body["operation"] = operation
+        if active_subject is not None:
+            body["activeSubject"] = active_subject
+        if user_constraints is not None:
+            body["userConstraints"] = user_constraints
+        if user_decisions is not None:
+            body["userDecisions"] = user_decisions
+        if open_loops is not None:
+            body["openLoops"] = open_loops
+        return await self.ingress(body)
+
     async def seo_run_finalize(
         self,
         *,
@@ -441,9 +501,7 @@ class ConvexClient:
             }
         )
 
-    async def sched_heartbeat(
-        self, *, occurrence_key: str, lease_token: str
-    ) -> dict:
+    async def sched_heartbeat(self, *, occurrence_key: str, lease_token: str) -> dict:
         """Prove liveness and learn about cancellation in the same round-trip."""
         return await self.ingress(
             {
@@ -494,9 +552,7 @@ class ConvexClient:
             }
         )
 
-    async def sched_run_status(
-        self, *, occurrence_key: str, lease_token: str
-    ) -> dict:
+    async def sched_run_status(self, *, occurrence_key: str, lease_token: str) -> dict:
         """Poll the turn. Terminal state + the message's durable error code."""
         return await self.ingress(
             {
@@ -506,9 +562,7 @@ class ConvexClient:
             }
         )
 
-    async def sched_cancel_run(
-        self, *, occurrence_key: str, lease_token: str
-    ) -> dict:
+    async def sched_cancel_run(self, *, occurrence_key: str, lease_token: str) -> dict:
         """Ask the running turn to stop (the same durable flag the Stop button
         sets; the worker sees it on its next ingress response)."""
         return await self.ingress(

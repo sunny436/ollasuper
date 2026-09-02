@@ -573,7 +573,11 @@ export const dispatchPayload = internalQuery({
       // not have.
       conversationContext: isScheduled
         ? null
-        : await loadContext(ctx, thread._id),
+        : await loadContext(
+            ctx,
+            thread._id,
+            new Set(history.map((h) => h.seq)),
+          ),
       history,
       // The scheduled thread is created with titleSource "user" (its title is
       // the task's), so this is already false for it — asserted in the tests

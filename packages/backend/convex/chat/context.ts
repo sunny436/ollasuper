@@ -53,6 +53,13 @@ async function resolveStream(ctx: MutationCtx, streamId: string) {
 
 /** How many artifacts travel in a dispatch payload. Metadata only, no content. */
 const MAX_ARTIFACTS_IN_PAYLOAD = 24;
+/**
+ * Bound on the out-of-window artifact text carried in a payload. Generous
+ * enough for a long article, bounded so a pathological artifact cannot make
+ * every subsequent turn expensive; the Python side reserves tokens for it and
+ * clips again against the real window.
+ */
+const OUT_OF_WINDOW_CHARS = 24_000;
 /** Bound on the message scan used to derive entity activation. */
 const ENTITY_SCAN_MESSAGES = 40;
 
@@ -79,6 +86,8 @@ export type ContextView = {
   userConstraints: string[];
   userDecisions: string[];
   openLoops: string[];
+  /** Set only when the active artifact fell outside the history window. */
+  activeArtifactText: string | null;
 };
 
 const view = (a: Doc<"conversationArtifacts">): ArtifactView => ({
@@ -155,6 +164,13 @@ async function deriveEntities(
 export async function loadContext(
   ctx: QueryCtx,
   threadId: Id<"chatThreads">,
+  /**
+   * The message seqs the history window already carries. The active
+   * artifact's TEXT is attached only when its message is NOT among them —
+   * which is exactly the long-conversation case where the artifact has aged
+   * out and a bare reference would otherwise resolve to nothing retrievable.
+   */
+  historySeqs: ReadonlySet<number> = new Set(),
 ): Promise<ContextView> {
   const rows = await ctx.db
     .query("conversationArtifacts")
@@ -173,6 +189,12 @@ export async function loadContext(
   const active = rows.find((a) => a.status === "active") ?? null;
   const entities = await deriveEntities(ctx, threadId, rows);
 
+  let activeArtifactText: string | null = null;
+  if (active && !historySeqs.has(active.seq)) {
+    const msg = await ctx.db.get(active.messageId);
+    if (msg) activeArtifactText = msg.content.slice(0, OUT_OF_WINDOW_CHARS);
+  }
+
   return {
     activeArtifactId: active?.artifactId ?? null,
     activeArtifactVersion: active?.version ?? null,
@@ -183,6 +205,7 @@ export async function loadContext(
     userConstraints: state?.userConstraints ?? [],
     userDecisions: state?.userDecisions ?? [],
     openLoops: state?.openLoops ?? [],
+    activeArtifactText,
   };
 }
 

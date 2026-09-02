@@ -74,6 +74,12 @@ from app.research.run_state import build_research_context, render_research_seed
 from app.research.tool import RECORD_RESEARCH_TOOL_NAME, RECORD_RESEARCH_TOOL_SPEC
 from app.runtime import compaction
 from app.runtime.capabilities import render_capability_overview
+from app.runtime.context_manager import (
+    ANSWER,
+    classify_operation,
+    compile_context,
+    derive_artifact,
+)
 from app.runtime.env_factory import build_live_agent_env
 from app.runtime.roster import (
     build_delegate_spec,
@@ -174,6 +180,11 @@ async def run_generation(
     usage: dict | None = None
     finish_reason: str | None = None
     error: dict | None = None
+    # Context layer. Initialised HERE, before the try, because the post-finalize
+    # persist runs in the finally and must not NameError on a turn that failed
+    # before the compile.
+    compiled = None
+    turn_operation: str | None = None
     started = time.monotonic()
     hb_task: asyncio.Task | None = None
     # `mono` is the LIVE total-execution deadline (monotonic seconds), read every
@@ -391,6 +402,48 @@ async def run_generation(
         # flags + context — so "what can you do?" is answered from runtime state, not a
         # static list. Independent of the discover() path (which only surfaces skills
         # matching the query's tags). Agentic-only ⇒ off-path is byte-identical.
+        # THE PLATFORM CONTEXT LAYER. One seam, every skill.
+        #
+        # This sits with the research seed and the dataset map below because it
+        # is the generalisation of them: those two give ONE skill each a memory
+        # of what it was doing, and this gives every skill — present and future
+        # — the same thing, without any of them containing context logic.
+        #
+        # The resolved artifact is pinned INTO the system prompt, deliberately.
+        # trim_messages trims history oldest-first, so an artifact left in
+        # history is the first thing dropped exactly when a follow-up needs it;
+        # here it cannot be trimmed at all, and its cost is measured into
+        # system_tokens below so the window is still respected.
+        turn_operation = classify_operation(latest.content)
+        compiled = compile_context(
+            user_text=latest.content,
+            ctx=req.conversationContext,
+            history=req.history,
+            artifact_reserve_tokens=settings.ai_context_artifact_reserve_tokens,
+        )
+        if compiled is not None:
+            system = f"{system}\n\n{compiled.block}"
+            log.info(
+                "context_compiled",
+                extra={
+                    "stream_id": req.streamId,
+                    "thread_id": req.threadId,
+                    "operation": compiled.operation,
+                    "active_artifact_id": (
+                        req.conversationContext.activeArtifactId
+                        if req.conversationContext
+                        else None
+                    ),
+                    "resolved_artifact_id": compiled.resolution.artifact_id,
+                    "resolved_version": compiled.resolution.version,
+                    "resolution_rung": compiled.resolution.rung,
+                    "resolution_confidence": round(compiled.resolution.confidence, 2),
+                    "pinned_artifact_id": compiled.pinned_artifact_id,
+                    "pinned_tokens": compiled.pinned_tokens,
+                    "pinned_clipped": compiled.pinned_clipped,
+                },
+            )
+
         if agentic:
             overview = render_capability_overview(
                 effective_skills(settings),
@@ -1251,6 +1304,42 @@ async def run_generation(
             # fail a turn that already succeeded. Only on a completed turn: a
             # cancelled or errored turn has no new state worth recording.
             if status == "done":
+                # THE ARTIFACT FLOOR. Derived from the turn the application
+                # just produced, and written whether or not the model called
+                # anything — because a registration that depended on model
+                # cooperation would leave the NEXT turn with nothing to
+                # resolve against, which is the original bug in a new hat.
+                #
+                # Swallowed on failure: context is worth degrading, never
+                # worth failing a turn that already succeeded.
+                try:
+                    derived = derive_artifact(
+                        operation=(turn_operation or ANSWER),
+                        final_text=writer.text,
+                        ctx=req.conversationContext,
+                        resolution=compiled.resolution if compiled else None,
+                        fallback_subject=latest.content[:120],
+                    )
+                    if derived is not None:
+                        await convex.register_artifact(
+                            stream_id=req.streamId,
+                            kind=derived.kind,
+                            subject=derived.subject,
+                            supersedes_artifact_id=derived.supersedes_artifact_id,
+                        )
+                    await convex.context_state(
+                        stream_id=req.streamId,
+                        through_seq=max((h.seq for h in req.history), default=0),
+                        operation=(turn_operation or ANSWER),
+                        active_subject=(
+                            derived.subject if derived is not None else None
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - never fail a finished turn
+                    log.warning(
+                        "context_persist_skipped",
+                        extra={"stream_id": req.streamId},
+                    )
                 compaction.schedule(
                     settings=settings,
                     convex=convex,
