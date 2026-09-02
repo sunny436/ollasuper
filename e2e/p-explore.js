@@ -27,7 +27,26 @@ const step = (ok, name, detail) => {
 };
 
 const explore = (page) => page.getByRole("button", { name: "Explore capabilities" });
-const menu = (page) => page.getByRole("menu");
+
+// Scoped to data-state="open" on purpose. Radix keeps the content mounted
+// until its exit animation ends, and measured on production that detach lands
+// 760-1250ms after the dismissal even though the 150ms fade is long finished.
+// Counting nodes therefore asserts garbage collection, not closure, and a
+// stale closing node would also make a bare [role=menu] locator match two
+// elements and trip Playwright's strict mode on the next open.
+const menu = (page) => page.locator('[role="menu"][data-state="open"]');
+
+/** Closed = no OPEN menu. The dying node may still be in the DOM. */
+const closed = async (page) => {
+  await page
+    .waitForFunction(
+      () => !document.querySelector('[role="menu"][data-state="open"]'),
+      null,
+      { timeout: 5000 },
+    )
+    .catch(() => {});
+  return (await menu(page).count()) === 0;
+};
 const box = async (page) =>
   page.locator("#chat-composer").boundingBox();
 
@@ -130,7 +149,7 @@ const box = async (page) =>
     // ── the shared footer responds to hover AND to keyboard focus ───────────
     const footerText = () =>
       page.evaluate(() => {
-        const m = document.querySelector('[role="menu"]');
+        const m = document.querySelector('[role="menu"][data-state="open"]');
         return m ? m.innerText.split("\n").slice(-1)[0] : "";
       });
     const idle = await footerText();
@@ -154,15 +173,13 @@ const box = async (page) =>
 
     // ── Escape dismisses ────────────────────────────────────────────────────
     await page.keyboard.press("Escape");
-    await page.waitForTimeout(600);
-    step((await menu(page).count()) === 0, "Escape closes the menu");
+    step(await closed(page), "Escape closes the menu");
 
     // ── outside-click dismisses ─────────────────────────────────────────────
     await explore(page).click();
     await menu(page).waitFor({ state: "visible", timeout: 8000 });
     await page.mouse.click(40, 40);
-    await page.waitForTimeout(600);
-    step((await menu(page).count()) === 0, "an outside click closes the menu");
+    step(await closed(page), "an outside click closes the menu");
 
     // ── selecting seeds the composer ────────────────────────────────────────
     await explore(page).click();
@@ -170,7 +187,7 @@ const box = async (page) =>
     await page.getByRole("menuitem", { name: /Research/ }).first().click();
     await page.waitForTimeout(900);
     const seeded = await page.locator("#chat-composer").inputValue();
-    step((await menu(page).count()) === 0, "selecting closes the menu");
+    step(await closed(page), "selecting closes the menu");
     step(
       seeded.length > 10,
       "selecting seeds the composer with an editable prompt",
@@ -204,7 +221,7 @@ const box = async (page) =>
       );
       if (over) overflow += `${w} `;
       await page.keyboard.press("Escape");
-      await page.waitForTimeout(400);
+      await closed(page);
     }
     step(!overflow, "no horizontal overflow at 390 / 820 / 1440", overflow);
 
