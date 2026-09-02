@@ -21,6 +21,7 @@ import { useMediaQuery } from "../_hooks/use-media-query";
 import { useSendMessage } from "../_hooks/use-send-message";
 import { preloadMarkdown } from "./lazy-markdown";
 import { AttachmentChip } from "./attachment-chip";
+import { ExploreMenu } from "./explore-menu";
 import { ModelPicker } from "./model-picker";
 
 /**
@@ -52,7 +53,19 @@ const ComposerTextarea = forwardRef<
 ));
 ComposerTextarea.displayName = "ComposerTextarea";
 
-export function ChatInput() {
+export function ChatInput({
+  onExploreOpenChange,
+}: {
+  /**
+   * Lifted to chat-layout, which owns BOTH the greeting and this composer.
+   * They are siblings inside one z-20 container that Framer Motion
+   * transforms, so it is its own stacking context — a portalled dim overlay
+   * would cover the composer too, and no z-index on a child can escape the
+   * parent. The parent raising itself is the only way to keep the input
+   * crisp while the page behind it dims.
+   */
+  onExploreOpenChange?: (open: boolean) => void;
+} = {}) {
   // Pulled from context rather than props: this component is rendered by
   // chat-layout.tsx, which sits ABOVE the route segment so the centred->bottom
   // spring survives router.replace on the first send. The transcript that
@@ -293,6 +306,30 @@ export function ChatInput() {
               <Paperclip className={centred ? "h-6 w-6" : "h-[18px] w-[18px]"} />
             </button>
             <ModelPicker value={model} onChange={setModel} disabled={isStreaming} />
+            {/*
+              Landing screen only. The docked composer is a working surface,
+              not a discovery one, and `centred` is already the empty-new-chat
+              gate the whole two-look shell is built on.
+            */}
+            {centred && (
+              <ExploreMenu
+                disabled={isStreaming}
+                onOpenChange={(o) => onExploreOpenChange?.(o)}
+                onSelect={(seed) => {
+                  // Seeded, not sent, and not hidden behind a badge: the
+                  // user can edit it, and what is in the box is exactly what
+                  // will be sent.
+                  setValue(seed);
+                  requestAnimationFrame(() => {
+                    const ta = taRef.current;
+                    if (!ta) return;
+                    ta.focus();
+                    ta.setSelectionRange(seed.length, seed.length);
+                    autosize();
+                  });
+                }}
+              />
+            )}
           </div>
 
           {/* TEXTAREA — same node in both layouts; only order/basis differ. */}

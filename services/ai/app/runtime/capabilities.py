@@ -105,3 +105,59 @@ def render_capability_overview(
         out.extend(f"  - {it}" for it in items)
     out.append("</your_capabilities>")
     return "\n".join(out)
+
+
+# --------------------------------------------------------------- catalogue
+
+# The capability IDS the Explore menu offers, and what makes each one live.
+#
+# DELIBERATELY IDS ONLY. The menu's labels, descriptions, icons, column and
+# starter prompt are presentation and live in the frontend — the server says
+# WHICH capabilities exist here, never how to name them. Returning names from
+# here would put two sources of truth on the same string and the menu would
+# drift from the design the moment a skill renamed itself.
+#
+# Derived from the SAME inputs render_capability_overview reads — the enabled
+# skill set and the platform flags — so the menu can never offer something the
+# model would refuse, nor hide something it would claim. That agreement is
+# asserted in tests/test_capabilities.py rather than enforced by sharing code,
+# because the alternative was refactoring the block injected into every agentic
+# turn in order to serve a dropdown.
+#
+# An id whose value is None is UNGATED: coding, writing, research and file
+# analysis are base skills or unconditional platform behaviour, present on any
+# deployment. `data` is ungated too — the flag swaps the tiny generic
+# methodology for the compute-backed skill (same skill_id), it does not decide
+# whether the capability exists.
+_CAPABILITY_FLAGS: dict[str, str | None] = {
+    # Business & Strategy
+    "finance": "ai_finance_enabled",
+    "sales": "ai_sales_enabled",
+    "marketing": "ai_marketing_enabled",
+    "hr": "ai_hr_enabled",
+    "ops": "ai_operations_enabled",
+    # Tech & Data
+    "coding": None,
+    "data": None,
+    "seo": "ai_seo_enabled",
+    "web": "agent_enabled",
+    # Research & Content
+    "research": None,
+    "writing": None,
+    "docs": "ai_documents_enabled",
+    "files": None,
+}
+
+
+def capability_catalog(settings: object) -> list[str]:
+    """The capability ids available on THIS deployment, in menu order.
+
+    Note that Finance registers two skills — FINANCE_SKILL and EQUITY_SKILL
+    (roster.py) — behind one flag. This emits one id for them, because a user
+    picking "Finance" is choosing a subject area, not a skill manifest.
+    """
+    out: list[str] = []
+    for cap_id, flag in _CAPABILITY_FLAGS.items():
+        if flag is None or getattr(settings, flag, False):
+            out.append(cap_id)
+    return out

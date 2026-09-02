@@ -16,6 +16,7 @@ from app.models.chat import (
     TitleRequest,
     TitleResponse,
 )
+from app.runtime.capabilities import capability_catalog
 from app.runtime.registry import Conflict, TooMany
 from app.runtime.runner import run_generation
 from app.security import require_service_key
@@ -135,3 +136,20 @@ async def title(req: TitleRequest, request: Request) -> TitleResponse:
     except Exception:
         log.exception("title generation failed")
         return TitleResponse(title="")
+
+
+@router.get("/capabilities")
+async def capabilities(request: Request) -> dict:
+    """Which capabilities this deployment actually has.
+
+    IDS ONLY. The Explore menu owns every label, description, icon and starter
+    prompt — this says what exists here, not what to call it. Two sources of
+    truth on the same user-facing string is how a menu drifts from its design.
+
+    Read from the live settings, so turning a flag off removes the entry on the
+    next request with nothing to invalidate. Cheap and pure: no model call, no
+    I/O, and the caller (a Convex action) treats a failure as "show everything"
+    rather than as an empty menu.
+    """
+    settings = request.app.state.settings
+    return {"enabled": capability_catalog(settings)}
