@@ -796,7 +796,6 @@ export async function buildHistory(
     if (room >= MIN_CLIP_CHARS) {
       picked.push({ m, content: clipForContext(m.content, room) });
       budget = Math.max(0, budget - room);
-      continue;
     }
     // No useful room for THIS message — skip it and keep walking. Older
     // messages are usually smaller and still carry the thread's subject, so
