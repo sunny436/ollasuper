@@ -221,17 +221,16 @@ export function ExploreMenu({
   return (
     <>
       {/*
-        The dim + blur. Portalled to the body so it escapes the composer, and
-        BELOW the menu content (Radix content sits at z-50). chat-layout raises
-        the greeting+composer container above this while open, which is why the
-        input stays crisp and only the page behind it dims.
+        THE DIM LIVES IN chat-layout, NOT HERE.
+
+        A body-portalled overlay was tried and reverted: the chat pane is
+        `relative isolate` (chat-layout, so the ambience backdrop's -z-10 stays
+        contained), which makes it a stacking context. Anything at body level
+        therefore paints above EVERYTHING inside it, and no z-index on the
+        composer can escape its isolated ancestor — production showed the
+        overlay covering the input. The overlay has to be a sibling inside that
+        same context, which is what chat-layout does with the flag below.
       */}
-      {open && (
-        <div
-          aria-hidden
-          className="fixed inset-0 z-30 bg-background/40 backdrop-blur-[2px] transition-opacity"
-        />
-      )}
 
       <DropdownMenu open={open} onOpenChange={change}>
         <DropdownMenuTrigger asChild>
@@ -257,6 +256,10 @@ export function ExploreMenu({
           align="start"
           sideOffset={12}
           collisionPadding={16}
+          // Radix returns focus to the trigger when the menu closes, which
+          // landed the caret on the Explore button instead of the composer it
+          // had just seeded. The seed is only useful if the user can type.
+          onCloseAutoFocus={(e) => e.preventDefault()}
           className="workspace z-50 max-h-[70vh] w-[min(46rem,calc(100vw-2rem))] overflow-hidden p-0"
         >
           <div className="flex items-center justify-between border-b border-border bg-primary/[0.03] px-4 py-2.5">

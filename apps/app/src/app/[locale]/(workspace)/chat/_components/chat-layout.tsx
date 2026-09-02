@@ -72,6 +72,20 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
       {centred && <AmbienceBackdrop />}
       {children}
 
+      {/*
+        Explore's dim. INSIDE the isolated pane, deliberately: this element is
+        `relative isolate`, so a body-level overlay would paint over the
+        composer no matter what z-index the composer got. Here it is an
+        ordinary sibling and z-30 vs the composer container's z-40 simply
+        works. Radix portals the menu itself, which is above both.
+      */}
+      {centred && exploreOpen && (
+        <div
+          aria-hidden
+          className="absolute inset-0 z-30 bg-background/40 backdrop-blur-[2px]"
+        />
+      )}
+
       {composerVisible && (
         <LazyMotion features={loadMotionFeatures} strict>
           <m.div
@@ -100,12 +114,14 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                     key="hero"
                     layout
                     initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
+                    // Driven through Framer, not a Tailwind opacity class:
+                    // this element already animates opacity, so the inline
+                    // style it writes wins over any class and the greeting
+                    // stayed at full opacity on production.
+                    animate={{ opacity: exploreOpen ? 0.3 : 1, y: 0 }}
                     exit={{ opacity: 0, y: -40, filter: "blur(12px)", scale: 0.95 }}
                     transition={ITEM_SPRING}
-                    className={`w-full transition-opacity duration-300 ${
-                      exploreOpen ? "opacity-30" : "opacity-100"
-                    }`}
+                    className="w-full"
                   >
                     <EmptyHero />
                   </m.div>
