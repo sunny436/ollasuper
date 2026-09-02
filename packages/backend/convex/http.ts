@@ -211,6 +211,85 @@ http.route({
           }),
         );
       }
+      // ---- conversational context (platform layer) ----
+      //
+      // Keyed on the stream like every other op, which is also the
+      // authorization: the artifact is registered against the message THIS
+      // turn is writing, so a turn cannot register work against someone
+      // else's message or another thread.
+      case "artifact": {
+        if (
+          !streamId ||
+          typeof body.kind !== "string" ||
+          typeof body.subject !== "string"
+        ) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        return aiJson(
+          await ctx.runMutation(internal.chat.context.registerArtifact, {
+            streamId,
+            kind: body.kind.slice(0, 40),
+            subject: body.subject.slice(0, 200),
+            ...(typeof body.supersedesArtifactId === "string"
+              ? { supersedesArtifactId: body.supersedesArtifactId }
+              : {}),
+          }),
+        );
+      }
+      case "artifact-revert": {
+        if (!streamId || typeof body.artifactId !== "string") {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        return aiJson(
+          await ctx.runMutation(internal.chat.context.revertArtifact, {
+            streamId,
+            artifactId: body.artifactId,
+            ...(typeof body.toVersion === "number"
+              ? { toVersion: body.toVersion }
+              : {}),
+          }),
+        );
+      }
+      case "context-state": {
+        if (!streamId || typeof body.throughSeq !== "number") {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        // Only the fields actually supplied are forwarded. An absent
+        // enrichment field leaves the stored value standing rather than
+        // clearing it — a model that says nothing must not be able to erase
+        // a constraint the user set several turns ago.
+        const strList = (x: unknown): string[] | undefined =>
+          Array.isArray(x)
+            ? x.filter((s): s is string => typeof s === "string").slice(0, 24)
+            : undefined;
+        return aiJson(
+          await ctx.runMutation(internal.chat.context.applyContextWrite, {
+            streamId,
+            throughSeq: body.throughSeq,
+            ...(typeof body.operation === "string"
+              ? { operation: body.operation.slice(0, 40) }
+              : {}),
+            ...(typeof body.activeArtifactId === "string"
+              ? { activeArtifactId: body.activeArtifactId }
+              : {}),
+            ...(typeof body.activeArtifactVersion === "number"
+              ? { activeArtifactVersion: body.activeArtifactVersion }
+              : {}),
+            ...(typeof body.activeSubject === "string"
+              ? { activeSubject: body.activeSubject.slice(0, 200) }
+              : {}),
+            ...(strList(body.userConstraints)
+              ? { userConstraints: strList(body.userConstraints) }
+              : {}),
+            ...(strList(body.userDecisions)
+              ? { userDecisions: strList(body.userDecisions) }
+              : {}),
+            ...(strList(body.openLoops)
+              ? { openLoops: strList(body.openLoops) }
+              : {}),
+          }),
+        );
+      }
       case "event": {
         // Typed events (Phase 3). Defensively filter to well-formed events with
         // a KNOWN type — malformed/unknown-type events are dropped at the edge

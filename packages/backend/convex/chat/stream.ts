@@ -17,6 +17,7 @@ import { resolvedApprovalsForStream } from "./approvals";
 import { loadThreadDatasets } from "./attachments";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
 import { deleteExecutions } from "./executions";
+import { loadContext } from "./context";
 import { buildHistory } from "./messages";
 import { contextWindowFor } from "./models";
 
@@ -561,6 +562,18 @@ export const dispatchPayload = internalQuery({
       customInstructionsStyle: settings?.customInstructionsStyle ?? null,
       summary: isScheduled ? null : (thread.summary ?? null),
       summaryThroughSeq: isScheduled ? 0 : (thread.summaryThroughSeq ?? 0),
+      // The platform context layer. Metadata only — artifact CONTENT is never
+      // copied here; each artifact carries the messageId its text lives in,
+      // and Python asks for that text only if a reference actually resolves
+      // to an artifact that has aged out of the history window.
+      //
+      // A scheduled run deliberately gets none of it: it carries exactly its
+      // own prompt by design (history is capped at 1), so a notion of "the
+      // previous artifact" would be inventing continuity that the task does
+      // not have.
+      conversationContext: isScheduled
+        ? null
+        : await loadContext(ctx, thread._id),
       history,
       // The scheduled thread is created with titleSource "user" (its title is
       // the task's), so this is already false for it — asserted in the tests

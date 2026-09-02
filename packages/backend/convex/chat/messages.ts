@@ -34,7 +34,70 @@ const TAIL_BATCH = 200;
 
 /** Context window handed to the Python service. */
 const HISTORY_MAX_MESSAGES = 60;
-const HISTORY_MAX_CHARS = 24_000;
+/**
+ * TRANSPORT bound on the Convex -> Python payload. NOT a token budget.
+ *
+ * Characters are not tokens, and the ratio swings by a factor of three between
+ * prose and code, so this number cannot stand in for one. The real budget is
+ * computed in agent/context.py:budget_for against the model's actual context
+ * window from the OpenRouter catalogue, and trim() enforces it. This bound
+ * exists only so a pathological thread cannot post a megabyte over HTTP.
+ *
+ * It was 24_000, which is roughly 6k tokens against a 32k-token Python budget:
+ * Convex was destroying content five times sooner than the layer that actually
+ * knows the window. A 25,348-char blog therefore never reached the model, and
+ * the model correctly said it could not see it.
+ */
+const HISTORY_MAX_CHARS = 96_000;
+/**
+ * Below this there is no point clipping — a 200-character fragment of an
+ * article tells the model less than the marker does.
+ */
+const MIN_CLIP_CHARS = 2_000;
+/**
+ * Floor for a PINNED message (the newest turn, and the newest assistant turn).
+ * Those two are what a follow-up refers to, so they are never absent — at worst
+ * they arrive clipped.
+ */
+const PINNED_MIN_CHARS = 6_000;
+/**
+ * The most of the REMAINING budget any one clipped message may claim.
+ *
+ * Without this the fix relocates the bug rather than removing it: a 200k
+ * message clipped to the whole remaining budget leaves nothing for the older
+ * turns, so the thread keeps its newest artifact and loses the subject that
+ * gives it meaning. Caught by chat.context.test.ts, which asserted on the
+ * compiled history and returned ['HUGE', 'NEWEST'] with both older messages
+ * gone.
+ *
+ * Half is arbitrary but the property is not: one message must never be able to
+ * starve every message behind it.
+ */
+const MAX_SINGLE_CLIP_SHARE = 0.5;
+
+/**
+ * Clip to `room`, keeping the head AND the tail with an explicit marker.
+ *
+ * Head-and-tail rather than head-only because the ends of a document are the
+ * parts a follow-up asks about: the title and opening frame the subject, the
+ * conclusion and closing sections are what an "expand this" turn continues.
+ *
+ * The marker is the load-bearing part. A silently dropped message leaves the
+ * model believing the content never existed, which is how a retrieval failure
+ * turns into a confident false statement to the user; a marked elision tells it
+ * the text exists and can be asked for.
+ */
+function clipForContext(text: string, room: number): string {
+  const marker =
+      "\n\n[... this message was truncated to fit the context window. The full " +
+      "text exists earlier in this conversation and can be quoted back in full " +
+      "on request; do not tell the user the content is missing ...]\n\n";
+  const usable = Math.max(0, room - marker.length);
+  if (usable <= 0 || text.length <= room) return text.slice(0, room);
+  const head = Math.ceil(usable * 0.6);
+  const tail = usable - head;
+  return text.slice(0, head) + marker + (tail > 0 ? text.slice(-tail) : "");
+}
 
 /** A message is "in flight" while the assistant is still producing it. */
 function isInFlight(m: Doc<"chatMessages">): boolean {
@@ -683,9 +746,8 @@ export async function buildHistory(
     .order("desc")
     .take(Math.max(1, maxMessages));
 
-  // Walk newest→oldest accumulating a char budget, then flip to chronological.
-  const picked: Doc<"chatMessages">[] = [];
-  let chars = 0;
+  // Eligibility first, so the budget walk below reasons about a clean list.
+  const eligible: Doc<"chatMessages">[] = [];
   for (const m of recent) {
     if (isInFlight(m) || m.status === "error") continue;
     // Only the active variant of a branched reply belongs in the context.
@@ -694,16 +756,59 @@ export async function buildHistory(
       const active = parent?.activeVariantIndex ?? 0;
       if ((m.variantIndex ?? 0) !== active) continue;
     }
-    chars += m.content.length;
-    if (chars > HISTORY_MAX_CHARS && picked.length > 0) break;
-    picked.push(m);
+    eligible.push(m);
+  }
+
+  // PIN the newest message and the newest assistant message.
+  //
+  // The newest assistant message is the artifact a follow-up almost always
+  // refers to — "expand the above blog", "make it more detailed". It is also
+  // the largest message in the thread, which is exactly why the old budget
+  // walk discarded it. Pinning is what makes "the better the answer, the more
+  // certain it is erased from its own next turn" impossible.
+  const pinned = new Set<string>();
+  if (eligible[0]) pinned.add(eligible[0]._id);
+  const newestAssistant = eligible.find((m) => m.role === "assistant");
+  if (newestAssistant) pinned.add(newestAssistant._id);
+
+  // Walk newest→oldest against the transport bound, then flip to chronological.
+  //
+  // The old loop did `chars += len; if (chars > MAX) break;` — three faults in
+  // one line. It counted a message BEFORE testing it, so anything larger than
+  // the remaining budget could never be admitted. It BROKE rather than
+  // continued, so one oversized message discarded every older message too. And
+  // it dropped rather than clipped, leaving no trace that the content existed.
+  const picked: { m: Doc<"chatMessages">; content: string }[] = [];
+  let budget = HISTORY_MAX_CHARS;
+  for (const m of eligible) {
+    const isPinned = pinned.has(m._id);
+    if (m.content.length <= budget) {
+      picked.push({ m, content: m.content });
+      budget -= m.content.length;
+      continue;
+    }
+    // Too big for what is left. Clip it — but to a SHARE of the remaining
+    // budget, never all of it, so the messages behind it keep room. A pinned
+    // message additionally gets a floor, because absent is worse than clipped
+    // for the one message the turn is actually about.
+    const share = Math.floor(budget * MAX_SINGLE_CLIP_SHARE);
+    const room = isPinned ? Math.max(share, PINNED_MIN_CHARS) : share;
+    if (room >= MIN_CLIP_CHARS) {
+      picked.push({ m, content: clipForContext(m.content, room) });
+      budget = Math.max(0, budget - room);
+      continue;
+    }
+    // No useful room for THIS message — skip it and keep walking. Older
+    // messages are usually smaller and still carry the thread's subject, so
+    // they must not be discarded on account of one large neighbour.
   }
   picked.reverse();
 
   return await Promise.all(
-    picked.map(async (m) => ({
+    picked.map(async ({ m, content }) => ({
       role: m.role,
-      content: m.content,
+      // `content`, not `m.content`: a clipped message carries its marker.
+      content,
       seq: m.seq,
       attachments: (
         await Promise.all(

@@ -72,6 +72,7 @@ from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.prepare import ProviderReadiness
 from app.research.run_state import build_research_context, render_research_seed
 from app.research.tool import RECORD_RESEARCH_TOOL_NAME, RECORD_RESEARCH_TOOL_SPEC
+from app.runtime import compaction
 from app.runtime.capabilities import render_capability_overview
 from app.runtime.env_factory import build_live_agent_env
 from app.runtime.roster import (
@@ -1243,6 +1244,21 @@ async def run_generation(
                     error=error,
                 )
             )
+            # Rolling summary — the compaction half of context management, and
+            # the producer that was never built for the `op: "summary"` route
+            # that has always existed. AFTER finalize and fire-and-forget, so it
+            # cannot delay a reply; it swallows its own failures, so it cannot
+            # fail a turn that already succeeded. Only on a completed turn: a
+            # cancelled or errored turn has no new state worth recording.
+            if status == "done":
+                compaction.schedule(
+                    settings=settings,
+                    convex=convex,
+                    stream_id=req.streamId,
+                    history=req.history,
+                    final_text=writer.text,
+                    summary_through_seq=req.summaryThroughSeq,
+                )
 
 
 def _chunk_text(chunk: object) -> str:

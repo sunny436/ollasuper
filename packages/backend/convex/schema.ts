@@ -265,6 +265,94 @@ export default defineSchema({
     value: v.number(),
   }).index("by_workspace_metric", ["workspaceId", "metric"]),
 
+  // ------------------------------------- conversational context (platform)
+  //
+  // Continuity used to be solved per skill: runner.py seeds Deep Research from
+  // `activeResearchRun`, Data Analysis from `datasets`, and neither helps Blog,
+  // SEO, Coding or anything added later. These two tables are the
+  // generalisation of that proven pattern, consumed through ONE seam
+  // (build_system_prompt) so every skill inherits it and none reimplements it.
+
+  /**
+   * One row per thread: what this conversation is currently about.
+   *
+   * OWNERSHIP IS SPLIT AND ENFORCED AT MERGE. The FLOOR fields are recomputed
+   * in code on every turn from data the application already has, and a model
+   * can never overwrite them. Only the enrichment fields come from the
+   * `record_context` tool. So a model that never calls that tool leaves nothing
+   * critical missing or stale — it only leaves constraints and decisions
+   * un-enriched — and nothing in the resolution path reads a model-owned field.
+   */
+  conversationState: defineTable({
+    threadId: v.id("chatThreads"),
+    userId: v.id("users"),
+
+    // ---- FLOOR-OWNED (derived in code every turn) ----
+    /** Stable id of the artifact a bare reference resolves to. */
+    activeArtifactId: v.optional(v.string()),
+    activeArtifactVersion: v.optional(v.number()),
+    activeSubject: v.optional(v.string()),
+    /**
+     * Entities with their ACTIVATION order, not merely their mention order.
+     * "Go back to PostgreSQL" re-activates PostgreSQL, so a following "compare
+     * that with Redis" binds `that` to PostgreSQL rather than to the lexically
+     * nearest mention. Recency of mention alone gets this wrong.
+     */
+    entities: v.optional(
+      v.array(v.object({ name: v.string(), activatedAtSeq: v.number() })),
+    ),
+    /** CREATE · MODIFY · EXTEND · REWRITE · CONTINUE · TRANSFORM · … */
+    lastOperation: v.optional(v.string()),
+    /** Highest message seq this state reflects. Makes the write idempotent. */
+    updatedThroughSeq: v.number(),
+
+    // ---- MODEL-ENRICHABLE (record_context; never required) ----
+    /**
+     * Requirements that still apply and must survive a narrow edit: asking to
+     * "make it more human" must not discard technical accuracy or SEO intent.
+     */
+    userConstraints: v.optional(v.array(v.string())),
+    userDecisions: v.optional(v.array(v.string())),
+    openLoops: v.optional(v.array(v.string())),
+
+    updatedAt: v.number(),
+  }).index("by_thread", ["threadId"]),
+
+  /**
+   * Generated work as an addressable, versioned object.
+   *
+   * INDEXES INTO chatMessages — it never copies content. Messages are already
+   * append-only (regenerate inserts a new row rather than editing one), so every
+   * version is immutable for free, `searchIndex("search_content")` already
+   * exists for retrieval, and there is exactly one source of truth for the text.
+   *
+   * Distinct from `chatArtifacts`, which is file-oriented (storageId, filename,
+   * mime) and describes a downloadable produced by filegen. This describes a
+   * conversational object, which is usually just prose in a message.
+   */
+  conversationArtifacts: defineTable({
+    threadId: v.id("chatThreads"),
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    /** Stable across versions — this is what a reference resolves TO. */
+    artifactId: v.string(),
+    version: v.number(),
+    /** blog · report · article · code · document · analysis · audit · … */
+    kind: v.string(),
+    subject: v.string(),
+    /** "active" | "superseded" — the lineage head is the active one. */
+    status: v.string(),
+    /** WHERE THE CONTENT LIVES. Never a copy. */
+    messageId: v.id("chatMessages"),
+    /** The version this one replaced, so REVERT walks a chain, not a guess. */
+    supersedesId: v.optional(v.id("conversationArtifacts")),
+    /** The message seq, so ordering needs no join. */
+    seq: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_thread_seq", ["threadId", "seq"])
+    .index("by_thread_artifact", ["threadId", "artifactId", "version"]),
+
   // ------------------------------------------------------------------ chat
   // Conversations are PRIVATE TO THE CREATING USER, workspace-scoped only for
   // tenancy/billing. This differs from every other table above, where the
