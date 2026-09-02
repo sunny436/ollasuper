@@ -1,6 +1,7 @@
 "use client";
 
 import { AnimatePresence, LazyMotion, m } from "framer-motion";
+import { useState } from "react";
 import { AmbienceBackdrop } from "./ambience-backdrop";
 import { EmptyHero } from "./empty-state";
 import { ChatInput } from "./chat-input";
@@ -47,6 +48,12 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
   // rail mounts straight into the docked state — `layout` animates between
   // renders, not on first mount, so there is no fly-up on page load.
   const centred = threadId === null;
+  // Explore raises this container above its own dim overlay and fades the
+  // greeting. Held here because the greeting and the composer are siblings
+  // below, and only their shared parent can order them against a portalled
+  // overlay. Gated on `centred` at the point of use so it can never affect
+  // the docked layout, where it would sit above the message list.
+  const [exploreOpen, setExploreOpen] = useState(false);
 
   // A typo'd or foreign id: the pane renders "Conversation not found" and the
   // composer must not exist at all. use-send-message.ts casts
@@ -80,7 +87,9 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                   // prototype does: layout projection writes to the transform, so a
                   // CSS translate on the same element is fought over every frame
                   // and the spring lands in the wrong place.
-                  "pointer-events-none absolute inset-0 z-20 flex items-center px-4 md:px-6"
+                  `pointer-events-none absolute inset-0 ${
+                    exploreOpen ? "z-40" : "z-20"
+                  } flex items-center px-4 md:px-6`
                 : "relative z-20 shrink-0"
             }
           >
@@ -94,7 +103,9 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -40, filter: "blur(12px)", scale: 0.95 }}
                     transition={ITEM_SPRING}
-                    className="w-full"
+                    className={`w-full transition-opacity duration-300 ${
+                      exploreOpen ? "opacity-30" : "opacity-100"
+                    }`}
                   >
                     <EmptyHero />
                   </m.div>
@@ -107,7 +118,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                 remounts and the draft disappears mid-send.
               */}
               <m.div layout transition={ITEM_SPRING} className="w-full">
-                <ChatInput />
+                <ChatInput onExploreOpenChange={setExploreOpen} />
               </m.div>
 
             </div>

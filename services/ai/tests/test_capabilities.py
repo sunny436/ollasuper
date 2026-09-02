@@ -104,8 +104,12 @@ def test_all_product_skills_present():
 def test_no_internal_details_leak():
     o = _overview(_prod_settings(), has_datasets=True, has_files=True).lower()
     bad_tokens = (
-        "skill_id", "ai_seo_enabled", "ai_data_analysis_enabled",
-        ".py", "_endpoint", "storageid",
+        "skill_id",
+        "ai_seo_enabled",
+        "ai_data_analysis_enabled",
+        ".py",
+        "_endpoint",
+        "storageid",
     )
     for bad in bad_tokens:
         assert bad not in o, bad
@@ -117,3 +121,99 @@ def test_empty_when_nothing_enabled():
     bare = make_settings("http://x")
     o = render_capability_overview([], bare)
     assert "<your_capabilities>" in o and "charts" in o.lower()
+
+
+# --- catalogue: the ids the Explore menu offers ------------------------------
+#
+# The catalogue is derived separately from render_capability_overview rather than
+# sharing its code, deliberately: the overview is injected into the system prompt
+# of every agentic turn, and refactoring it to serve a dropdown would put the one
+# thing that can change generation on the critical path of a UI feature. These
+# tests are what buys the same guarantee — they pin the two in agreement.
+
+
+def _catalog(settings):
+    from app.runtime.capabilities import capability_catalog
+
+    return capability_catalog(settings)
+
+
+def test_catalogue_offers_every_flag_gated_capability_when_all_are_on():
+    ids = _catalog(
+        _prod_settings(
+            ai_finance_enabled=True,
+            ai_sales_enabled=True,
+            ai_hr_enabled=True,
+            ai_marketing_enabled=True,
+            ai_operations_enabled=True,
+            ai_documents_enabled=True,
+        )
+    )
+    assert set(ids) == {
+        "finance",
+        "sales",
+        "marketing",
+        "hr",
+        "ops",
+        "coding",
+        "data",
+        "seo",
+        "web",
+        "research",
+        "writing",
+        "docs",
+        "files",
+    }
+
+
+def test_finance_is_ONE_entry_despite_registering_two_skills():
+    """roster.py appends FINANCE_SKILL *and* EQUITY_SKILL behind one flag.
+
+    A skill-per-menu-item mapping would show Finance twice; a user picking
+    "Finance" is choosing a subject area, not a manifest.
+    """
+    settings = _prod_settings(ai_finance_enabled=True)
+    skills = effective_skills(settings)
+    finance_skills = [
+        s for s in skills if "equity" in s.skill_id or "finance" in s.skill_id
+    ]
+    assert len(finance_skills) >= 2, (
+        "precondition: finance really does register two skills"
+    )
+    assert _catalog(settings).count("finance") == 1
+
+
+def test_clearing_a_flag_removes_exactly_that_capability():
+    on = set(_catalog(_prod_settings(ai_documents_enabled=True, ai_sales_enabled=True)))
+    off = set(
+        _catalog(_prod_settings(ai_documents_enabled=False, ai_sales_enabled=True))
+    )
+    assert on - off == {"docs"}
+
+
+def test_ungated_capabilities_survive_a_bare_deployment():
+    """Coding, writing, research and file analysis are base skills or
+    unconditional platform behaviour — a deployment with every flag off still
+    has them, and the menu must still offer them."""
+    ids = set(_catalog(make_settings("http://x")))
+    assert {"coding", "writing", "research", "data", "files"} <= ids
+    # ...and nothing flag-gated leaked in.
+    assert not ({"finance", "sales", "hr", "marketing", "ops", "docs", "seo"} & ids)
+
+
+def test_catalogue_and_overview_agree_on_what_is_live():
+    """The property the shared-code refactor would have given us, asserted
+    instead. If a flag makes the overview advertise something, the menu offers
+    it; if it does not, the menu must not."""
+    for flag, cap_id, needle in [
+        ("ai_seo_enabled", "seo", "SEO"),
+        ("ai_documents_enabled", "docs", "Document"),
+        ("ai_sales_enabled", "sales", "Sales"),
+        ("ai_finance_enabled", "finance", "Financ"),
+    ]:
+        enabled = _prod_settings(**{flag: True})
+        disabled = _prod_settings(**{flag: False})
+        assert cap_id in _catalog(enabled)
+        assert needle in _overview(enabled), f"{needle} missing from overview"
+        assert cap_id not in _catalog(disabled)
+        assert needle not in _overview(disabled), f"{needle} still claimed when off"
