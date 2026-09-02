@@ -561,3 +561,50 @@ async def test_a_wide_fanout_runs_every_call_instead_of_refusing_the_overflow():
     assert calls["n"] == n
     assert len(out) == n  # the tool_call<->result pairing lock still holds
     assert not any("too many tool calls" in str(m.content) for m in out)
+
+
+# ---- 9. adaptive concurrency gate --------------------------------------------
+
+
+async def test_a_burst_of_429s_narrows_the_gate_once_not_once_per_request():
+    """A window that is too wide produces one 429 per in-flight request. Halving
+    per 429 would collapse straight to the floor on the first burst and throttle
+    the provider far below what it actually allows — the opposite of the goal."""
+    from app.clients.ollagraph import AdaptiveGate
+
+    gate = AdaptiveGate(100, 2)
+    # Model a REAL burst: every request is admitted (in flight) at the same width
+    # BEFORE any response comes back. Acquiring and reporting one at a time would
+    # instead be 20 sequential over-wide windows, which SHOULD collapse the gate.
+    async with contextlib.AsyncExitStack() as stack:
+        epochs = [
+            await stack.enter_async_context(gate.slot()) for _ in range(20)
+        ]
+    assert set(epochs) == {0}, epochs
+    for e in epochs:
+        await gate.on_rate_limited(e)
+    assert gate.limit == 50, gate.limit
+
+
+async def test_the_gate_regrows_on_sustained_success():
+    from app.clients.ollagraph import AdaptiveGate
+
+    gate = AdaptiveGate(8, 2)
+    async with gate.slot() as e:
+        pass
+    await gate.on_rate_limited(e)
+    assert gate.limit == 4
+    for _ in range(4):  # one full round of successes at the narrowed width
+        await gate.on_success()
+    assert gate.limit == 5  # additive increase, one slot per round
+
+
+async def test_the_gate_never_collapses_below_its_floor():
+    from app.clients.ollagraph import AdaptiveGate
+
+    gate = AdaptiveGate(64, 2)
+    for _ in range(20):
+        async with gate.slot() as e:
+            pass
+        await gate.on_rate_limited(e)
+    assert gate.limit == 2

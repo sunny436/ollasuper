@@ -55,6 +55,13 @@ class AdaptiveGate:
         self._limit = self._max
         self._in_flight = 0
         self._ok = 0
+        # Generation counter, bumped on every narrowing. A wide window that is too
+        # wide produces MANY simultaneous 429s — one per in-flight request — and
+        # halving once per 429 would collapse straight to the floor on the first
+        # burst. Each request carries the epoch it was admitted under, and only a
+        # 429 from the CURRENT epoch narrows: one halving per over-wide window,
+        # which is what AIMD actually means.
+        self._epoch = 0
         self._cond = asyncio.Condition()
 
     @property
@@ -63,22 +70,32 @@ class AdaptiveGate:
 
     @contextlib.asynccontextmanager
     async def slot(self):
+        """Yields the epoch this call was admitted under — pass it back to
+        `on_rate_limited` so a stale 429 cannot re-narrow an already-narrowed gate."""
         async with self._cond:
             while self._in_flight >= self._limit:
                 await self._cond.wait()
             self._in_flight += 1
+            epoch = self._epoch
         try:
-            yield
+            yield epoch
         finally:
             async with self._cond:
                 self._in_flight -= 1
                 self._cond.notify()
 
-    async def on_rate_limited(self) -> None:
-        """Multiplicative decrease: the provider just told us we are too wide."""
+    async def on_rate_limited(self, epoch: int) -> None:
+        """Multiplicative decrease: the provider just told us we are too wide.
+
+        Ignores a 429 raised by a request admitted under an EARLIER epoch — those
+        were already in flight when we narrowed, so they are evidence about the old
+        width, not the new one."""
         async with self._cond:
+            if epoch != self._epoch:
+                return
             before = self._limit
             self._limit = max(self._min, self._limit // 2)
+            self._epoch += 1
             self._ok = 0
         if before != self._limit:
             log.info("tool.gate_narrowed", extra={"from": before, "to": self._limit})
@@ -360,7 +377,7 @@ class OllagraphAdapter:
             # its whole allowance before its first byte, time out, and be retried,
             # adding yet more pool pressure. Connect/read/write keep the tool's
             # budget; pool acquisition gets its own, separately bounded wait.
-            async with gate.slot():
+            async with gate.slot() as gate_epoch:
                 r = await self._c.request(
                     tool.method.upper(),
                     url,
@@ -385,7 +402,7 @@ class OllagraphAdapter:
         # Feed the provider's verdict back BEFORE normalization turns it into an
         # exception, so the gate learns from every call including the failed ones.
         if r.status_code == 429:
-            await gate.on_rate_limited()
+            await gate.on_rate_limited(gate_epoch)
         elif r.status_code < 400:
             await gate.on_success()
         return self._normalize_response(tool, r)
