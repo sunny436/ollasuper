@@ -520,6 +520,9 @@ MIN_ARTIFACT_CHARS = 1_200
 
 _HEADING = re.compile(r"^#{1,3}\s+(.{3,120})$", re.M)
 _FENCE = re.compile(r"^```", re.M)
+# The BODY of each fenced block, so classification can weigh how much of the
+# text is actually code rather than merely counting delimiters.
+_FENCED_BLOCK = re.compile(r"```[^\n]*\n(.*?)```", re.S)
 
 # Operations that produce a NEW VERSION of the thing already in play, rather
 # than a new thing. This is what makes v1 -> v2 -> v3 a lineage instead of
@@ -561,13 +564,23 @@ def derive_artifact(
         # resolve to the audit rather than to the thing being audited.
         return None
 
-    kind = "code" if len(_FENCE.findall(text)) >= 2 else "blog"
-    if kind == "blog" and len(_HEADING.findall(text)) >= 3:
-        kind = (
-            "report"
-            if operation in (CREATE, NEW_TASK) and "report" in text[:400].lower()
-            else kind
-        )
+    # A technical article full of config examples is still an ARTICLE.
+    #
+    # Counting fences was not enough: the WireGuard blog has several code blocks
+    # and was registered as kind="code" on production, which then made "the
+    # article" fail to match it by kind. What distinguishes them is how much of
+    # the text is inside the fences, not how many there are.
+    fenced_chars = sum(len(m) for m in _FENCED_BLOCK.findall(text))
+    code_ratio = fenced_chars / max(1, len(text))
+    headings = len(_HEADING.findall(text))
+    if code_ratio > 0.5 and headings < 3:
+        kind = "code"
+    elif headings >= 2 and re.search(
+        r"(report|analysis|findings|audit)", text[:400], re.I
+    ):
+        kind = "report"
+    else:
+        kind = "blog"
 
     heading = _HEADING.search(text)
     subject = (heading.group(1).strip() if heading else "") or fallback_subject

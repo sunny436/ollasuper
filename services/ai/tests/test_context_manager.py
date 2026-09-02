@@ -28,13 +28,13 @@ from app.runtime.context_manager import (
     MODIFY,
     REVERT,
     REWRITE,
-    RUNG_ACTIVATION,
     RUNG_AMBIGUOUS,
     RUNG_EXPLICIT,
     RUNG_LINEAGE,
     TRANSFORM,
     classify_operation,
     compile_context,
+    derive_artifact,
     resolve_reference,
 )
 
@@ -70,7 +70,10 @@ def ctx(**kw) -> ConversationContext:
     ("text", "expected"),
     [
         ("Write a blog about WireGuard", CREATE),
-        ("give me above blog with more detail explanation and in detail,format", MODIFY),
+        (
+            "give me above blog with more detail explanation and in detail,format",
+            MODIFY,
+        ),
         ("Make it more detailed", MODIFY),
         ("Add AWS examples", EXTEND),
         ("Make it more human", REWRITE),
@@ -92,7 +95,9 @@ def test_apply_beats_modify_and_revert_beats_continue() -> None:
     """Ordering is load-bearing, not incidental."""
     # "apply the changes" contains no MODIFY verb by accident — but "apply your
     # recommendations and improve it" contains both.
-    assert classify_operation("apply your recommendations and improve it") == APPLY_AUDIT
+    assert (
+        classify_operation("apply your recommendations and improve it") == APPLY_AUDIT
+    )
     # "go back to the previous version" would match CONTINUE's "go on" family if
     # REVERT did not come first.
     assert classify_operation("go back to the previous version") == REVERT
@@ -146,7 +151,7 @@ def test_explicit_subject_outranks_the_active_artifact() -> None:
 
 
 def test_previous_version_walks_the_lineage_not_the_transcript() -> None:
-    """"Previous version" means the previous VERSION.
+    """ "Previous version" means the previous VERSION.
 
     Two artifacts produced in consecutive turns make "the previous one" ambiguous
     with "the message before"; only the supersedes chain distinguishes them.
@@ -240,7 +245,9 @@ def test_the_resolved_artifact_is_pinned_into_the_block() -> None:
         artifacts=[artifact(aid="art_1", seq=1)],
     )
     compiled = compile_context(
-        user_text="give me above blog with more detail explanation and in detail,format",
+        user_text=(
+            "give me above blog with more detail explanation and in detail,format"
+        ),
         ctx=c,
         history=[HistoryMessage(role="assistant", content=body, seq=1)],
         artifact_reserve_tokens=8_000,
@@ -302,7 +309,7 @@ def test_out_of_window_artifact_still_reaches_the_model() -> None:
 
 
 def test_constraints_are_carried_forward_on_a_narrow_edit() -> None:
-    """"Make it more human" must not discard technical accuracy or SEO intent."""
+    """ "Make it more human" must not discard technical accuracy or SEO intent."""
     c = ctx(
         activeArtifactId="art_1",
         artifacts=[artifact(aid="art_1", seq=1)],
@@ -369,3 +376,99 @@ def test_the_floor_does_not_read_model_supplied_fields() -> None:
     assert r.resolved
     assert r.artifact_id == "art_1"
     assert r.version == 2
+
+
+# ------------------------------------------------------------ artifact floor
+
+
+def _blog_with_config(n_blocks: int = 4) -> str:
+    """A technical article: mostly prose, with configuration examples."""
+    prose = "WireGuard is a modern VPN. " * 60
+    block = "```ini\n[Interface]\nPrivateKey = abc\n```\n"
+    body = "# Cloud WireGuard VPN\n\n" + prose
+    for i in range(n_blocks):
+        body += f"\n\n## Section {i}\n\n" + prose + "\n\n" + block
+    return body
+
+
+def test_a_technical_article_with_config_blocks_is_not_code() -> None:
+    """The defect production actually produced.
+
+    The WireGuard blog has several fenced blocks and was registered as
+    kind="code", which then made "the article" fail to match it by kind.
+    Counting fences is the wrong signal; how much of the text is inside them is
+    the right one.
+    """
+    d = derive_artifact(
+        operation=CREATE,
+        final_text=_blog_with_config(),
+        ctx=None,
+        resolution=None,
+        fallback_subject="fallback",
+    )
+    assert d is not None
+    assert d.kind == "blog"
+    assert d.subject == "Cloud WireGuard VPN"
+
+
+def test_a_predominantly_code_answer_is_code() -> None:
+    body = "Here you go:\n\n```python\n" + ("x = 1\n" * 400) + "```\n"
+    d = derive_artifact(
+        operation=CREATE,
+        final_text=body,
+        ctx=None,
+        resolution=None,
+        fallback_subject="a script",
+    )
+    assert d is not None
+    assert d.kind == "code"
+
+
+def test_a_short_answer_is_not_an_artifact() -> None:
+    """Registering every reply would make "it" ambiguous on every turn."""
+    assert (
+        derive_artifact(
+            operation=ANSWER,
+            final_text="Yes, that is correct.",
+            ctx=None,
+            resolution=None,
+            fallback_subject="x",
+        )
+        is None
+    )
+
+
+def test_an_audit_is_about_an_artifact_not_a_version_of_one() -> None:
+    """Otherwise "apply those changes" resolves to the audit, not to the work."""
+    assert (
+        derive_artifact(
+            operation=AUDIT,
+            final_text="# Findings\n\n" + ("Issue found. " * 400),
+            ctx=None,
+            resolution=None,
+            fallback_subject="x",
+        )
+        is None
+    )
+
+
+def test_a_modify_supersedes_and_keeps_the_original_identity() -> None:
+    """ "Make it more human" must not rename the article after the new heading."""
+    c = ctx(
+        activeArtifactId="art_1",
+        artifacts=[
+            artifact(aid="art_1", kind="blog", subject="Cloud WireGuard VPN", seq=1)
+        ],
+    )
+    resolution = resolve_reference("make it more human", c)
+    d = derive_artifact(
+        operation=REWRITE,
+        final_text="# A Totally Different Heading\n\n" + ("prose " * 400),
+        ctx=c,
+        resolution=resolution,
+        fallback_subject="ignored",
+    )
+    assert d is not None
+    assert d.supersedes_artifact_id == "art_1"
+    assert d.subject == "Cloud WireGuard VPN"
+    assert d.kind == "blog"
