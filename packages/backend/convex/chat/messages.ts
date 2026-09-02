@@ -286,6 +286,10 @@ export async function startAssistantTurn(
       error: undefined,
       errorCode: undefined,
       finishReason: undefined,
+      // The folded timeline of the FAILED attempt: the turn regenerates from the
+      // durable checkpoint, so leaving it would render the old run's tool rows
+      // alongside the new ones.
+      events: undefined,
       model: opts.model,
       updatedAt: now,
     });
@@ -540,10 +544,20 @@ export const retry = mutation({
       // pick (args.model !== thread.model) stays strict.
       explicit: args.model !== undefined && args.model !== thread.model,
     });
+    // Seed `attempts` so dispatchPayload's `doResume` is true and the retry
+    // REPLAYS the surviving toolExecutions checkpoint instead of re-running every
+    // completed call from zero. Without it a retry after a timeout paid for the
+    // same research twice and hit the same wall. (The scheduled path already
+    // passes this, for exactly this reason — see the note on `attempts` above.)
+    const prior = await ctx.db
+      .query("chatStreams")
+      .withIndex("by_message", (q) => q.eq("messageId", message._id))
+      .unique();
     const { streamId } = await startAssistantTurn(ctx, thread, userId, {
       seq: message.seq,
       model,
       reuseMessageId: message._id,
+      attempts: (prior?.attempts ?? 0) + 1,
     });
     return { assistantMessageId: message._id, streamId };
   },

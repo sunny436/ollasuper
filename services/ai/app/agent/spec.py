@@ -87,6 +87,7 @@ class ExecutionPolicy:
     # defaults + the grounding test (test_agent.py).
     max_concurrent_tools: int = 100
     max_tool_calls_per_step: int = 0
+    max_stall_steps: int = 2
     tool_max_retries: int = 2
     tool_retry_base_s: float = 0.5
     default_timeout_s: float = 30.0

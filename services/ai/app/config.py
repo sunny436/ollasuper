@@ -104,13 +104,26 @@ class Settings(BaseSettings):
     # Discovery is filtered to READ_ONLY tools, policy is enforced OUTSIDE the
     # model, and high-impact/approval tools are never silently executed.
     ai_agent_enabled: bool = False
-    # Hard ceiling on model<->tool round-trips per turn. At the cap the model is
-    # re-invoked WITHOUT tools so it must produce a final text answer. A CEILING, not
-    # a target: simple chats use ~0-1, SEO audits ~4; only the tool-heaviest workflows
-    # (a research + quality-gated blog: research -> write -> score -> up to 3 targeted
-    # fix/rescore cycles) use the headroom. The blog fix loop caps itself at 3 cycles
-    # in-prompt, so this never becomes unbounded regeneration.
-    ai_agent_max_steps: int = 12
+    # Emergency backstop on model<->tool round-trips per turn. 0 (the default) means
+    # NO count ceiling — a turn runs as many steps as it keeps making PROGRESS for.
+    #
+    # This was a hard 12, which is what actually broke long deliverables: a research
+    # -> write -> score -> fix workflow spent its budget on research, and at the cap
+    # the model was silently re-invoked WITHOUT tools. It could no longer call
+    # generate_file (so it announced it would "write the post myself"), and with no
+    # tool able to run it could not emit another tool event either — which, before
+    # the deadline became progress-rolled, also froze its own watchdog.
+    #
+    # A count cannot tell useful work from a loop. `ai_agent_max_stall_steps` can:
+    # a step that produces no new successful tool result is not progress, and a few
+    # of those in a row is a loop. Convergence is bounded by that, by the no-progress
+    # deadline, and by the context/cost budget — all real signals.
+    ai_agent_max_steps: int = 0
+    # Consecutive UNPRODUCTIVE steps (no successful, non-duplicate tool result)
+    # tolerated before the loop is stopped and the model must answer in text. This
+    # is a convergence criterion, not a work ceiling: a productive step resets it,
+    # so genuinely long work is unbounded while a stuck loop still terminates.
+    ai_agent_max_stall_steps: int = 2
     # Emergency backstop ONLY — 0 (the default) means unlimited, and unlimited is
     # the intended operating mode. A batch wider than the concurrency budget is
     # QUEUED by the executor's semaphore, not refused; the natural bound on one
@@ -132,8 +145,15 @@ class Settings(BaseSettings):
     # Per-tool result is truncated to this many chars of serialized JSON before
     # it re-enters the context as a ToolMessage (bounds runaway tool output).
     ai_agent_tool_result_max_chars: int = 8000
-    # How many discovered candidates are bound to the model per turn (never 223).
-    ai_agent_discovery_top_k: int = 5
+    # How many discovered candidates are bound to the model per turn. 0 = NO count
+    # limit: relevance (`tool_discovery_min_score`) plus the SCHEMA-TOKEN BUDGET
+    # below decide what binds, and the token budget is a real constraint where a
+    # count is not.
+    #
+    # This was 5 — out of ~223 discovered Ollagraph tools — which meant a task
+    # needing the sixth-most-relevant tool could not see it at all, and had to
+    # spend one of its scarce steps on `find_capabilities` to reach it.
+    ai_agent_discovery_top_k: int = 0
     # Phase 10 — orchestrator + dynamic capability routing. `capability_working_set`
     # is how many capabilities are INLINED per step (the render limit); it is NOT a
     # reachability ceiling — `find_capabilities` reaches the rest of the registry on

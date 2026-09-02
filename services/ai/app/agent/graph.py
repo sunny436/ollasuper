@@ -86,7 +86,13 @@ class ChatState(TypedDict):
     system_prompt: str
     # Declared now so adding a node later is not a state migration.
     retrieved: NotRequired[list[dict]]
-    tool_budget: NotRequired[int]
+    # Remaining step BACKSTOP. `None` = no count ceiling (the default): the loop is
+    # bounded by PROGRESS (`tool_stalls`), by the no-progress deadline, and by the
+    # context budget — never by a fixed number of round-trips.
+    tool_budget: NotRequired[int | None]
+    # Consecutive steps that produced no successful, non-duplicate tool result.
+    # A productive step resets it, so useful work is unbounded and a loop is not.
+    tool_stalls: NotRequired[int]
     # Phase 6: token budget for the in-graph message list, so each model call is
     # re-fit (accumulated tool results compacted) before it is sent.
     fit_budget: NotRequired[int]
@@ -179,6 +185,7 @@ def _build_agent_graph(
         # With budget left, offer tools; at the cap fall back to the plain LLM so
         # the model MUST answer in text and cannot emit a dangling tool_call.
         budget = state.get("tool_budget", 0)
+        has_budget = budget is None or budget > 0
         # Phase 10: when dynamic capability loading is active, RE-BIND from the
         # (possibly expanded) working set each step so a just-discovered tool is
         # callable. With no resolver attached, the fixed bind is used unchanged.
@@ -196,12 +203,12 @@ def _build_agent_graph(
         # so the try always succeeds → byte-identical to the pre-streaming behaviour.
         if tools_ctx.capabilities is not None and tools_ctx.rebind is not None:
             specs = state.get("bound_specs") or []
-            use_tools = budget > 0 and bool(specs)
+            use_tools = has_budget and bool(specs)
             client = tools_ctx.rebind(specs) if use_tools else llm
             fb = tools_ctx.rebind_fallback
             fallback_client = fb(specs) if (use_tools and fb is not None) else None
         else:
-            use_tools = budget > 0
+            use_tools = has_budget
             client = llm_tools if use_tools else llm
             fallback_client = llm_tools_fallback if use_tools else None
         # Phase 6 (B3): re-fit the accumulated messages to the per-turn budget
@@ -252,11 +259,34 @@ def _build_agent_graph(
         last = state["messages"][-1]
         tool_calls = list(getattr(last, "tool_calls", None) or [])
         messages = await execute_tool_calls(tool_calls, tools_ctx)
+        # A step is PRODUCTIVE if it returned at least one non-error tool result.
+        # Errors, duplicates, refusals and cancellations all carry status "error",
+        # so a step that only produced those advanced nothing. Counting consecutive
+        # unproductive steps is what bounds the loop now that there is no count
+        # ceiling: real work resets it, a spin does not.
+        productive = any(
+            getattr(m, "status", "success") != "error" for m in messages
+        )
+        budget = state.get("tool_budget", 0)
+        stalls = 0 if productive else state.get("tool_stalls", 0) + 1
+        cap = tools_ctx.max_stall_steps
+        stalled = bool(cap) and stalls >= cap
+        if stalled:
+            log.info(
+                "agent.tool_loop_stalled",
+                extra={"run_id": tools_ctx.run_id, "stalls": stalls},
+            )
         # One executor pass = one step consumed, regardless of how many tools it
-        # ran in parallel. Never below zero.
+        # ran in parallel. None = no ceiling; never below zero. A stalled loop
+        # zeroes the budget HERE (a node return is the only thing that updates
+        # state — a router cannot), so the next model call has no tools bound and
+        # must answer in text rather than emit another dangling call.
         out: dict = {
             "messages": messages,
-            "tool_budget": max(0, state.get("tool_budget", 0) - 1),
+            "tool_budget": (
+                0 if stalled else None if budget is None else max(0, budget - 1)
+            ),
+            "tool_stalls": stalls,
         }
         # Phase 10: drain any capabilities the model discovered this step into the
         # bound working set so the next model step can call them (progressive
@@ -275,7 +305,8 @@ def _build_agent_graph(
             return END
         last = state["messages"][-1]
         has_calls = bool(getattr(last, "tool_calls", None))
-        if has_calls and state.get("tool_budget", 0) > 0:
+        budget = state.get("tool_budget", 0)
+        if has_calls and (budget is None or budget > 0):
             return "executor"
         return END
 

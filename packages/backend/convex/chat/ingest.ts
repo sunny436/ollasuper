@@ -51,6 +51,19 @@ const MAX_EVENT_PAYLOAD_CHARS = 100_000;
 const AGENT_TOTAL_DEADLINE_MS = 300_000;
 const TOOL_EVENT_TYPES = new Set(["TOOL_CALL", "TOOL_RESULT", "TOOL_PROGRESS"]);
 /**
+ * Terminals where the completed tool work is still VALID and re-running it would
+ * be pure waste — the turn ran out of time, it did not produce a wrong answer.
+ * `finalizeError` preserves the toolExecutions checkpoint for these so `retry`
+ * resumes from it. Deliberately narrow: a cancel or an expired approval is a
+ * decision, not a timeout, and still retires the checkpoint.
+ */
+const RESUMABLE_ERROR_CODES = new Set([
+  "deadline",
+  "deadline_exceeded",
+  "timeout",
+  "provider_timeout",
+]);
+/**
  * `appendEvent` was the single largest source of Convex OCC write-conflicts (68/68
  * observed in 24h, retried at 47-77ms each) because it patched this stream row on
  * EVERY call — and its victims included `upsertExecution`, the write-ahead gate a
@@ -575,7 +588,16 @@ export async function finalizeError(
 
   const now = Date.now();
   await deleteChunks(ctx, stream.messageId);
-  await deleteExecutions(ctx, stream.messageId); // Phase 3: retire the checkpoint
+  // KEEP the durable execution checkpoint when the turn died of running out of
+  // TIME rather than of being wrong. Those rows are the record of tool work that
+  // was already paid for; deleting them meant a retry re-ran every call from zero
+  // and hit the same wall, so a long research turn could burn its work twice and
+  // still deliver nothing. `retry` seeds `attempts` so the next dispatch replays
+  // them instead. Every other terminal still retires the checkpoint, so this does
+  // not become unbounded retention.
+  if (!RESUMABLE_ERROR_CODES.has(args.errorCode ?? "")) {
+    await deleteExecutions(ctx, stream.messageId);
+  }
   // NB: deliberately do NOT deleteApprovals here — finalizeError is the expiry /
   // error terminal, where the "expired"/"rejected" row is a kept audit record
   // (reapExpired asserts it survives). Orphan cleanup rides finishStream only.

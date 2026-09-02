@@ -174,6 +174,9 @@ class ToolExecContext:
     # existing tests are unchanged; the runner sets it from config). Extra calls
     # are refused with a paired error.
     max_tool_calls_per_step: int = 0
+    # Consecutive unproductive steps tolerated before the graph stops looping and
+    # the model must answer in text. Convergence criterion, not a work ceiling.
+    max_stall_steps: int = 2
     # Phase 7: max tool calls that run SIMULTANEOUSLY within one step (0/1 =
     # sequential, the default so existing tests are byte-identical; the runner
     # sets it from config). Bounds the concurrency semaphore.

@@ -977,3 +977,101 @@ describe("long-running execution", () => {
     expect(payload?.completedSteps).toBe(3);
   });
 });
+
+describe("a timed-out turn keeps its paid work", () => {
+  test("finalizeError preserves the checkpoint for a deadline, retires it otherwise", async () => {
+    const t = convexTest(schema, modules);
+    for (const [code, shouldSurvive] of [
+      ["deadline_exceeded", true],
+      ["internal", false],
+    ] as const) {
+      const { streamId, messageId } = await seedStream(t);
+      await t.run(async (ctx) => {
+        const m = (await ctx.db.get(messageId))!;
+        await ctx.db.insert("toolExecutions", {
+          executionId: `e-${code}`,
+          streamId,
+          messageId,
+          threadId: m.threadId,
+          workspaceId: m.workspaceId,
+          userId: m.userId,
+          stepId: "run:a0:s0",
+          toolCallId: "c0",
+          toolId: "search_web",
+          attemptId: "a0",
+          attempt: 0,
+          actionType: "tool",
+          sideEffect: "read_only",
+          state: "succeeded",
+          inputHash: "h0",
+          args: { q: "x" },
+          resultContent: "{}",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      });
+      await t.mutation(internal.chat.ingest.failStream, {
+        streamId,
+        error: "out of time",
+        errorCode: code,
+      });
+      const rows = await t.run(async (ctx) =>
+        ctx.db
+          .query("toolExecutions")
+          .withIndex("by_message", (q) => q.eq("messageId", messageId))
+          .collect(),
+      );
+      // Deleting these made a retry re-run every completed call from zero and hit
+      // the same wall. A wrong answer is different: that checkpoint is retired.
+      expect(rows.length > 0).toBe(shouldSurvive);
+    }
+  });
+
+  test("retry resumes from the checkpoint instead of re-running everything", async () => {
+    const t = convexTest(schema, modules);
+    const { streamId, messageId, userId, threadId } = await seedStream(t);
+    await t.run(async (ctx) => {
+      const m = (await ctx.db.get(messageId))!;
+      for (let i = 0; i < 20; i++) {
+        await ctx.db.insert("toolExecutions", {
+          executionId: `e${i}`,
+          streamId,
+          messageId,
+          threadId: m.threadId,
+          workspaceId: m.workspaceId,
+          userId: m.userId,
+          stepId: `run:a0:s${i % 2}`,
+          toolCallId: `c${i}`,
+          toolId: "search_web",
+          attemptId: `a${i}`,
+          attempt: 0,
+          actionType: "tool",
+          sideEffect: "read_only",
+          state: "succeeded",
+          inputHash: `h${i}`,
+          args: { q: `${i}` },
+          resultContent: "{}",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+    });
+    await t.mutation(internal.chat.ingest.failStream, {
+      streamId,
+      error: "out of time",
+      errorCode: "deadline_exceeded",
+    });
+    const r = await t
+      .withIdentity(as(userId))
+      .mutation(api.chat.messages.retry, { messageId });
+    const payload = await t.query(internal.chat.stream.dispatchPayload, {
+      streamId: r.streamId,
+    });
+    // doResume was false on a retry (fresh stream: attempts 0, hasEvents false),
+    // so all 20 paid calls used to be re-executed.
+    expect(payload?.completedTools).toHaveLength(20);
+    expect(payload?.completedSteps).toBe(2);
+    await drain(t);
+    expect(threadId).toBeTruthy();
+  });
+});

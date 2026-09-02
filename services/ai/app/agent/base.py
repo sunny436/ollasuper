@@ -229,6 +229,7 @@ class Agent:
             tool_max_retries=spec.execution.tool_max_retries,
             tool_retry_base_s=spec.execution.tool_retry_base_s,
             max_tool_calls_per_step=spec.execution.max_tool_calls_per_step,
+            max_stall_steps=spec.execution.max_stall_steps,
             max_concurrent_tools=spec.execution.max_concurrent_tools,
             approvals=dict(env.approvals),
             force_approval_ids=spec.execution.force_approval_ids,

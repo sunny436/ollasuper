@@ -694,20 +694,41 @@ async def run_generation(
                     web_specs, name_to_id = build_tool_specs(
                         candidates, tool_registry, reserved=_reserved
                     )
-                    # Phase 6 (B2): bound the bound-schema TOKEN cost. Candidates
-                    # are score-sorted, so drop the lowest-ranked until the specs
-                    # fit the schema budget — a few verbose nested schemas can't
-                    # blow the window, and this is the seam that keeps a 40-50-skill
-                    # future from loading every schema. (Schemas are also counted
-                    # in fixed_tokens by B1; this caps them at the source.)
+                    # Phase 6 (B2): bound the bound-schema TOKEN cost. This is the
+                    # REAL limit on how many tools bind (the count cap is off), so
+                    # it must stay cheap: candidates are score-sorted, so take the
+                    # longest prefix whose cumulative cost fits, in ONE pass.
+                    #
+                    # The previous loop dropped one candidate at a time and
+                    # RE-SERIALIZED every remaining spec each time — O(n^2) JSON on
+                    # the single event loop, which was tolerable at 5 candidates and
+                    # is not at 200.
                     _schema_budget = cb.input_ceiling // 4
-                    while (
-                        len(candidates) > 1 and spec_tokens(web_specs) > _schema_budget
-                    ):
-                        candidates = candidates[:-1]
-                        web_specs, name_to_id = build_tool_specs(
-                            candidates, tool_registry, reserved=_reserved
-                        )
+                    if spec_tokens(web_specs) > _schema_budget:
+                        # Binary-search the largest score-sorted PREFIX that fits.
+                        # Every probe rebuilds from `candidates`, so specs and
+                        # name_to_id stay consistent — build_tool_specs may skip a
+                        # candidate whose name cannot be sanitized, which makes any
+                        # spec-index -> candidate-index mapping wrong. ~8 probes
+                        # replaces up to N full re-serializations.
+                        _lo, _hi, _best = 1, len(candidates), None
+                        while _lo <= _hi:
+                            _mid = (_lo + _hi) // 2
+                            _ps, _pm = build_tool_specs(
+                                candidates[:_mid], tool_registry, reserved=_reserved
+                            )
+                            if spec_tokens(_ps) <= _schema_budget:
+                                _best = (_mid, _ps, _pm)
+                                _lo = _mid + 1
+                            else:
+                                _hi = _mid - 1
+                        if _best is None:  # even one spec overruns: keep exactly one
+                            _ps, _pm = build_tool_specs(
+                                candidates[:1], tool_registry, reserved=_reserved
+                            )
+                            _best = (1, _ps, _pm)
+                        _keep, web_specs, name_to_id = _best
+                        candidates = candidates[:_keep]
                     specs += web_specs
                     adapter = OllagraphAdapter(settings, ollagraph_http)
             except Exception:  # noqa: BLE001 — web tools are optional
@@ -829,6 +850,7 @@ async def run_generation(
                     tool_max_retries=settings.ai_agent_tool_max_retries,
                     tool_retry_base_s=settings.ai_agent_tool_retry_base_s,
                     max_tool_calls_per_step=settings.ai_agent_max_tool_calls_per_step,
+                    max_stall_steps=settings.ai_agent_max_stall_steps,
                     max_concurrent_tools=settings.ai_agent_max_concurrent_tools,
                     rag=rag_ctx,
                     memory=mem_ctx,
@@ -1138,7 +1160,15 @@ async def run_generation(
             # CALLS) is only the fallback for a Convex that predates the field, and
             # over-counting there is safe-but-conservative, never unbounded.
             already = req.completedSteps or completed_steps
-            state["tool_budget"] = max(0, settings.ai_agent_max_steps - already)
+            # None = NO count ceiling (the default). The loop is bounded by
+            # PROGRESS (ai_agent_max_stall_steps), by the no-progress deadline, and
+            # by the context budget. A configured backstop still applies, and a
+            # resume subtracts what earlier attempts already spent.
+            state["tool_budget"] = (
+                None
+                if settings.ai_agent_max_steps <= 0
+                else max(0, settings.ai_agent_max_steps - already)
+            )
             # Phase 6 (B3): the per-step re-fit budget for the in-graph model node.
             state["fit_budget"] = fit_budget
             # Phase 12b (Stage 1): seed the dynamic working set so the model node

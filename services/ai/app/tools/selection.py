@@ -227,12 +227,21 @@ class ToolSelector:
     ) -> ToolSelectionResult:
         t0 = perf_counter()
         filters = filters or ToolFilters()
-        k = max(1, min(top_k or DEFAULT_TOP_K, MAX_TOP_K))
         threshold = DEFAULT_MIN_SCORE if min_score is None else min_score
 
         index = self._index_now()
         pool = [e for e in index.entries if _passes(e.tool, filters)]
         t_filter = perf_counter()
+        # top_k=0 => NO count limit: every tool that clears `min_score` is a
+        # candidate, and the CALLER's real bound (the agent's schema-token budget)
+        # decides what actually binds. MAX_TOP_K still caps an explicit request,
+        # which is what the public discovery API passes. Computed AFTER `pool`
+        # because the unbounded form is defined in terms of it.
+        k = (
+            max(1, len(pool))
+            if top_k == 0
+            else max(1, min(top_k or DEFAULT_TOP_K, MAX_TOP_K))
+        )
 
         q_exact = _tokenize(query)
         q = _expand_synonyms(q_exact)
