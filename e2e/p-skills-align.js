@@ -73,9 +73,16 @@ const menu = (page) => page.locator('[role="menu"][data-state="open"]');
       `${Math.round(panel.width)} vs ${Math.round(shell.width)}`,
     );
 
+    // Measured against the TEXTAREA, not the shell: `sideOffset` is relative to
+    // the trigger, which sits inside the pill's py-3 padding, so the panel's box
+    // legitimately reaches ~11px into the shell's top edge with no visual overlap.
+    // `data-side` is the real invariant — that floating-ui did not flip it below.
+    const ta = await page.locator("#chat-composer").boundingBox();
+    const side = await menu(page).evaluate((el) => el.getAttribute("data-side"));
     step(
-      panel.y + panel.height <= shell.y + 8,
+      side === "top" && panel.y + panel.height <= ta.y,
       `the panel opens above the composer @${width}w`,
+      `side=${side}, panel bottom ${Math.round(panel.y + panel.height)} vs textarea top ${Math.round(ta.y)}`,
     );
 
     if (width === WIDTHS[0]) {
