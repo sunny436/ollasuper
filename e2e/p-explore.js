@@ -26,7 +26,7 @@ const step = (ok, name, detail) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
 };
 
-const explore = (page) => page.getByRole("button", { name: "Explore capabilities" });
+const explore = (page) => page.getByRole("button", { name: "Skills" });
 
 // Scoped to data-state="open" on purpose. Radix keeps the content mounted
 // until its exit animation ends, and measured on production that detach lands

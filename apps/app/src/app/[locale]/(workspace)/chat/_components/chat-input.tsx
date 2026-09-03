@@ -79,6 +79,11 @@ export function ChatInput({
   const { send, sending, canSend } = useSendMessage(threadId);
   const attachments = useAttachments(threadId);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  // The composer's horizontal extent — what the Skills panel is centred on and
+  // sized to. This element (not the inner pill) because the pill is a `w-full`
+  // child of it, so their left/right edges coincide and this one is stable
+  // across the centred/docked class swap.
+  const composerShell = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   // dragenter/dragleave fire for EVERY child element, so a boolean makes the
   // overlay strobe as the pointer crosses message boundaries. A counter is the
@@ -248,7 +253,11 @@ export function ChatInput({
           <span className="text-sm font-medium text-brand-ink">Drop to attach</span>
         </div>
       )}
-      <div className={`mx-auto w-full ${centred ? "max-w-[58rem]" : "max-w-3xl"}`}>
+      <div
+        ref={composerShell}
+        data-composer-shell
+        className={`mx-auto w-full ${centred ? "max-w-[58rem]" : "max-w-3xl"}`}
+      >
         <label htmlFor="chat-composer" className="sr-only">
           Message
         </label>
@@ -314,6 +323,7 @@ export function ChatInput({
             {centred && (
               <ExploreMenu
                 disabled={isStreaming}
+                anchorRef={composerShell}
                 onOpenChange={(o) => onExploreOpenChange?.(o)}
                 onSelect={(seed) => {
                   // Seeded, not sent, and not hidden behind a badge: the

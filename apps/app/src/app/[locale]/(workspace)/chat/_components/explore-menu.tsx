@@ -25,7 +25,7 @@ import {
   Users,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * Explore — capability discovery above the composer.
@@ -180,13 +180,31 @@ export function ExploreMenu({
   onOpenChange,
   onSelect,
   disabled,
+  anchorRef,
 }: {
   /** Lifted so chat-layout can raise the stack and dim the greeting. */
   onOpenChange: (open: boolean) => void;
   onSelect: (seed: string) => void;
   disabled?: boolean;
+  /**
+   * The COMPOSER SHELL, which the panel is centred on and sized to.
+   *
+   * Radix anchors a menu to its trigger and exports no `Anchor` (Trigger /
+   * Content / Portal only), and this trigger sits left-of-centre in the composer
+   * — after the paperclip and the model picker — so an unadjusted panel lands
+   * well right of centre. The correction is measured from this element rather
+   * than hardcoded, because the trigger's own offset moves with the model
+   * picker's label width ("DeepSeek V4 Flash" vs "GLM 5.2").
+   */
+  anchorRef?: React.RefObject<HTMLElement | null>;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // null until measured: the panel then falls back to its own width class and a
+  // zero offset, i.e. exactly the pre-existing behaviour, rather than breaking.
+  const [anchor, setAnchor] = useState<{ offset: number; width: number } | null>(
+    null,
+  );
   const [hint, setHint] = useState<string | null>(null);
   const [enabled, setEnabled] = useState<string[] | null>(null);
   const [fetched, setFetched] = useState(false);
@@ -209,14 +227,52 @@ export function ExploreMenu({
     ? CAPABILITIES.filter((c) => enabled.includes(c.id))
     : CAPABILITIES;
 
+  /**
+   * Panel geometry, in the trigger's frame.
+   *
+   * `align="start"` is load-bearing and NOT interchangeable with `align="center"`:
+   * Radix forwards `alignOffset` to floating-ui as `alignmentAxis`, which is
+   * applied only `if (alignment && …)`. A centred placement has no alignment, so
+   * the offset would be silently DISCARDED and the panel would not move at all.
+   *
+   * Matching the panel's width to the composer's is what removes the
+   * `(composerWidth - panelWidth) / 2` term, so nothing here has to know the
+   * panel's own width and no second copy of it can drift out of sync.
+   *
+   * LTR is assumed (locales are en/fr/es). Under RTL `align="start"` anchors the
+   * RIGHT edges and this delta would need its sign flipped.
+   */
+  const measure = useCallback(() => {
+    const shell = anchorRef?.current;
+    const trigger = triggerRef.current;
+    if (!shell || !trigger) return null;
+    const s = shell.getBoundingClientRect();
+    const t = trigger.getBoundingClientRect();
+    if (s.width === 0) return null;
+    return { offset: Math.round(s.left - t.left), width: Math.round(s.width) };
+  }, [anchorRef]);
+
   const change = useCallback(
     (next: boolean) => {
+      // Measured HERE, in the open handler, and NOT in an effect. An effect runs
+      // after the panel has already rendered, so the first open would paint at
+      // offset 0 and then visibly snap across. Batched with setOpen, so the very
+      // first render of the content already carries the right geometry.
+      if (next) setAnchor(measure());
       setOpen(next);
       onOpenChange(next);
       if (!next) setHint(null);
     },
-    [onOpenChange],
+    [onOpenChange, measure],
   );
+
+  // The composer is `mx-auto`, so its centre moves whenever the pane does.
+  useEffect(() => {
+    if (!open) return;
+    const remeasure = () => setAnchor(measure());
+    window.addEventListener("resize", remeasure);
+    return () => window.removeEventListener("resize", remeasure);
+  }, [open, measure]);
 
   return (
     <>
@@ -235,13 +291,17 @@ export function ExploreMenu({
       <DropdownMenu open={open} onOpenChange={change}>
         <DropdownMenuTrigger asChild>
           <button
+            ref={triggerRef}
             type="button"
             disabled={disabled}
-            aria-label="Explore capabilities"
+            // Kept in step with the visible label: an accessible name that says
+            // something else fails WCAG 2.5.3 and breaks "click Skills" in voice
+            // control. e2e/p-explore.js locates this button by this exact name.
+            aria-label="Skills"
             className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] text-primary/55 transition hover:bg-primary/5 hover:text-primary/80 disabled:opacity-40"
           >
             <Sparkles className="h-3 w-3" />
-            Explore
+            Skills
           </button>
         </DropdownMenuTrigger>
 
@@ -254,13 +314,17 @@ export function ExploreMenu({
         <DropdownMenuContent
           side="top"
           align="start"
+          alignOffset={anchor?.offset ?? 0}
           sideOffset={12}
           collisionPadding={16}
           // Radix returns focus to the trigger when the menu closes, which
           // landed the caret on the Explore button instead of the composer it
           // had just seeded. The seed is only useful if the user can type.
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="workspace z-50 max-h-[70vh] w-[min(46rem,calc(100vw-2rem))] overflow-hidden p-0"
+          // Inline width beats the class below; the class stays as the fallback
+          // for the (defensive) unmeasured case.
+          style={anchor ? { width: anchor.width } : undefined}
+          className="workspace z-50 max-h-[70vh] w-[min(46rem,calc(100vw-2rem))] overflow-hidden rounded-2xl p-0"
         >
           <div className="flex items-center justify-between border-b border-border bg-primary/[0.03] px-4 py-2.5">
             <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-primary/45">
