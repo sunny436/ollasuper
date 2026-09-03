@@ -262,3 +262,92 @@ async def test_rag_and_web_tool_in_one_loop(monkeypatch):
     assert adapter.calls == 1  # web tool ran
     assert "CITATION" in _event_types(convex)  # RAG ran
     assert out["messages"][-1].content == "compared"
+
+
+# ---- capacity (quota) failover -----------------------------------------------
+#
+# The provider refusing for CAPACITY is a different failure from the streaming
+# tool-call accumulator break, and both arrive from this gateway as a 502 — so
+# they are told apart by message text, not exception type. Confusing them would
+# send an accumulator bug to a different model, and a quota refusal to a client
+# that will refuse identically.
+
+
+class BoomLLM:
+    """Duck-typed model that always raises the given exception."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.calls = 0
+
+    async def ainvoke(self, messages, *a, **k):
+        self.calls += 1
+        raise self._exc
+
+
+# The real body Ollima returns, verified against production on 2026-09-03.
+QUOTA_TEXT = (
+    "Error code: 502 - All variants failed with errors: deepseek-v4-pro: All "
+    "model providers failed to infer with errors: ollama1: Error 429 Too Many "
+    "Requests from openai client: you (eager_jepsen_160) have reached your "
+    "weekly usage limit"
+)
+
+
+def test_quota_detector_matches_the_real_provider_body():
+    from app.agent.llm import is_quota_error
+
+    assert is_quota_error(RuntimeError(QUOTA_TEXT))
+    # The accumulator break must NOT look like a capacity problem, or a code bug
+    # would silently start routing to a different model.
+    assert not is_quota_error(IndexError("Tool call index out of bounds"))
+    assert not is_quota_error(ValueError("invalid schema"))
+
+
+async def test_a_capacity_refusal_fails_over_to_the_alternate_model():
+    primary = BoomLLM(RuntimeError(QUOTA_TEXT))
+    alternate = ScriptedLLM([AIMessage(content="answered by the alternate")])
+    told = {"n": 0}
+
+    async def note() -> None:
+        told["n"] += 1
+
+    graph = build_graph(primary, quota_fallback=alternate, on_quota_fallback=note)
+    out = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")], "system_prompt": "s"}
+    )
+    assert out["messages"][-1].content == "answered by the alternate"
+    assert primary.calls == 1 and alternate.calls == 1
+    # Not silent: a user whose answer came from another model is told, or the
+    # model picker is lying to them.
+    assert told["n"] == 1
+
+
+async def test_a_non_capacity_failure_is_not_re_routed():
+    """Only a capacity refusal may change models. Anything else must surface."""
+    primary = BoomLLM(ValueError("something else entirely"))
+    alternate = ScriptedLLM([AIMessage(content="should never be reached")])
+    graph = build_graph(primary, quota_fallback=alternate)
+    try:
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content="hi")], "system_prompt": "s"}
+        )
+    except ValueError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("a non-capacity error must not be swallowed")
+    assert alternate.calls == 0
+
+
+async def test_without_a_configured_alternate_the_error_still_surfaces():
+    """`ai_quota_fallback_model` empty => byte-identical to before."""
+    primary = BoomLLM(RuntimeError(QUOTA_TEXT))
+    graph = build_graph(primary)
+    try:
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content="hi")], "system_prompt": "s"}
+        )
+    except RuntimeError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("must not silently succeed with no alternate")

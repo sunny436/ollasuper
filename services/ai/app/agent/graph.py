@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
 from langchain_core.language_models import BaseChatModel
@@ -36,6 +37,7 @@ from langgraph.graph.message import add_messages
 from app.agent.budget import fit_messages
 from app.agent.executor import execute_tool_calls
 from app.agent.harmony import recover_into_message
+from app.agent.llm import is_quota_error
 from app.logging import get_logger
 from app.models.events import EventType
 
@@ -121,6 +123,9 @@ def build_graph(
     llm_tools: Runnable | None = None,
     llm_tools_fallback: Runnable | None = None,
     tools_ctx: ToolExecContext | None = None,
+    quota_fallback: Runnable | None = None,
+    quota_fallback_tools: Runnable | None = None,
+    on_quota_fallback: Callable[[], Awaitable[None]] | None = None,
 ):
     """Compile the generation graph.
 
@@ -132,7 +137,20 @@ def build_graph(
     """
     if llm_tools is None or tools_ctx is None:
         async def model(state: ChatState) -> dict:
-            response = await llm.ainvoke(state["messages"])
+            try:
+                response = await llm.ainvoke(state["messages"])
+            except Exception as e:  # noqa: BLE001 — capacity refusal, see below
+                # The provider refused for CAPACITY, not for anything in this
+                # turn. One hop to a different model recovers it; without this
+                # the turn just fails, which is what made a provider-side weekly
+                # quota outage look like an application fault. Anything else
+                # re-raises unchanged.
+                if quota_fallback is None or not is_quota_error(e):
+                    raise
+                log.warning("model_quota_fallback", extra={"node": "plain"})
+                if on_quota_fallback is not None:
+                    await on_quota_fallback()
+                response = await quota_fallback.ainvoke(state["messages"])
             return {"messages": [response]}
 
         builder = StateGraph(ChatState)
@@ -143,7 +161,15 @@ def build_graph(
         builder.add_edge("model", END)
         return builder.compile(checkpointer=None)
 
-    return _build_agent_graph(llm, llm_tools, llm_tools_fallback, tools_ctx)
+    return _build_agent_graph(
+        llm,
+        llm_tools,
+        llm_tools_fallback,
+        tools_ctx,
+        quota_fallback,
+        quota_fallback_tools,
+        on_quota_fallback,
+    )
 
 
 async def _emit_model_call(
@@ -180,6 +206,9 @@ def _build_agent_graph(
     llm_tools: Runnable,
     llm_tools_fallback: Runnable | None,
     tools_ctx: ToolExecContext,
+    quota_fallback: Runnable | None = None,
+    quota_fallback_tools: Runnable | None = None,
+    on_quota_fallback: Callable[[], Awaitable[None]] | None = None,
 ):
     async def model(state: ChatState) -> dict:
         # With budget left, offer tools; at the cap fall back to the plain LLM so
@@ -224,7 +253,23 @@ def _build_agent_graph(
         stream_broke = False
         try:
             response = await client.ainvoke(messages)
-        except Exception:  # noqa: BLE001 — streaming tool-call-delta accumulator break
+        except Exception as e:  # noqa: BLE001 — two DIFFERENT failures, see below
+            # A CAPACITY refusal is checked first and is a different thing from
+            # the accumulator break below: it needs a different MODEL, whereas
+            # the break needs the same model without streaming. Both arrive as a
+            # 502 from this gateway, so they are told apart by message, not type
+            # — collapsing them would send an accumulator bug to another model
+            # and a quota refusal to a client that will refuse identically.
+            if is_quota_error(e):
+                qfb = quota_fallback_tools if use_tools else quota_fallback
+                if qfb is None:
+                    raise
+                log.warning("model_quota_fallback", extra={"node": "agent"})
+                if on_quota_fallback is not None:
+                    await on_quota_fallback()
+                response = await qfb.ainvoke(messages)
+                await _emit_model_call(tools_ctx, response, time.monotonic() - t0)
+                return {"messages": [response]}
             if fallback_client is None:
                 raise
             log.warning("model_stream_fallback", extra={"run_id": tools_ctx.run_id})

@@ -19,7 +19,7 @@
  * corrects the selection once the catalogue loads, so a future drift degrades
  * instead of breaking.
  */
-export const DEFAULT_MODEL = "deepseek-v4-pro";
+export const DEFAULT_MODEL = "deepseek-v4-flash";
 
 /**
  * A readable name for a model id, derived purely from the string.

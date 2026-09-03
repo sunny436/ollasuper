@@ -43,8 +43,8 @@ const rowsIn = (t: T) =>
   t.run(async (ctx) => ctx.db.query("chatModels").collect());
 
 const ALL_CURATED = [
-  "deepseek-v4-pro",
   "deepseek-v4-flash",
+  "deepseek-v4-pro",
   "glm-5.2",
   "glm-5.1",
   "qwen3.5",
@@ -77,14 +77,20 @@ describe("the model catalogue is a curated shortlist", () => {
     }
   });
 
-  test("the default is DeepSeek V4 Pro and it leads the list", async () => {
+  // The pinned id moves whenever the provider's capacity does — it was
+  // gpt-5.6-luna (expired upstream credential), then deepseek-v4-pro (account
+  // hit its weekly usage limit; 7 of 8 models 429ing on 2026-09-03). What this
+  // guards is not the id but the INVARIANT: the default must be a real curated
+  // entry and must lead the picker, because a default that is not in the list
+  // is what broke chat both times.
+  test("the default is DeepSeek V4 Flash and it leads the list", async () => {
     const t = convexTest(schema, modules);
-    expect(DEFAULT_MODEL).toBe("deepseek-v4-pro");
+    expect(DEFAULT_MODEL).toBe("deepseek-v4-flash");
     serve(ALL_CURATED);
     await t.action(internal.chat.models.refresh, {});
     const listed = await t.query(api.chat.models.list, {});
     expect(listed[0].modelId).toBe(DEFAULT_MODEL);
-    expect(listed[0].name).toBe("DeepSeek V4 Pro");
+    expect(listed[0].name).toBe("DeepSeek V4 Flash");
   });
 
   test("the curated list does not depend on what /v1/models advertises", async () => {

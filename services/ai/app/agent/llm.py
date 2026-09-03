@@ -17,6 +17,27 @@ from langchain_openai import ChatOpenAI
 
 from app.config import Settings
 
+# Substrings the gateway actually returns when it refuses for CAPACITY rather
+# than for anything about the request. Matched on TEXT, not status code: Ollima
+# wraps the upstream refusal, answering **502** with a body like `All variants
+# failed ... Error 429 Too Many Requests ... "you (...) have reached your weekly
+# usage limit"`. A 502 is indistinguishable from a transient gateway fault by
+# type alone, which is why this reads the message.
+_QUOTA_MARKERS = (
+    "usage limit",
+    "quota",
+    "insufficient_quota",
+    "too many requests",
+    "rate limit",
+    "429",
+)
+
+
+def is_quota_error(e: BaseException) -> bool:
+    """The provider refused for capacity, not for anything in this turn."""
+    text = f"{type(e).__name__} {e}".lower()
+    return any(m in text for m in _QUOTA_MARKERS)
+
 
 def _clamp_output(requested: int, context_window: int) -> int:
     """Cap the output request so it cannot exceed what the window can hold."""

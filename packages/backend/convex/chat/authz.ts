@@ -169,15 +169,24 @@ export function timingSafeEqualStr(
  * serves — some catalogue ids are advertised but unserved ("not found in
  * model table"); this one is verified working.
  */
-// glm-5.2, not gpt-5.6-luna.
+// deepseek-v4-flash.
 //
-// The provider serves 11 of its 13 models; the two exceptions are exactly the
-// OpenAI-backed pair (gpt-5.6-luna and gpt-5.5), both returning 502 wrapping
-// `sidecar: Error 401 Unauthorized ... Provided authentication token is
-// expired` — an expired upstream credential on THEIR side, which we cannot fix
-// and should not depend on. The default was one of those two, so every new
-// user and every scheduled run failed while the rest of the catalogue was fine.
-export const DEFAULT_MODEL = "deepseek-v4-pro";
+// SECOND OCCURRENCE of the same failure shape. The first was an expired upstream
+// credential on the provider's side that took out exactly the OpenAI-backed pair
+// (gpt-5.6-luna / gpt-5.5, 502 wrapping `sidecar: Error 401 ... token is
+// expired`) while the rest of the catalogue was fine. This time the account hit
+// its WEEKLY USAGE LIMIT and the provider returns 429 "you (...) have reached
+// your weekly usage limit" for 7 of 8 catalogue models — measured 2026-09-03:
+// deepseek-v4-pro/-v4, glm-5.2/5.1, gpt-oss-120b and qwen3.5 all 429; only
+// deepseek-v4-flash answers (deepseek-v3.2 returns 400, simply unserved).
+//
+// Both times a HARDCODED default pointed at a model that could not answer, so
+// every new chat and every scheduled run failed while capacity existed
+// elsewhere. Pointing this at the one model with capacity is the stopgap; the
+// durable fix is the runtime failover in the Python plane, which re-routes a
+// quota-exhausted turn instead of failing it — a constant in this file can only
+// ever be right until the provider's state changes again.
+export const DEFAULT_MODEL = "deepseek-v4-flash";
 
 /**
  * Validate a model against the cached OpenRouter catalogue.

@@ -657,6 +657,15 @@ export const ERROR_COPY: Record<string, { message: string; retryable: boolean }>
     timeout: { message: "This response timed out. Please try again.", retryable: true },
     provider_timeout: { message: "The model timed out. Please try again.", retryable: true },
     provider_error: { message: "The model had a problem. Please try again.", retryable: true },
+    // Capacity, not a fault in the request. "Try again" is the WRONG advice here —
+    // the same model will refuse again — so this names the cause and the action.
+    // Folding this into provider_error is what made a provider-side weekly-quota
+    // outage read as an application bug.
+    provider_quota: {
+      message:
+        "This model is out of capacity right now. Pick another model from the picker, or try again later.",
+      retryable: false,
+    },
     attachment_failed: {
       message: "One of your attachments couldn't be processed.",
       retryable: true,

@@ -55,14 +55,14 @@ const CURATED_SPECS: readonly {
   description: string;
 }[] = [
   {
-    modelId: "deepseek-v4-pro",
-    name: "DeepSeek V4 Pro",
-    description: "Fastest to answer. The default for everyday work.",
-  },
-  {
     modelId: "deepseek-v4-flash",
     name: "DeepSeek V4 Flash",
-    description: "Lighter and quicker, for short back-and-forth.",
+    description: "Lighter and quicker. The default for everyday work.",
+  },
+  {
+    modelId: "deepseek-v4-pro",
+    name: "DeepSeek V4 Pro",
+    description: "Deeper reasoning for harder problems.",
   },
   {
     modelId: "glm-5.2",

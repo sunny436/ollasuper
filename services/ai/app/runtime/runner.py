@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from contextlib import aclosing
@@ -36,7 +37,7 @@ from app.agent.filegen_tool import GENERATE_FILE_TOOL_SPEC
 from app.agent.graph import build_graph
 from app.agent.harmony import HarmonyStreamFilter
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
-from app.agent.llm import build_llm
+from app.agent.llm import build_llm, is_quota_error
 from app.agent.memory import (
     FORGET_TOOL_NAME,
     FORGET_TOOL_SPEC,
@@ -110,6 +111,13 @@ ERR_ATTACHMENT = "attachment_failed"
 ERR_INGRESS = "ingress_unavailable"
 ERR_INTERNAL = "internal"
 ERR_DEADLINE = "deadline_exceeded"  # Phase 7: total execution deadline hit
+# The model PROVIDER refused for capacity/quota reasons, not because anything in
+# this turn was wrong. Distinct from ERR_PROVIDER because the user's action is
+# different and knowable: pick another model, or add capacity. Folding it into
+# "The model could not complete this response" is what made a provider-side
+# weekly-quota outage look like an application bug (measured 2026-09-03: 7 of 8
+# catalogue models returning 429 "reached your weekly usage limit").
+ERR_QUOTA = "provider_quota"
 
 
 def _compute_deadline_mono(
@@ -1000,11 +1008,62 @@ async def run_generation(
             system_tokens=system_tokens, schema_tokens=schema_tokens
         )
 
+        # CAPACITY FAILOVER. One hop to a different model when the selected one
+        # refuses for quota — the failure that has now taken chat down twice via a
+        # hardcoded default. Off unless `ai_quota_fallback_model` is configured and
+        # differs from the model actually chosen, so the default runtime is
+        # unchanged. Mirrors ai_schedule_model_fallback (routers/schedule.py).
+        quota_fb = None
+        quota_fb_tools = None
+        fb_model = settings.ai_quota_fallback_model
+        if fb_model and fb_model != req.model:
+            quota_fb = build_llm(
+                settings,
+                model=fb_model,
+                context_window=req.contextWindow,
+                base_url=settings.ollima_base_url,
+                api_key=settings.ollima_api_key,
+            )
+            quota_fb_tools = (
+                quota_fb.bind_tools(specs)
+                if specs
+                else build_llm(
+                    settings,
+                    model=fb_model,
+                    context_window=req.contextWindow,
+                    streaming=False,
+                    base_url=settings.ollima_base_url,
+                    api_key=settings.ollima_api_key,
+                )
+            )
+
+        # NOT silent. A user whose answer came from a different model than the one
+        # in their picker must be told, or the picker is lying to them. One line,
+        # pushed ahead of the answer through the existing delta channel.
+        notified = {"done": False}
+
+        async def _note_quota_fallback() -> None:
+            if notified["done"]:
+                return
+            notified["done"] = True
+            log.warning(
+                "generation_quota_fallback",
+                extra={"stream_id": req.streamId, "from": req.model, "to": fb_model},
+            )
+            with contextlib.suppress(Exception):  # never break a recovering turn
+                await writer.push(
+                    f"_{req.model} is out of capacity — answered with "
+                    f"{fb_model} instead._\n\n"
+                )
+
         graph = build_graph(
             llm,
             llm_tools=llm_tools,
             llm_tools_fallback=llm_tools_fallback,
             tools_ctx=tools_ctx,
+            quota_fallback=quota_fb,
+            quota_fallback_tools=quota_fb_tools,
+            on_quota_fallback=_note_quota_fallback,
         )
 
         # Phase 7 resume: rebuild the already-completed tool steps from the durable
@@ -1310,7 +1369,13 @@ async def run_generation(
         # provider internals, or a key in a URL.
         log.exception("generation_failed", extra={"stream_id": req.streamId})
         error = error or {
-            "code": ERR_PROVIDER if _is_provider_error(e) else ERR_INTERNAL,
+            "code": (
+                ERR_QUOTA
+                if is_quota_error(e)
+                else ERR_PROVIDER
+                if _is_provider_error(e)
+                else ERR_INTERNAL
+            ),
             "message": "The model could not complete this response",
             "retryable": True,
         }
@@ -1459,3 +1524,6 @@ def _chunk_text(chunk: object) -> str:
 def _is_provider_error(e: Exception) -> bool:
     name = type(e).__name__.lower()
     return any(k in name for k in ("api", "openai", "http", "rate", "connection"))
+
+
+

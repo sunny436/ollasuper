@@ -406,6 +406,16 @@ class Settings(BaseSettings):
     # provider does not accept at all, so every parse silently degraded to the
     # manual form.
     ai_default_model: str = "glm-5.2"
+    # Model a CHAT turn is re-routed to when the selected model refuses for
+    # capacity. Empty (the default) disables it and the runtime is unchanged.
+    #
+    # Mirrors ai_schedule_model_fallback, which exists because a provider 502 on
+    # one model silently degraded every schedule parse. The same 502 has now taken
+    # chat down twice via a HARDCODED default (an expired upstream credential,
+    # then a weekly usage limit) — a constant is only right until the provider's
+    # state changes, so this re-routes at run time. Deliberately ONE hop: a second
+    # refusal is a real outage and must surface, not be papered over.
+    ai_quota_fallback_model: str = ""
     # The scheduling-intent parser's model, pinned SEPARATELY from the chat
     # default so a future change to chat cannot silently degrade parsing into
     # the fabricating manual-form fallback. Empty = follow ai_default_model.
