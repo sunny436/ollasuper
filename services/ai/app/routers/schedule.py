@@ -239,11 +239,18 @@ def parse_candidates(settings) -> list[str]:
         )
         if m
     ]
-    # Skip what an earlier call already proved is refusing, but never skip
-    # everything: if the whole list is believed exhausted, still try the first.
-    # A stale belief must not turn a recovered provider into a permanent outage.
+    # Skip what an earlier call already proved is refusing — but if EVERY
+    # candidate is believed dead, try them ALL rather than just the first.
+    #
+    # The first cut returned `seen[:1]` here, which picked the primary: the one
+    # model most likely to still be refusing, and only it. Measured 2026-09-03:
+    # with all three latched, a parse tried deepseek-v4-pro alone, failed, and
+    # never reached the alternates — reproducing the exact bug this function was
+    # written to fix. When every belief says "dead" the beliefs are the least
+    # trustworthy thing in the system; a refusal costs ~0.6s to re-confirm, and
+    # one of them may have recovered.
     live = [m for m in seen if not health.is_exhausted(m)]
-    return live or seen[:1]
+    return live or seen
 
 
 async def _invoke(settings, model: str, payload: dict) -> tuple[str, str | None]:

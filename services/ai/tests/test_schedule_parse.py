@@ -278,8 +278,13 @@ def test_the_default_fallback_differs_from_the_default_primary():
     assert s.ai_schedule_model_fallback != s.ai_default_model
 
 
-def test_everything_believed_dead_still_makes_one_attempt():
-    """A stale belief must not turn a recovered provider into a permanent outage."""
+def test_everything_believed_dead_still_tries_them_all():
+    """A stale belief must not turn a recovered provider into a permanent outage.
+
+    Returning only the FIRST here was a real bug, reproduced on production: the
+    primary is the model most likely to still be refusing, so trying it alone
+    guaranteed the failure this whole function exists to prevent. When every
+    belief says "dead" the beliefs are the least trustworthy thing available."""
     from app.agent import health
     from app.config import Settings
 
@@ -291,4 +296,4 @@ def test_everything_believed_dead_still_makes_one_attempt():
         ai_schedule_model_fallback="b",
         ai_quota_fallback_model="c",
     )
-    assert _candidates(s) == ["a"]
+    assert _candidates(s) == ["a", "b", "c"]
