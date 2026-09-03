@@ -13,6 +13,7 @@ import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.agent import health as model_health
 from app.agent.base import AgentEnv
 from app.agent.budget import (
     ContextBudget,
@@ -201,6 +202,11 @@ async def run_generation(
     # the post-finalize persist in the finally cannot NameError.
     conversation_state = ContextToolState()
     started = time.monotonic()
+    # Splits ttft_ms into OUR time and THEIRS. Everything before the graph starts
+    # — attachments, RAG, discovery, skills, memory, history assembly — was one
+    # opaque block, so a 45s p90 time-to-first-token could not be attributed to
+    # the app or to the provider, and every latency discussion was guesswork.
+    prep_ms: float | None = None
     hb_task: asyncio.Task | None = None
     # `mono` is the LIVE total-execution deadline (monotonic seconds), read every
     # heartbeat tick. ANY forward progress rolls it forward (below) — a tool event
@@ -1056,6 +1062,27 @@ async def run_generation(
                     f"{fb_model} instead._\n\n"
                 )
 
+        # EVERY option refusing: say so NOW. Starting the graph would spend two
+        # full doomed model calls (three attempts each inside openai-python) to
+        # reach the same answer, which is the "waited minutes for nothing" the
+        # user reported. One cheap check turns that into an immediate, honest
+        # message. `is_exhausted` self-expires, so a recovered provider is
+        # retried without a restart.
+        if model_health.is_exhausted(req.model) and (
+            quota_fb is None or model_health.is_exhausted(fb_model)
+        ):
+            log.warning(
+                "generation_no_capacity",
+                extra={"stream_id": req.streamId, "model": req.model},
+            )
+            status = "error"
+            error = {
+                "code": ERR_QUOTA,
+                "message": "The model could not complete this response",
+                "retryable": False,
+            }
+            return
+
         graph = build_graph(
             llm,
             llm_tools=llm_tools,
@@ -1064,6 +1091,8 @@ async def run_generation(
             quota_fallback=quota_fb,
             quota_fallback_tools=quota_fb_tools,
             on_quota_fallback=_note_quota_fallback,
+            model_name=req.model,
+            health_ttl_s=settings.ai_model_health_ttl_s,
         )
 
         # Phase 7 resume: rebuild the already-completed tool steps from the durable
@@ -1267,6 +1296,7 @@ async def run_generation(
         # filter is a pass-through until a `to=functions.`/`multi_tool_use.parallel`
         # marker appears, so normal text streams byte-for-byte with no added latency.
         harmony_filter = HarmonyStreamFilter()
+        prep_ms = (time.monotonic() - started) * 1000
         async with aclosing(graph.astream(state, stream_mode="messages")) as stream:
             async for chunk, metadata in stream:
                 # Only the model node's output is user-visible. Tool nodes added
@@ -1395,6 +1425,12 @@ async def run_generation(
                 "flushes": writer.stats.flushes,
                 "events": writer.stats.events,
                 "event_posts": writer.stats.event_posts,
+                # prep_ms is OURS (everything before the first model call);
+                # ttft_ms - prep_ms is the provider's plus any tool work. `steps`
+                # is model<->executor round-trips, the serial cost of a turn and
+                # the thing to watch now that the step ceiling is off.
+                "prep_ms": round(prep_ms) if prep_ms is not None else None,
+                "steps": tools_ctx.step_counter if tools_ctx is not None else 0,
                 "dropped": writer.stats.dropped,
                 "ttft_ms": writer.stats.first_flush_ms,
                 "total_ms": round((time.monotonic() - started) * 1000),

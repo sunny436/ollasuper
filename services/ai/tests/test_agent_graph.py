@@ -351,3 +351,75 @@ async def test_without_a_configured_alternate_the_error_still_surfaces():
         pass
     else:  # pragma: no cover
         raise AssertionError("must not silently succeed with no alternate")
+
+
+# ---- health latches: learn once, not once per step ---------------------------
+
+
+def _fresh_health():
+    from app.agent import health
+
+    health.reset()
+    return health
+
+
+async def test_a_known_refusing_model_is_not_re_called_on_later_steps():
+    """The first cut re-paid the doomed call on EVERY model step, and each
+    payment is three attempts inside openai-python. One turn, five steps, five
+    wasted calls — the recovery cost more than the failure."""
+    _fresh_health()
+    primary = BoomLLM(RuntimeError(QUOTA_TEXT))
+    alternate = ScriptedLLM([AIMessage(content="a"), AIMessage(content="b")])
+    graph = build_graph(
+        primary, quota_fallback=alternate, model_name="dead-model", health_ttl_s=600
+    )
+    st = {"messages": [HumanMessage(content="hi")], "system_prompt": "s"}
+    await graph.ainvoke(st)
+    assert primary.calls == 1  # learned
+    await graph.ainvoke(st)
+    assert primary.calls == 1, "second turn must not re-pay the doomed call"
+    assert alternate.calls == 2
+
+
+async def test_the_refusal_belief_expires_so_a_recovered_model_returns():
+    """TTL'd on purpose: a weekly quota resets, and nothing should require a
+    restart to notice. A non-positive ttl is clamped to a 1s floor by design, so
+    expiry is exercised by ageing the deadline rather than passing a negative."""
+    import time as _t
+
+    health = _fresh_health()
+    health.mark_exhausted("m", ttl_s=600)
+    assert health.is_exhausted("m")
+    health._exhausted["m"] = _t.monotonic() - 1  # deadline already passed
+    assert not health.is_exhausted("m")
+    assert "m" not in health._exhausted, "an expired belief is forgotten, not kept"
+
+
+async def test_a_stream_break_is_latched_without_losing_the_preamble():
+    """Once a model's tool-call deltas are known unaccumulatable, later calls go
+    straight to the non-streaming twin. The content-clear must NOT fire there:
+    it exists to de-duplicate text that already streamed, and on this path
+    nothing did — clearing would silently drop the answer."""
+    health = _fresh_health()
+    health.mark_stream_broken("m")
+
+    streaming = BoomLLM(IndexError("Tool call index out of bounds"))
+    nonstreaming = ScriptedLLM([AIMessage(content="preamble kept")])
+
+    ctx, _adapter, _convex, _writer = _setup([_read_tool()])
+    graph = build_graph(
+        streaming,
+        llm_tools=streaming,
+        llm_tools_fallback=nonstreaming,
+        tools_ctx=ctx,
+        model_name="m",
+    )
+    out = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="hi")],
+            "system_prompt": "s",
+            "tool_budget": 2,
+        }
+    )
+    assert streaming.calls == 0, "the doomed streaming attempt must be skipped"
+    assert out["messages"][-1].content == "preamble kept"

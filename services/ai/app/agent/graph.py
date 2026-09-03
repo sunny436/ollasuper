@@ -34,6 +34,7 @@ from langchain_core.runnables import Runnable
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from app.agent import health
 from app.agent.budget import fit_messages
 from app.agent.executor import execute_tool_calls
 from app.agent.harmony import recover_into_message
@@ -126,6 +127,8 @@ def build_graph(
     quota_fallback: Runnable | None = None,
     quota_fallback_tools: Runnable | None = None,
     on_quota_fallback: Callable[[], Awaitable[None]] | None = None,
+    model_name: str = "",
+    health_ttl_s: float = 600.0,
 ):
     """Compile the generation graph.
 
@@ -137,6 +140,12 @@ def build_graph(
     """
     if llm_tools is None or tools_ctx is None:
         async def model(state: ChatState) -> dict:
+            # Already known to be refusing: go straight to the alternate rather
+            # than re-paying a call that cannot succeed.
+            if quota_fallback is not None and health.is_exhausted(model_name):
+                if on_quota_fallback is not None:
+                    await on_quota_fallback()
+                return {"messages": [await quota_fallback.ainvoke(state["messages"])]}
             try:
                 response = await llm.ainvoke(state["messages"])
             except Exception as e:  # noqa: BLE001 — capacity refusal, see below
@@ -145,7 +154,10 @@ def build_graph(
                 # the turn just fails, which is what made a provider-side weekly
                 # quota outage look like an application fault. Anything else
                 # re-raises unchanged.
-                if quota_fallback is None or not is_quota_error(e):
+                if not is_quota_error(e):
+                    raise
+                health.mark_exhausted(model_name, health_ttl_s)
+                if quota_fallback is None:
                     raise
                 log.warning("model_quota_fallback", extra={"node": "plain"})
                 if on_quota_fallback is not None:
@@ -169,6 +181,8 @@ def build_graph(
         quota_fallback,
         quota_fallback_tools,
         on_quota_fallback,
+        model_name,
+        health_ttl_s,
     )
 
 
@@ -209,6 +223,8 @@ def _build_agent_graph(
     quota_fallback: Runnable | None = None,
     quota_fallback_tools: Runnable | None = None,
     on_quota_fallback: Callable[[], Awaitable[None]] | None = None,
+    model_name: str = "",
+    health_ttl_s: float = 600.0,
 ):
     async def model(state: ChatState) -> dict:
         # With budget left, offer tools; at the cap fall back to the plain LLM so
@@ -251,8 +267,33 @@ def _build_agent_graph(
         )
         t0 = time.monotonic()
         stream_broke = False
+        qfb = quota_fallback_tools if use_tools else quota_fallback
+
+        # KNOWN REFUSING: skip the doomed call. Without this every step of a
+        # multi-step turn re-pays it, and each payment is three attempts inside
+        # openai-python (it retries the gateway's 502) — so the recovery cost
+        # more than the failure it was recovering from.
+        if qfb is not None and health.is_exhausted(model_name):
+            if on_quota_fallback is not None:
+                await on_quota_fallback()
+            response = await qfb.ainvoke(messages)
+            recover_into_message(response)
+            await _emit_model_call(tools_ctx, response, time.monotonic() - t0)
+            return {"messages": [response]}
+
+        # KNOWN TO BREAK THE ACCUMULATOR: go straight to the non-streaming twin.
+        # `stream_broke` stays FALSE here on purpose — it drives the content
+        # clear below, which is only correct when the text has ALREADY streamed.
+        # Nothing streamed on this path, so clearing would silently drop the
+        # preamble instead of de-duplicating it.
+        skip_stream = (
+            use_tools
+            and fallback_client is not None
+            and not health.streams_tool_calls_cleanly(model_name)
+        )
+        primary = fallback_client if skip_stream else client
         try:
-            response = await client.ainvoke(messages)
+            response = await primary.ainvoke(messages)
         except Exception as e:  # noqa: BLE001 — two DIFFERENT failures, see below
             # A CAPACITY refusal is checked first and is a different thing from
             # the accumulator break below: it needs a different MODEL, whereas
@@ -261,7 +302,7 @@ def _build_agent_graph(
             # — collapsing them would send an accumulator bug to another model
             # and a quota refusal to a client that will refuse identically.
             if is_quota_error(e):
-                qfb = quota_fallback_tools if use_tools else quota_fallback
+                health.mark_exhausted(model_name, health_ttl_s)
                 if qfb is None:
                     raise
                 log.warning("model_quota_fallback", extra={"node": "agent"})
@@ -270,8 +311,11 @@ def _build_agent_graph(
                 response = await qfb.ainvoke(messages)
                 await _emit_model_call(tools_ctx, response, time.monotonic() - t0)
                 return {"messages": [response]}
-            if fallback_client is None:
+            if fallback_client is None or skip_stream:
                 raise
+            # One observation is enough: this model's tool-call deltas cannot be
+            # accumulated, so later steps and later turns skip the attempt.
+            health.mark_stream_broken(model_name)
             log.warning("model_stream_fallback", extra={"run_id": tools_ctx.run_id})
             # Tag the recovery call NOSTREAM so messages-mode silences the fallback's
             # OWN emit (its content already streamed via the primary above); the node

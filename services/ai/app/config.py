@@ -416,6 +416,10 @@ class Settings(BaseSettings):
     # state changes, so this re-routes at run time. Deliberately ONE hop: a second
     # refusal is a real outage and must surface, not be papered over.
     ai_quota_fallback_model: str = ""
+    # How long a capacity refusal is believed before the model is tried again.
+    # Short enough that a recovered model returns without a restart; long enough
+    # that a turn does not re-learn the same refusal on every step.
+    ai_model_health_ttl_s: float = 600.0
     # The scheduling-intent parser's model, pinned SEPARATELY from the chat
     # default so a future change to chat cannot silently degrade parsing into
     # the fabricating manual-form fallback. Empty = follow ai_default_model.
