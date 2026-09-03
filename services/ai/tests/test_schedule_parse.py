@@ -297,3 +297,43 @@ def test_everything_believed_dead_still_tries_them_all():
         ai_quota_fallback_model="c",
     )
     assert _candidates(s) == ["a", "b", "c"]
+
+
+# ── no application deadline ─────────────────────────────────────────────────
+
+
+def test_the_parse_imposes_no_ollasuper_deadline():
+    """20.0s sat INSIDE the latency distribution of a real parse: measured
+    2026-09-03, a simple request parses in 5.3s but "Deep SEO audit of this
+    website <url>" takes 15.8-37.7s, because the parser must WRITE the task's
+    full instruction. Simple requests always fit, complex ones straddled the
+    bound, and the scheduler appeared to work only for trivial tasks.
+
+    What remains must be the PROVIDER CLIENT'S own default, not a number this
+    product picked."""
+    import openai
+
+    from app.routers import schedule as mod
+
+    assert not hasattr(mod, "PARSE_TIMEOUT_S"), "the app-chosen deadline is gone"
+    assert mod.PARSE_TIMEOUT is openai.DEFAULT_TIMEOUT
+
+
+def test_none_is_not_used_as_the_timeout():
+    """`None` would be worse, not purer: langchain-openai overrides openai's
+    constant, so None AND omitting it both yield client.timeout=None — no read
+    timeout at any layer, letting a half-open socket hold a Convex action and the
+    user's spinner until OS TCP keepalive."""
+    from app.routers.schedule import PARSE_TIMEOUT
+
+    assert PARSE_TIMEOUT is not None
+
+
+def test_a_provider_timeout_is_not_treated_as_exhausted_capacity():
+    """Deliberate asymmetry: a QUOTA refusal marks a model exhausted, a TIMEOUT
+    does not — being slow is not evidence of having no capacity, and latching on
+    it would strand a model that is merely busy."""
+    from app.agent.llm import is_quota_error
+
+    assert not is_quota_error(TimeoutError("timed out"))
+    assert not is_quota_error(Exception("APITimeoutError: Request timed out."))

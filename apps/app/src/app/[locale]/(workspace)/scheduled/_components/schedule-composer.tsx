@@ -4,7 +4,7 @@ import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useAction, useMutation } from "convex/react";
-import { ArrowUp, Loader2, Plus, X } from "lucide-react";
+import { ArrowUp, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useCachedUser } from "../../chat/_hooks/use-cached-user";
@@ -110,6 +110,24 @@ export function ScheduleComposer({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  /**
+   * Monotonic id of the parse the UI is currently waiting for.
+   *
+   * There is NO application deadline on a parse any more (a complex one can
+   * legitimately take tens of seconds), so a reply can land long after the user
+   * has moved on — they cancelled, or typed and sent something else. Every
+   * response checks its own id against this before touching state; a stale one
+   * is dropped. Cancelling simply bumps the id, which is why it needs no
+   * AbortController: Convex actions take no AbortSignal, so the in-flight server
+   * work cannot actually be stopped, and pretending otherwise would be a lie.
+   * It finishes upstream, wastes one call, and is ignored.
+   *
+   * This also closes an existing race: two rapid submissions could previously
+   * resolve out of order and let the OLDER answer overwrite the newer one.
+   */
+  const parseId = useRef(0);
+  /** The sentence sent for parsing, so Cancel returns it rather than eating it. */
+  const pendingText = useRef("");
 
   // Scoped to the user AND workspace: a shared browser must never surface one
   // person's half-written task to the next.
@@ -189,8 +207,10 @@ export function ScheduleComposer({
     }
     const nextTurns: Turn[] = [...turns, { role: "user", content: message }];
     setTurns(nextTurns);
+    pendingText.current = message;
     setText("");
     setPhase("parsing");
+    const myParse = ++parseId.current;
 
     let res: Awaited<ReturnType<typeof parse>>;
     try {
@@ -206,6 +226,9 @@ export function ScheduleComposer({
     } catch {
       res = { ok: false, reason: "unavailable" };
     }
+    // Cancelled, or superseded by a newer submission: this answer is no longer
+    // the one the user is waiting for.
+    if (myParse !== parseId.current) return;
 
     if (!res.ok || !("schedule" in res) || !res.schedule) {
       // Every failure lands in the same place: an editable form seeded with
@@ -362,19 +385,42 @@ export function ScheduleComposer({
           }}
           className="max-h-40 min-h-[24px] flex-1 resize-none bg-transparent py-1 text-sm text-primary outline-none placeholder:text-primary/35 disabled:opacity-60"
         />
-        <button
-          type="button"
-          onClick={() => void send()}
-          disabled={!text.trim() || phase === "parsing" || phase === "creating"}
-          aria-label="Interpret schedule"
-          className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand text-brand-foreground transition disabled:opacity-30"
-        >
-          {phase === "parsing" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
+        {/*
+          While parsing this is a CANCEL, not a dead spinner. Nothing bounds a
+          parse from the application side any more, so without an escape a slow
+          provider would leave the composer frozen with no way out. Cancelling
+          stops the WAIT — the request itself finishes upstream unnoticed (see
+          `parseId`).
+        */}
+        {phase === "parsing" ? (
+          <button
+            type="button"
+            onClick={() => {
+              parseId.current += 1; // orphan the in-flight reply
+              setPhase("idle");
+              setText(pendingText.current);
+              // Drop the optimistic user turn: leaving it would show a question
+              // in the transcript that now has no answer coming.
+              setTurns((t) => t.slice(0, -1));
+              inputRef.current?.focus();
+            }}
+            aria-label="Stop interpreting"
+            title="Stop waiting"
+            className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border text-primary/60 transition hover:bg-primary/5 hover:text-primary"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void send()}
+            disabled={!text.trim() || phase === "creating"}
+            aria-label="Interpret schedule"
+            className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand text-brand-foreground transition disabled:opacity-30"
+          >
             <ArrowUp className="h-4 w-4" />
-          )}
-        </button>
+          </button>
+        )}
       </div>
 
       {turns.length > 0 && (

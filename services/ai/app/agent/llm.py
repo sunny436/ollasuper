@@ -13,6 +13,7 @@ passing None keeps it off the wire for all models and both gateways.
 
 from __future__ import annotations
 
+import httpx
 from langchain_openai import ChatOpenAI
 
 from app.config import Settings
@@ -55,7 +56,7 @@ def build_llm(
     streaming: bool = True,
     base_url: str | None = None,
     api_key: str | None = None,
-    timeout: float = 180.0,
+    timeout: float | httpx.Timeout = 180.0,
     max_retries: int = 2,
 ) -> ChatOpenAI:
     # base_url/api_key default (None) => OpenRouter, so title-gen + OCR stay

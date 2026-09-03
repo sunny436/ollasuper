@@ -29,6 +29,7 @@ import json
 import re
 from typing import Literal
 
+import openai
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,9 +54,26 @@ MAX_CONTEXT_CHARS = 4_000
 # truncated reply is unterminated JSON — which failed all the way back to "use
 # the raw sentence". Still small enough to bound a runaway generation.
 MAX_OUTPUT_TOKENS = 1_200
-# A user is watching a spinner. The 180s generation default is the wrong budget
-# entirely; better to reach the (now honest) manual form quickly.
-PARSE_TIMEOUT_S = 20.0
+# NO APPLICATION DEADLINE. This was 20.0s, and it sat inside the latency
+# distribution of a real parse: measured 2026-09-03, "ai news summary daily at
+# 8 am" parses in 5.3s but "Deep SEO audit of this website <url>" takes
+# 15.8-37.7s, because the parser must WRITE the task's full instruction and a
+# complex request is a longer generation. Simple requests always fit; complex
+# ones straddled the bound and failed intermittently, which is why the scheduler
+# appeared to work only for trivial tasks.
+#
+# A product-chosen number cannot separate "legitimately complex" from "stuck", so
+# there is deliberately no OllaSuper bound here at all. What remains is the
+# PROVIDER CLIENT'S OWN public default (connect=5s, read=600s) — not a value we
+# invented. Passing None instead would be worse, not purer: langchain-openai
+# overrides openai's constant, so both None and omitting it yield
+# `client.timeout = None`, leaving a half-open socket to hold a Convex action and
+# the user's spinner until OS TCP keepalive, potentially for hours.
+#
+# The escape from a slow-but-alive call is the composer's Cancel, not a shorter
+# deadline. See the timeout taxonomy in the plan: app deadline (gone), provider
+# timeout (below), user cancellation (composer), infrastructure (Convex/TCP).
+PARSE_TIMEOUT = openai.DEFAULT_TIMEOUT
 # ZERO, not one. This is openai-python's retry of the SAME model, and the useful
 # diversity now lives in `parse_candidates` — trying a different model beats
 # asking the same one twice. Measured 2026-09-03 after the candidate list was
@@ -262,7 +280,7 @@ async def _invoke(settings, model: str, payload: dict) -> tuple[str, str | None]
         streaming=False,
         base_url=settings.ollima_base_url,
         api_key=settings.ollima_api_key,
-        timeout=PARSE_TIMEOUT_S,
+        timeout=PARSE_TIMEOUT,
         max_retries=PARSE_RETRIES,
     )
     reply = await llm.ainvoke(
