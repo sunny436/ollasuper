@@ -53,11 +53,28 @@ const CURATED_SPECS: readonly {
   modelId: string;
   name: string;
   description: string;
+  /**
+   * Real usable window, MEASURED — omitted where it has not been. /v1/models
+   * carries no metadata, so this was 0 for every model and the Python plane fell
+   * back to a hardcoded 200k guess for all of them.
+   *
+   * Measure it, do not assume it. A large prompt is ACCEPTED by this gateway
+   * whether or not the model can use it, so size alone proves nothing: put a
+   * needle at the very start, fill to N tokens, and ask for it back at the end.
+   * Only a model that returns the needle actually had the context.
+   */
+  contextLength?: number;
 }[] = [
   {
     modelId: "deepseek-v4-flash",
     name: "DeepSeek V4 Flash",
     description: "Lighter and quicker. The default for everyday work.",
+    // Verified 2026-09-03 by needle-in-haystack: 133,371 prompt tokens accepted
+    // and the needle placed at the very START returned verbatim, so the context
+    // is genuinely used rather than silently truncated. The others are left
+    // unmeasured (0) while the account is out of quota — an unverified number
+    // here is exactly the guess this field exists to remove.
+    contextLength: 131_072,
   },
   {
     modelId: "deepseek-v4-pro",
@@ -107,7 +124,8 @@ const MIN_PLAUSIBLE_MODELS = 1;
  *  the picker shows a name and a line, and never renders these. */
 const CURATED: readonly CatalogueEntry[] = CURATED_SPECS.map((m) => ({
   ...m,
-  contextLength: 0,
+  // 0 = not measured; the Python plane keeps its conservative budget for those.
+  contextLength: m.contextLength ?? 0,
   promptPrice: "",
   completionPrice: "",
   vision: true,

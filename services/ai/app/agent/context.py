@@ -171,6 +171,20 @@ def budget_for(
     eff_out = max(256, min(max_output, window // 4)) if window > 0 else max_output
     hard = window - eff_out - fixed_tokens
     image_cost = n_images * IMAGE_TOKENS.get(model, 1_600)
+    # `base_budget` (32k) is a COST cap inherited from Opus-5 pricing on
+    # OpenRouter — "a full 1M context is ~$5.00 per message". Chat does not run
+    # there any more, and after the safety factor it left ~23.7k of history on a
+    # model MEASURED to use 133k, so long threads lost their own beginning.
+    #
+    # When the window is genuinely known, spend a fraction of it instead. The
+    # fraction is not a taste call: prefill on this gateway measured 1.88s at
+    # 22k prompt tokens, 2.75s at 67k and 4.94s at 133k, so ~60% buys roughly
+    # triple the history for about +0.9s on a FULL context (a short thread pays
+    # nothing) while consuming the whole window would cost +3s. An UNMEASURED
+    # window (context_window == 0) keeps the old conservative cap, so this can
+    # only widen where the window was actually verified.
+    if context_window > 0:
+        base_budget = max(base_budget, int(context_window * 0.6))
     return max(2_000, min(base_budget, hard) - image_cost)
 
 

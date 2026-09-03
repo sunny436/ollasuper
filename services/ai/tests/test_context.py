@@ -152,3 +152,36 @@ def test_redaction_scrubs_configured_secrets_and_common_shapes():
     r = _rec("key sk-abcdefghijklmnop leaked")
     f.filter(r)
     assert "abcdefghijklmnop" not in r.msg
+
+
+# ---- the history budget follows a MEASURED window ----------------------------
+
+
+def test_an_unmeasured_window_keeps_the_conservative_cap():
+    """context_window == 0 means nobody has verified it, so nothing widens.
+    This is what stops the change from becoming a new guess."""
+    from app.agent.context import budget_for
+
+    got = budget_for("unknown-model", 0, 8192, 32_000, context_window=0)
+    assert got <= 32_000
+
+
+def test_a_measured_window_buys_more_history_than_the_opus_era_cap():
+    """32k was a COST cap for Opus-5 pricing on OpenRouter. On a model measured
+    to use 133k prompt tokens it left ~23.7k of history after the safety factor,
+    so a long thread lost its own beginning."""
+    from app.agent.context import budget_for
+
+    got = budget_for("deepseek-v4-flash", 0, 8192, 32_000, context_window=131_072)
+    assert got > 32_000, got
+    # Still well inside the window: output reservation and fixed costs are
+    # subtracted, so this can never be the thing that overruns the model.
+    assert got < 131_072
+
+
+def test_the_budget_never_exceeds_what_the_window_can_hold():
+    """A small-window model must not be widened into an overrun."""
+    from app.agent.context import budget_for
+
+    got = budget_for("tiny", 0, 8192, 32_000, context_window=8_000)
+    assert got < 8_000, got
