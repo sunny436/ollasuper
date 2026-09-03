@@ -56,7 +56,14 @@ MAX_OUTPUT_TOKENS = 1_200
 # A user is watching a spinner. The 180s generation default is the wrong budget
 # entirely; better to reach the (now honest) manual form quickly.
 PARSE_TIMEOUT_S = 20.0
-PARSE_RETRIES = 1
+# ZERO, not one. This is openai-python's retry of the SAME model, and the useful
+# diversity now lives in `parse_candidates` — trying a different model beats
+# asking the same one twice. Measured 2026-09-03 after the candidate list was
+# fixed: a successful parse takes 7-10s, and a slow one burned 2 x 20s before
+# giving up, so the retry only ever doubled the wait in front of a user watching
+# a spinner. Where a second candidate exists the loop still tries it; where it
+# does not, failing at 20s reaches the (honest) manual form twice as fast.
+PARSE_RETRIES = 0
 
 
 class ParseTurn(BaseModel):
