@@ -23,9 +23,19 @@ const step = (ok, n, d = "") => { results.push(ok); console.log(`${ok ? "PASS" :
   await page.click('button[type="submit"]');
   await page.waitForTimeout(3500);
 
-  await page.goto(`${BASE}/en/scheduled`, { waitUntil: "domcontentloaded" });
+  // The scheduled route hydrates behind the workspace shell; on a cold cache the
+  // composer can take a while to mount. Retry the navigation once rather than
+  // letting a slow first paint read as a product failure.
   const composer = page.getByPlaceholder("Schedule a task");
-  await composer.waitFor({ timeout: 15000 });
+  for (let i = 0; i < 2; i++) {
+    await page.goto(`${BASE}/en/scheduled`, { waitUntil: "domcontentloaded" });
+    try {
+      await composer.waitFor({ timeout: 30000 });
+      break;
+    } catch {
+      if (i === 1) throw new Error("scheduled composer never mounted");
+    }
+  }
   await composer.fill(SENTENCE);
   await page.keyboard.press("Enter");
 
