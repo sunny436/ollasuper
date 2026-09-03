@@ -22,6 +22,9 @@ from app.routers.schedule import (
     _missing,
     _sanitize,
 )
+from app.routers.schedule import (
+    parse_candidates as _candidates,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -206,3 +209,86 @@ def test_a_missing_instruction_is_reported():
     assert "prompt" in _missing(
         ParsedSchedule(kind="daily", prompt="   ", hour=8, minute=0)
     )
+
+
+# ── candidate selection: a list that can actually answer ────────────────────
+#
+# Measured on production 2026-09-03: the two configured candidates
+# (deepseek-v4-pro, then glm-5.2) were BOTH refusing for weekly quota while
+# deepseek-v4-flash answered — and it was in neither list. Every parse degraded
+# to the raw-sentence form, which blocks Create and reads to the user as a
+# broken button. Retrying could never have helped; the only model with capacity
+# was not a candidate.
+
+
+
+
+def test_the_quota_fallback_model_is_a_parser_candidate():
+    """The chat plane's healthy alternate must be reachable here too, or the
+    parser can be stranded while chat is fine."""
+    from app.agent import health
+    from app.config import Settings
+
+    health.reset()
+    s = Settings(
+        ai_schedule_model="a",
+        ai_schedule_model_fallback="b",
+        ai_quota_fallback_model="c",
+    )
+    assert _candidates(s) == ["a", "b", "c"]
+
+
+def test_a_model_known_to_be_refusing_is_skipped():
+    from app.agent import health
+    from app.config import Settings
+
+    health.reset()
+    health.mark_exhausted("a", ttl_s=600)
+    s = Settings(
+        ai_schedule_model="a",
+        ai_schedule_model_fallback="b",
+        ai_quota_fallback_model="c",
+    )
+    assert _candidates(s) == ["b", "c"]
+
+
+def test_candidates_are_deduped_so_a_repeat_is_not_a_second_attempt():
+    """The defaults resolve to the same id more often than they look like they
+    do: `schedule_model` falls back to `ai_default_model`, which was the same
+    value as the fallback — a box with no explicit parser model had no second
+    attempt at all."""
+    from app.agent import health
+    from app.config import Settings
+
+    health.reset()
+    s = Settings(
+        ai_schedule_model="same",
+        ai_schedule_model_fallback="same",
+        ai_quota_fallback_model="other",
+    )
+    assert _candidates(s) == ["same", "other"]
+
+
+def test_the_default_fallback_differs_from_the_default_primary():
+    """Guards the config itself: with no AI_SCHEDULE_MODEL set, `schedule_model`
+    is `ai_default_model`, and if the fallback equals it there is no second try."""
+    from app.config import Settings
+
+    s = Settings()
+    assert s.ai_schedule_model_fallback != s.ai_default_model
+
+
+def test_everything_believed_dead_still_makes_one_attempt():
+    """A stale belief must not turn a recovered provider into a permanent outage."""
+    from app.agent import health
+    from app.config import Settings
+
+    health.reset()
+    for m in ("a", "b", "c"):
+        health.mark_exhausted(m, ttl_s=600)
+    s = Settings(
+        ai_schedule_model="a",
+        ai_schedule_model_fallback="b",
+        ai_quota_fallback_model="c",
+    )
+    assert _candidates(s) == ["a"]

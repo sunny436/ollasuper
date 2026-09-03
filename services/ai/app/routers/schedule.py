@@ -32,7 +32,8 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.llm import build_llm
+from app.agent import health
+from app.agent.llm import build_llm, is_quota_error
 from app.logging import get_logger
 from app.security import require_service_key
 
@@ -206,6 +207,38 @@ Rules:
 """
 
 
+def parse_candidates(settings) -> list[str]:
+    """Models to try, best first: the primary, then genuinely DIFFERENT ones —
+    including the model the chat plane falls back to.
+
+    Measured 2026-09-03: the two configured candidates (deepseek-v4-pro, then
+    glm-5.2) were BOTH refusing for weekly quota while deepseek-v4-flash
+    answered, and it was in neither list. Retrying could never have helped,
+    because the only model with capacity was not a candidate — so every parse
+    degraded to the raw-sentence form, which blocks Create and reads to the user
+    as a broken button.
+
+    `dict.fromkeys` for the de-dupe: order matters (best model first) and these
+    three settings resolve to the same id more often than they look like they do.
+    """
+    seen = [
+        m
+        for m in dict.fromkeys(
+            [
+                settings.schedule_model,
+                settings.ai_schedule_model_fallback,
+                settings.ai_quota_fallback_model,
+            ]
+        )
+        if m
+    ]
+    # Skip what an earlier call already proved is refusing, but never skip
+    # everything: if the whole list is believed exhausted, still try the first.
+    # A stale belief must not turn a recovered provider into a permanent outage.
+    live = [m for m in seen if not health.is_exhausted(m)]
+    return live or seen[:1]
+
+
 async def _invoke(settings, model: str, payload: dict) -> tuple[str, str | None]:
     """One model attempt. Returns the raw reply and its finish reason."""
     llm = build_llm(
@@ -249,13 +282,7 @@ async def parse(req: ParseRequest, request: Request) -> ParseResponse:
         "message": req.text,
     }
 
-    # The primary model, then one different fallback. A provider 502 on one
-    # model put every user into the raw-sentence fallback; trying a second
-    # curated model costs one request and recovers most of those.
-    candidates = [settings.schedule_model]
-    fallback = settings.ai_schedule_model_fallback
-    if fallback and fallback not in candidates:
-        candidates.append(fallback)
+    candidates = parse_candidates(settings)
 
     raw: str | None = None
     finish: str | None = None
@@ -264,11 +291,16 @@ async def parse(req: ParseRequest, request: Request) -> ParseResponse:
             raw, finish = await _invoke(settings, model, payload)
             break
         except Exception as e:  # noqa: BLE001 — degrade to the manual form, never 500
+            # A capacity refusal is remembered so the next parse skips this model
+            # instead of re-learning it, and so chat and scheduling share one view
+            # of what the provider is currently refusing.
+            if is_quota_error(e):
+                health.mark_exhausted(model, settings.ai_model_health_ttl_s)
             # ERROR, not WARNING: invisible to the user, but it is the state in
             # which the product silently stops understanding anyone.
             log.error(
                 "schedule.parse_failed",
-                extra={"error": type(e).__name__, "attempt": attempt},
+                extra={"error": type(e).__name__, "attempt": attempt, "model": model},
             )
     if raw is None:
         return ParseResponse(ok=False, reason="unavailable")

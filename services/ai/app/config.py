@@ -424,10 +424,15 @@ class Settings(BaseSettings):
     # default so a future change to chat cannot silently degrade parsing into
     # the fabricating manual-form fallback. Empty = follow ai_default_model.
     ai_schedule_model: str = ""
-    # Tried once when the primary parser model's provider fails. A 502 from
-    # the upstream is what put every user into the raw-sentence fallback.
+    # Tried when the primary parser model's provider fails. A 502 from the
+    # upstream is what put every user into the raw-sentence fallback.
     # Empty disables the second attempt.
-    ai_schedule_model_fallback: str = "glm-5.2"
+    #
+    # Must not equal `ai_default_model`, which is what `schedule_model` falls back
+    # to when `ai_schedule_model` is unset: both were "glm-5.2", so a box with no
+    # explicit parser model had a "fallback" identical to its primary and
+    # therefore no second attempt at all.
+    ai_schedule_model_fallback: str = "deepseek-v4-flash"
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
     # NOTE: gemini-2.0-flash-001 was RETIRED by OpenRouter (404 "No endpoints
     # found"); the live successor is gemini-2.5-flash-lite (multimodal, cheap).

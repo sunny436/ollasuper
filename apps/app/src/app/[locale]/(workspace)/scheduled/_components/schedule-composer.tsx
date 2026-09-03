@@ -228,18 +228,25 @@ export function ScheduleComposer({
         emailOnSuccess: false,
         attachPdf: false,
       };
+      const why =
+        "reason" in res && res.reason === "rate_limited"
+          ? "You've scheduled a lot just now — set the details below and I'll create it."
+          : "reason" in res && res.reason === "unavailable"
+            // NOT the user's fault, and "I couldn't read that" says it was. The
+            // sentence was fine; the scheduling assistant could not be reached.
+            // Telling them to rephrase would send them round a loop that cannot
+            // succeed, so name the real state and what still works.
+            ? "I couldn't reach the scheduling assistant just now. The fields below still work — set the name and what it should do, and I'll create it."
+            : "I couldn't read that as a schedule. Fill in the name and what it should do, and I'll create it.";
+      // ONE list, built before either setter. `apply` persists whatever it is
+      // handed, so passing `nextTurns` here and adding the explanation to React
+      // state afterwards wrote a transcript WITHOUT it: the reason showed once
+      // and vanished on the next reload, leaving a blocked Create with nothing
+      // on screen to explain it.
+      const withWhy: Turn[] = [...nextTurns, { role: "assistant", content: why }];
       setPhase("draft");
-      apply(fallback, nextTurns);
-      setTurns([
-        ...nextTurns,
-        {
-          role: "assistant",
-          content:
-            "reason" in res && res.reason === "rate_limited"
-              ? "You've scheduled a lot just now — set the details below and I'll create it."
-              : "I couldn't read that as a schedule. Fill in the name and what it should do, and I'll create it.",
-        },
-      ]);
+      apply(fallback, withWhy);
+      setTurns(withWhy);
       return;
     }
 
