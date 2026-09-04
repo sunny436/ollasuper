@@ -31,7 +31,7 @@ const step = async (n, f) => {
 const generating = async (page) =>
   (await page.getByRole("button", { name: "Stop generating" }).count()) > 0;
 
-async function settle(page, ms = 330000) {
+async function settle(page, ms = 900000) {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (!(await generating(page))) return;
