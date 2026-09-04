@@ -974,7 +974,7 @@ async def run_generation(
                                 # does not fit. This used to log the selected set,
                                 # which meant telemetry asserted a skill was
                                 # active when it never reached the prompt.
-                                included, dropped = pack_skills(
+                                included, dropped, compacted = pack_skills(
                                     active_skills, char_budget=_budget
                                 )
                                 system = f"{system}\n\n" + render_skills_block(
@@ -998,6 +998,12 @@ async def run_generation(
                                         "stream_id": req.streamId,
                                         "skills": [
                                             a.manifest.skill_id for a in included
+                                        ],
+                                        # A SUBSET of `skills`: contributed
+                                        # constraints + output shape, not their
+                                        # full procedure.
+                                        "compacted": [
+                                            a.manifest.skill_id for a in compacted
                                         ],
                                     },
                                 )

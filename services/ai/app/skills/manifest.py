@@ -61,6 +61,56 @@ class SkillManifest:
             parts.append(f"Output expectations: {self.output_expectations}")
         return "\n".join(parts)
 
+    def render_compact(self) -> str:
+        """A SUPPORTING skill's contribution when the budget cannot carry it whole.
+
+        Skill bodies are dominated by `methodology` + `instructions` — the long
+        procedural text describing how to run the job. Exactly one skill can own
+        the procedure for a turn, so for the rest that bulk is what gives way.
+
+        What survives is what still composes: identity, when it applies, its
+        CONSTRAINTS (the read-only ceilings, never-fabricate rules and safety
+        limits — the last thing that should ever be dropped for space), and the
+        shape it expects output in. Before this existed the whole skill was
+        discarded, constraints included.
+
+        Empty when none of those fields carry anything: a heading on its own is
+        not guidance, and spending budget on it would displace a skill that has
+        something to say.
+        """
+        parts = []
+        if self.purpose:
+            parts.append(f"Purpose: {self.purpose}")
+        if self.when_to_use:
+            parts.append(f"Applies when: {self.when_to_use}")
+        if self.constraints:
+            parts.append(f"Constraints: {self.constraints}")
+        if self.output_expectations:
+            parts.append(f"Output expectations: {self.output_expectations}")
+        if not parts:
+            return ""
+        header = f"## Skill: {self.name} (v{self.version}) — supporting"
+        return "\n".join([header, *parts])
+
+    def render_minimal(self) -> str:
+        """The irreducible contribution: identity plus RULES, nothing else.
+
+        The last rung before a skill is dropped entirely. Measured on the real
+        catalogue: seo-audit renders 17,617 chars and leaves 2,383 of a 20,000
+        budget — too little for operations' compact form (4,316) but enough for
+        its constraints (1,827). Without this rung that turn carried one skill;
+        with it, it carries the second skill's rules too.
+
+        Empty when the skill declares no constraints: there is then nothing here
+        worth spending budget on, and the caller drops it instead.
+        """
+        if not self.constraints:
+            return ""
+        return (
+            f"## Skill: {self.name} (v{self.version}) — supporting\n"
+            f"Constraints: {self.constraints}"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ActiveSkill:

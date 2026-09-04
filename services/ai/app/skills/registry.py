@@ -160,45 +160,74 @@ def _segments(request: str) -> list[str]:
 
 def _pack(
     active: list[ActiveSkill], char_budget: int
-) -> tuple[list[str], list[ActiveSkill], list[ActiveSkill]]:
-    """Fit whole skill bodies into the budget, highest score first.
+) -> tuple[list[str], list[ActiveSkill], list[ActiveSkill], list[ActiveSkill]]:
+    """Fit skills into the budget, highest score first, degrading before dropping.
 
-    CONTINUE, not break. Skill bodies vary hugely — seo-audit renders 17,617
-    chars and research-methodology 278 — so stopping at the first skill that does
-    not fit also discarded every smaller one behind it, which could have fitted
-    several times over.
+    Three rules, each earned from a measured failure:
+
+    1. FULL if it fits. The top-scoring skill owns the turn's procedure.
+    2. COMPACT if the full body does not. Bodies are dominated by methodology +
+       instructions; a supporting skill can still contribute its constraints and
+       output shape for a fraction of the size. This is what makes multi-skill
+       composition possible at all — seo-audit alone renders 17,617 chars against
+       a 20,000 budget, so before this ANY second substantial skill was discarded
+       whole, its safety constraints with it.
+    3. CONTINUE, never break. research-methodology renders 278 chars; stopping at
+       the first skill that did not fit threw away every smaller one behind it.
 
     Returns the dropped skills too, because dropping one used to be invisible:
-    the runner logged what `discover()` SELECTED, not what actually reached the
-    model, so telemetry asserted a skill was active when it never was.
+    the runner logged what `discover()` SELECTED, not what reached the model.
     """
     ordered = sorted(active, key=lambda a: (-a.score, a.manifest.skill_id))
     bodies: list[str] = []
     included: list[ActiveSkill] = []
+    compacted: list[ActiveSkill] = []
     dropped: list[ActiveSkill] = []
     used = 0
     for a in ordered:
-        body = a.manifest.render()
-        if not bodies and len(body) > char_budget:
-            body = body[:char_budget]  # last resort: a single oversized skill
-        if used + len(body) > char_budget and bodies:
-            dropped.append(a)
+        full = a.manifest.render()
+        if not bodies and len(full) > char_budget:
+            # Last resort: a lone oversized top skill is truncated, not dropped.
+            bodies.append(full[:char_budget])
+            included.append(a)
+            used += char_budget
             continue
-        bodies.append(body)
-        included.append(a)
-        used += len(body)
-    return bodies, included, dropped
+        if used + len(full) <= char_budget:
+            bodies.append(full)
+            included.append(a)
+            used += len(full)
+            continue
+        # Degrade down the ladder rather than dropping: compact (rules + shape,
+        # no procedure), then minimal (rules only). Measured worst case —
+        # seo-audit full leaves 2,383 chars, too little for operations' compact
+        # form (4,316) but enough for its constraints (1,827).
+        placed = False
+        for smaller in (a.manifest.render_compact(), a.manifest.render_minimal()):
+            if smaller and bodies and used + len(smaller) <= char_budget:
+                bodies.append(smaller)
+                included.append(a)
+                compacted.append(a)
+                used += len(smaller)
+                placed = True
+                break
+        if not placed:
+            dropped.append(a)
+    return bodies, included, dropped, compacted
 
 
 def pack_skills(
     active: list[ActiveSkill], *, char_budget: int = DEFAULT_SKILL_BUDGET_CHARS
-) -> tuple[list[ActiveSkill], list[ActiveSkill]]:
-    """(included, dropped) for `active` under `char_budget` — what the model will
-    ACTUALLY see, versus what discovery selected. Callers log the former."""
+) -> tuple[list[ActiveSkill], list[ActiveSkill], list[ActiveSkill]]:
+    """(included, dropped, compacted) under `char_budget` — what the model will
+    ACTUALLY see, versus what discovery selected. Callers log the former.
+
+    `compacted` is a SUBSET of `included`: those skills contributed constraints
+    and output shape rather than their full procedure.
+    """
     if not active:
-        return [], []
-    _, included, dropped = _pack(active, char_budget)
-    return included, dropped
+        return [], [], []
+    _, included, dropped, compacted = _pack(active, char_budget)
+    return included, dropped, compacted
 
 
 def render_skills_block(
@@ -210,6 +239,6 @@ def render_skills_block(
     is bounded by ACTIVE skills + the budget — NOT by how many are registered."""
     if not active:
         return ""
-    bodies, _, _ = _pack(active, char_budget)
+    bodies, _, _, _ = _pack(active, char_budget)
     inner = "\n\n".join(bodies)
     return f"{_SKILL_GUIDANCE_HEADER}\n{inner}\n</skill_guidance>"

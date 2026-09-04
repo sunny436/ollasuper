@@ -19,10 +19,23 @@ from __future__ import annotations
 
 import pytest
 
+from app.skills.manifest import SkillManifest
 from app.skills.registry import SkillRegistry, pack_skills, render_skills_block
 from tests.test_skills import _skill
 
 pytestmark = pytest.mark.anyio
+
+
+def _sk(sid: str, name: str, *, tags, instructions: str, constraints: str = "") -> SkillManifest:
+    """Local builder: the shared `_skill` helper carries no constraints, and
+    constraints are exactly what compaction has to preserve."""
+    return SkillManifest(
+        skill_id=sid,
+        name=name,
+        tags=frozenset(tags),
+        instructions=instructions,
+        constraints=constraints,
+    )
 
 
 def _blog_registry() -> SkillRegistry:
@@ -144,40 +157,80 @@ def test_a_small_skill_behind_a_huge_one_is_still_included():
     active = SkillRegistry([huge, medium, tiny]).discover("alpha")
     assert len(active) == 3
 
-    included, dropped = pack_skills(active, char_budget=1200)
+    included, _dropped, _compacted = pack_skills(active, char_budget=1200)
     ids = {a.manifest.skill_id for a in included}
     assert "tiny" in ids, "a skill that fits was discarded behind one that did not"
-    assert {a.manifest.skill_id for a in dropped}, "nothing reported as dropped"
 
 
 def test_included_and_dropped_partition_the_selection():
     huge = _skill("huge", "Huge", tags=["alpha"], instructions="X" * 900)
     other = _skill("other", "Other", tags=["alpha"], instructions="Y" * 900)
     active = SkillRegistry([huge, other]).discover("alpha")
-    included, dropped = pack_skills(active, char_budget=1000)
+    included, dropped, _ = pack_skills(active, char_budget=1000)
     assert len(included) + len(dropped) == len(active)
     inc_ids = {a.manifest.skill_id for a in included}
     drop_ids = {a.manifest.skill_id for a in dropped}
     assert not (inc_ids & drop_ids)
 
 
-def test_every_included_skill_is_actually_in_the_rendered_block():
+def test_what_pack_reports_is_exactly_what_the_block_contains():
     """The telemetry bug: the runner logged the SELECTED set, so a dropped skill
-    was reported as active. Whatever pack_skills reports as included is exactly
-    what render_skills_block emits."""
-    a1 = _skill("keep", "Keep", tags=["alpha"], instructions="KEEPBODY" * 60)
-    a2 = _skill("drop", "Drop", tags=["alpha"], instructions="DROPBODY" * 60)
+    was reported as active. Every one of the three outcomes is now checkable in
+    the rendered text — full carries its procedure, compact carries its rules
+    without it, dropped carries nothing."""
+    a1 = _sk("keep", "Keep", tags=["alpha"],
+             instructions="KEEPBODY" * 60, constraints="KEEPRULES")
+    a2 = _sk("drop", "Drop", tags=["alpha"],
+             instructions="DROPBODY" * 60, constraints="DROPRULES")
     active = SkillRegistry([a1, a2]).discover("alpha")
     budget = 700
-    included, dropped = pack_skills(active, char_budget=budget)
+    included, dropped, compacted = pack_skills(active, char_budget=budget)
     block = render_skills_block(active, char_budget=budget)
 
+    compact_ids = {a.manifest.skill_id for a in compacted}
     for a in included:
-        assert a.manifest.instructions[:40] in block
+        assert a.manifest.name in block
+        if a.manifest.skill_id in compact_ids:
+            # Its procedure gave way; its RULES did not.
+            assert a.manifest.instructions[:40] not in block
+            assert a.manifest.constraints in block
+        else:
+            assert a.manifest.instructions[:40] in block
     for a in dropped:
         assert a.manifest.instructions[:40] not in block
 
 
+def test_a_second_skill_contributes_its_constraints_instead_of_vanishing():
+    """Composition, the whole point of item 5: before this, a second substantial
+    skill was discarded WHOLE — its safety constraints with it."""
+    big = _sk("big", "Big", tags=["alpha"],
+              instructions="B" * 900, constraints="BIG-RULES")
+    second = _sk("second", "Second", tags=["alpha"],
+                 instructions="S" * 900, constraints="SECOND-RULES-MUST-SURVIVE")
+    active = SkillRegistry([big, second]).discover("alpha")
+    budget = 1100  # one full body fits; two do not
+    included, dropped, compacted = pack_skills(active, char_budget=budget)
+    block = render_skills_block(active, char_budget=budget)
+
+    assert len(included) == 2, "the second skill was dropped instead of compacted"
+    assert len(compacted) == 1
+    assert not dropped
+    assert "SECOND-RULES-MUST-SURVIVE" in block
+    assert len(block) <= budget + 400  # header/footer overhead only
+
+
+def test_compaction_never_pushes_the_block_over_budget():
+    skills = [
+        _sk(f"s{i}", f"S{i}", tags=["alpha"], instructions="X" * 900,
+            constraints="R" * 200)
+        for i in range(6)
+    ]
+    active = SkillRegistry(skills).discover("alpha", limit=6)
+    for budget in (500, 1000, 2000, 4000):
+        block = render_skills_block(active, char_budget=budget)
+        assert len(block) <= budget + 400, f"budget {budget} overrun: {len(block)}"
+
+
 def test_nothing_selected_renders_nothing():
     assert render_skills_block([]) == ""
-    assert pack_skills([]) == ([], [])
+    assert pack_skills([]) == ([], [], [])
