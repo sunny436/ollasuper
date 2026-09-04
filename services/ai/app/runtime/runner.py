@@ -99,7 +99,7 @@ from app.seo.mutations import (
     StubSeoWriteProvider,
     register_seo_mutation_provider,
 )
-from app.skills.registry import render_skills_block
+from app.skills.registry import pack_skills, render_skills_block
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
 
@@ -742,6 +742,19 @@ async def run_generation(
                             )
                             _best = (1, _ps, _pm)
                         _keep, web_specs, name_to_id = _best
+                        # A dropped tool used to vanish without a trace. The cut is
+                        # a SCORE-ORDERED PREFIX, so what is lost is whatever ranked
+                        # lowest lexically — which is not the same as what the task
+                        # needs at step 7. Record it rather than infer it later.
+                        log.info(
+                            "agent.tools_trimmed",
+                            extra={
+                                "stream_id": req.streamId,
+                                "kept": _keep,
+                                "dropped": len(candidates) - _keep,
+                                "budget_tokens": _schema_budget,
+                            },
+                        )
                         candidates = candidates[:_keep]
                     specs += web_specs
                     adapter = OllagraphAdapter(settings, ollagraph_http)
@@ -954,12 +967,23 @@ async def run_generation(
                                 min_score=settings.ai_skill_min_score,
                             )
                             if active_skills:
-                                system = f"{system}\n\n" + render_skills_block(
-                                    active_skills,
-                                    char_budget=(
-                                        settings.ai_skill_instructions_budget_chars
-                                    ),
+                                _budget = settings.ai_skill_instructions_budget_chars
+                                # What discovery SELECTED is not what the model
+                                # SEES: skill bodies range from 278 to 17,617
+                                # chars, so a second substantial skill routinely
+                                # does not fit. This used to log the selected set,
+                                # which meant telemetry asserted a skill was
+                                # active when it never reached the prompt.
+                                included, dropped = pack_skills(
+                                    active_skills, char_budget=_budget
                                 )
+                                system = f"{system}\n\n" + render_skills_block(
+                                    active_skills, char_budget=_budget
+                                )
+                                # Deliberately over ALL discovered skills, not just
+                                # the included ones: a dropped skill's approval
+                                # requirements still bind. Erring toward MORE
+                                # approval is the safe direction.
                                 skill_approvals: set[str] = set()
                                 for a in active_skills:
                                     skill_approvals |= set(a.manifest.require_approval)
@@ -973,10 +997,21 @@ async def run_generation(
                                     extra={
                                         "stream_id": req.streamId,
                                         "skills": [
-                                            a.manifest.skill_id for a in active_skills
+                                            a.manifest.skill_id for a in included
                                         ],
                                     },
                                 )
+                                if dropped:
+                                    log.warning(
+                                        "agent.skills_dropped",
+                                        extra={
+                                            "stream_id": req.streamId,
+                                            "skills": [
+                                                a.manifest.skill_id for a in dropped
+                                            ],
+                                            "budget_chars": _budget,
+                                        },
+                                    )
                         specs.append(build_delegate_spec(settings))
                         tools_ctx.delegator = orchestrator.make_delegator(
                             AgentEnv(

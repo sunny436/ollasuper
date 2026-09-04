@@ -13,6 +13,7 @@ spurious tool candidate the model can ignore), so precision beats recall here.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.skills.manifest import ActiveSkill, SkillManifest
@@ -20,6 +21,19 @@ from app.tools.selection import _overlap, _tokenize
 
 # Tag vs free-text weighting (sum to 1). Tags dominate so activation is precise.
 _W_TAG, _W_TEXT = 0.7, 0.3
+
+# Sentence-ish boundaries. A real request is a bag of clauses — a title, the ask,
+# a reference URL, formatting notes — and the INTENT lives in one of them.
+_SEGMENT_SPLIT = re.compile(r"[.\n?!]+|\s{2,}")
+# Below this a fragment is noise ("ok", a bare URL tail) and scoring it would only
+# add false positives.
+_MIN_SEGMENT_CHARS = 8
+# Masked BEFORE splitting: a bare URL is full of the very characters the splitter
+# breaks on, so "https://www.networkershome.com/ deep seo audit" shattered into
+# ['https://www', 'networkershome', 'com/ deep seo audit'] — and that last, oddly
+# short fragment inflated unrelated skills into activation range. A URL carries no
+# intent worth scoring, so it becomes one opaque token.
+_URL = re.compile(r"https?://\S+|www\.\S+")
 DEFAULT_SKILL_MIN_SCORE = 0.2
 DEFAULT_SKILL_MAX_ACTIVE = 3
 DEFAULT_SKILL_BUDGET_CHARS = 6000
@@ -88,21 +102,103 @@ class SkillRegistry:
         min_score: float = DEFAULT_SKILL_MIN_SCORE,
     ) -> list[ActiveSkill]:
         """Rank skills for `request` by tag-anchored metadata overlap; keep those
-        ≥ min_score; return the top `limit` (bounded — never all registered)."""
-        q = _tokenize(request)
-        if not q:
-            return []
-        scored: list[ActiveSkill] = []
-        for e in self._entries:
-            score = (
-                _W_TAG * _overlap(q, e.tag_toks)
-                + _W_TEXT * _overlap(q, e.text_toks)
-            )
-            if score >= min_score:
-                scored.append(ActiveSkill(manifest=e.manifest, score=round(score, 4)))
+        ≥ min_score; return the top `limit` (bounded — never all registered).
+
+        SCORED PER SEGMENT, best-of. `_overlap` divides by the SMALLER of the two
+        token sets, and a skill's metadata set is large, so for a real request the
+        divisor is the QUERY — which makes the score fall as the user adds detail.
+        Measured on the same intent: "write a blog about zero trust" scored
+        blog-assist 0.2833 and activated; the user's actual 246-char request, with
+        a title, a reference URL and formatting notes, scored 0.0680 and activated
+        NOTHING. The more precisely someone described the task, the less likely the
+        right skill loaded.
+
+        This is the same failure `_overlap`'s own comment records fixing for TOOLS
+        ("dividing by the verbose query length structurally capped every score
+        below min_score for real multi-word requests"). That fix works there
+        because a tool's name/path field is small; it never reached skills, whose
+        field is never the smaller set. `_overlap` is deliberately NOT touched —
+        tool ranking depends on its current behaviour.
+
+        So: score each segment independently and keep each skill's best. The WHOLE
+        request stays in the candidate set, so a score can only ever rise — nothing
+        that activates today can stop activating.
+        """
+        candidates = [request, *_segments(request)]
+        best: dict[str, tuple[float, SkillManifest]] = {}
+        for chunk in candidates:
+            q = _tokenize(chunk)
+            if not q:
+                continue
+            for e in self._entries:
+                score = (
+                    _W_TAG * _overlap(q, e.tag_toks)
+                    + _W_TEXT * _overlap(q, e.text_toks)
+                )
+                prev = best.get(e.manifest.skill_id)
+                if prev is None or score > prev[0]:
+                    best[e.manifest.skill_id] = (score, e.manifest)
+        scored = [
+            ActiveSkill(manifest=m, score=round(s, 4))
+            for s, m in best.values()
+            if s >= min_score
+        ]
         # Deterministic: score desc, then skill_id asc.
         scored.sort(key=lambda a: (-a.score, a.manifest.skill_id))
         return scored[: max(1, limit)]
+
+
+def _segments(request: str) -> list[str]:
+    """Sentence-ish chunks of a request, URLs kept whole, noise fragments removed."""
+    masked = _URL.sub(" ␣ ", request)
+    return [
+        s
+        for s in (part.strip() for part in _SEGMENT_SPLIT.split(masked))
+        if len(s) >= _MIN_SEGMENT_CHARS
+    ]
+
+
+def _pack(
+    active: list[ActiveSkill], char_budget: int
+) -> tuple[list[str], list[ActiveSkill], list[ActiveSkill]]:
+    """Fit whole skill bodies into the budget, highest score first.
+
+    CONTINUE, not break. Skill bodies vary hugely — seo-audit renders 17,617
+    chars and research-methodology 278 — so stopping at the first skill that does
+    not fit also discarded every smaller one behind it, which could have fitted
+    several times over.
+
+    Returns the dropped skills too, because dropping one used to be invisible:
+    the runner logged what `discover()` SELECTED, not what actually reached the
+    model, so telemetry asserted a skill was active when it never was.
+    """
+    ordered = sorted(active, key=lambda a: (-a.score, a.manifest.skill_id))
+    bodies: list[str] = []
+    included: list[ActiveSkill] = []
+    dropped: list[ActiveSkill] = []
+    used = 0
+    for a in ordered:
+        body = a.manifest.render()
+        if not bodies and len(body) > char_budget:
+            body = body[:char_budget]  # last resort: a single oversized skill
+        if used + len(body) > char_budget and bodies:
+            dropped.append(a)
+            continue
+        bodies.append(body)
+        included.append(a)
+        used += len(body)
+    return bodies, included, dropped
+
+
+def pack_skills(
+    active: list[ActiveSkill], *, char_budget: int = DEFAULT_SKILL_BUDGET_CHARS
+) -> tuple[list[ActiveSkill], list[ActiveSkill]]:
+    """(included, dropped) for `active` under `char_budget` — what the model will
+    ACTUALLY see, versus what discovery selected. Callers log the former."""
+    if not active:
+        return [], []
+    _, included, dropped = _pack(active, char_budget)
+    return included, dropped
 
 
 def render_skills_block(
@@ -110,21 +206,10 @@ def render_skills_block(
 ) -> str:
     """Compose the ACTIVE skills' full guidance into ONE bounded, TRUSTED block.
 
-    Highest score first; add whole skills until the next would exceed `char_budget`
-    (a lone oversized top skill is truncated only as a last resort). The block size
+    Highest score first; add whole skills that fit (see `_pack`). The block size
     is bounded by ACTIVE skills + the budget — NOT by how many are registered."""
     if not active:
         return ""
-    ordered = sorted(active, key=lambda a: (-a.score, a.manifest.skill_id))
-    bodies: list[str] = []
-    used = 0
-    for a in ordered:
-        body = a.manifest.render()
-        if not bodies and len(body) > char_budget:
-            body = body[:char_budget]  # last resort: a single oversized skill
-        if used + len(body) > char_budget and bodies:
-            break  # dropping this (lower-scored) whole skill keeps us in budget
-        bodies.append(body)
-        used += len(body)
+    bodies, _, _ = _pack(active, char_budget)
     inner = "\n\n".join(bodies)
     return f"{_SKILL_GUIDANCE_HEADER}\n{inner}\n</skill_guidance>"
