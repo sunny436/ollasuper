@@ -1,7 +1,7 @@
 "use client";
 
 import { api } from "@v1/backend/convex/_generated/api";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { ArrowUp, Loader2, Mic, Paperclip, Square } from "lucide-react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
@@ -53,6 +53,43 @@ const ComposerTextarea = forwardRef<
 ));
 ComposerTextarea.displayName = "ComposerTextarea";
 
+/**
+ * MODULE SCOPE — same reason as ComposerTextarea above.
+ *
+ * Follow-up actions for the turn that just finished. They are composer UI, not
+ * conversation: clicking one only fills the draft, and nothing here is ever
+ * written to the transcript.
+ */
+function SuggestionChips({
+  items,
+  onPick,
+}: {
+  items: string[];
+  onPick: (text: string) => void;
+}) {
+  return (
+    <div
+      data-suggestions
+      // Scrolls rather than wraps: on a narrow viewport three chips would
+      // otherwise stack and shove the composer up off the keyboard.
+      className="mb-2 flex gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
+      {items.map((text, i) => (
+        <button
+          key={text}
+          type="button"
+          onClick={() => onPick(text)}
+          // Staggered so three chips read as one gesture rather than a flash.
+          style={{ animationDelay: `${i * 60}ms`, animationFillMode: "backwards" }}
+          className="animate-in fade-in slide-in-from-bottom-1 zoom-in-95 shrink-0 whitespace-nowrap rounded-full border border-border bg-card/70 px-3 py-1.5 text-xs text-primary/70 shadow-sm backdrop-blur-xl duration-200 transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-primary motion-reduce:animate-none"
+        >
+          {text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function ChatInput({
   onExploreOpenChange,
 }: {
@@ -84,6 +121,19 @@ export function ChatInput({
   // child of it, so their left/right edges coincide and this one is stable
   // across the centred/docked class swap.
   const composerShell = useRef<HTMLDivElement | null>(null);
+  // Byte-identical args to chat-pane's own subscription, so Convex dedupes it
+  // and this costs no extra query. `suggestions` is the only field read here.
+  const thread = useQuery(
+    api.chat.threads.get,
+    threadId ? { threadId } : "skip",
+  );
+  // Hidden while a generation is in flight, which also covers "cleared on
+  // Send": sending sets streamingId, and the send mutation clears the stored
+  // chips in the same patch. Clicking a chip does NEITHER, so the row survives
+  // a click and stays visible while the user edits the filled-in text.
+  // No `centred` guard is needed (and it would be a TDZ read here): the landing
+  // screen has threadId === null, so the query skips and this is empty anyway.
+  const suggestions = streamingId ? [] : (thread?.suggestions ?? []);
   const [dragging, setDragging] = useState(false);
   // dragenter/dragleave fire for EVERY child element, so a boolean makes the
   // overlay strobe as the pointer crosses message boundaries. A counter is the
@@ -261,6 +311,9 @@ export function ChatInput({
         <label htmlFor="chat-composer" className="sr-only">
           Message
         </label>
+        {suggestions.length > 0 && (
+          <SuggestionChips items={suggestions} onPick={setDraft} />
+        )}
         {/*
           ONE shell, two looks. Centred = the Gemini floating glass pill (single
           row); docked = today's multi-line composer. Only Tailwind classes and

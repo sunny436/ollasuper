@@ -141,6 +141,10 @@ export const get = query({
       tokensIn: thread.tokensIn,
       tokensOut: thread.tokensOut,
       createdAt: thread.createdAt,
+      // Exposed HERE only, never from toListItem — that helper is shared with
+      // threads.list, which backs the sidebar, and the sidebar has no use for
+      // composer chips.
+      suggestions: thread.suggestions ?? [],
     };
   },
 });

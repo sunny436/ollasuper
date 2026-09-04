@@ -58,6 +58,7 @@ def build_llm(
     api_key: str | None = None,
     timeout: float | httpx.Timeout = 180.0,
     max_retries: int = 2,
+    temperature: float | None = None,
 ) -> ChatOpenAI:
     # base_url/api_key default (None) => OpenRouter, so title-gen + OCR stay
     # byte-for-byte unchanged; only the user-chat call site overrides them for
@@ -85,7 +86,11 @@ def build_llm(
         max_tokens=_clamp_output(
             max_tokens or settings.ai_max_output_tokens, context_window
         ),
-        temperature=None,
+        # Defaults to None — see the module docstring: the Claude 5 series
+        # REJECTS non-default sampling params, so nothing may be sent unless a
+        # caller asks. A classifier on a small model passes 0 explicitly, where
+        # the default sampling makes a yes/no judgement flap between runs.
+        temperature=temperature,
         # Defaults suit a generation. An INTERACTIVE caller (the scheduling
         # composer blocks a user behind a spinner) passes a much shorter budget.
         timeout=timeout,

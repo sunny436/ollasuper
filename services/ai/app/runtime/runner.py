@@ -74,7 +74,7 @@ from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.prepare import ProviderReadiness
 from app.research.run_state import build_research_context, render_research_seed
 from app.research.tool import RECORD_RESEARCH_TOOL_NAME, RECORD_RESEARCH_TOOL_SPEC
-from app.runtime import compaction
+from app.runtime import compaction, suggestions
 from app.runtime.capabilities import render_capability_overview
 from app.runtime.context_manager import (
     ANSWER,
@@ -1471,6 +1471,19 @@ async def run_generation(
             # anything registered here could never be read back. Skip it rather
             # than accumulate rows nothing will ever resolve against.
             if status == "done" and not req.unattended:
+                # Composer chips. FIRST in this block on purpose: it is a
+                # create_task, so starting it here lets the model call overlap
+                # the awaited context_state write below instead of queueing
+                # behind it — the only latency the user actually waits on.
+                # Unattended runs are already excluded: nobody is watching a
+                # scheduled run's composer.
+                suggestions.schedule(
+                    settings=settings,
+                    convex=convex,
+                    stream_id=req.streamId,
+                    history=req.history,
+                    final_text=writer.text,
+                )
                 # THE ARTIFACT FLOOR. Derived from the turn the application
                 # just produced, and written whether or not the model called
                 # anything — because a registration that depended on model

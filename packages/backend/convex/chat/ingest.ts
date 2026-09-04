@@ -760,3 +760,38 @@ export const setSummary = internalMutation({
     return { ok: true };
   },
 });
+
+/**
+ * Composer follow-up chips for a completed turn.
+ *
+ * The ordering key is derived HERE rather than accepted from the caller: it is
+ * the assistant message's own seq, which rises across turns, so the inference
+ * plane cannot get it wrong and no seq crosses the wire.
+ *
+ * Called with an EMPTY array on a turn that warrants no suggestions, and that
+ * is load-bearing — writing nothing would leave the previous turn's chips
+ * standing after a trivial turn.
+ */
+export const setSuggestions = internalMutation({
+  args: {
+    streamId: v.string(),
+    suggestions: v.array(v.string()),
+  },
+  handler: async (ctx, { streamId, suggestions }) => {
+    const stream = await loadStream(ctx, streamId);
+    if (!stream) return { ok: false };
+    const thread = await ctx.db.get(stream.threadId);
+    if (!thread) return { ok: false };
+    const message = await ctx.db.get(stream.messageId);
+    if (!message) return { ok: false };
+    // Monotonic, and `>=` NOT `>`: a late duplicate for the SAME turn has to
+    // lose to the result already stored. With `>` a slow call from turn 1 could
+    // land after turn 2 finished and overwrite it.
+    if ((thread.suggestionsForSeq ?? -1) >= message.seq) return { ok: true };
+    await ctx.db.patch(thread._id, {
+      suggestions: suggestions.slice(0, 3).map((s) => s.slice(0, 60)),
+      suggestionsForSeq: message.seq,
+    });
+    return { ok: true };
+  },
+});

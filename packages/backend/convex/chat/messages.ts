@@ -340,6 +340,12 @@ export async function startAssistantTurn(
 
   await ctx.db.patch(thread._id, {
     streamingMessageId: assistantMessageId,
+    // Chips belong to the turn that produced them. Cleared in a patch that
+    // already runs, so a new turn costs no extra write and never shows the
+    // previous turn's suggestions. `suggestionsForSeq` deliberately SURVIVES:
+    // it is what makes a slow suggestion call from the previous turn lose the
+    // monotonic guard rather than repopulate chips the user has moved past.
+    suggestions: undefined,
     updatedAt: now,
   });
 

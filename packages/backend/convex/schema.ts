@@ -399,6 +399,13 @@ export default defineSchema({
     // the single source of truth for conversation state.
     summary: v.optional(v.string()),
     summaryThroughSeq: v.optional(v.number()),
+    // Composer follow-up chips for the most recent completed turn. Deliberately
+    // NOT a chatMessages row: they are transient composer UI, so they must stay
+    // out of the transcript, the search index and the model's context.
+    // `suggestionsForSeq` is the assistant seq they belong to — the monotonic
+    // guard that stops a slow call from an older turn overwriting a newer one.
+    suggestions: v.optional(v.array(v.string())),
+    suggestionsForSeq: v.optional(v.number()),
     lastMessageAt: v.number(),
     createdAt: v.number(),
     updatedAt: v.number(),

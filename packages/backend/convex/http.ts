@@ -211,6 +211,19 @@ http.route({
           }),
         );
       }
+      case "suggestions": {
+        if (!streamId || !Array.isArray(body.suggestions)) {
+          return aiJson({ error: "bad request" }, 400);
+        }
+        return aiJson(
+          await ctx.runMutation(internal.chat.ingest.setSuggestions, {
+            streamId,
+            suggestions: body.suggestions
+              .filter((s: unknown): s is string => typeof s === "string")
+              .slice(0, 3),
+          }),
+        );
+      }
       // ---- conversational context (platform layer) ----
       //
       // Keyed on the stream like every other op, which is also the

@@ -441,6 +441,11 @@ class Settings(BaseSettings):
     ai_title_model: str = "google/gemini-2.5-flash-lite"
     ai_max_output_tokens: int = 8192
 
+    # Composer follow-up chips, produced out-of-band after a turn finalizes on
+    # the title model (OpenRouter), so they cost none of the chat gateway's
+    # quota. Off by default like every other capability flag here.
+    ai_suggestions_enabled: bool = False
+
     # --- context -----------------------------------------------------------
     # 32k, not 1M. At Opus-5 input rates a full 32k context is ~$0.16/turn;
     # 1M would be $5.00 per message. A 32k window holds ~60 turns of ordinary
