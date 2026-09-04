@@ -98,6 +98,12 @@ class DeltaWriter:
         self._convex = convex
         self._stream_id = stream_id
         self._s = settings
+        # The turn's requirement ledger, set by the runner ONLY for a complex
+        # turn (None for ordinary chat, which is then byte-identical). Lives
+        # here because record_execution below is the one place every tool
+        # outcome already passes through, and ToolExecContext already carries
+        # the writer — so counting needs no new plumbing.
+        self.ledger = None
         self._buf: list[str] = []
         self._buf_len = 0
         self._seq = 0
@@ -506,11 +512,28 @@ class DeltaWriter:
         whether the record durably LANDED (the write-ahead signal). An OLD Convex
         without this op 400s → ConvexRejected → False, and the executor's DUAL gate
         falls back to the TOOL_CALL event's persisted-bool (deploy Python first)."""
+        # Count TERMINAL outcomes only — this method is also called at RUNNING
+        # (write-ahead) and WAITING_APPROVAL, and counting those would inflate
+        # every tally. `indeterminate` counts as a failure: the effect may have
+        # landed, so an answer resting on it is not something to stand behind.
+        if self.ledger is not None:
+            state = str(getattr(execution, "state", ""))
+            if state.endswith(("succeeded", "failed", "timed_out", "indeterminate")):
+                self.ledger.note_tool(ok=state.endswith("succeeded"))
         body: dict = {
             "op": "execution",
             "streamId": self._stream_id,
             "executionId": execution.execution_id,
             "stepId": execution.step_id,
+            # The step this one responded to. `toolExecutions.parentStep` was
+            # reserved for the step graph and never populated; this fills it
+            # deterministically so the turn's dependency chain is durable and
+            # a resume can see the real execution order.
+            **(
+                {"parentStep": execution.parent_step}
+                if execution.parent_step
+                else {}
+            ),
             "toolCallId": execution.tool_call_id,
             "toolId": execution.tool_id,
             "attemptId": execution.attempt_id,

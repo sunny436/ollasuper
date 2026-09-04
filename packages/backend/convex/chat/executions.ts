@@ -57,6 +57,9 @@ export const upsertExecution = internalMutation({
     streamId: v.string(),
     executionId: v.string(),
     stepId: v.string(),
+    // The step this one responded to. Optional: absent on a turn's FIRST step
+    // (which responds to the user, not to a tool) and on any pre-upgrade caller.
+    parentStep: v.optional(v.string()),
     toolCallId: v.string(),
     toolId: v.string(),
     attemptId: v.string(),
@@ -102,6 +105,7 @@ export const upsertExecution = internalMutation({
         workspaceId: stream.workspaceId,
         userId: stream.userId,
         stepId: a.stepId,
+        parentStep: a.parentStep,
         toolCallId: a.toolCallId,
         toolId: a.toolId,
         attemptId: a.attemptId,

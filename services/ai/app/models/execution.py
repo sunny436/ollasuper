@@ -128,6 +128,13 @@ class ToolExecution:
     tool_call_id: str
     tool_id: str
     args: dict = field(default_factory=dict)
+    # The step whose observations this call was made in response to — i.e. the
+    # PREVIOUS executor pass. Deterministic, not model-declared: tools inside one
+    # step are siblings that run concurrently, and a step always follows the
+    # results of the one before it, so this is the turn's real dependency chain
+    # rather than a guess at one. Durable via `toolExecutions.parentStep`, whose
+    # schema field was reserved for exactly this and never populated.
+    parent_step: str | None = None
     # Reserved for the future orchestrator; kept in code, NEVER put on the wire
     # (event_fields omits it) so the high-frequency event payloads stay lean.
     workflow_id: str | None = None
@@ -211,6 +218,7 @@ class ExecutionLedger:
         tool_id: str,
         args: dict,
         workflow_id: str | None = None,
+        parent_step: str | None = None,
     ) -> ToolExecution:
         key = (run_id, step_id, tool_call_id)
         existing = self._by_key.get(key)
@@ -223,6 +231,7 @@ class ExecutionLedger:
             tool_id=tool_id,
             args=args if isinstance(args, dict) else {},
             workflow_id=workflow_id,
+            parent_step=parent_step,
         )
         self._by_key[key] = execution
         return execution

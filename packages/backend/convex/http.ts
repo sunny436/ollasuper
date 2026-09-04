@@ -462,6 +462,8 @@ http.route({
             streamId,
             executionId: body.executionId,
             stepId: typeof body.stepId === "string" ? body.stepId : "",
+            parentStep:
+              typeof body.parentStep === "string" ? body.parentStep : undefined,
             toolCallId:
               typeof body.toolCallId === "string" ? body.toolCallId : "",
             toolId: typeof body.toolId === "string" ? body.toolId : "",

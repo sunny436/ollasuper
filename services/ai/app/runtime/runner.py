@@ -69,7 +69,7 @@ from app.marketing.tool import (
 )
 from app.models.chat import GenerateRequest
 from app.models.execution import hash_args
-from app.models.tools import SideEffect, ToolFilters
+from app.models.tools import SideEffect, ToolCandidate, ToolFilters
 from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.prepare import ProviderReadiness
 from app.research.run_state import build_research_context, render_research_seed
@@ -87,6 +87,7 @@ from app.runtime.context_tool import (
     ContextToolState,
 )
 from app.runtime.env_factory import build_live_agent_env
+from app.runtime.ledger import build_ledger
 from app.runtime.roster import (
     build_delegate_spec,
     build_live_runtime,
@@ -101,7 +102,7 @@ from app.seo.mutations import (
 )
 from app.skills.registry import pack_skills, render_skills_block
 from app.tools.registry import ToolRegistry
-from app.tools.selection import ToolSelector
+from app.tools.selection import ToolSelector, _passes
 
 log = get_logger(__name__)
 
@@ -112,6 +113,44 @@ ERR_ATTACHMENT = "attachment_failed"
 ERR_INGRESS = "ingress_unavailable"
 ERR_INTERNAL = "internal"
 ERR_DEADLINE = "deadline_exceeded"  # Phase 7: total execution deadline hit
+
+
+def reserve_skill_tools(
+    candidates: list[ToolCandidate],
+    declared: set[str],
+    registry: ToolRegistry,
+    filters: ToolFilters,
+) -> tuple[list[ToolCandidate], int]:
+    """Guarantee an active skill's DECLARED tools survive discovery and trimming.
+
+    The schema-budget trim keeps a score-ordered PREFIX, and lexical score is a
+    poor proxy for "this methodology names this tool". Measured on the real blog
+    thread: the blog skill declares 34 `blog.*` capabilities, discovery scored a
+    single unrelated tool at 0.202, and the turn fell back to 12 generic web
+    searches having bound none of them.
+
+    So: add any declared tool discovery missed, then sort declared tools to the
+    front — the trim cuts from the tail, so it can only ever reach undeclared
+    ones. Returns (candidates, added).
+
+    AUTHORIZATION IS UNCHANGED. Seeding runs through `_passes`, the selector's
+    own predicate, so the side-effect ceiling and granted permissions apply
+    exactly as they do to a discovered tool. A skill can widen what is RELEVANT;
+    it can never widen what is ALLOWED.
+    """
+    have = {c.tool.tool_id for c in candidates}
+    added = 0
+    for tool_id in sorted(declared - have):
+        tool = registry.get(tool_id)
+        if tool is not None and _passes(tool, filters):
+            candidates.append(
+                ToolCandidate(
+                    tool=tool, score=0.0, reason="declared by an active skill"
+                )
+            )
+            added += 1
+    candidates.sort(key=lambda c: (c.tool.tool_id not in declared, -c.score))
+    return candidates, added
 # The model PROVIDER refused for capacity/quota reasons, not because anything in
 # this turn was wrong. Distinct from ERR_PROVIDER because the user's action is
 # different and knowable: pick another model, or add capacity. Folding it into
@@ -424,6 +463,29 @@ async def run_generation(
             rag=rag_text,
             agentic=agentic,
         )
+        # THE REQUIREMENT LEDGER. Built deterministically from what the user
+        # enumerated, so a ten-part task is tracked by OllaSuper rather than by a
+        # flash-tier model's working memory. `build_ledger` returns None for
+        # anything not enumerable — which is nearly every request — and a None
+        # ledger makes this whole path a no-op, so ordinary chat is unchanged.
+        #
+        # The requirement list goes into the system prompt because the answer
+        # STREAMS: a check placed after synthesis cannot retract a claim already
+        # on the user's screen. The counts of what actually failed are not known
+        # yet; those ride the deterministic report appended at the end of the
+        # turn, which is computed from recorded state and therefore cannot be
+        # overridden by a model that would rather say "done".
+        ledger = build_ledger(latest.content) if latest is not None else None
+        if ledger is not None:
+            system = f"{system}\n\n{ledger.render_status()}"
+            writer.ledger = ledger
+            log.info(
+                "agent.ledger_open",
+                extra={
+                    "stream_id": req.streamId,
+                    "requirements": len(ledger.requirements),
+                },
+            )
         # Capability self-awareness: an always-on, compact catalogue of what OllaSuper
         # can ACTUALLY do this turn, derived live from the enabled skills + platform
         # flags + context — so "what can you do?" is answered from runtime state, not a
@@ -696,6 +758,43 @@ async def run_generation(
                         candidates.append(_hit[0])
                         _seen_ids.add(_hit[0].tool.tool_id)
                 candidates.sort(key=lambda c: -c.score)
+                # A skill that DECLARES a tool must not lose it to the trim.
+                # The trim keeps a score-ordered PREFIX, and lexical score is a
+                # poor proxy for "this methodology names this tool": the blog
+                # skill declares 34 blog.* capabilities and the real blog turn
+                # bound NONE of them — discovery scored one unrelated tool at
+                # 0.202 — so it fell back to 12 generic web searches.
+                #
+                # Seed the declared ones under the SAME filters (`_passes` is the
+                # selector's own predicate, so scope and side-effect ceilings are
+                # applied exactly as they are to a discovered tool — a skill can
+                # widen relevance, never authorization), then sort them to the
+                # front so the cut below can only ever reach undeclared tools.
+                _declared: set[str] = set()
+                if latest is not None:
+                    with contextlib.suppress(Exception):  # discovery is optional
+                        _, _sk_reg = build_live_runtime(
+                            settings,
+                            CapabilityResolver(tool_registry, tool_selector),
+                        )
+                        for _a in _sk_reg.discover(
+                            latest.content,
+                            limit=settings.ai_skill_max_active,
+                            min_score=settings.ai_skill_min_score,
+                        ):
+                            _declared |= set(_a.manifest.preferred_capabilities)
+                if _declared:
+                    candidates, _added = reserve_skill_tools(
+                        candidates, _declared, tool_registry, _filters
+                    )
+                    log.info(
+                        "agent.skill_tools_reserved",
+                        extra={
+                            "stream_id": req.streamId,
+                            "declared": len(_declared),
+                            "added": _added,
+                        },
+                    )
                 if candidates:
                     _reserved = {
                         KNOWLEDGE_TOOL_NAME,
@@ -1490,6 +1589,38 @@ async def run_generation(
         # finalize here would drive waiting_approval -> done and destroy it. Skip
         # the terminal write. (Guarded, not `return`-in-finally, which would
         # silence an in-flight exception.)
+        # THE BACKSTOP. Assess the answer that was actually produced against the
+        # requirements that were actually asked for, and append the shortfall.
+        # System-authored from recorded state, so a model claiming "all ten are
+        # complete" changes nothing. Pushed BEFORE finalize so it lands in the
+        # same message; a clean turn renders nothing at all.
+        # Also runs on a DEADLINE. `deadline_exceeded` is already in Convex's
+        # RESUMABLE_ERROR_CODES, so completed executions survive and a retry
+        # continues rather than restarting — but the user was told only "took too
+        # long". Reporting which requirements are still outstanding is what turns
+        # that from a dead end into a checkpoint.
+        _deadline_hit = status == "error" and (error or {}).get("code") == ERR_DEADLINE
+        if ledger is not None and (status == "done" or _deadline_hit):
+            with contextlib.suppress(Exception):  # never fail a finished turn
+                ledger.stopped_early = _deadline_hit
+                ledger.note_output_truncated(finish_reason)
+                ledger.assess(writer.text or "")
+                report = ledger.render_report()
+                if report:
+                    await writer.push(report)
+                log.info(
+                    "agent.ledger_closed",
+                    extra={
+                        "stream_id": req.streamId,
+                        "requirements": len(ledger.requirements),
+                        "unaddressed": len(ledger.unaddressed),
+                        "unverified": len(ledger.unverified),
+                        "tools_failed": ledger.tools_failed,
+                        "tools_truncated": ledger.tools_truncated,
+                        "output_truncated": ledger.output_truncated,
+                        "reported": bool(report),
+                    },
+                )
         if status != "suspended":
             # shield: the CancelledError that got us here must not also cancel the
             # write that records the cancellation.

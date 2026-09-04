@@ -26,7 +26,9 @@ from tests.test_skills import _skill
 pytestmark = pytest.mark.anyio
 
 
-def _sk(sid: str, name: str, *, tags, instructions: str, constraints: str = "") -> SkillManifest:
+def _sk(
+    sid: str, name: str, *, tags, instructions: str, constraints: str = ""
+) -> SkillManifest:
     """Local builder: the shared `_skill` helper carries no constraints, and
     constraints are exactly what compaction has to preserve."""
     return SkillManifest(

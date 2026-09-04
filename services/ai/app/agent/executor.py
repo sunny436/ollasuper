@@ -450,6 +450,28 @@ def _step_id(ctx: ToolExecContext) -> str:
     return f"{ctx.run_id}:a{ctx.run_attempt}:s{ctx.step_counter}"
 
 
+def _parent_step_id(ctx: ToolExecContext) -> str | None:
+    """The step whose observations this one responds to — the previous executor
+    pass. None for the first step, which responds to the user's message rather
+    than to any tool result.
+
+    Deterministic, not model-declared. Tools inside one step are siblings that
+    already run concurrently (`asyncio.gather`); a step always follows the results
+    of the one before it. That IS the turn's dependency chain, so recording it
+    needs no cooperation from the model — which is the point, since a weak model
+    declaring its own DAG is exactly what cannot be relied upon.
+    """
+    # `execute_tool_calls` bumps the counter on ENTRY, so the first pass is s1 and
+    # there is never an s0. Anything at or below 1 therefore has no parent —
+    # guarding on 0 would have every first step point at a step that never ran.
+    if ctx.step_counter <= 1:
+        return None
+    prev = ctx.step_counter - 1
+    if ctx.delegation_id:
+        return f"{ctx.run_id}:a{ctx.run_attempt}:d{ctx.delegation_id}:s{prev}"
+    return f"{ctx.run_id}:a{ctx.run_attempt}:s{prev}"
+
+
 async def _park_for_approval(
     ctx: ToolExecContext,
     execution: ToolExecution,
@@ -657,6 +679,7 @@ async def _run_one(
         tool_call_id=call_id,
         tool_id=tool_id,
         args=args,
+        parent_step=_parent_step_id(ctx),
     )
 
     # Phase 5: the reserved knowledge tool is not a registry tool — route it
@@ -1164,6 +1187,11 @@ async def _run_one(
         duration_ms=_dur,
     )
     if truncated:
+        # 442 results were clipped here in 14 days (17% of all calls) and it was
+        # visible only in this log line. A requirement answered from a clipped
+        # result is not one we can call satisfied.
+        if getattr(ctx.writer, "ledger", None) is not None:
+            ctx.writer.ledger.note_truncated()
         log.info(
             "agent.tool_result_truncated",
             extra={
@@ -2392,6 +2420,7 @@ async def _park_all_for_approval(
             tool_call_id=call_id,
             tool_id=tool_id,
             args=args,
+            parent_step=_parent_step_id(ctx),
         )
         decision = check_tool_policy(tool, ctx.scope)
         outcome, msg = await _park_for_approval(
@@ -2435,6 +2464,7 @@ def _cancelled_record(
         # Phase 5: record-only; label an unbound name as itself.
         tool_id=ctx.name_to_tool_id.get(bound_name) or bound_name,
         args=args,
+        parent_step=_parent_step_id(ctx),
     )
     _advance(execution, ExecutionState.CANCELLED)
     return _tool_message(call_id, {"status": "cancelled"}, status="error")
