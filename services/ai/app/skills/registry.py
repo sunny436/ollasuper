@@ -28,6 +28,15 @@ _SEGMENT_SPLIT = re.compile(r"[.\n?!]+|\s{2,}")
 # Below this a fragment is noise ("ok", a bare URL tail) and scoring it would only
 # add false positives.
 _MIN_SEGMENT_CHARS = 8
+# ...and a segment must carry at least this many CONTENT tokens. `_overlap`
+# divides by the smaller token set, so a one-token segment scores a perfect 1.0
+# against any skill whose metadata happens to contain that word. Measured on a
+# real request: the connective "and report on all of these:" reduces to the
+# single token {report} and scored 1.0 for documents, equity-research,
+# operations AND report-writing — outranking the seo-audit skill (0.5667) the
+# request was actually about. Two content tokens is the floor that kills that
+# while keeping genuinely short asks like "check the sitemap" ({check, sitemap}).
+_MIN_SEGMENT_TOKENS = 2
 # Masked BEFORE splitting: a bare URL is full of the very characters the splitter
 # breaks on, so "https://www.networkershome.com/ deep seo audit" shattered into
 # ['https://www', 'networkershome', 'com/ deep seo audit'] — and that last, oddly
@@ -155,6 +164,7 @@ def _segments(request: str) -> list[str]:
         s
         for s in (part.strip() for part in _SEGMENT_SPLIT.split(masked))
         if len(s) >= _MIN_SEGMENT_CHARS
+        and len(_tokenize(s)) >= _MIN_SEGMENT_TOKENS
     ]
 
 

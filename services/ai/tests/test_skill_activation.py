@@ -236,3 +236,44 @@ def test_compaction_never_pushes_the_block_over_budget():
 def test_nothing_selected_renders_nothing():
     assert render_skills_block([]) == ""
     assert pack_skills([]) == ([], [], [])
+
+
+def test_a_one_word_connective_cannot_score_a_perfect_match():
+    """Found in production. `_overlap` divides by the SMALLER token set, so a
+    segment reducing to a single content token scores 1.0 against any skill whose
+    metadata contains that word.
+
+    The real request "Audit <url> and report on all of these: 1. ..." produced the
+    segment "and report on all of these:", which reduces to {report} and scored a
+    perfect 1.0 for documents, equity-research, operations AND report-writing —
+    outranking seo-audit (0.5667), the skill the request was actually about. The
+    turn then ran with three irrelevant skills loaded and the relevant one absent.
+    """
+    from app.skills.registry import _segments
+
+    junk = "and report on all of these:"
+    assert _segments(junk) == [], "a one-token connective is still being scored"
+
+    reg = SkillRegistry(
+        [
+            _sk("report-writing", "Report Writing", tags=["report", "writing"],
+                instructions="R" * 100),
+            _sk("seo-audit", "SEO Audit", tags=["seo", "audit", "metadata"],
+                instructions="S" * 100),
+        ]
+    )
+    scored = {a.manifest.skill_id: a.score for a in reg.discover(
+        f"Audit the site metadata {junk}\n1. audit the homepage metadata\n",
+        limit=5, min_score=0.0,
+    )}
+    assert scored["seo-audit"] > scored.get("report-writing", 0.0)
+
+
+def test_a_genuinely_short_two_token_ask_still_counts():
+    """The floor must not be so high that real short requirements are discarded."""
+    from app.skills.registry import _segments
+
+    assert _segments("Check the sitemap. Review the metadata.") == [
+        "Check the sitemap",
+        "Review the metadata",
+    ]
