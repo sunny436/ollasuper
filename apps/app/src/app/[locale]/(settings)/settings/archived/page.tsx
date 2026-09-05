@@ -7,6 +7,7 @@ import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { Button } from "@v1/ui/button";
 import { useMutation, usePaginatedQuery } from "convex/react";
 import { ArchiveRestore, MessageSquare } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 
 export default function ArchivedSection() {
@@ -67,14 +68,24 @@ export default function ArchivedSection() {
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/5 text-primary/50">
               <MessageSquare className="h-4 w-4" />
             </span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-primary/85">
+            {/*
+              OPEN. An archived conversation was reachable only by knowing its
+              URL — the row offered Restore and Delete but no way to read the
+              thing being managed. Opening it deliberately does NOT unarchive it
+              (threads.get admits any non-trashed thread), so a user can check
+              what a conversation was before deciding to restore or delete it.
+            */}
+            <Link
+              href={`/chat/${t._id}`}
+              className="min-w-0 flex-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+            >
+              <p className="truncate text-sm font-medium text-primary/85 transition group-hover:text-primary">
                 {t.title || "Untitled"}
               </p>
               <p className="mt-0.5 text-xs text-primary/45">
                 Archived · {new Date(t.updatedAt).toLocaleDateString()}
               </p>
-            </div>
+            </Link>
             <div className="flex shrink-0 items-center gap-1">
               <button
                 type="button"
