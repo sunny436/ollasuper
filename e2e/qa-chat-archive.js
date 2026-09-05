@@ -189,11 +189,12 @@ async function openRowMenu(page, title) {
       waitUntil: "domcontentloaded",
     });
     await page.waitForTimeout(2500);
+    // ConfirmButton renders a trigger AND a dialog button, both "Delete" —
+    // target the dialog explicitly rather than guessing by index.
     await page.getByText("Delete", { exact: true }).first().click();
-    await page.waitForTimeout(600);
-    // The archived page uses ConfirmButton — confirm if a dialog appears.
-    const confirm = page.getByRole("button", { name: /^Delete$/ });
-    if ((await confirm.count()) > 1) await confirm.last().click();
+    const dialog = page.getByRole("dialog");
+    await dialog.waitFor({ timeout: 8000 });
+    await dialog.getByRole("button", { name: "Delete" }).click();
     await page.waitForTimeout(2500);
     const body = await page.evaluate(() => document.body.innerText || "");
     if (body.includes(title.slice(0, 20))) {
@@ -202,17 +203,39 @@ async function openRowMenu(page, title) {
   });
 
   await step("mobile: Archive is reachable at 390px", async () => {
+    // Below `md` the conversation list is a DRAWER that starts closed, so it
+    // has to be opened first — the same is true of Pin/Rename/Delete, and an
+    // earlier version of this step failed here by asserting against a closed
+    // drawer and blaming the product for it.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(BASE + "/en/chat", { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#chat-composer", { timeout: 20000 });
     await page.waitForTimeout(2000);
-    const menus = await page
+
+    await page.getByRole("button", { name: "Open conversations" }).click();
+    await page.waitForTimeout(1200);
+
+    const link = page
+      .getByRole("link")
+      .filter({ hasText: /./ })
+      .first();
+    const trigger = page
       .getByRole("button", { name: "Conversation actions" })
-      .count();
-    notes.push(`conversation action triggers at 390px: ${menus}`);
-    if (menus === 0) {
-      throw new Error("no conversation menu available on mobile");
+      .first();
+    if ((await trigger.count()) === 0) {
+      throw new Error("no conversation menu inside the mobile drawer");
     }
+    await trigger.click();
+    await page.waitForTimeout(400);
+    void link;
+
+    const labels = ["Archive", "Rename", "Delete"];
+    for (const label of labels) {
+      if ((await page.getByText(label, { exact: true }).count()) === 0) {
+        throw new Error(`${label} missing from the mobile menu`);
+      }
+    }
+    notes.push("mobile drawer menu offers Archive alongside Rename/Delete");
   });
 
   await step("zero console errors", async () => {
