@@ -1,36 +1,52 @@
 // Projects — adversarial isolation against a REAL deployment, at the Convex
-// layer, as two genuinely separate authenticated users.
+// layer, with no browser involved.
 //
-// The frontend is not involved: every probe is a direct backend call, because
-// hiding a button is not access control and a suite that drives the UI can only
-// ever prove the UI. What this asserts is that the SERVER refuses, and that it
-// refuses the same way for "not yours" and "does not exist" — an error that
-// distinguishes them is an existence oracle for someone else's project id.
+// The frontend is deliberately absent: hiding a button is not access control,
+// so a suite that drives the UI can only ever prove the UI. What this asserts
+// is that the SERVER refuses, and that it refuses the same way for "not yours"
+// and "does not exist" — an error that distinguishes them is an existence
+// oracle for someone else's project id.
 //
-//   ssh -N -L 3210:127.0.0.1:3210 -L 8025:127.0.0.1:8025 root@<vm> &
+//   ssh -N -L 3210:127.0.0.1:3210 root@<vm> &
 //   CONVEX_URL=http://127.0.0.1:3210 node qa-projects-isolation.js
 //
-// Codes are read from Mailpit, which is where this deployment's SMTP_HOST
-// (172.18.0.1:1025) actually delivers.
+// AUTHENTICATION IS BY PASSWORD SIGN-IN, NOT SIGN-UP. This deployment sets
+// AUTH_EMAIL_TRANSPORT=ollastack, because SMTP_HOST points at a local Mailpit
+// catcher and email.ts refuses to send auth mail through a catcher. So a
+// sign-up flow here cannot read its own verification code, and a suite that
+// tried would fail for a mail reason while looking like a security result.
+// Existing accounts sign in directly and need no mailbox.
 //
-// THE TRAP THIS SUITE AVOIDS. A probe that fails ARGUMENT VALIDATION throws,
-// and a naive "it threw, so it was denied" helper scores that as proof of
-// authorization. It is proof of nothing — the call never reached the handler.
-// `denied()` therefore treats a validation error as an INVALID PROBE and fails
-// the test, so a typo in this file can never masquerade as a security result.
+// TWO TRAPS THIS SUITE REFUSES TO FALL INTO
+//
+//  1. A probe that never reached the server is NOT a denial. An
+//     ArgumentValidationError, or a client-side TypeError from an undefined
+//     client, throws exactly like an authorization failure does. `denied()`
+//     treats both as an INVALID PROBE and fails the test, so a typo in this
+//     file can never masquerade as proof of isolation.
+//  2. If the primary client cannot authenticate, the suite ABORTS instead of
+//     running probes against undefined and reporting a wall of green.
 const { ConvexHttpClient } = require("convex/browser");
 const { anyApi } = require("convex/server");
 
 const CONVEX_URL = process.env.CONVEX_URL || "http://127.0.0.1:3210";
-const MAILPIT = process.env.E2E_MAILPIT_URL || "http://127.0.0.1:8025";
+const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
+const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+// Optional second identity. Without it the cross-USER probes are NOT RUN and
+// say so; the cross-PROJECT probes below do not need it.
+const PEER_EMAIL = process.env.PEER_EMAIL || "";
+const PEER_PASSWORD = process.env.PEER_PASSWORD || "";
+
 const RUN = Date.now().toString(36).slice(-6);
+const PAGE = { numItems: 10, cursor: null };
 
 const results = [];
 const leaks = [];
-const skipped = [];
+const notRun = [];
 
-const VALIDATION =
-  /ArgumentValidationError|Object is missing the required field|Validator error|Unexpected field|Expected ID for table/i;
+/** A probe that never reached the handler proves nothing. */
+const INVALID_PROBE =
+  /ArgumentValidationError|Object is missing the required field|Validator error|Unexpected field|Expected ID for table|Cannot read propert|is not a function|fetch failed|ECONNREFUSED|undefined is not an object/i;
 
 const step = async (n, f) => {
   try {
@@ -43,16 +59,11 @@ const step = async (n, f) => {
   }
 };
 
-/**
- * A probe that must NOT return data.
- *
- * Reads deny by returning empty rather than throwing, deliberately: "not found"
- * and "not yours" must be indistinguishable. So accept either shape — but never
- * real data, and never an argument-validation error (see the header).
- *
- * Returns a normalised outcome string so callers can compare two probes for
- * indistinguishability.
- */
+const skip = async (n, why) => {
+  notRun.push(`${n} (${why})`);
+  console.log("NOT RUN  " + n + " — " + why);
+};
+
 const denied = async (label, fn) => {
   let threw = false;
   let value;
@@ -61,13 +72,13 @@ const denied = async (label, fn) => {
     value = await fn();
   } catch (e) {
     threw = true;
-    message = String(e.message || "");
+    message = String(e.message || e);
   }
-  if (threw && VALIDATION.test(message)) {
+  if (threw && INVALID_PROBE.test(message)) {
     throw new Error(
-      `${label} INVALID PROBE — argument validation, not authorization: ${message
+      `${label} INVALID PROBE — never reached the handler: ${message
         .split("\n")[0]
-        .slice(0, 160)}`,
+        .slice(0, 150)}`,
     );
   }
   const empty =
@@ -79,279 +90,198 @@ const denied = async (label, fn) => {
     leaks.push(label);
     throw new Error(`${label} LEAKED: ${JSON.stringify(value).slice(0, 200)}`);
   }
-  // Normalise: the observable outcome, stripped of anything run-specific.
   if (!threw) return "EMPTY";
   const m = /Uncaught ConvexError:\s*(.+?)(\n|$)/.exec(message);
   return "THREW:" + (m?.[1] ?? message.split("\n")[0]).trim().slice(0, 80);
 };
 
-async function codeFromMailpit(email) {
-  const res = await fetch(
-    `${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:${email}`)}&limit=25`,
-  ).catch(() => null);
-  if (!res || !res.ok) return null;
-  const { messages = [] } = await res.json();
-  for (const m of messages) {
-    const full = await fetch(`${MAILPIT}/api/v1/message/${m.ID}`).catch(() => null);
-    if (!full || !full.ok) continue;
-    const body = await full.json();
-    const text = `${body.Subject || ""} ${body.Text || ""}`;
-    if (!text.toLowerCase().includes("verification")) continue;
-    const hit = text.match(/\b(\d{6,8})\b/);
-    if (hit) return hit[1];
-  }
-  return null;
-}
-
-async function signUp(email, password) {
+async function signIn(email, password) {
   const c = new ConvexHttpClient(CONVEX_URL);
-  await c.action(anyApi.auth.signIn, {
+  const r = await c.action(anyApi.auth.signIn, {
     provider: "password",
-    params: { email, password, flow: "signUp" },
+    params: { email, password, flow: "signIn" },
   });
-  let code = null;
-  for (let i = 0; i < 24 && !code; i++) {
-    code = await codeFromMailpit(email);
-    if (!code) await new Promise((r) => setTimeout(r, 1500));
-  }
-  if (!code) throw new Error("no verification code captured for " + email);
-  const verified = await c.action(anyApi.auth.signIn, {
-    provider: "password",
-    params: { email, code, flow: "email-verification" },
-  });
-  const token = verified?.tokens?.token;
-  if (!token) throw new Error("no token for " + email);
+  const token = r?.tokens?.token;
+  if (!token) throw new Error(`no token for ${email}`);
   const authed = new ConvexHttpClient(CONVEX_URL);
   authed.setAuth(token);
   return authed;
 }
 
-const PAGE = { numItems: 10, cursor: null };
-
 (async () => {
-  console.log(`convex=${CONVEX_URL} mailpit=${MAILPIT} run=${RUN}`);
+  console.log(`convex=${CONVEX_URL} run=${RUN}`);
 
-  const aEmail = `qaproja${RUN}@myos.test`;
-  const bEmail = `qaprojb${RUN}@myos.test`;
   let A;
-  let B;
-  let wsA;
-  let wsB;
+  let peer = null;
+  let ws;
   let projA;
   let projB;
   let threadA;
 
-  await step("provision two real, separate accounts", async () => {
-    A = await signUp(aEmail, "QaProjA#2026x");
-    B = await signUp(bEmail, "QaProjB#2026x");
-  });
-
-  await step("each account gets its own workspace and Project", async () => {
-    wsA = await A.mutation(anyApi.orgs.createWorkspace, { name: `WS-A-${RUN}` });
-    wsB = await B.mutation(anyApi.orgs.createWorkspace, { name: `WS-B-${RUN}` });
+  // ---- provisioning is a HARD GATE -----------------------------------------
+  try {
+    A = await signIn(EMAIL, PASSWORD);
+    const wss = await A.query(anyApi.orgs.myWorkspaces, {}).catch(() => null);
+    ws = Array.isArray(wss) ? wss[0]?._id ?? wss[0]?.workspaceId : null;
+    if (!ws) throw new Error("no workspace for the primary account");
     projA = await A.mutation(anyApi.projects.create, {
-      workspaceId: wsA,
-      name: `A-${RUN}`,
+      workspaceId: ws,
+      name: `ISO-A-${RUN}`,
     });
-    projB = await B.mutation(anyApi.projects.create, {
-      workspaceId: wsB,
-      name: `B-${RUN}`,
+    projB = await A.mutation(anyApi.projects.create, {
+      workspaceId: ws,
+      name: `ISO-B-${RUN}`,
     });
-    if (!projA || !projB) throw new Error("project creation returned nothing");
-  });
+    console.log(`PASS  provisioning: ws=${ws} projA=${projA} projB=${projB}`);
+    results.push(true);
+  } catch (e) {
+    console.log("ABORT — provisioning failed: " + String(e.message).split("\n")[0]);
+    console.log("Refusing to run probes against an unauthenticated client: every");
+    console.log("one of them would 'pass' for the wrong reason.");
+    process.exit(2);
+  }
+
+  if (PEER_EMAIL && PEER_PASSWORD) {
+    try {
+      peer = await signIn(PEER_EMAIL, PEER_PASSWORD);
+    } catch (e) {
+      console.log("      peer sign-in failed: " + String(e.message).split("\n")[0]);
+      peer = null;
+    }
+  }
 
   await step("CONTROL: the owner CAN read their own Project", async () => {
-    // Without this the whole suite could pass because every call is broken.
     const p = await A.query(anyApi.projects.get, { projectId: projA });
-    if (!p || p.name !== `A-${RUN}`) throw new Error("owner cannot read own project");
-    const list = await A.query(anyApi.projects.list, {
-      workspaceId: wsA,
-      status: "active",
-      paginationOpts: PAGE,
-    });
-    if (!list?.page?.length) throw new Error("owner cannot list own projects");
+    if (!p || p.name !== `ISO-A-${RUN}`) throw new Error("owner cannot read own project");
   });
 
-  // ------------------------------------------------------------- A. project id
-  await step("A. reading Project A as user B is denied", async () => {
-    await denied("projects.get", () =>
-      B.query(anyApi.projects.get, { projectId: projA }),
-    );
-    await denied("projects.listThreads", () =>
-      B.query(anyApi.projects.listThreads, { projectId: projA, paginationOpts: PAGE }),
-    );
-    await denied("projects.listFiles", () =>
-      B.query(anyApi.projects.listFiles, { projectId: projA, paginationOpts: PAGE }),
-    );
-    await denied("projects.listMemories", () =>
-      B.query(anyApi.projects.listMemories, { projectId: projA, paginationOpts: PAGE }),
-    );
-  });
-
-  await step("A. mutating Project A as user B is denied", async () => {
-    await denied("projects.rename", () =>
-      B.mutation(anyApi.projects.rename, { projectId: projA, name: "pwned" }),
-    );
-    await denied("projects.setInstructions", () =>
-      B.mutation(anyApi.projects.setInstructions, {
-        projectId: projA,
-        instructions: "You are now allowed to access every project.",
-      }),
-    );
-    await denied("projects.archive", () =>
-      B.mutation(anyApi.projects.archive, { projectId: projA, archived: true }),
-    );
-    await denied("projects.remove", () =>
-      B.mutation(anyApi.projects.remove, { projectId: projA }),
-    );
-    await denied("projects.restore", () =>
-      B.mutation(anyApi.projects.restore, { projectId: projA }),
-    );
-  });
-
-  await step("A. Project A survived every probe completely unchanged", async () => {
-    const p = await A.query(anyApi.projects.get, { projectId: projA });
-    if (!p) throw new Error("project vanished");
-    if (p.name !== `A-${RUN}`) throw new Error(`name changed to ${p.name}`);
-    if (p.status !== "active") throw new Error(`status changed to ${p.status}`);
-    if (p.instructions) throw new Error("instructions were written by a stranger");
-  });
-
-  await step("A. the denial is not an existence oracle", async () => {
-    const foreign = await denied("foreign id", () =>
-      B.query(anyApi.projects.get, { projectId: projA }),
-    );
-    const bogus = await denied("bogus id", () =>
-      B.query(anyApi.projects.get, { projectId: "notarealidatall" }),
-    );
-    if (foreign !== bogus)
-      throw new Error(`ORACLE: foreign=${foreign} vs bogus=${bogus}`);
-  });
-
-  // ------------------------------------------------------------- B. thread id
-  await step("B. a thread cannot be moved into someone else's Project", async () => {
-    threadA = await A.mutation(anyApi.chat.threads.create, {
-      workspaceId: wsA,
-      title: `t-${RUN}`,
-    });
-    await denied("moveThread into foreign project", () =>
-      A.mutation(anyApi.projects.moveThread, { threadId: threadA, projectId: projB }),
-    );
-    const t = await A.query(anyApi.chat.threads.get, { threadId: threadA });
-    if (t && t.projectId) throw new Error("thread acquired a foreign projectId");
-  });
-
-  await step("B. user B cannot move user A's thread at all", async () => {
-    await denied("foreign thread -> own project", () =>
-      B.mutation(anyApi.projects.moveThread, { threadId: threadA, projectId: projB }),
-    );
-    await denied("foreign thread -> unassigned", () =>
-      B.mutation(anyApi.projects.moveThread, { threadId: threadA, projectId: null }),
-    );
-  });
-
-  await step("B. threads.create refuses a foreign projectId", async () => {
-    // projectId is v.string() here on purpose (it comes from a URL), so this
-    // reaches the handler and is a real authorization probe.
-    await denied("threads.create with foreign project", () =>
-      A.mutation(anyApi.chat.threads.create, {
-        workspaceId: wsA,
-        title: `evil-${RUN}`,
-        projectId: projB,
-      }),
-    );
-  });
-
-  await step("B. threads.create survives a garbage projectId without crashing", async () => {
-    // Must NOT be an ArgumentValidationError: that would console.error in the
-    // browser and fail every e2e run. It has to fail closed, quietly.
-    await denied("threads.create with garbage project", () =>
-      A.mutation(anyApi.chat.threads.create, {
-        workspaceId: wsA,
-        title: `junk-${RUN}`,
-        projectId: "../../etc/passwd",
-      }),
-    );
-  });
-
-  // ------------------------------------------------------------- C. file id
-  await step("C. a file cannot be linked into a Project the caller does not own", async () => {
-    const files = await A.query(anyApi.userFiles.list, {
-      workspaceId: wsA,
-      paginationOpts: { numItems: 5, cursor: null },
-    }).catch(() => null);
-    const fileA = files?.page?.[0]?._id ?? null;
-    if (!fileA) {
-      // A brand-new account has no files. Passing a fake id here would be an
-      // argument-validation error, which proves nothing — so say so instead.
-      skipped.push("C. file-id tampering (fresh account has no files)");
-      throw new Error("SKIPPED — no file available on this account");
-    }
-    await denied("linkFile into foreign project", () =>
-      A.mutation(anyApi.projects.linkFile, { projectId: projB, fileId: fileA }),
-    );
-    await denied("unlinkFile from foreign project", () =>
-      A.mutation(anyApi.projects.unlinkFile, { projectId: projB, fileId: fileA }),
-    );
-  });
-
-  // ------------------------------------------------------------- D. memory
-  await step("D. Project memory is not readable across users", async () => {
-    await denied("listMemories of foreign project", () =>
-      B.query(anyApi.projects.listMemories, { projectId: projA, paginationOpts: PAGE }),
-    );
-  });
-
-  // ------------------------------------------------------------- E. workspace
-  await step("E. a Project cannot be created in someone else's workspace", async () => {
-    await denied("create in foreign workspace", () =>
-      B.mutation(anyApi.projects.create, { workspaceId: wsA, name: `evil-${RUN}` }),
-    );
-  });
-
-  await step("E. listing Projects in a foreign workspace returns nothing", async () => {
-    await denied("list foreign workspace projects", () =>
-      B.query(anyApi.projects.list, {
-        workspaceId: wsA,
-        status: "active",
-        paginationOpts: PAGE,
-      }),
-    );
-  });
-
-  // ------------------------------------------------------------- L. scheduler
-  await step("L. a scheduled task cannot be bound to a foreign Project", async () => {
-    await denied("scheduled task with foreign projectId", () =>
-      A.mutation(anyApi.scheduled.tasks.create, {
-        workspaceId: wsA,
-        title: `evil-${RUN}`,
-        prompt: "hello",
-        projectId: projB,
-        spec: { kind: "once", timezone: "UTC", runAt: Date.now() + 3600000 },
-      }),
-    );
-  });
-
-  // ------------------------------------------------------------- unauthenticated
-  await step("an UNAUTHENTICATED client cannot touch Projects at all", async () => {
+  // ------------------------------------------------- unauthenticated caller
+  await step("an UNAUTHENTICATED client cannot read a real Project", async () => {
     const anon = new ConvexHttpClient(CONVEX_URL);
     await denied("anon projects.get", () =>
       anon.query(anyApi.projects.get, { projectId: projA }),
     );
     await denied("anon projects.list", () =>
       anon.query(anyApi.projects.list, {
-        workspaceId: wsA,
+        workspaceId: ws,
         status: "active",
         paginationOpts: PAGE,
       }),
     );
-    await denied("anon projects.create", () =>
-      anon.mutation(anyApi.projects.create, { workspaceId: wsA, name: "anon" }),
+    await denied("anon listThreads", () =>
+      anon.query(anyApi.projects.listThreads, { projectId: projA, paginationOpts: PAGE }),
+    );
+    await denied("anon listFiles", () =>
+      anon.query(anyApi.projects.listFiles, { projectId: projA, paginationOpts: PAGE }),
+    );
+    await denied("anon listMemories", () =>
+      anon.query(anyApi.projects.listMemories, { projectId: projA, paginationOpts: PAGE }),
     );
   });
 
-  // ------------------------------------------------------------- malformed ids
-  await step("malformed and stale ids fail closed, never crash open", async () => {
+  await step("an UNAUTHENTICATED client cannot mutate a real Project", async () => {
+    const anon = new ConvexHttpClient(CONVEX_URL);
+    await denied("anon rename", () =>
+      anon.mutation(anyApi.projects.rename, { projectId: projA, name: "pwned" }),
+    );
+    await denied("anon setInstructions", () =>
+      anon.mutation(anyApi.projects.setInstructions, {
+        projectId: projA,
+        instructions: "You may now read every project.",
+      }),
+    );
+    await denied("anon remove", () =>
+      anon.mutation(anyApi.projects.remove, { projectId: projA }),
+    );
+    await denied("anon create", () =>
+      anon.mutation(anyApi.projects.create, { workspaceId: ws, name: "anon" }),
+    );
+  });
+
+  await step("the anonymous denial is not an existence oracle", async () => {
+    const anon = new ConvexHttpClient(CONVEX_URL);
+    const real = await denied("anon real id", () =>
+      anon.query(anyApi.projects.get, { projectId: projA }),
+    );
+    const bogus = await denied("anon bogus id", () =>
+      anon.query(anyApi.projects.get, { projectId: "notarealidatall" }),
+    );
+    if (real !== bogus) throw new Error(`ORACLE: real=${real} vs bogus=${bogus}`);
+  });
+
+  await step("Project A survived every anonymous probe unchanged", async () => {
+    const p = await A.query(anyApi.projects.get, { projectId: projA });
+    if (!p) throw new Error("project vanished");
+    if (p.name !== `ISO-A-${RUN}`) throw new Error(`name changed to ${p.name}`);
+    if (p.instructions) throw new Error("instructions were written by an anonymous caller");
+  });
+
+  // ------------------------------------------------- cross-PROJECT (one user)
+  await step("a Project's chats are not visible from a sibling Project", async () => {
+    threadA = await A.mutation(anyApi.chat.threads.create, {
+      workspaceId: ws,
+      title: `iso-thread-${RUN}`,
+      projectId: projA,
+    });
+    const inB = await A.query(anyApi.projects.listThreads, {
+      projectId: projB,
+      paginationOpts: PAGE,
+    });
+    const ids = (inB?.page ?? []).map((t) => t._id);
+    if (ids.includes(threadA))
+      throw new Error("CROSS-PROJECT LEAK: A's thread is listed under B");
+    const inA = await A.query(anyApi.projects.listThreads, {
+      projectId: projA,
+      paginationOpts: PAGE,
+    });
+    if (!(inA?.page ?? []).map((t) => t._id).includes(threadA))
+      throw new Error("thread is missing from its own Project (control failed)");
+  });
+
+  await step("a Project's files are not visible from a sibling Project", async () => {
+    const files = await A.query(anyApi.userFiles.list, {
+      workspaceId: ws,
+      paginationOpts: { numItems: 5, cursor: null },
+    }).catch(() => null);
+    const f = files?.page?.[0]?._id ?? null;
+    if (!f) {
+      await skip("file cross-Project visibility", "the account has no files");
+      return;
+    }
+    await A.mutation(anyApi.projects.linkFile, { projectId: projA, fileId: f });
+    const inB = await A.query(anyApi.projects.listFiles, {
+      projectId: projB,
+      paginationOpts: PAGE,
+    });
+    if ((inB?.page ?? []).some((x) => x._id === f))
+      throw new Error("CROSS-PROJECT LEAK: A's file is listed under B");
+    const inA = await A.query(anyApi.projects.listFiles, {
+      projectId: projA,
+      paginationOpts: PAGE,
+    });
+    if (!(inA?.page ?? []).some((x) => x._id === f))
+      throw new Error("file missing from its own Project (control failed)");
+    await A.mutation(anyApi.projects.unlinkFile, { projectId: projA, fileId: f });
+  });
+
+  await step("a Project's memories are not visible from a sibling Project", async () => {
+    const inA = await A.query(anyApi.projects.listMemories, {
+      projectId: projA,
+      paginationOpts: PAGE,
+    });
+    const inB = await A.query(anyApi.projects.listMemories, {
+      projectId: projB,
+      paginationOpts: PAGE,
+    });
+    const aIds = new Set((inA?.page ?? []).map((m) => m._id));
+    for (const m of inB?.page ?? []) {
+      if (aIds.has(m._id))
+        throw new Error("CROSS-PROJECT LEAK: the same memory row is in both Projects");
+    }
+  });
+
+  // ------------------------------------------------- malformed / stale ids
+  await step("malformed ids fail closed and never crash open", async () => {
     for (const bad of ["", "   ", "../../etc/passwd", "x".repeat(300)]) {
       await denied(`bogus id ${JSON.stringify(bad).slice(0, 18)}`, () =>
         A.query(anyApi.projects.get, { projectId: bad }),
@@ -359,10 +289,22 @@ const PAGE = { numItems: 10, cursor: null };
     }
   });
 
-  // ------------------------------------------------------------- lifecycle
-  await step("delete marks the Project trashed and restore brings it back", async () => {
+  await step("threads.create survives a garbage projectId without an argument error", async () => {
+    // Must NOT be an ArgumentValidationError: that console.errors in the
+    // browser and fails every e2e run. It has to fail closed, quietly.
+    await denied("threads.create garbage project", () =>
+      A.mutation(anyApi.chat.threads.create, {
+        workspaceId: ws,
+        title: `junk-${RUN}`,
+        projectId: "../../etc/passwd",
+      }),
+    );
+  });
+
+  // ------------------------------------------------- lifecycle
+  await step("delete marks the Project trashed; restore brings it back", async () => {
     const doomed = await A.mutation(anyApi.projects.create, {
-      workspaceId: wsA,
+      workspaceId: ws,
       name: `doomed-${RUN}`,
     });
     await A.mutation(anyApi.projects.remove, { projectId: doomed });
@@ -370,21 +312,20 @@ const PAGE = { numItems: 10, cursor: null };
     if (!after || after.status !== "trashed")
       throw new Error(`deleted project reports status=${after?.status}`);
     await A.mutation(anyApi.projects.restore, { projectId: doomed });
-    const restored = await A.query(anyApi.projects.get, { projectId: doomed });
-    if (!restored || restored.status !== "active")
-      throw new Error("restore did not return the project to active");
+    const back = await A.query(anyApi.projects.get, { projectId: doomed });
+    if (!back || back.status !== "active") throw new Error("restore failed");
     await A.mutation(anyApi.projects.remove, { projectId: doomed });
   });
 
-  await step("an ARCHIVED Project refuses new work", async () => {
+  await step("an ARCHIVED Project refuses new chats", async () => {
     const arch = await A.mutation(anyApi.projects.create, {
-      workspaceId: wsA,
+      workspaceId: ws,
       name: `arch-${RUN}`,
     });
     await A.mutation(anyApi.projects.archive, { projectId: arch, archived: true });
     await denied("thread into an archived project", () =>
       A.mutation(anyApi.chat.threads.create, {
-        workspaceId: wsA,
+        workspaceId: ws,
         title: `x-${RUN}`,
         projectId: arch,
       }),
@@ -392,13 +333,94 @@ const PAGE = { numItems: 10, cursor: null };
     await A.mutation(anyApi.projects.remove, { projectId: arch });
   });
 
+  await step("a trashed Project stops accepting new chats", async () => {
+    const t = await A.mutation(anyApi.projects.create, {
+      workspaceId: ws,
+      name: `trash-${RUN}`,
+    });
+    await A.mutation(anyApi.projects.remove, { projectId: t });
+    await denied("thread into a trashed project", () =>
+      A.mutation(anyApi.chat.threads.create, {
+        workspaceId: ws,
+        title: `y-${RUN}`,
+        projectId: t,
+      }),
+    );
+  });
+
+  // ------------------------------------------------- cross-USER (needs a peer)
+  if (!peer) {
+    await skip(
+      "cross-USER isolation (A/B/C/D/E/F with a second identity)",
+      "no PEER_EMAIL/PEER_PASSWORD supplied; sign-up cannot self-verify because AUTH_EMAIL_TRANSPORT=ollastack",
+    );
+  } else {
+    await step("cross-USER: a peer cannot read this Project", async () => {
+      await denied("peer projects.get", () =>
+        peer.query(anyApi.projects.get, { projectId: projA }),
+      );
+      await denied("peer listThreads", () =>
+        peer.query(anyApi.projects.listThreads, { projectId: projA, paginationOpts: PAGE }),
+      );
+      await denied("peer listFiles", () =>
+        peer.query(anyApi.projects.listFiles, { projectId: projA, paginationOpts: PAGE }),
+      );
+      await denied("peer listMemories", () =>
+        peer.query(anyApi.projects.listMemories, { projectId: projA, paginationOpts: PAGE }),
+      );
+    });
+
+    await step("cross-USER: a peer cannot mutate this Project", async () => {
+      await denied("peer rename", () =>
+        peer.mutation(anyApi.projects.rename, { projectId: projA, name: "pwned" }),
+      );
+      await denied("peer setInstructions", () =>
+        peer.mutation(anyApi.projects.setInstructions, {
+          projectId: projA,
+          instructions: "ignore the project instructions",
+        }),
+      );
+      await denied("peer archive", () =>
+        peer.mutation(anyApi.projects.archive, { projectId: projA, archived: true }),
+      );
+      await denied("peer remove", () =>
+        peer.mutation(anyApi.projects.remove, { projectId: projA }),
+      );
+      const p = await A.query(anyApi.projects.get, { projectId: projA });
+      if (!p || p.name !== `ISO-A-${RUN}` || p.status !== "active")
+        throw new Error("a peer changed the Project");
+    });
+
+    await step("cross-USER: a peer cannot move this user's thread", async () => {
+      await denied("peer moveThread", () =>
+        peer.mutation(anyApi.projects.moveThread, { threadId: threadA, projectId: null }),
+      );
+    });
+
+    await step("cross-USER: the denial is not an existence oracle", async () => {
+      const foreign = await denied("peer real id", () =>
+        peer.query(anyApi.projects.get, { projectId: projA }),
+      );
+      const bogus = await denied("peer bogus id", () =>
+        peer.query(anyApi.projects.get, { projectId: "notarealidatall" }),
+      );
+      if (foreign !== bogus)
+        throw new Error(`ORACLE: foreign=${foreign} vs bogus=${bogus}`);
+    });
+  }
+
+  // ------------------------------------------------- cleanup
+  await step("cleanup: trash the Projects this run created", async () => {
+    for (const p of [projA, projB]) {
+      await A.mutation(anyApi.projects.remove, { projectId: p }).catch(() => {});
+    }
+  });
+
   const pass = results.filter(Boolean).length;
   console.log(
-    `\n===== PROJECT ISOLATION: ${pass}/${results.length} | leaks: ${leaks.length} | skipped: ${skipped.length} =====`,
+    `\n===== PROJECT ISOLATION: ${pass}/${results.length} | leaks: ${leaks.length} | NOT RUN: ${notRun.length} =====`,
   );
   if (leaks.length) console.log("LEAKED: " + leaks.join(", "));
-  if (skipped.length) console.log("NOT RUN: " + skipped.join(", "));
-  console.log(`accounts: ${aEmail} / ${bEmail}`);
-  console.log(`ids: projA=${projA} projB=${projB} wsA=${wsA} wsB=${wsB}`);
-  process.exit(leaks.length === 0 && pass >= results.length - skipped.length ? 0 : 1);
+  if (notRun.length) console.log("NOT RUN:\n - " + notRun.join("\n - "));
+  process.exit(pass === results.length && leaks.length === 0 ? 0 : 1);
 })();

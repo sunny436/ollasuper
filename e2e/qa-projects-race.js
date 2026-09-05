@@ -16,7 +16,6 @@ const { ConvexHttpClient } = require("convex/browser");
 const { anyApi } = require("convex/server");
 
 const CONVEX_URL = process.env.CONVEX_URL || "http://127.0.0.1:3210";
-const MAILPIT = process.env.E2E_MAILPIT_URL || "http://127.0.0.1:8025";
 const RUN = Date.now().toString(36).slice(-6);
 
 const results = [];
@@ -37,46 +36,22 @@ const tried = async (fn) => {
   try {
     return { ok: true, value: await fn() };
   } catch (e) {
-    return { ok: false, error: String(e.message || "").split("\n")[0] };
+    // A ConvexError carries its reason in .data. The FIRST line of e.message is
+    // only the generic "[Request ID] Server Error" envelope, so reading line 0
+    // throws the real reason away and makes a correct refusal look like a bug.
+    const detail = typeof e?.data === "string" ? e.data : String(e.message || "");
+    return { ok: false, error: detail };
   }
 };
 
-async function codeFromMailpit(email) {
-  const res = await fetch(
-    `${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:${email}`)}&limit=25`,
-  ).catch(() => null);
-  if (!res || !res.ok) return null;
-  const { messages = [] } = await res.json();
-  for (const m of messages) {
-    const full = await fetch(`${MAILPIT}/api/v1/message/${m.ID}`).catch(() => null);
-    if (!full || !full.ok) continue;
-    const body = await full.json();
-    const text = `${body.Subject || ""} ${body.Text || ""}`;
-    if (!text.toLowerCase().includes("verification")) continue;
-    const hit = text.match(/\b(\d{6,8})\b/);
-    if (hit) return hit[1];
-  }
-  return null;
-}
-
-async function signUp(email, password) {
+async function signIn(email, password) {
   const c = new ConvexHttpClient(CONVEX_URL);
-  await c.action(anyApi.auth.signIn, {
-    provider: "password",
-    params: { email, password, flow: "signUp" },
+  const r = await c.action(anyApi.auth.signIn, {
+    provider: 'password',
+    params: { email, password, flow: 'signIn' },
   });
-  let code = null;
-  for (let i = 0; i < 24 && !code; i++) {
-    code = await codeFromMailpit(email);
-    if (!code) await new Promise((r) => setTimeout(r, 1500));
-  }
-  if (!code) throw new Error("no verification code captured for " + email);
-  const v = await c.action(anyApi.auth.signIn, {
-    provider: "password",
-    params: { email, code, flow: "email-verification" },
-  });
-  const token = v?.tokens?.token;
-  if (!token) throw new Error("no token for " + email);
+  const token = r?.tokens?.token;
+  if (!token) throw new Error('no token for ' + email);
   const authed = new ConvexHttpClient(CONVEX_URL);
   authed.setAuth(token);
   return authed;
@@ -95,15 +70,18 @@ const settle = async (c, threadId, ms = 120000) => {
 
 (async () => {
   console.log(`convex=${CONVEX_URL} run=${RUN}`);
-  const email = `qaprojr${RUN}@myos.test`;
+  const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
+  const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
   let C;
   let ws;
   let pA;
   let pB;
 
   await step("provision an account, a workspace and two Projects", async () => {
-    C = await signUp(email, "QaProjR#2026x");
-    ws = await C.mutation(anyApi.orgs.createWorkspace, { name: `WS-R-${RUN}` });
+    C = await signIn(EMAIL, PASSWORD);
+    const wss = await C.query(anyApi.orgs.myWorkspaces, {});
+    ws = Array.isArray(wss) ? wss[0]?._id : null;
+    if (!ws) throw new Error("no workspace for the account");
     pA = await C.mutation(anyApi.projects.create, { workspaceId: ws, name: `RA-${RUN}` });
     pB = await C.mutation(anyApi.projects.create, { workspaceId: ws, name: `RB-${RUN}` });
   });
@@ -262,6 +240,6 @@ const settle = async (c, threadId, ms = 120000) => {
   const pass = results.filter(Boolean).length;
   console.log(`\n===== PROJECT RACES: ${pass}/${results.length} =====`);
   if (findings.length) console.log("FINDINGS:\n - " + findings.join("\n - "));
-  console.log(`account: ${email}  ids: pA=${pA} pB=${pB}`);
+  console.log(`ids: pA=${pA} pB=${pB}`);
   process.exit(pass === results.length && findings.length === 0 ? 0 : 1);
 })();

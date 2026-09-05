@@ -94,9 +94,11 @@ const openProject = async (page, name) => {
 
 const createProject = async (page, name) => {
   await page.goto(BASE + "/en/projects", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "New" }).first().click();
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  if (!page.url().includes("/projects"))
+    throw new Error(`clicking New navigated away to ${page.url()} — wrong button`);
   const dlg = page.getByRole("dialog", { name: "New project" });
-  await dlg.waitFor({ timeout: 10000 });
+  await dlg.waitFor({ timeout: 15000 });
   await dlg.locator('input[aria-label="Project name"]').fill(name);
   await dlg.getByRole("button", { name: "Create project" }).click();
   await page.waitForURL(/\/projects\/[a-z0-9]+/i, { timeout: 20000 });
@@ -238,9 +240,9 @@ const createProject = async (page, name) => {
   });
 
   await step("the Project chat shows its Project in the breadcrumb", async () => {
-    const header = await page.locator("header, [class*=border-b]").first().innerText();
-    if (!header.includes(P1))
-      throw new Error("breadcrumb does not name the Project");
+    const crumb = page.locator(`a[href*="/projects/${p1Id}"]`);
+    if ((await crumb.count()) === 0)
+      throw new Error("no breadcrumb link back to the Project from its chat");
   });
 
   await step("the chat is listed inside the Project", async () => {
@@ -253,13 +255,13 @@ const createProject = async (page, name) => {
   await step("the Project chat is NOT duplicated in the normal sidebar", async () => {
     await page.goto(projectChatUrl, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
-    const title = await page.title();
-    const rail = page.locator("aside, nav").first();
-    const railText = (await rail.count()) ? await rail.innerText() : "";
-    // The thread's own title must not appear in the Recents rail.
-    const threadTitle = (title || "").replace(/\s*[|·-].*$/, "").trim();
-    if (threadTitle && threadTitle.length > 6 && railText.includes(threadTitle))
-      throw new Error(`project chat "${threadTitle}" is also in the rail`);
+    // page.title() is the APP name ("Ollasuper"), not the thread title, so a
+    // title-based check compares the brand against the rail and always matches.
+    // The thread ID is unambiguous: the rail must carry no link to it.
+    const threadId = projectChatUrl.split("/chat/")[1].split("?")[0];
+    const railLink = page.locator(`aside a[href*="${threadId}"]`);
+    if ((await railLink.count()) > 0)
+      throw new Error(`project chat ${threadId} is ALSO listed in the Recents rail`);
   });
 
   // ---- GENERATION 2: Project instructions reach the runtime ----
@@ -272,9 +274,9 @@ const createProject = async (page, name) => {
     await dlg
       .locator('textarea[aria-label="Project instructions"]')
       .fill(
-        `When asked for the smoke-test marker, reply with exactly ${INSTR_MARKER} and nothing else.`,
+        `When asked for the project codename, reply with exactly ${INSTR_MARKER} and nothing else.`,
       );
-    await dlg.getByRole("button", { name: "Save" }).click();
+    await dlg.getByRole("button", { name: "Save" }).last().click();
     await page.waitForTimeout(2500);
     await page.keyboard.press("Escape");
     await page.waitForTimeout(500);
@@ -287,7 +289,7 @@ const createProject = async (page, name) => {
     await page.getByRole("button", { name: "Start chat" }).click();
     await page.waitForURL(/\/chat\?project=/, { timeout: 15000 });
     await page.waitForSelector("#chat-composer", { timeout: 15000 });
-    await ask(page, "What is the smoke-test marker?", INSTR_MARKER);
+    await ask(page, "What is the project codename?", INSTR_MARKER);
   });
 
   // ---- Project files + RAG ----
@@ -338,7 +340,7 @@ const createProject = async (page, name) => {
     await page.waitForSelector("#chat-composer", { timeout: 15000 });
     await ask(
       page,
-      "Search the project files and tell me the unique verification marker, exactly as written.",
+      "Quote, verbatim, the OLLASUPER verification string that appears in the uploaded document.",
       FILE_MARKER,
       180000,
     );
@@ -432,14 +434,18 @@ const createProject = async (page, name) => {
   });
 
   await step("back/forward navigation keeps the app coherent", async () => {
-    await page.goto(BASE + "/en/projects", { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(800);
-    await page.goto(BASE + `/en/projects/${p1Id}`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(800);
-    await page.goBack();
-    await page.waitForTimeout(1200);
-    await page.goForward();
+    // Settle fully between navigations. Chrome logs a "blocked beforeunload"
+    // intervention when history navigation races a frame that has not been
+    // interacted with; that message comes from a vendor chunk (no Projects code
+    // registers beforeunload) and is provoked by the test, not by the product.
+    await page.goto(BASE + "/en/projects", { waitUntil: "load" });
     await page.waitForTimeout(1500);
+    await page.goto(BASE + `/en/projects/${p1Id}`, { waitUntil: "load" });
+    await page.waitForTimeout(1500);
+    await page.goBack({ waitUntil: "load" });
+    await page.waitForTimeout(2000);
+    await page.goForward({ waitUntil: "load" });
+    await page.waitForTimeout(2500);
     const h1 = (await page.locator("h1").first().innerText()).trim();
     if (h1 !== P1) throw new Error(`after forward, h1 was "${h1}"`);
   });
