@@ -15,6 +15,7 @@ import { useCachedThreads, type CachedThread } from "../_hooks/use-cached-thread
 import { useCachedUser } from "../_hooks/use-cached-user";
 import { prefetchThread, releasePrefetch } from "../_lib/prefetch";
 import {
+  Archive,
   CalendarClock,
   CreditCard,
   LogOut,
@@ -226,6 +227,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const createThread = useMutation(api.chat.threads.create);
   const renameThread = useMutation(api.chat.threads.rename);
   const removeThread = useMutation(api.chat.threads.remove);
+  const archiveThread = useMutation(api.chat.threads.archive);
   const setPinned = useMutation(api.chat.threads.setPinned);
 
 
@@ -395,6 +397,19 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                         "Couldn't rename that",
                       );
                     }}
+                    onArchive={async () => {
+                      // No confirm: archiving is reversible and non-destructive,
+                      // and no navigation either — unlike Delete, the thread is
+                      // still perfectly valid to read, so yanking the user out of
+                      // a conversation they are looking at would be a surprise.
+                      // It simply leaves the sidebar.
+                      await guard(
+                        () =>
+                          archiveThread({ threadId: t._id, archived: true }),
+                        "Couldn't archive that",
+                      );
+                      toast.success("Chat archived");
+                    }}
                     onDelete={async () => {
                       if (!window.confirm(`Delete “${t.title}”?`)) return;
                       await guard(
@@ -430,11 +445,13 @@ function ThreadMenu({
   pinned,
   onPin,
   onRename,
+  onArchive,
   onDelete,
 }: {
   pinned: boolean;
   onPin: () => void;
   onRename: () => void;
+  onArchive: () => void;
   onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -478,6 +495,15 @@ function ThreadMenu({
             >
               <Pencil className="h-3.5 w-3.5" />
               Rename
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setOpen(false);
+                onArchive();
+              }}
+            >
+              <Archive className="h-3.5 w-3.5" />
+              Archive
             </MenuItem>
             <MenuItem
               destructive

@@ -20,6 +20,19 @@ import { getUserIdOrNull } from "./authz";
 
 const LIMIT = 20;
 const MIN_QUERY = 2;
+
+/**
+ * Which thread states search may surface.
+ *
+ * The title searches express this as `.eq("status", "active")` inside their
+ * search index; the message-content passes cannot (they start from messages and
+ * resolve the thread afterwards), so they call this instead. One definition, so
+ * the two halves of search cannot drift apart again — they already had, with
+ * archived chats findable by message text and not by title.
+ */
+function isSearchable(status: string): boolean {
+  return status === "active";
+}
 const SNIPPET_RADIUS = 90;
 
 function snippet(content: string, term: string): string {
@@ -105,7 +118,14 @@ export const messages = query({
         const thread = await ctx.db.get(m.threadId);
         // Skip trashed threads: their rows still exist until the purge cron
         // catches up, and surfacing them looks like a deletion that failed.
-        if (!thread || thread.status === "trashed") continue;
+        //
+        // Archived too, and that is a FIX, not a new rule. The title searches
+        // above pin `.eq("status", "active")`, so before this an archived chat
+        // was findable by its message text but not by its title — the same
+        // conversation present in one half of search and absent from the other.
+        // Archived means "out of my way": out of the sidebar and out of search,
+        // reachable from Settings -> Archived Chats.
+        if (!thread || !isSearchable(thread.status)) continue;
         title = thread.title;
         titles.set(m.threadId, title);
       }
@@ -174,7 +194,7 @@ export const combined = query({
     for (const m of byContent) {
       if (seen.has(m.threadId)) continue;
       const thread = await ctx.db.get(m.threadId);
-      if (!thread || thread.status === "trashed") continue;
+      if (!thread || !isSearchable(thread.status)) continue;
       seen.add(m.threadId);
       out.push({
         threadId: m.threadId,
