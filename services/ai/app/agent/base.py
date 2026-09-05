@@ -75,6 +75,14 @@ class AgentEnv:
     # Passed through unchanged when the agent binds the reserved built-ins.
     rag: Any = None
     memory: Any = None
+    # Phase 5: the Project this execution belongs to, as trusted CONFIGURATION.
+    # Server-authored by Convex (dispatchPayload) and carried here so a delegated
+    # agent works inside the same Project as its parent.
+    #
+    # A sub-agent env is replace(env, ...) of its parent (orchestrator), so this
+    # propagates to every nesting depth automatically and a child can never widen
+    # it — the child RECEIVES the parent value, it never computes one.
+    project_instructions: Any = None
     # Phase 10: when set, the agent gains the orchestration built-ins.
     # `capabilities` (a CapabilityResolver) binds `find_capabilities` + enables
     # dynamic loading; `delegator` (an async callable(role, task) -> dict) binds
@@ -269,8 +277,20 @@ class Agent:
         `build_graph`, invokes it, and maps the terminal state -> outcome."""
         state = AgentState(task_input=task, completion="running")
         ctx, specs = Agent.build_context(spec, env)
+        # Project instructions are composed HERE, not at the delegator call
+        # sites. There are two of those today (the orchestrator passes `sys` in
+        # one and `rendered_skills` in the other); patching them would risk
+        # displacing what they already send AND let a future third call site
+        # silently drop the Project. run() is the one place every delegated agent
+        # must pass through.
+        pi = getattr(env, "project_instructions", None)
+        project_block = (
+            f"<project_instructions>\n{str(pi).strip()}\n</project_instructions>"
+            if pi and str(pi).strip()
+            else ""
+        )
         system_prompt = "\n\n".join(
-            p for p in (spec.instructions, system_prefix) if p
+            p for p in (spec.instructions, project_block, system_prefix) if p
         )
 
         llm_tools = None

@@ -66,6 +66,17 @@ export type ThreadStatus =
 
 interface ChatSessionApi {
   threadId: string | null;
+  /**
+   * The Project a NOT-YET-CREATED chat belongs to, as a raw string from
+   * ?project=. It travels through here for the same reason threadStatus does:
+   * the composer lives above the route segment and cannot see the page props.
+   *
+   * It is never validated on the client -- threads.create takes it as a
+   * v.string() and authorizes it server-side, so a tampered value produces a
+   * refusal, never a chat that silently lands outside the Project.
+   */
+  pendingProjectId: string | null;
+  setPendingProjectId: (id: string | null) => void;
   threadStatus: ThreadStatus;
   setThreadStatus: (s: ThreadStatus) => void;
   streamingId: Id<"chatMessages"> | null;
@@ -94,6 +105,7 @@ export function ChatSessionProvider({
     useState<Id<"chatMessages"> | null>(null);
   const [model, setModel] = useState(defaultModel);
   const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
+  const [pendingProjectId, setPendingProjectId] = useState<string | null>(null);
 
   const setStreamingId = useCallback(
     (id: Id<"chatMessages"> | null) => setStreamingIdState(id),
@@ -103,6 +115,8 @@ export function ChatSessionProvider({
   const value = useMemo(
     () => ({
       threadId,
+      pendingProjectId,
+      setPendingProjectId,
       threadStatus,
       setThreadStatus,
       streamingId,
@@ -112,7 +126,15 @@ export function ChatSessionProvider({
       pendingUsers,
       setPendingUsers,
     }),
-    [threadId, threadStatus, streamingId, setStreamingId, model, pendingUsers],
+    [
+      threadId,
+      pendingProjectId,
+      threadStatus,
+      streamingId,
+      setStreamingId,
+      model,
+      pendingUsers,
+    ],
   );
 
   return (

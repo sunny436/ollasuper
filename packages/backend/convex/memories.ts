@@ -63,6 +63,7 @@ export async function loadMemoriesForDispatch(
   ctx: QueryCtx,
   userId: Id<"users">,
   workspaceId: Id<"workspaces">,
+  projectId?: Id<"projects">,
 ): Promise<DispatchMemory[]> {
   const userGlobal = await ctx.db
     .query("userMemories")
@@ -80,8 +81,38 @@ export async function loadMemoriesForDispatch(
         .eq("status", "active"),
     )
     .take(DISPATCH_CAP);
-  return [...userGlobal, ...wsScoped]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+  // Project memories, when this turn belongs to a Project. Absent projectId ->
+  // this query never runs, so an ordinary chat can never receive Project memory
+  // and its two-query behaviour is byte-identical to before Projects existed.
+  const projectScoped = projectId
+    ? await ctx.db
+        .query("userMemories")
+        .withIndex("by_user_project_status", (q) =>
+          q
+            .eq("userId", userId)
+            .eq("projectId", projectId)
+            .eq("status", "active"),
+        )
+        .take(DISPATCH_CAP)
+    : [];
+
+  // PRECEDENCE IS APPLIED AT THE MERGE, not left to recency.
+  //
+  // The cap is filled most-specific-first: project, then workspace, then
+  // user-global. Concatenating all three and sorting by updatedAt would let a
+  // newer user-global memory EVICT a Project's own memories from its own
+  // conversation — the more memories a user accumulates elsewhere, the less of
+  // its own context a Project would get.
+  //
+  // Ordering WITHIN each tier is still updatedAt-desc, unchanged.
+  const byRecency = <T extends { updatedAt: number }>(rows: T[]) =>
+    [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
+
+  return [
+    ...byRecency(projectScoped),
+    ...byRecency(wsScoped),
+    ...byRecency(userGlobal),
+  ]
     .slice(0, DISPATCH_CAP)
     .map((m) => ({
       id: m._id,
@@ -99,6 +130,10 @@ function toClient(m: Doc<"userMemories">) {
     content: m.content,
     source: m.source,
     scope: m.scope,
+    // Exposed so Settings -> Memories can say WHICH project a memory belongs to.
+    // Without it a project-scoped memory looks identical to a global one, and a
+    // user cannot tell why it is not applying everywhere.
+    projectId: m.projectId ?? null,
     status: m.status,
     reason: m.reason ?? null,
     sourceThreadId: m.sourceThreadId ?? null,
@@ -254,22 +289,62 @@ export const rememberFromIngress = internalMutation({
     if (scanForSecret(content)) return { ok: true, rejected: "secret" };
 
     const source = a.source ?? "explicit";
-    const scope = a.scope ?? defaultScopeForKind(a.kind);
     const normalizedKey = normalizeMemory(content);
     const now = Date.now();
 
+    // PROJECT SCOPE IS DERIVED, NEVER DECLARED.
+    //
+    // If the stream's thread belongs to a Project, everything learned in that
+    // conversation is the Project's. The projectId comes from the thread the
+    // streamId capability resolves to — the inference plane cannot name a
+    // Project, and http.ts deliberately refuses to coerce a body-supplied
+    // scope:"project" for the same reason.
+    //
+    // This OVERRIDES defaultScopeForKind (which would send a `fact` to
+    // "workspace"): inside a Project the container wins, or a fact learned about
+    // one client would surface while working on another.
+    const thread = await ctx.db.get(stream.threadId);
+    // UNATTENDED RUNS DO NOT WRITE MEMORY. The Python runner already withholds
+    // the tool, so this is defence in depth: a compromised inference plane
+    // holding a live streamId still cannot persist memory from a scheduled run,
+    // where nobody is present to notice.
+    if (thread?.status === "scheduled") {
+      return { ok: true, dropped: "unattended", cancel: stream.cancelRequested };
+    }
+    const projectId = thread?.projectId;
+    const scope = projectId
+      ? ("project" as const)
+      : (a.scope ?? defaultScopeForKind(a.kind));
+
     // Idempotent dedup: refresh an existing active row with the same normalized
-    // content (same user+scope) rather than inserting a duplicate.
-    const dupe = await ctx.db
-      .query("userMemories")
-      .withIndex("by_user_scope_key", (q) =>
-        q
-          .eq("userId", stream.userId)
-          .eq("scope", scope)
-          .eq("normalizedKey", normalizedKey),
-      )
-      .filter((q) => q.eq(q.field("status"), "active"))
-      .first();
+    // content rather than inserting a duplicate.
+    //
+    // The QUERY branches — this is the whole fix, not the index.
+    // by_user_scope_key would key every Project row as
+    // [userId, "project", normalizedKey], so the same sentence remembered in
+    // Project A and Project B would dedup into ONE row and silently merge two
+    // Projects' memories. Project-scoped dedup is per-PROJECT.
+    const dupe = projectId
+      ? await ctx.db
+          .query("userMemories")
+          .withIndex("by_user_project_key", (q) =>
+            q
+              .eq("userId", stream.userId)
+              .eq("projectId", projectId)
+              .eq("normalizedKey", normalizedKey),
+          )
+          .filter((q) => q.eq(q.field("status"), "active"))
+          .first()
+      : await ctx.db
+          .query("userMemories")
+          .withIndex("by_user_scope_key", (q) =>
+            q
+              .eq("userId", stream.userId)
+              .eq("scope", scope)
+              .eq("normalizedKey", normalizedKey),
+          )
+          .filter((q) => q.eq(q.field("status"), "active"))
+          .first();
     if (dupe) {
       await ctx.db.patch(dupe._id, {
         updatedAt: now,
@@ -304,6 +379,7 @@ export const rememberFromIngress = internalMutation({
       content,
       source,
       scope,
+      ...(projectId ? { projectId } : {}),
       status: "active",
       normalizedKey,
       sourceThreadId: stream.threadId,
@@ -348,10 +424,29 @@ export const forgetFromIngress = internalMutation({
       return { ok: true, dropped: "terminal", cancel: true };
     }
 
+    // The Project this turn belongs to (undefined for an ordinary chat). A
+    // forget may only reach memories in the SAME scope the turn runs in.
+    const thread = await ctx.db.get(stream.threadId);
+    // Same rule as remember: an unattended run may READ memory but never
+    // destroy it. A wrong forget in a scheduled loop is unrecoverable and
+    // silent.
+    if (thread?.status === "scheduled") {
+      return { ok: true, disabled: 0, cancel: stream.cancelRequested };
+    }
+    const turnProjectId = thread?.projectId;
+
     let disabled = 0;
     for (const id of a.memoryIds.slice(0, 25)) {
       const m = await ctx.db.get(id);
       if (!m || m.userId !== stream.userId || m.status !== "active") continue;
+      // PROJECT BOUNDARY. The userId check above is NOT sufficient: one user
+      // owns every one of their Projects, so a Project A turn naming a Project B
+      // memory id would otherwise disable it. The ids are supposed to come from
+      // the pre-loaded, scope-authorized pool — this makes that a rule rather
+      // than a convention, so a model that invents or replays an id from another
+      // Project is refused. An ordinary chat (undefined) can only forget
+      // non-Project memories, which is the same comparison.
+      if (m.projectId !== turnProjectId) continue;
       await ctx.db.patch(id, { status: "disabled", updatedAt: Date.now() });
       disabled++;
     }

@@ -353,6 +353,71 @@ export default defineSchema({
     .index("by_thread_seq", ["threadId", "seq"])
     .index("by_thread_artifact", ["threadId", "artifactId", "version"]),
 
+  // -------------------------------------------------------------- projects
+  // A Project is a first-class container for chats (Phase 1) and, later, files,
+  // instructions and memory scope. It is PRIVATE TO THE CREATING USER inside a
+  // workspace, exactly like chatThreads below — the workspace stays the
+  // tenancy/billing boundary and is never the trust boundary for a Project.
+  //
+  // The index leads with userId for the same reason every chatThreads index
+  // does: with no workspace-only index, no query shape here can enumerate a
+  // tenant's Projects without pinning a userId first.
+  projects: defineTable({
+    workspaceId: v.id("workspaces"),
+    userId: v.id("users"),
+    name: v.string(),
+    // Stored and editable from Phase 1, but NOT injected into any prompt until
+    // Phase 5. Deliberately not surfaced in the Phase 1 UI: a control that
+    // silently does nothing is worse than an absent one.
+    instructions: v.optional(v.string()),
+    // active <-> archived -> trashed -> purged. Widening a union is additive:
+    // every pre-Phase-6 row is still valid.
+    status: v.union(
+      v.literal("active"),
+      v.literal("archived"),
+      v.literal("trashed"),
+    ),
+    // Set on trash, cleared on restore. The 30-day purge cron reads it.
+    //
+    // Unlike chatThreads, trashing a Project does NOT schedule an immediate
+    // purge: threads.remove does runAfter(0, purge), which makes their trash a
+    // formality and their restore a race. A Project genuinely waits out the TTL,
+    // so Delete is recoverable rather than merely labelled that way.
+    trashedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_user_ws_status_updated", [
+    "userId",
+    "workspaceId",
+    "status",
+    "updatedAt",
+  ]),
+
+  // A file belongs to a Project through this JOIN, never through a column on
+  // userFiles. That is forced by dedup: userFiles.saveFile returns the EXISTING
+  // row for identical content (uq per user+contentHash), so one physical file
+  // can legitimately be a member of several Projects at once. A projectId column
+  // could only ever record the first one.
+  //
+  // Unlinking removes an edge here and NOTHING else — the file, its Postgres
+  // blob and its chunks survive, because another Project (or the account-wide
+  // corpus) may still reference them.
+  projectFiles: defineTable({
+    projectId: v.id("projects"),
+    fileId: v.id("userFiles"),
+    // Denormalised owner. Both sides are already owner-checked on write; this
+    // exists so the file-delete cascade can find edges without loading projects.
+    userId: v.id("users"),
+    addedAt: v.number(),
+  })
+    // The Project sources list, and the retrieval scope.
+    .index("by_project", ["projectId"])
+    // Cascade: userFiles.remove drops every edge pointing at the deleted file.
+    .index("by_file", ["fileId"])
+    // Idempotent linking — adding the same file twice must not create a second
+    // edge, and must not re-trigger ingestion.
+    .index("by_project_file", ["projectId", "fileId"]),
+
   // ------------------------------------------------------------------ chat
   // Conversations are PRIVATE TO THE CREATING USER, workspace-scoped only for
   // tenancy/billing. This differs from every other table above, where the
@@ -383,6 +448,11 @@ export default defineSchema({
     // branches on this to send NO history and NO summary, which is what stops a
     // daily task accumulating a year of its own previous runs as context.
     scheduledTaskId: v.optional(v.id("scheduledTasks")),
+    // The Project this conversation belongs to, or absent for an ordinary
+    // chat. OPTIONAL and never backfilled: every pre-Projects thread reads back
+    // as undefined and behaves exactly as it did before. Set ONLY by
+    // threads.create after requireProjectAccess — never patched from a client.
+    projectId: v.optional(v.id("projects")),
     pinned: v.boolean(),
     model: v.string(),
     systemPrompt: v.optional(v.string()),
@@ -421,6 +491,17 @@ export default defineSchema({
       "userId",
       "workspaceId",
       "pinned",
+      "updatedAt",
+    ])
+    // Backs the per-Project chat list. `status` is part of the key so the
+    // list can separate active from archived chats, and so a hidden
+    // status="scheduled" thread can never surface as a conversation once
+    // Phase 6 starts attaching Projects to scheduled tasks.
+    .index("by_user_ws_project_status_updated", [
+      "userId",
+      "workspaceId",
+      "projectId",
+      "status",
       "updatedAt",
     ])
     .index("by_trashed", ["status", "trashedAt"])
@@ -847,8 +928,19 @@ export default defineSchema({
     content: v.string(),
     source: v.union(v.literal("explicit"), v.literal("inferred")),
     // `user` = applies in all the user's workspaces; `workspace` = this ws only
-    // (tenant-bound, so a fact learned in one workspace can't leak to another).
-    scope: v.union(v.literal("user"), v.literal("workspace")),
+    // (tenant-bound, so a fact learned in one workspace can't leak to another);
+    // `project` = this Project only, and `projectId` is then set.
+    //
+    // Project scope is REAL IDENTITY, not the `project_context` kind above —
+    // `kind` is a topic label anyone can pick and is not a security boundary.
+    scope: v.union(
+      v.literal("user"),
+      v.literal("workspace"),
+      v.literal("project"),
+    ),
+    // Set if and only if scope === "project". Derived server-side from the
+    // stream's thread, never from a tool argument or a client body.
+    projectId: v.optional(v.id("projects")),
     status: v.union(
       v.literal("active"),
       v.literal("disabled"),
@@ -874,7 +966,16 @@ export default defineSchema({
       "scope",
       "status",
     ])
-    .index("by_user_scope_key", ["userId", "scope", "normalizedKey"]),
+    .index("by_user_scope_key", ["userId", "scope", "normalizedKey"])
+    // Project-scoped dedup. A SEPARATE index, because by_user_scope_key would
+    // key every Project row as [userId, "project", normalizedKey] and therefore
+    // collapse the SAME memory text in two different Projects into one row.
+    // The dedup query in rememberFromIngress branches onto this one — adding the
+    // index without branching the query would leave the collision in place.
+    .index("by_user_project_key", ["userId", "projectId", "normalizedKey"])
+    // Project memory retrieval (loadMemoriesForDispatch), and the index a
+    // future Project purge (Phase 6) will sweep.
+    .index("by_user_project_status", ["userId", "projectId", "status"]),
 
   // The OpenRouter catalogue, refreshed by chat/models.ts:refresh.
   //
@@ -967,6 +1068,10 @@ export default defineSchema({
   // system database entirely loses NO occurrence.
   scheduledTasks: defineTable({
     userId: v.id("users"),
+    // The Project this task belongs to, or absent for an ordinary task.
+    // Additive: every pre-Projects task reads back undefined and runs exactly as
+    // it did. Set only through scheduled.tasks.create after requireProjectAccess.
+    projectId: v.optional(v.id("projects")),
     // Tenancy/billing only. Ownership is the USER, exactly like chatThreads —
     // a same-workspace peer must not see someone's scheduled prompts.
     workspaceId: v.id("workspaces"),
@@ -1032,6 +1137,10 @@ export default defineSchema({
   scheduledTaskRevisions: defineTable({
     taskId: v.id("scheduledTasks"),
     userId: v.id("users"),
+    // PINNED at edit time, mirroring how the prompt is pinned. An occurrence
+    // executes the revision it was created under, so a task that later moves
+    // Project does not retroactively change what an already-scheduled run meant.
+    projectId: v.optional(v.id("projects")),
     revision: v.number(),
     title: v.string(),
     prompt: v.string(),

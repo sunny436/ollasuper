@@ -277,9 +277,32 @@ class GenerateRequest(BaseModel):
     conversationContext: ConversationContext | None = None
     history: list[HistoryMessage] = Field(default_factory=list, max_length=200)
     titleNeeded: bool = False
-    # >0 when the user has ready knowledge-base files; gates RAG retrieval so
-    # users with no files pay no extra latency. Computed in Convex dispatchPayload.
+    # >0 when there are ready knowledge-base files IN SCOPE for this turn; gates
+    # RAG retrieval so a turn with nothing to search pays no extra latency.
+    # Computed in Convex dispatchPayload, and PROJECT-AWARE: for a Project chat it
+    # reflects the Project corpus, not the account corpus.
     ragFileCount: int = 0
+    # Project-scoped retrieval (Phase 3). THREE STATES — they must never collapse:
+    #
+    #   None  -> this chat is in no Project. Retrieve across the whole account
+    #            corpus, exactly as before Projects existed.
+    #   []    -> this chat IS in a Project, and that Project has no ready files.
+    #            Retrieve NOTHING. It must never widen to the account corpus.
+    #   [ids] -> retrieve only these files (Postgres file ids == Convex ingestIds).
+    #
+    # Server-authored: Convex derives it from chatThreads.projectId, which is
+    # itself set only through an authorized mutation. The browser cannot supply it
+    # and never even sees an ingestId (userFiles.list withholds them). Defaulting
+    # to None keeps an older Convex deploy byte-identical.
+    ragFileIds: list[str] | None = None
+    # Project instructions (Phase 4). Read fresh from the Project row by Convex
+    # on EVERY dispatch, so editing them takes effect on the next turn of every
+    # chat in the Project — nothing is snapshotted onto a thread.
+    #
+    # TRUSTED config, but NOT platform authority: rendered as its own delimited
+    # block AFTER the system base, never replacing the persona. Defaults to None
+    # so an older Convex deploy is byte-identical.
+    projectInstructions: str | None = None
     # Phase 6 long-term memory. `memoryEnabled` is the user's setting (default
     # false here so an older Convex deploy that omits it disables memory safely);
     # `memories` is the bounded, scope-authorized active set Convex pre-loaded for

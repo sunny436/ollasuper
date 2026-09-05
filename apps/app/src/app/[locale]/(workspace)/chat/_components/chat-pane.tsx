@@ -2,19 +2,29 @@
 
 import { api } from "@v1/backend/convex/_generated/api";
 import { useQuery } from "convex/react";
-import { ChevronRight, PanelLeft, Share2 } from "lucide-react";
+import { ChevronRight, FolderKanban, PanelLeft, Share2 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useChatSession } from "../_hooks/use-chat-session";
+import { useComposer } from "../_hooks/use-composer";
+import { PROJECT_DRAFT_KEY } from "../_lib/project-draft";
 import { MessageList } from "./message-list";
 import { useChatSidebar } from "./chat-shell";
 import { AmbienceSlider } from "./ambience-slider";
 import { ShareDialog } from "./share-dialog";
 import { NotificationsBell } from "../../../(dashboard)/_components/notifications-bell";
 
-export function ChatPane({ threadId }: { threadId: string | null }) {
+export function ChatPane({
+  threadId,
+  pendingProjectId = null,
+}: {
+  threadId: string | null;
+  /** Set only on /chat?project=<id> -- a chat that does not exist yet. */
+  pendingProjectId?: string | null;
+}) {
   const { openSidebar, collapsed, toggleCollapsed } = useChatSidebar();
-  const { setThreadStatus, setModel } = useChatSession();
+  const { setThreadStatus, setModel, setPendingProjectId } = useChatSession();
+  const { setDraft, focus } = useComposer();
   const [shareOpen, setShareOpen] = useState(false);
 
   // threadId is a raw URL string, so this query takes v.string() and
@@ -27,6 +37,52 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
   useEffect(() => {
     if (thread?.model) setModel(thread.model);
   }, [thread?.model, setModel]);
+
+  /**
+   * Publish the pending Project to the session, and clear it again whenever
+   * this pane is showing a real thread.
+   *
+   * Clearing matters: ChatShell persists across the /chat -> /chat/[threadId]
+   * navigation that the first send performs, so without this the id would
+   * linger and attach itself to the NEXT new chat the user started.
+   */
+  useEffect(() => {
+    setPendingProjectId(threadId === null ? pendingProjectId : null);
+  }, [threadId, pendingProjectId, setPendingProjectId]);
+
+  /**
+   * Pick up a message typed on the Project page.
+   *
+   * Read ONCE and removed immediately, so a later plain visit to /chat can never
+   * resurrect a stale draft. Only on a NEW chat (threadId null) — handing a
+   * draft to an existing conversation would be a surprise.
+   */
+  useEffect(() => {
+    if (threadId !== null) return;
+    let handed = "";
+    try {
+      handed = sessionStorage.getItem(PROJECT_DRAFT_KEY) ?? "";
+      if (handed) sessionStorage.removeItem(PROJECT_DRAFT_KEY);
+    } catch {
+      // Private mode / blocked storage: nothing to hand over.
+    }
+    if (!handed) return;
+    setDraft(handed);
+    focus();
+  }, [threadId, setDraft, focus]);
+
+  // Display only -- never a gate on sending. Resolving this is not on the
+  // correctness path, so a slow round trip cannot drop the association.
+  const pendingProject = useQuery(
+    api.projects.get,
+    threadId === null && pendingProjectId
+      ? { projectId: pendingProjectId }
+      : "skip",
+  );
+
+  // The Project shown in the breadcrumb: a saved thread reports its own, and a
+  // not-yet-created one borrows the pending Project.
+  const headerProject = thread?.project ?? pendingProject ?? null;
 
   // The composer now lives above the route segment (chat-layout.tsx), so it
   // cannot see this query. Publish the outcome instead of making the shell run
@@ -88,8 +144,20 @@ export function ChatPane({ threadId }: { threadId: string | null }) {
             Ollasuper
           </Link>
           <ChevronRight className="hidden h-3.5 w-3.5 shrink-0 text-muted-foreground sm:block" />
+          {headerProject && (
+            <>
+              <Link
+                href={`/projects/${headerProject._id}`}
+                className="hidden min-w-0 shrink items-center gap-1.5 rounded-md px-2 py-1 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-primary sm:inline-flex"
+              >
+                <FolderKanban className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{headerProject.name}</span>
+              </Link>
+              <ChevronRight className="hidden h-3.5 w-3.5 shrink-0 text-muted-foreground sm:block" />
+            </>
+          )}
           <span className="truncate px-1 font-semibold text-primary">
-            {thread?.title ?? "AI Workspace"}
+            {thread?.title ?? (headerProject ? "New chat" : "AI Workspace")}
           </span>
         </div>
 

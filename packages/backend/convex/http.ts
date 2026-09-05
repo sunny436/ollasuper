@@ -622,6 +622,11 @@ http.route({
           body.source === "explicit" || body.source === "inferred"
             ? body.source
             : undefined;
+        // DELIBERATELY NOT "project". Project scope is derived in the mutation
+        // from the stream's thread; letting the inference plane name it here
+        // would hand an untrusted caller the ability to choose which Project a
+        // memory lands in. A body-supplied scope:"project" falls through to
+        // undefined and the mutation decides.
         const scope =
           body.scope === "user" || body.scope === "workspace"
             ? body.scope

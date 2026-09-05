@@ -60,6 +60,9 @@ def build_live_agent_env(
         resume_seen_set=frozenset(resume_seen_set or ()),
         rag=rag,
         memory=memory,
+        # Trusted, server-authored. The delegated env is a replace() of this one,
+        # so every sub-agent at every depth inherits the same Project.
+        project_instructions=getattr(req, "projectInstructions", None),
         capabilities=capabilities,
         workflow_id=workflow_id or req.streamId,
     )

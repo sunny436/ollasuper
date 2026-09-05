@@ -4,6 +4,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import { mutation, query } from "../_generated/server";
 import { toPublic } from "../chat/public";
 import { requireMember } from "../orgs";
+import { requireProjectAccess } from "../projects";
 import {
   optionalTaskAccess,
   requireTaskAccess,
@@ -138,10 +139,25 @@ export const create = mutation({
     title: v.string(),
     prompt: v.string(),
     spec: scheduleSpecValidator,
+    // Optional Project home. Authorized below — a caller cannot schedule work
+    // into a Project they do not own, and cannot cross a workspace boundary.
+    projectId: v.optional(v.id("projects")),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, args.workspaceId);
+
+    if (args.projectId) {
+      const project = await requireProjectAccess(ctx, userId, args.projectId);
+      // Same invariant as threads.create and projects.linkFile: one user may
+      // belong to two workspaces, and a task must never straddle them.
+      if (project.workspaceId !== args.workspaceId) {
+        throw new ConvexError("Not found");
+      }
+      if (project.status !== "active") {
+        throw new ConvexError("This project is archived or deleted");
+      }
+    }
 
     const now = Date.now();
     const spec = validateSpec(args.spec, now);
@@ -162,6 +178,7 @@ export const create = mutation({
     const taskId = await ctx.db.insert("scheduledTasks", {
       userId,
       workspaceId: args.workspaceId,
+      ...(args.projectId ? { projectId: args.projectId } : {}),
       title,
       prompt,
       spec,
@@ -176,6 +193,9 @@ export const create = mutation({
     const revisionId = await ctx.db.insert("scheduledTaskRevisions", {
       taskId,
       userId,
+      // Pinned alongside the prompt: an occurrence executes the revision it was
+      // created under, so this is what a past run actually meant.
+      ...(args.projectId ? { projectId: args.projectId } : {}),
       revision: 1,
       title,
       prompt,
@@ -257,6 +277,10 @@ export const update = mutation({
     const revisionId = await ctx.db.insert("scheduledTaskRevisions", {
       taskId: args.taskId,
       userId,
+      // Carried from the task, not from the caller: an edit cannot move a task
+      // into a different Project, and every revision records the Project that
+      // was in force when it was written.
+      ...(task.projectId ? { projectId: task.projectId } : {}),
       revision,
       title,
       prompt,

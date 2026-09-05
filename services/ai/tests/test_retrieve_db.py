@@ -163,3 +163,80 @@ async def test_file_ids_none_is_unfiltered(engine):
         embedding_dimensions=DIM, file_ids=None,
     )
     assert [r["file_id"] for r in a] == ["fX"]
+
+
+# --- Phase 3: Project-scoped retrieval -------------------------------------
+#
+# Project membership lives in Convex; what reaches Postgres is a resolved list of
+# file ids. So the DB-level proof is: an EMPTY list must narrow to nothing, and a
+# populated list must narrow to exactly itself — even when every competing chunk
+# belongs to the SAME user and is vectorially identical. user_id alone cannot
+# make these pass, which is the whole point.
+
+
+async def test_empty_scope_returns_nothing_even_though_user_has_files(engine):
+    # THE headline invariant. uA owns two indexed files; a Project with no files
+    # resolves to file_ids=[] and must retrieve NOTHING.
+    #
+    # This is the exact shape of the old bug: `if file_ids` was falsy for [], the
+    # clause was dropped, and the query widened to the user's entire corpus.
+    await _seed(engine, file_id="fA1", user_id="uA", hot=0, content="doc-A1")
+    await _seed(engine, file_id="fA2", user_id="uA", hot=0, content="doc-A2",
+                content_hash="a2-hash")
+    got = await store.retrieve(
+        engine, user_id="uA", query_embedding=_vec(0), fetch_k=10,
+        embedding_dimensions=DIM, file_ids=[],
+    )
+    assert got == []
+
+
+async def test_same_user_project_isolation_with_identical_vectors(engine):
+    # ONE user, TWO Projects. Identical embeddings and identical filenames, so
+    # neither the tenant filter nor vector distance can separate them — only the
+    # resolved Project scope can.
+    await _seed(engine, file_id="projA-file", user_id="uA", hot=0,
+                content="ALPHA project secret")
+    await _seed(engine, file_id="projB-file", user_id="uA", hot=0,
+                content="BETA project secret", content_hash="b-hash")
+
+    a = await store.retrieve(
+        engine, user_id="uA", query_embedding=_vec(0), fetch_k=10,
+        embedding_dimensions=DIM, file_ids=["projA-file"],
+    )
+    assert [r["content"] for r in a] == ["ALPHA project secret"]
+
+    b = await store.retrieve(
+        engine, user_id="uA", query_embedding=_vec(0), fetch_k=10,
+        embedding_dimensions=DIM, file_ids=["projB-file"],
+    )
+    assert [r["content"] for r in b] == ["BETA project secret"]
+
+
+async def test_scope_cannot_be_widened_to_another_project_of_the_same_user(engine):
+    # A caller that somehow supplied Project B's file id while operating in
+    # Project A gets B's content ONLY if it is in the resolved scope. The scope
+    # is authoritative; asking for a file outside it returns nothing extra.
+    await _seed(engine, file_id="pA", user_id="uA", hot=0, content="A-only")
+    await _seed(engine, file_id="pB", user_id="uA", hot=0, content="B-only",
+                content_hash="pb-hash")
+    got = await store.retrieve(
+        engine, user_id="uA", query_embedding=_vec(0), fetch_k=10,
+        embedding_dimensions=DIM, file_ids=["pA"],
+    )
+    assert [r["content"] for r in got] == ["A-only"]
+    assert all("B-only" not in r["content"] for r in got)
+
+
+async def test_project_scope_survives_a_crowd_of_the_users_own_chunks(engine):
+    # 40 same-user chunks all NEARER the query than the Project's one file. The
+    # Project scope must still return exactly its own chunk — proving the
+    # narrowing happens in the query, not by ranking luck.
+    await _seed(engine, file_id="proj", user_id="uA", hot=5, content="PROJECT-DOC")
+    for i in range(40):
+        await _seed(engine, file_id=f"noise{i}", user_id="uA", hot=0,
+                    content=f"noise-{i}", content_hash=f"n{i}")
+    rows = await store.retrieve(
+        engine, user_id="uA", query_embedding=_vec(0), fetch_k=10,
+        embedding_dimensions=DIM, file_ids=["proj"],
+    )
+    assert [r["content"] for r in rows] == ["PROJECT-DOC"]

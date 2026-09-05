@@ -6,7 +6,7 @@ import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { Button } from "@v1/ui/button";
 import { useMutation, usePaginatedQuery } from "convex/react";
-import { ArchiveRestore, MessageSquare } from "lucide-react";
+import { ArchiveRestore, FolderKanban, MessageSquare } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 
@@ -14,16 +14,31 @@ export default function ArchivedSection() {
   const { current } = useWorkspace();
   const { results, status, loadMore } = usePaginatedQuery(
     api.chat.threads.list,
-    current ? { workspaceId: current, status: "archived" as const } : "skip",
+    // withProject: restoring an archived Project chat returns it to its
+    // PROJECT, not to the sidebar. Without a visible label that looks like the
+    // restore silently failed. No unassignedOnly here on purpose — this page is
+    // the "everything archived" view, and the Project page has no archived tab.
+    current
+      ? {
+          workspaceId: current,
+          status: "archived" as const,
+          withProject: true,
+        }
+      : "skip",
     { initialNumItems: 20 },
   );
   const archive = useMutation(api.chat.threads.archive);
   const remove = useMutation(api.chat.threads.remove);
 
-  const onUnarchive = async (threadId: Id<"chatThreads">) => {
+  const onUnarchive = async (
+    threadId: Id<"chatThreads">,
+    projectName?: string,
+  ) => {
     try {
       await archive({ threadId, archived: false });
-      toast.success("Chat restored");
+      toast.success(
+        projectName ? `Chat restored to ${projectName}` : "Chat restored",
+      );
     } catch {
       toast.error("Couldn't restore that chat");
     }
@@ -82,14 +97,23 @@ export default function ArchivedSection() {
               <p className="truncate text-sm font-medium text-primary/85 transition group-hover:text-primary">
                 {t.title || "Untitled"}
               </p>
-              <p className="mt-0.5 text-xs text-primary/45">
+              <p className="mt-0.5 flex items-center gap-1.5 text-xs text-primary/45">
+                {t.project && (
+                  <>
+                    <span className="inline-flex max-w-[12rem] items-center gap-1 truncate rounded-md bg-brand/10 px-1.5 py-0.5 font-medium text-brand-ink">
+                      <FolderKanban className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{t.project.name}</span>
+                    </span>
+                    <span aria-hidden="true">·</span>
+                  </>
+                )}
                 Archived · {new Date(t.updatedAt).toLocaleDateString()}
               </p>
             </Link>
             <div className="flex shrink-0 items-center gap-1">
               <button
                 type="button"
-                onClick={() => onUnarchive(t._id)}
+                onClick={() => onUnarchive(t._id, t.project?.name)}
                 className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-primary/60 transition hover:bg-primary/5 hover:text-primary/90"
               >
                 <ArchiveRestore className="h-3.5 w-3.5" />

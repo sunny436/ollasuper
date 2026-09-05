@@ -59,6 +59,7 @@ import type * as ollastack from "../ollastack.js";
 import type * as orgs from "../orgs.js";
 import type * as passwordProvider from "../passwordProvider.js";
 import type * as passwordProviders from "../passwordProviders.js";
+import type * as projects from "../projects.js";
 import type * as reportMarkdown from "../reportMarkdown.js";
 import type * as researchRuns from "../researchRuns.js";
 import type * as scheduled_authz from "../scheduled/authz.js";
@@ -143,6 +144,7 @@ declare const fullApi: ApiFromModules<{
   orgs: typeof orgs;
   passwordProvider: typeof passwordProvider;
   passwordProviders: typeof passwordProviders;
+  projects: typeof projects;
   reportMarkdown: typeof reportMarkdown;
   researchRuns: typeof researchRuns;
   "scheduled/authz": typeof scheduled_authz;

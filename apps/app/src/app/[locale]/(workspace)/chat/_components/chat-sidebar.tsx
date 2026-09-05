@@ -1,6 +1,7 @@
 "use client";
 
 import { FilesSection } from "./files-section";
+import { MoveToProjectDialog } from "./move-to-project-dialog";
 import { IntelligenceCore } from "./intelligence-core";
 import { clearDisplayCaches } from "@/lib/display-cache";
 import { useWorkspace } from "@/lib/useWorkspace";
@@ -18,6 +19,8 @@ import {
   Archive,
   CalendarClock,
   CreditCard,
+  FolderInput,
+  FolderKanban,
   LogOut,
   MessageSquare,
   MoreHorizontal,
@@ -195,6 +198,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   // the pathname rather than from a chat-only param.
   const pathname = usePathname();
   const scheduledActive = (pathname ?? "").includes("/scheduled");
+  const projectsActive = (pathname ?? "").includes("/projects");
   const { current } = useWorkspace();
 
   // Defer the decorative rail orb's WebGL renderer until the workspace is ready
@@ -229,11 +233,16 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const removeThread = useMutation(api.chat.threads.remove);
   const archiveThread = useMutation(api.chat.threads.archive);
   const setPinned = useMutation(api.chat.threads.setPinned);
+  const [movingThread, setMovingThread] = useState<Id<"chatThreads"> | null>(
+    null,
+  );
 
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.chat.threads.list,
-    current ? { workspaceId: current } : "skip",
+    // Phase 2: a chat placed in a Project leaves the rail and lives on its
+    // Project page, so the same conversation is never listed twice.
+    current ? { workspaceId: current, unassignedOnly: true } : "skip",
     { initialNumItems: PAGE },
   );
 
@@ -316,10 +325,24 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           active treatment a selected thread gets.
         */}
         <Link
+          href="/projects"
+          onClick={onNavigate}
+          aria-current={projectsActive ? "page" : undefined}
+          className={`mt-2 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
+            projectsActive
+              ? "bg-brand/10 font-medium text-brand-ink"
+              : "text-muted-foreground hover:bg-accent hover:text-primary"
+          }`}
+        >
+          <FolderKanban className="h-4 w-4 shrink-0" />
+          Projects
+        </Link>
+
+        <Link
           href="/scheduled"
           onClick={onNavigate}
           aria-current={scheduledActive ? "page" : undefined}
-          className={`mt-2 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
+          className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
             scheduledActive
               ? "bg-brand/10 font-medium text-brand-ink"
               : "text-muted-foreground hover:bg-accent hover:text-primary"
@@ -419,6 +442,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                       // user can see.
                       if (ok) toast.success("Chat archived");
                     }}
+                    onMove={() => setMovingThread(t._id)}
                     onDelete={async () => {
                       if (!window.confirm(`Delete “${t.title}”?`)) return;
                       await guard(
@@ -445,6 +469,11 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         )}
       </div>
 
+      <MoveToProjectDialog
+        threadId={movingThread}
+        onClose={() => setMovingThread(null)}
+      />
+
       <ProfileFooter onNavigate={onNavigate} />
     </div>
   );
@@ -454,12 +483,14 @@ function ThreadMenu({
   pinned,
   onPin,
   onRename,
+  onMove,
   onArchive,
   onDelete,
 }: {
   pinned: boolean;
   onPin: () => void;
   onRename: () => void;
+  onMove: () => void;
   onArchive: () => void;
   onDelete: () => void;
 }) {
@@ -504,6 +535,15 @@ function ThreadMenu({
             >
               <Pencil className="h-3.5 w-3.5" />
               Rename
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setOpen(false);
+                onMove();
+              }}
+            >
+              <FolderInput className="h-3.5 w-3.5" />
+              Move to project
             </MenuItem>
             <MenuItem
               onClick={() => {

@@ -6,6 +6,7 @@ import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { Button } from "@v1/ui/button";
 import { Switch } from "@v1/ui/switch";
+import { FolderKanban } from "lucide-react";
 import {
   useMutation,
   usePaginatedQuery,
@@ -137,6 +138,15 @@ export default function MemoriesSection() {
                     <span className="rounded bg-primary/5 px-1.5 py-0.5">
                       {KIND_LABEL[m.kind] ?? m.kind}
                     </span>
+                    {/* A project-scoped memory only applies inside its project.
+                        Without this it looks identical to a global one and the
+                        user cannot tell why it is not applying everywhere. */}
+                    {m.projectId && (
+                      <span className="inline-flex items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 font-medium text-brand-ink">
+                        <FolderKanban className="h-3 w-3" />
+                        Project only
+                      </span>
+                    )}
                     <span>
                       {m.source === "inferred" ? "inferred" : "you told me"}
                     </span>

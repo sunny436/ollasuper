@@ -38,6 +38,20 @@ crons.interval(
   {},
 );
 
+/**
+ * Reclaim Projects deleted more than the retention TTL ago.
+ *
+ * Unlike threads, a trashed Project is NOT purged the moment it is deleted, so
+ * this cron is the only thing that reclaims one. That is what makes the
+ * advertised 30-day recovery window real rather than decorative.
+ */
+crons.interval(
+  "purge trashed projects",
+  { hours: 6 },
+  internal.projects.purgeTrashed,
+  {},
+);
+
 /** Hard-delete conversations that have sat in the trash past the retention TTL. */
 crons.interval(
   "purge trashed chat threads",

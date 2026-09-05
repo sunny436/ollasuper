@@ -17,7 +17,7 @@ import { useChatSession } from "./use-chat-session";
 export function useSendMessage(threadId: string | null) {
   const router = useRouter();
   const { current } = useWorkspace();
-  const { setPendingUsers } = useChatSession();
+  const { setPendingUsers, pendingProjectId } = useChatSession();
   const createThread = useMutation(api.chat.threads.create);
   const sendMessage = useMutation(api.chat.messages.send);
   const [sending, setSending] = useState(false);
@@ -59,7 +59,14 @@ export function useSendMessage(threadId: string | null) {
           // Existing thread: echo instantly, before any round-trip.
           echo(tid);
         } else {
-          tid = await createThread({ workspaceId: current });
+          // Forwarded UNVALIDATED on purpose: threads.create declares
+          // projectId as v.string() and resolves it server-side, so a bad or
+          // foreign id is refused there rather than silently producing a chat
+          // outside the Project the user asked for.
+          tid = await createThread({
+            workspaceId: current,
+            ...(pendingProjectId ? { projectId: pendingProjectId } : {}),
+          });
           // New thread: echo the moment it exists, then navigate BEFORE the send
           // resolves — the optimistic row is only VISIBLE once the docked
           // transcript replaces the centred hero (which overlays an empty list).
@@ -89,7 +96,15 @@ export function useSendMessage(threadId: string | null) {
         setSending(false);
       }
     },
-    [threadId, current, createThread, sendMessage, router, setPendingUsers],
+    [
+      threadId,
+      current,
+      createThread,
+      sendMessage,
+      router,
+      setPendingUsers,
+      pendingProjectId,
+    ],
   );
 
   return { send, sending, canSend: Boolean(current) };

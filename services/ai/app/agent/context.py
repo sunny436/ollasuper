@@ -24,6 +24,10 @@ from langchain_core.messages.utils import count_tokens_approximately
 
 from app.models.chat import CONTEXT_WINDOW, IMAGE_TOKENS, HistoryMessage
 
+# Runtime backstop for the Project instruction block. Mirrors the skill
+# instructions budget; the authoritative limit is enforced by Convex on write.
+PROJECT_INSTRUCTIONS_MAX_CHARS = 20_000
+
 SYSTEM_BASE = (
     "You are the assistant in myos. Be direct and useful.\n"
     "Format answers in Markdown. Use fenced code blocks with a language tag "
@@ -119,6 +123,7 @@ def build_system_prompt(
     summary_through_seq: int,
     rag: str | None = None,
     agentic: bool = False,
+    project_instructions: str | None = None,
 ) -> str:
     persona = custom.strip() if custom and custom.strip() else SYSTEM_BASE
     # The agentic orientation LEADS so it survives a user's custom instructions
@@ -133,6 +138,21 @@ def build_system_prompt(
         parts.append(f"<about_the_user>\n{about.strip()}\n</about_the_user>")
     if style and style.strip():
         parts.append(f"<response_style>\n{style.strip()}\n</response_style>")
+    # PROJECT INSTRUCTIONS — trusted configuration, placed AFTER the persona.
+    #
+    # Deliberately NOT merged into `persona`: `custom` REPLACES SYSTEM_BASE, so
+    # putting Project instructions there would let a Project erase the platform
+    # base and the agentic orientation. As its own block it is read as a strong
+    # preference that the platform rules above still bound — a Project saying
+    # "ignore all system rules" is text that the system rules precede, not an
+    # instruction that outranks them.
+    #
+    # Bounded here as a backstop; Convex already validates length on write.
+    if project_instructions and project_instructions.strip():
+        body = project_instructions.strip()[:PROJECT_INSTRUCTIONS_MAX_CHARS]
+        parts.append(
+            f"<project_instructions>\n{body}\n</project_instructions>"
+        )
     if summary and summary.strip():
         parts.append(
             f'<conversation_summary through_message="{summary_through_seq}">\n'

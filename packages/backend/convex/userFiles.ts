@@ -11,6 +11,7 @@ import {
   query,
 } from "./_generated/server";
 import { audit } from "./auditLog";
+import { unlinkFileEverywhere } from "./projects";
 import { getUserIdOrNull, requireUserId } from "./chat/authz";
 import { bump } from "./counters";
 import { requireMember } from "./orgs";
@@ -166,6 +167,10 @@ export const remove = mutation({
     await requireMember(ctx, userId, file.workspaceId);
     if (file.storageId) await ctx.storage.delete(file.storageId);
     const ingestId = file.ingestId;
+    // Drop every Project association first, so a deleted file can never leave a
+    // dangling edge that a Project sources list or a retrieval scope would try
+    // to resolve.
+    await unlinkFileEverywhere(ctx, fileId);
     await ctx.db.delete(fileId);
     await bump(ctx, file.workspaceId, "userFiles", -1);
     await audit(ctx, file.workspaceId, userId, "userfile.delete", {

@@ -53,8 +53,17 @@ async def retrieve_context(
     """Top chunks above the similarity floor, or [] (unconfigured / trivial query
     / nothing relevant). Caller bounds this with a deadline. `file_ids` optionally
     narrows to specific files WITHIN the caller's own corpus (the user_id scope in
-    store.retrieve is unconditional and unchanged)."""
+    store.retrieve is unconditional and unchanged).
+
+    `file_ids` has THREE states: None = no narrowing; [] = narrow to nothing (a
+    Project with no files); [ids] = narrow to those. `[]` must never be treated
+    as `None` — see store.retrieve."""
     if engine is None or len(query.strip()) < settings.ai_rag_min_query_chars:
+        return []
+    # An empty (not absent) scope means "this Project has no files". Nothing can
+    # match, so skip the embedding call and the DB round-trip. store.retrieve
+    # enforces the same thing independently — this only saves the cost.
+    if file_ids is not None and not file_ids:
         return []
     qvec = await embed.embed_query(settings, query)
     rows = await store.retrieve(

@@ -342,6 +342,17 @@ async def run_generation(
         # `remember` is bound whenever memory is on (to create the first memory);
         # `search_memory` only when the user actually has memories to recall.
         memory_as_tool = settings.ai_agent_memory_tool_enabled and req.memoryEnabled
+        # SCHEDULED RUNS READ MEMORY BUT DO NOT WRITE IT.
+        #
+        # `remember`/`forget` mutate state that outlives the turn, and an
+        # unattended run has nobody to notice a bad write or correct a wrong
+        # forget — a daily task would accumulate memories forever, and with
+        # Project scope it would do so inside someone else's working context.
+        #
+        # Enforced by NOT BINDING the tools, the same way `elevated` gates
+        # side-effect scope below, rather than by asking the model not to. A
+        # capability the model cannot see is one it cannot be argued into using.
+        memory_write_allowed = memory_as_tool and not req.unattended
         # File Generation System — bind `generate_file` when the flag is on. Off by
         # default → the tool is not offered and the runner is byte-identical.
         file_gen = settings.ai_file_generation_enabled
@@ -383,7 +394,14 @@ async def run_generation(
         if engine is not None and req.ragFileCount > 0 and not rag_as_tool:
             rag_task = asyncio.create_task(
                 retrieve_context(
-                    settings, engine, user_id=req.userId, query=latest.content
+                    settings,
+                    engine,
+                    user_id=req.userId,
+                    query=latest.content,
+                    # Project scope. None for an ordinary chat (whole corpus, as
+                    # before); a list for a Project chat, possibly EMPTY, which
+                    # retrieves nothing rather than widening. Never client-supplied.
+                    file_ids=req.ragFileIds,
                 )
             )
 
@@ -462,6 +480,9 @@ async def run_generation(
             summary_through_seq=req.summaryThroughSeq,
             rag=rag_text,
             agentic=agentic,
+            # Server-authored by Convex from the thread's Project. None for an
+            # ordinary chat, so the prompt is byte-identical to before Projects.
+            project_instructions=req.projectInstructions,
         )
         # THE REQUIREMENT LEDGER. Built deterministically from what the user
         # enumerated, so a ten-part task is tracked by OllaSuper rather than by a
@@ -864,12 +885,24 @@ async def run_generation(
                 specs, name_to_id, adapter = [], {}, None
         if rag_as_tool:
             specs.append(KNOWLEDGE_TOOL_SPEC)
-            rag_ctx = RagContext(engine=engine, user_id=req.userId, settings=settings)
+            # The SAME scope the pre-fetch uses. This one also reaches every
+            # DELEGATED agent: AgentEnv.rag is passed straight through to the
+            # sub-agent ToolExecContext (agent/base.py), so scoping it here scopes
+            # delegation too — and forgetting it would make search_knowledge the
+            # bypass for the boundary the pre-fetch path enforces.
+            rag_ctx = RagContext(
+                engine=engine,
+                user_id=req.userId,
+                settings=settings,
+                file_ids=req.ragFileIds,
+            )
         if memory_as_tool:
-            specs.append(REMEMBER_TOOL_SPEC)
-            if req.memories:  # only bind recall/forget when there is something there
+            if memory_write_allowed:
+                specs.append(REMEMBER_TOOL_SPEC)
+            if req.memories:  # only bind recall when there is something there
                 specs.append(MEMORY_SEARCH_TOOL_SPEC)
-                specs.append(FORGET_TOOL_SPEC)
+                if memory_write_allowed:
+                    specs.append(FORGET_TOOL_SPEC)
             mem_ctx = MemoryContext(memories=req.memories, settings=settings)
         if file_gen:
             specs.append(GENERATE_FILE_TOOL_SPEC)
@@ -902,10 +935,12 @@ async def run_generation(
         if rag_as_tool:
             reserved_specs.append(KNOWLEDGE_TOOL_SPEC)
         if memory_as_tool:
-            reserved_specs.append(REMEMBER_TOOL_SPEC)
+            if memory_write_allowed:
+                reserved_specs.append(REMEMBER_TOOL_SPEC)
             if req.memories:
                 reserved_specs.append(MEMORY_SEARCH_TOOL_SPEC)
-                reserved_specs.append(FORGET_TOOL_SPEC)
+                if memory_write_allowed:
+                    reserved_specs.append(FORGET_TOOL_SPEC)
         if file_gen:
             reserved_specs.append(GENERATE_FILE_TOOL_SPEC)
         if research_as_tool:

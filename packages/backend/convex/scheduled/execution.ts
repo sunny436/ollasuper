@@ -82,11 +82,31 @@ async function guard(
 async function ensureThread(
   ctx: MutationCtx,
   task: Doc<"scheduledTasks">,
+  projectId: Id<"projects"> | undefined,
 ): Promise<Doc<"chatThreads">> {
   const existing = task.executionThreadId
     ? await ctx.db.get(task.executionThreadId)
     : null;
-  if (existing && existing.status === "scheduled") return existing;
+  if (existing && existing.status === "scheduled") {
+    // RECONCILE THE PROJECT ON EVERY OCCURRENCE, not only at creation.
+    //
+    // There is ONE execution thread per task and it is reused for the whole
+    // life of that task, while the Project is pinned per REVISION. So a task
+    // that gains or changes a Project after its first run would otherwise keep
+    // a stale projectId forever — and dispatchPayload reads the THREAD, so every
+    // later run would resolve the wrong Project instructions, the wrong memory
+    // pool and the wrong RAG scope, or none at all. Pinning the revision would
+    // be ornamental without this.
+    if (existing.projectId !== projectId) {
+      await ctx.db.patch(existing._id, {
+        projectId,
+        updatedAt: Date.now(),
+      });
+      const reconciled = await ctx.db.get(existing._id);
+      if (reconciled) return reconciled;
+    }
+    return existing;
+  }
 
   const now = Date.now();
   // The OWNER's chosen model, not the build-time constant.
@@ -115,6 +135,8 @@ async function ensureThread(
     // listPinned and both search paths, all of which pin an equality on status.
     status: "scheduled",
     scheduledTaskId: task._id,
+    // From the executing revision, so the very first run is already scoped.
+    ...(projectId ? { projectId } : {}),
     pinned: false,
     model: settings?.defaultModel || DEFAULT_MODEL,
     nextSeq: 0,
@@ -198,7 +220,8 @@ export const startRun = internalMutation({
       }
     }
 
-    const thread = await ensureThread(ctx, task);
+    // The revision is authoritative for WHICH Project this run belongs to.
+    const thread = await ensureThread(ctx, task, revision.projectId);
     // Another turn is mid-flight on this thread and it is not ours. Phase 1
     // serialisation makes this near-impossible; treat it as transient rather
     // than starting a second concurrent turn.

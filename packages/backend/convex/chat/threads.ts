@@ -6,6 +6,7 @@ import { internalMutation, mutation, query } from "../_generated/server";
 import { audit } from "../auditLog";
 import { bump } from "../counters";
 import { requireMember } from "../orgs";
+import { requireProjectAccessByString } from "../projects";
 import { deleteResearchRunsForThread } from "../researchRuns";
 import { deleteMutationsForThread } from "../seoMutations";
 import {
@@ -74,6 +75,32 @@ export const list = query({
     status: v.optional(
       v.union(v.literal("active"), v.literal("archived"), v.literal("trashed")),
     ),
+    /**
+     * Return ONLY chats that belong to no Project (the conversation rail).
+     *
+     * Phase 2 decision: a chat placed in a Project leaves the rail and lives on
+     * its Project page, so the same conversation is not listed twice. Served by
+     * the Phase 1 index with an equality on an ABSENT field — Convex indexes a
+     * missing optional as `undefined`, so this is a normal indexed range, not a
+     * scan, and pagination/ordering are unchanged.
+     *
+     * Opt-IN rather than the default, so Settings -> Archived Chats keeps
+     * listing every archived chat including Project ones. Excluding them there
+     * would strand them: the Project page has no archived view.
+     */
+    unassignedOnly: v.optional(v.boolean()),
+    /**
+     * Resolve each row's Project name.
+     *
+     * Only Settings -> Archived Chats asks for this. Restoring an archived
+     * Project chat returns it to its PROJECT, not to the rail, so without a
+     * visible Project label that restore looks like it silently failed.
+     *
+     * Off by default because it costs one read per distinct Project, and the
+     * rail is the hot path. The `project` key is always present so the return
+     * type stays uniform; it is simply never resolved unless asked for.
+     */
+    withProject: v.optional(v.boolean()),
     paginationOpts: paginationOptsValidator,
   },
   handler: async (ctx, args) => {
@@ -81,17 +108,55 @@ export const list = query({
     if (!uid) return EMPTY_PAGE;
     await requireMember(ctx, uid, args.workspaceId);
     const status = args.status ?? "active";
-    const res = await ctx.db
-      .query("chatThreads")
-      .withIndex("by_user_ws_status_updated", (q) =>
-        q
-          .eq("userId", uid)
-          .eq("workspaceId", args.workspaceId)
-          .eq("status", status),
-      )
-      .order("desc")
-      .paginate(args.paginationOpts);
-    return { ...res, page: res.page.map(toListItem) };
+
+    const res = args.unassignedOnly
+      ? await ctx.db
+          .query("chatThreads")
+          .withIndex("by_user_ws_project_status_updated", (q) =>
+            q
+              .eq("userId", uid)
+              .eq("workspaceId", args.workspaceId)
+              .eq("projectId", undefined)
+              .eq("status", status),
+          )
+          .order("desc")
+          .paginate(args.paginationOpts)
+      : await ctx.db
+          .query("chatThreads")
+          .withIndex("by_user_ws_status_updated", (q) =>
+            q
+              .eq("userId", uid)
+              .eq("workspaceId", args.workspaceId)
+              .eq("status", status),
+          )
+          .order("desc")
+          .paginate(args.paginationOpts);
+
+    if (!args.withProject) {
+      return { ...res, page: res.page.map((t) => ({ ...toListItem(t), project: null })) };
+    }
+
+    // Memoised per page: several archived chats commonly share one Project.
+    const names = new Map<Id<"projects">, string>();
+    const page = [];
+    for (const t of res.page) {
+      let project: { _id: Id<"projects">; name: string } | null = null;
+      if (t.projectId) {
+        let name = names.get(t.projectId);
+        if (name === undefined) {
+          const row = await ctx.db.get(t.projectId);
+          // Ownership re-checked on the project row itself: a thread must never
+          // surface metadata for a Project the caller does not own.
+          if (row && row.userId === uid) {
+            name = row.name;
+            names.set(t.projectId, name);
+          }
+        }
+        if (name !== undefined) project = { _id: t.projectId, name };
+      }
+      page.push({ ...toListItem(t), project });
+    }
+    return { ...res, page };
   },
 });
 
@@ -135,8 +200,26 @@ export const get = query({
       return null;
     }
     await requireMember(ctx, uid, thread.workspaceId);
+
+    // Project context for the chat header. Re-verify ownership on the project
+    // row rather than trusting the denormalised link: a thread must never be
+    // able to surface metadata for a Project the caller does not own.
+    //
+    // Exposed from get() ONLY, never from toListItem -- that helper also backs
+    // threads.list, which is the sidebar hot path and has no use for it. Same
+    // rule the suggestions field below follows.
+    let project: { _id: Id<"projects">; name: string; status: string } | null =
+      null;
+    if (thread.projectId) {
+      const row = await ctx.db.get(thread.projectId);
+      if (row && row.userId === uid) {
+        project = { _id: row._id, name: row.name, status: row.status };
+      }
+    }
+
     return {
       ...toListItem(thread),
+      project,
       systemPrompt: thread.systemPrompt ?? null,
       tokensIn: thread.tokensIn,
       tokensOut: thread.tokensOut,
@@ -154,10 +237,39 @@ export const create = mutation({
     workspaceId: v.id("workspaces"),
     title: v.optional(v.string()),
     model: v.optional(v.string()),
+    // A STRING, not v.id("projects"): this value originates in a ?project= URL
+    // query param, so a malformed one must not reach a v.id() validator --
+    // that throws ArgumentValidationError, which the Convex client logs via
+    // console.error, which fails every e2e run. Resolved below instead.
+    projectId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, args.workspaceId);
+
+    // Resolve the Project BEFORE creating anything. A bad, foreign or archived
+    // project THROWS rather than silently producing an unassigned chat -- the
+    // user asked for a chat inside a Project, and quietly giving them one
+    // outside it would be a lie they cannot see.
+    let projectId: Id<"projects"> | undefined;
+    if (args.projectId) {
+      const project = await requireProjectAccessByString(
+        ctx,
+        userId,
+        args.projectId,
+      );
+      // The same user can belong to two workspaces; a thread must never be
+      // linked to a Project across that boundary.
+      if (project.workspaceId !== args.workspaceId) {
+        throw new ConvexError("Not found");
+      }
+      // An archived Project accepts no NEW work. Its existing chats keep
+      // working exactly like any other chat.
+      if (project.status !== "active") {
+        throw new ConvexError("This project is archived or deleted");
+      }
+      projectId = project._id;
+    }
 
     const settings = await ctx.db
       .query("chatSettings")
@@ -180,6 +292,7 @@ export const create = mutation({
       title: args.title ? cleanTitle(args.title) : "New chat",
       titleSource: "auto",
       status: "active",
+      ...(projectId ? { projectId } : {}),
       pinned: false,
       model,
       systemPrompt: settings?.systemPrompt,

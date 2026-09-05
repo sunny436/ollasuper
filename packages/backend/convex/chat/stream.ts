@@ -12,6 +12,7 @@ import {
 } from "../_generated/server";
 import { loadMemoriesForDispatch } from "../memories";
 import { loadActiveResearchRun } from "../researchRuns";
+import { projectFileIngestIds } from "../projects";
 import { userHasReadyFiles } from "../userFiles";
 import { resolvedApprovalsForStream } from "./approvals";
 import { loadThreadDatasets } from "./attachments";
@@ -485,16 +486,65 @@ export const dispatchPayload = internalQuery({
       message.seq,
       isScheduled ? 1 : undefined,
     );
+    // RETRIEVAL SCOPE (Phase 3). Derived from the THREAD, which is the only
+    // authoritative source of a chat's Project — the browser never supplies it,
+    // and never even sees an ingestId.
+    //
+    // Three states, and collapsing any two of them is a data leak:
+    //
+    //   null  -> not a Project chat. Whole account corpus, exactly as before.
+    //   []    -> a Project chat whose Project has no ready files. Retrieve
+    //            NOTHING. This is the case that used to widen to everything,
+    //            because store.retrieve tested an empty list for truthiness.
+    //   [ids] -> retrieve only this Project's ready files.
+    // PROJECT INSTRUCTIONS — read fresh from the project row on every dispatch,
+    // deliberately NOT snapshotted onto the thread the way thread.systemPrompt
+    // snapshots account settings at creation. Instructions belong to the
+    // Project, so editing them takes effect on the next turn of every chat in
+    // it, including conversations that already exist.
+    const project = thread.projectId ? await ctx.db.get(thread.projectId) : null;
+    // A TRASHED Project contributes NOTHING, immediately.
+    //
+    // Its chats survive deletion and are unassigned by the purge, but that purge
+    // is up to 30 days away. Without this, a Project the user believes is
+    // deleted would keep injecting its instructions, memory pool and file scope
+    // into those chats for the whole retention window. Treating it as no project
+    // also makes the eventual trash -> purge transition invisible to them.
+    const liveProject =
+      project && project.userId === stream.userId && project.status !== "trashed"
+        ? project
+        : null;
+    const projectInstructions = liveProject?.instructions ?? null;
+
+    const ragFileIds: string[] | null = liveProject
+      ? await projectFileIngestIds(ctx, liveProject._id)
+      : null;
     // Cheap existence check so the inference plane only pays the RAG embedding +
-    // pgvector round-trip for users who actually have knowledge-base files.
-    const ragFileCount = (await userHasReadyFiles(ctx, stream.userId)) ? 1 : 0;
+    // pgvector round-trip when there is something in scope to search. Stays 0|1
+    // (every consumer tests `> 0`) but is now PROJECT-AWARE: an empty Project
+    // reports 0, which also unbinds the search_knowledge tool rather than
+    // offering the model a search that can only ever return nothing.
+    const ragFileCount = ragFileIds
+      ? ragFileIds.length > 0
+        ? 1
+        : 0
+      : (await userHasReadyFiles(ctx, stream.userId))
+        ? 1
+        : 0;
 
     // Phase 6: memory is on unless the user explicitly turned it off. When on,
     // pre-load the bounded, scope-correct active set so the agent's search_memory
     // tool can rank it in-Python (no mid-generation round-trip).
     const memoryEnabled = settings?.memoryEnabled !== false;
     const memories = memoryEnabled
-      ? await loadMemoriesForDispatch(ctx, stream.userId, stream.workspaceId)
+      ? await loadMemoriesForDispatch(
+          ctx,
+          stream.userId,
+          stream.workspaceId,
+          // Project tier. Undefined for an ordinary chat OR a trashed
+          // Project, so neither can receive Project memory.
+          liveProject?._id,
+        )
       : [];
 
     // Deep Research: the compact, owner-scoped resume seed for this thread's incomplete
@@ -612,6 +662,8 @@ export const dispatchPayload = internalQuery({
       // turn would sit until the approval reaper expired it).
       unattended: isScheduled,
       ragFileCount,
+      ragFileIds,
+      projectInstructions,
       memoryEnabled,
       memories,
       // Phase 7 durable resume.

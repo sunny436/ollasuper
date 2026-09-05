@@ -162,11 +162,30 @@ async def retrieve(
     scan = iterative_scan if iterative_scan in _valid else "relaxed_order"
     # Fixed literals, never user input (like `dim`); every value stays a bind.
     model_clause = "AND embedding_model = :model" if embedding_model else ""
-    # Optional per-file narrowing (Phase 5 selected-files). ALWAYS under the
-    # user_id clause, so it can only restrict WITHIN the caller's own corpus — a
-    # foreign/invalid file_id simply matches nothing. `= ANY(:fids)` binds a
-    # Python list as a text[] array (psycopg3), so file ids stay parameterized.
-    file_clause = "AND file_id = ANY(:fids)" if file_ids else ""
+    # Optional per-file narrowing. ALWAYS under the user_id clause, so it can only
+    # restrict WITHIN the caller's own corpus — a foreign/invalid file_id simply
+    # matches nothing. `= ANY(:fids)` binds a Python list as a text[] array
+    # (psycopg3), so file ids stay parameterized.
+    #
+    # THREE STATES, and they must never collapse into two:
+    #
+    #   None  -> no narrowing. The caller's whole corpus. (An ordinary chat.)
+    #   []    -> narrow to NOTHING. Return no rows.        (A Project with no files.)
+    #   [ids] -> narrow to exactly those ids.               (A Project with files.)
+    #
+    # This used to read `if file_ids`, which is FALSY FOR AN EMPTY LIST — so an
+    # empty scope emitted no clause at all and silently returned the user's entire
+    # corpus. Harmless while nothing passed `[]`; a cross-Project data leak the
+    # moment Project scope is expressed as a list of files.
+    #
+    # The empty case returns before touching SQL rather than relying on
+    # `= ANY(ARRAY[]::text[])`: an empty Python list gives psycopg3 no element
+    # type to infer, so leaving it to the driver risks an error where the whole
+    # point is a guaranteed empty result. Explicit beats clever for the one
+    # branch whose failure mode is a silent leak.
+    if file_ids is not None and not file_ids:
+        return []
+    file_clause = "AND file_id = ANY(:fids)" if file_ids is not None else ""
     params: dict[str, Any] = {
         "uid": user_id,
         "qvec": _vec_literal(query_embedding),
@@ -174,7 +193,9 @@ async def retrieve(
     }
     if embedding_model:
         params["model"] = embedding_model
-    if file_ids:
+    # Same rule as the clause above, so removing the early return could never
+    # silently resurrect the leak by leaving the clause bound to nothing.
+    if file_ids is not None:
         params["fids"] = list(file_ids)
     async with engine.begin() as conn:
         await conn.execute(text(f"SET LOCAL hnsw.ef_search = {ef}"))
