@@ -169,6 +169,30 @@ async function openRowMenu(page, title) {
     }
   });
 
+  await step("an archived chat opens from Settings with messages intact", async () => {
+    // And opening it must NOT unarchive it — the user is reading it to decide
+    // whether to restore or delete, not committing to either.
+    await page.getByText(title.slice(0, 20), { exact: false }).first().click();
+    await page.waitForURL(/\/chat\//, { timeout: 15000 });
+    await page.waitForTimeout(2500);
+    const body = await page.evaluate(() => document.body.innerText || "");
+    if (!body.includes(MARKER)) {
+      throw new Error("the conversation's messages did not render");
+    }
+
+    // Still archived: absent from the sidebar, still listed under Settings.
+    await page.goto(BASE + "/en/settings/archived", {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForTimeout(2500);
+    const archivedBody = await page.evaluate(
+      () => document.body.innerText || "",
+    );
+    if (!archivedBody.includes(title.slice(0, 20))) {
+      throw new Error("opening it silently unarchived the conversation");
+    }
+  });
+
   await step("restoring returns it to the active sidebar", async () => {
     await page.getByText("Restore", { exact: true }).first().click();
     await page.waitForTimeout(2000);
