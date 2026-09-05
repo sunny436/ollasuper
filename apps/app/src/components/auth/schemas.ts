@@ -15,41 +15,21 @@ const email = z
   .email("Enter a valid email address");
 
 /**
- * Sign-UP is restricted to these consumer providers. Client mirror of
- * ALLOWED_SIGNUP_DOMAINS in convex/authPolicy.ts — the server is the authority;
- * this only gives instant feedback. Login/forgot are NOT domain-restricted
- * (existing accounts keep working, and forgot must not reveal domains).
- */
-const ALLOWED_SIGNUP_DOMAINS = new Set([
-  "gmail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com",
-  "icloud.com", "proton.me", "protonmail.com", "zoho.com", "aol.com",
-  "gmx.com", "mail.com",
-]);
-
-/**
- * Test/CI-only extension, mirroring AUTH_EXTRA_ALLOWED_DOMAINS on the server.
+ * Sign-UP accepts any syntactically valid address.
  *
- * Without this the mirror is not actually a mirror: the server had an escape
- * hatch and the client did not, so a domain the backend accepts was still
- * rejected in the browser before a request was ever sent. That made an
- * end-to-end signup test against a real inbox impossible — which is how a stack
- * that could not deliver mail to anyone kept passing its auth suite.
+ * There used to be an allow-list of twelve consumer providers here, mirroring
+ * one on the server, so `you@yourcompany.com` was refused before a request was
+ * ever sent. Both are gone: a list of approved providers cannot be maintained
+ * against the real world, and it was refusing exactly the work addresses this
+ * product exists for.
  *
- * NEXT_PUBLIC_ because it is evaluated in the browser, so it is inlined at BUILD
- * time: changing it needs a rebuild, not just a restart. Empty in production,
- * and the server remains the authority either way.
+ * The client deliberately does NOT mirror the server's throwaway-domain check.
+ * A mirror would put the list in the browser bundle, which publishes it to the
+ * people evading it, and it would drift the moment the server's list changed.
+ * The server is the authority; a rejected throwaway address costs one round trip
+ * and returns a specific, actionable message.
  */
-const EXTRA_SIGNUP_DOMAINS = new Set(
-  (process.env.NEXT_PUBLIC_AUTH_EXTRA_ALLOWED_DOMAINS ?? "")
-    .split(",")
-    .map((d) => d.trim().toLowerCase())
-    .filter(Boolean),
-);
-
-const signUpEmail = email.refine((e) => {
-  const domain = e.toLowerCase().split("@")[1] ?? "";
-  return ALLOWED_SIGNUP_DOMAINS.has(domain) || EXTRA_SIGNUP_DOMAINS.has(domain);
-}, "That email domain isn't supported. Use Gmail, Outlook, Yahoo, iCloud, Proton, Zoho, AOL, GMX or Mail.com.");
+const signUpEmail = email;
 
 /**
  * Sign-IN takes any non-empty password ON PURPOSE. Applying the sign-up policy

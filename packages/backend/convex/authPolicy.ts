@@ -82,48 +82,33 @@ export function isValidEmailShape(email: string): boolean {
 }
 
 /**
- * Positive allow-list of consumer email providers permitted to sign up.
+ * There is deliberately NO allow-list of email providers.
  *
- * A domain the user typed reveals nothing about whether an ACCOUNT exists, so —
- * unlike the login/existence path — a specific, user-friendly message here is
- * safe and is what the product wants. The allow-list also supersedes the
- * disposable block-list above: a throwaway domain simply isn't on it. Keep it as
- * a Set of already-normalised (lowercased) domains.
+ * There used to be one — twelve consumer domains — which meant every work
+ * address was refused at sign-up with "That email domain isn't supported."
+ * A list of approved providers cannot be maintained against the real world, and
+ * the escape hatch it needed (AUTH_EXTRA_ALLOWED_DOMAINS) had already been
+ * switched on in production to get the e2e mailbox through, which is the usual
+ * sign that a rule is fighting its own users.
+ *
+ * Removing it required care, because the list was doing security work nobody
+ * had noticed: throwaway providers were rejected only because they were not on
+ * it. `isDisposableEmail` above was written for that job and was never called
+ * from this file — dead code kept alive by its tests. `assertUsableEmail` now
+ * calls it explicitly, so the protection survives the list that replaced it.
+ *
+ * The real boundary was never the domain. It is mandatory email verification:
+ * a sign-up issues no session until a code sent to that address comes back.
  */
-const ALLOWED_SIGNUP_DOMAINS = new Set([
-  "gmail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com",
-  "icloud.com", "proton.me", "protonmail.com", "zoho.com", "aol.com",
-  "gmx.com", "mail.com",
-]);
-
-/**
- * Test/CI-only extension, so fixtures that use throwaway domains (Mailpit) can
- * sign up without loosening production. Empty in prod. Comma-separated.
- */
-function extraAllowedDomains(): Set<string> {
-  return new Set(
-    (process.env.AUTH_EXTRA_ALLOWED_DOMAINS ?? "")
-      .split(",")
-      .map((d) => d.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
-
-/** True when the address's domain is on the sign-up allow-list. */
-export function isAllowedSignupDomain(email: string): boolean {
-  const d = domainOf(normalizeEmail(email));
-  return d !== "" && (ALLOWED_SIGNUP_DOMAINS.has(d) || extraAllowedDomains().has(d));
-}
-
 export const INVALID_EMAIL_MESSAGE = "Enter a valid email address.";
-export const UNSUPPORTED_DOMAIN_MESSAGE =
-  "That email domain isn't supported. Use Gmail, Outlook, Yahoo, iCloud, Proton, Zoho, AOL, GMX or Mail.com.";
+export const DISPOSABLE_DOMAIN_MESSAGE =
+  "That looks like a temporary email address. Please use an address you can receive mail at.";
 
 /**
  * Validate a sign-up address and return its normalized form.
  *
  * Domain policy is NOT an account-existence oracle, so the two failure reasons
- * carry specific, actionable messages (malformed vs. unsupported domain). What
+ * carry specific, actionable messages (malformed vs. throwaway provider). What
  * must stay generic is anything that reveals whether an *account* exists — that
  * lives on the login/existence path, not here.
  */
@@ -132,8 +117,11 @@ export function assertUsableEmail(email: string): string {
   if (!isValidEmailShape(normalized)) {
     throw new ConvexError(INVALID_EMAIL_MESSAGE);
   }
-  if (!isAllowedSignupDomain(normalized)) {
-    throw new ConvexError(UNSUPPORTED_DOMAIN_MESSAGE);
+  // The ONLY domain rule. Partial by design and it says so: a curated list
+  // raises the cost of casual throwaway abuse and will never catch an attacker
+  // with a custom domain. Verification is what actually holds.
+  if (isDisposableEmail(normalized)) {
+    throw new ConvexError(DISPOSABLE_DOMAIN_MESSAGE);
   }
   return normalized;
 }

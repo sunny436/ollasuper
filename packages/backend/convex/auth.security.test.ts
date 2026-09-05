@@ -4,11 +4,10 @@ import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
+  DISPOSABLE_DOMAIN_MESSAGE,
   INVALID_EMAIL_MESSAGE,
-  UNSUPPORTED_DOMAIN_MESSAGE,
   assertPasswordNotIdentity,
   assertUsableEmail,
-  isAllowedSignupDomain,
   isCommonPassword,
   isDisposableEmail,
   isValidEmailShape,
@@ -81,17 +80,33 @@ describe("email policy", () => {
     expect(isDisposableEmail("a@example.com")).toBe(false);
   });
 
-  test("sign-up domain allow-list: approved consumer providers only", () => {
+  test("ANY real domain may sign up — work addresses above all", () => {
+    // The whole point of removing the allow-list. Every address below was
+    // refused before, which meant the product turned away the people it is for.
     for (const ok of [
+      "user@ollasoftware.com", "employee@randomcompany.com",
+      "person@company-a.com", "person@company-b.co.uk",
+      "founder@startup.xyz", "a@example.com", "a@company.io",
+      "first.last+tag@sub.domain.example",
+      // ...and the twelve consumer providers still work, unchanged.
       "a@gmail.com", "A@Outlook.COM", "b@yahoo.com", "c@icloud.com",
       "d@proton.me", "e@protonmail.com", "f@zoho.com", "g@aol.com",
       "h@gmx.com", "i@mail.com", "j@hotmail.com", "k@live.com",
     ]) {
-      expect(isAllowedSignupDomain(ok)).toBe(true);
       expect(assertUsableEmail(ok)).toBe(normalizeEmail(ok));
     }
-    for (const no of ["a@example.com", "a@company.io", "a@mailinator.com"]) {
-      expect(isAllowedSignupDomain(no)).toBe(false);
+  });
+
+  test("throwaway providers are still refused — by the disposable check", () => {
+    // THE REGRESSION GUARD. Disposable domains used to be rejected only because
+    // they were absent from the allow-list; `isDisposableEmail` existed but was
+    // never called. Deleting the list without wiring it in would have opened
+    // disposable sign-up silently, and nothing would have failed.
+    for (const bad of [
+      "a@mailinator.com", "A@GuerrillaMail.com", "a@yopmail.com",
+      "a@10minutemail.com", "a@temp-mail.org",
+    ]) {
+      expect(() => assertUsableEmail(bad)).toThrow();
     }
   });
 
@@ -107,9 +122,10 @@ describe("email policy", () => {
       }
     };
     expect(msg("not-an-email")).toBe(INVALID_EMAIL_MESSAGE);
-    expect(msg("a@company.io")).toBe(UNSUPPORTED_DOMAIN_MESSAGE);
-    expect(msg("a@mailinator.com")).toBe(UNSUPPORTED_DOMAIN_MESSAGE);
+    expect(msg("a@mailinator.com")).toBe(DISPOSABLE_DOMAIN_MESSAGE);
     expect(msg("real@gmail.com")).toBe("OK");
+    // The address that used to be refused, and is the reason for this change.
+    expect(msg("user@ollasoftware.com")).toBe("OK");
   });
 });
 
