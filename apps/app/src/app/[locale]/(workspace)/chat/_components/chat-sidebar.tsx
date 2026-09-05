@@ -267,11 +267,17 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
     return out;
   }, [filtered]);
 
+  // Returns whether the call SUCCEEDED. The existing callers ignore it, so
+  // Pin/Rename/Delete are unchanged — but a caller that also shows a success
+  // toast needs to know, or a failed mutation reports "done" and "failed" at
+  // the same time.
   const guard = async (fn: () => Promise<unknown>, msg: string) => {
     try {
       await fn();
+      return true;
     } catch {
       toast.error(msg);
+      return false;
     }
   };
 
@@ -403,12 +409,15 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                       // still perfectly valid to read, so yanking the user out of
                       // a conversation they are looking at would be a surprise.
                       // It simply leaves the sidebar.
-                      await guard(
+                      const ok = await guard(
                         () =>
                           archiveThread({ threadId: t._id, archived: true }),
                         "Couldn't archive that",
                       );
-                      toast.success("Chat archived");
+                      // Only on success: the row is still in the sidebar if the
+                      // mutation failed, so claiming otherwise would be a lie the
+                      // user can see.
+                      if (ok) toast.success("Chat archived");
                     }}
                     onDelete={async () => {
                       if (!window.confirm(`Delete “${t.title}”?`)) return;
