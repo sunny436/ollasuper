@@ -291,3 +291,40 @@ def test_extract_pdf_text_encrypted_degrades_not_raises():
 def test_extract_pdf_text_malformed_degrades_not_raises():
     out = _extract_pdf_text(b"this is definitely not a pdf")  # must NOT raise
     assert "could not be read" in out.lower()
+
+
+# --- decoder containment (security regression) -----------------------------
+def test_only_the_four_accepted_decoders_are_reachable():
+    """Pillow dispatches on magic bytes, not on the declared mime, so a file
+    named .png that begins with another format's signature reaches that
+    format's decoder. GHSA-cfh3-3jmp-rvhc is an out-of-bounds write in exactly
+    one of those (PSD) affecting the pinned 11.3.0. Restricting the decoder set
+    closes that one and every sibling at once."""
+    import io
+
+    import pytest
+    from PIL import Image
+
+    from app.clients.attachments import AttachmentError, _normalise_image
+
+    # BMP and TIFF are formats Pillow supports but this service never accepts.
+    for fmt in ("BMP", "TIFF"):
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), "white").save(buf, format=fmt)
+        with pytest.raises(AttachmentError):
+            _normalise_image(buf.getvalue(), "image/png", 512)
+
+
+def test_an_accepted_format_still_decodes():
+    """The containment must not cost the feature."""
+    import io
+
+    from PIL import Image
+
+    from app.clients.attachments import _normalise_image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 16), "white").save(buf, format="PNG")
+    out, mime = _normalise_image(buf.getvalue(), "image/png", 512)
+    assert mime == "image/png"
+    assert len(out) > 0

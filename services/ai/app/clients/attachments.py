@@ -15,6 +15,8 @@ from app.models.chat import IMAGE_LONG_EDGE, Attachment, HistoryMessage
 log = get_logger(__name__)
 
 ACCEPTED_IMAGE = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+# The Pillow decoders those four mimes may legitimately reach, and no others.
+_SAFE_IMAGE_FORMATS = ["PNG", "JPEG", "WEBP", "GIF"]
 MAX_IMAGE_BYTES = 3_500_000  # -> ~4.7MB base64, under the 5MB per-image limit
 MAX_PDF_CHARS = 60_000
 
@@ -56,8 +58,19 @@ def _normalise_image(raw: bytes, mime: str, long_edge: int) -> tuple[bytes, str]
     # for a network-fed service.
     Image.MAX_IMAGE_PIXELS = 40_000_000
 
+    # Pillow dispatches on the file's own MAGIC BYTES, never on the declared
+    # mime — so a ".png" upload that starts with "8BPS" is handed to the PSD
+    # decoder. That is CVE-class territory: GHSA-cfh3-3jmp-rvhc is an
+    # out-of-bounds write in exactly that decoder, affecting >=10.3.0,<12.1.1,
+    # which includes the 11.3.0 pinned here.
+    #
+    # Naming the formats is a better fix than chasing that one CVE: this service
+    # accepts four image types and nothing else (ACCEPTED_IMAGE above, and the
+    # same four in convex/chat/attachments.ts), so every other parser Pillow
+    # ships — PSD, DDS, FLI, FPX, PCX, SGI, XBM and the rest — becomes
+    # unreachable, including the ones whose advisories are not written yet.
     try:
-        img = Image.open(io.BytesIO(raw))
+        img = Image.open(io.BytesIO(raw), formats=_SAFE_IMAGE_FORMATS)
         img.load()
     except Image.DecompressionBombError as e:
         raise AttachmentError("image dimensions are too large to process") from e
