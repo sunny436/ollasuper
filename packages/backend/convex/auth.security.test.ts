@@ -61,6 +61,25 @@ describe("email policy", () => {
     expect(normalizeEmail("ｕｓｅｒ@example.com")).toBe("user@example.com");
   });
 
+  test("a homoglyph address collapses to ONE identity before validation (GHSA-7rqj-j65f-68wh)", () => {
+    // Auth.js's own email normalizer validates BEFORE Unicode normalization, so a
+    // full-width or compatibility-form address could pass validation as one string
+    // and key an account as another — a homoglyph @ bypass. This app never relies
+    // on that normalizer for identity: profile() derives the account id from
+    // normalizeEmail(), which runs NFKC FIRST, and assertUsableEmail() validates
+    // the ALREADY-normalized form. This pins that ordering so a refactor cannot
+    // reintroduce the library's bug at the app boundary.
+    const raw = "ｕｓｅｒ@Example.com"; // full-width u-s-e-r + mixed case
+    const canonical = "user@example.com";
+    // the normalizer folds it...
+    expect(normalizeEmail(raw)).toBe(canonical);
+    // ...and validation returns the folded form, not the raw one — so validation
+    // did not run against a different string than the identity.
+    expect(assertUsableEmail(raw)).toBe(canonical);
+    // both entry points (sign-up validates, sign-in normalizes) yield the same id.
+    expect(assertUsableEmail(raw)).toBe(normalizeEmail(raw));
+  });
+
   test("does NOT strip gmail dots or +tags", () => {
     // Deliberate: provider-specific folding applied universally would merge
     // genuinely distinct addresses and become a takeover vector.

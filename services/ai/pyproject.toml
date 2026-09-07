@@ -18,8 +18,8 @@ dependencies = [
     # and cache, which is exactly where JWKS bugs live. PyJWKClient is the direct
     # analogue of the jose createRemoteJWKSet used in backend-echo/server.mjs.
     "pyjwt[crypto]>=2.10,<3",
-    "pillow>=11,<12",
-    "pypdf>=5,<6",
+    "pillow>=12.3,<13",
+    "pypdf>=6.16.1,<7",
     # --- File Knowledge System (RAG) ---
     # Dedicated pgvector DB accessed only from this service. psycopg3 (not
     # asyncpg): it takes the libpq URL — including ?sslmode=disable — as-is, so
@@ -46,7 +46,7 @@ dependencies = [
     # main-content extraction — far better than bs4 get_text() on real pages.
     "trafilatura>=2,<3",
     "beautifulsoup4>=4.12,<5",
-    "lxml>=5,<6",
+    "lxml>=6.1,<7",
     "filetype>=1.2,<2",
     # defusedxml hardens the XML parsing that openpyxl/python-docx do under the
     # hood (XXE / billion-laughs) for untrusted uploads.

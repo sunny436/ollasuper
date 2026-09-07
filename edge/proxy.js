@@ -49,10 +49,26 @@ function route(hostHeader, url) {
   return { port: HOST_ROUTES[host] ?? DEFAULT, path: url };
 }
 
+// CVE-2025-29927 (GHSA-f82v-jwr5-mffw): Next.js skips middleware entirely when it
+// sees `x-middleware-subrequest`. On this app that would bypass the auth redirect,
+// the i18n rewrite, and BOTH per-IP throttles in apps/app/src/middleware.ts.
+//
+// It is an INTERNAL header — Next sets it on its own subrequests — so nothing
+// legitimate ever arrives carrying it from outside, and dropping it at the only
+// door into the stack is exact rather than heuristic.
+//
+// THIS IS A MITIGATION, NOT THE FIX. The fix is Next >= 15.5.16, which also
+// closes the flight-protocol RCE this cannot touch. It stays useful afterwards
+// as defence in depth.
+function safeHeaders(headers) {
+  const { "x-middleware-subrequest": _dropped, ...rest } = headers;
+  return rest;
+}
+
 const server = http.createServer((req, res) => {
   const { port, path } = route(req.headers.host, req.url);
   const up = http.request(
-    { host: "127.0.0.1", port, path, method: req.method, headers: req.headers },
+    { host: "127.0.0.1", port, path, method: req.method, headers: safeHeaders(req.headers) },
     (r) => {
       res.writeHead(r.statusCode, r.headers);
       r.pipe(res);
@@ -69,7 +85,8 @@ server.on("upgrade", (req, socket, head) => {
   const { port, path } = route(req.headers.host, req.url);
   const up = net.connect(port, "127.0.0.1", () => {
     const lines = [`${req.method} ${path} HTTP/1.1`];
-    for (const [k, v] of Object.entries(req.headers)) lines.push(`${k}: ${v}`);
+    for (const [k, v] of Object.entries(safeHeaders(req.headers)))
+      lines.push(`${k}: ${v}`);
     up.write(lines.join("\r\n") + "\r\n\r\n");
     if (head && head.length) up.write(head);
     up.pipe(socket);
