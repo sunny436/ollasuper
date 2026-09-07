@@ -645,14 +645,12 @@ describe("schedule parser gate", () => {
     const t = convexTest(schema, modules);
     const { userId, ws } = await seed(t);
     await t.run(async (ctx) => {
-      await ctx.db.insert("chatSettings", {
+      // Per-user quota row; see convex/quotas.ts for why this left chatSettings.
+      await ctx.db.insert("userQuotas", {
         userId,
-        workspaceId: ws,
-        defaultModel: "",
-        sendOnEnter: true,
-        updatedAt: Date.now(),
-        parseWindowStart: Date.now(),
-        parseWindowCount: 60,
+        kind: "parse",
+        windowStart: Date.now(),
+        windowCount: 60,
       });
     });
     const res = await t

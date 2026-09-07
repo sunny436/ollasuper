@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { consumeWindow } from "../quotas";
 import { internal } from "../_generated/api";
 import { action, internalMutation } from "../_generated/server";
 import { requireMember } from "../orgs";
@@ -68,37 +69,18 @@ export const gate = internalMutation({
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, workspaceId);
 
-    const now = Date.now();
-    const settings = await ctx.db
-      .query("chatSettings")
-      .withIndex("by_user_workspace", (q) =>
-        q.eq("userId", userId).eq("workspaceId", workspaceId),
-      )
-      .unique();
-
-    const start = settings?.parseWindowStart ?? 0;
-    const fresh = now - start >= WINDOW_MS;
-    const count = fresh ? 0 : (settings?.parseWindowCount ?? 0);
-    if (count >= MAX_PARSES_PER_HOUR) {
+    // Per USER, not per workspace, and not on a row the user can delete.
+    // See convex/quotas.ts.
+    void workspaceId;
+    const res = await consumeWindow(
+      ctx,
+      userId,
+      "parse",
+      MAX_PARSES_PER_HOUR,
+      WINDOW_MS,
+    );
+    if (!res.ok) {
       return { ok: false as const, reason: "rate_limited" as const };
-    }
-    const patch = {
-      parseWindowStart: fresh ? now : start,
-      parseWindowCount: count + 1,
-    };
-    if (settings) {
-      await ctx.db.patch(settings._id, patch);
-    } else {
-      // Mirrors chat's assertRateLimit: the settings row is created on first
-      // use rather than requiring a separate bootstrap.
-      await ctx.db.insert("chatSettings", {
-        userId,
-        workspaceId,
-        defaultModel: "",
-        sendOnEnter: true,
-        updatedAt: now,
-        ...patch,
-      });
     }
     return { ok: true as const };
   },

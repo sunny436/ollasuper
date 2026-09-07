@@ -1,5 +1,6 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import { consumeWindow } from "../quotas";
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
@@ -168,40 +169,22 @@ async function assertRateLimit(
   userId: Id<"users">,
   workspaceId: Id<"workspaces">,
 ) {
-  const now = Date.now();
-  const settings = await ctx.db
-    .query("chatSettings")
-    .withIndex("by_user_workspace", (q) =>
-      q.eq("userId", userId).eq("workspaceId", workspaceId),
-    )
-    .unique();
-
-  const start = settings?.rateWindowStart ?? 0;
-  const fresh = now - start >= RATE_WINDOW_MS;
-  const count = fresh ? 0 : (settings?.rateWindowCount ?? 0);
-
-  if (count >= MAX_GENERATIONS_PER_HOUR) {
-    const mins = Math.ceil((start + RATE_WINDOW_MS - now) / 60_000);
+  // workspaceId is no longer part of the key: the limit is per USER. It stays in
+  // the signature because callers pass it and membership is still the caller's
+  // concern. See convex/quotas.ts for why this moved off chatSettings.
+  void workspaceId;
+  const res = await consumeWindow(
+    ctx,
+    userId,
+    "chat",
+    MAX_GENERATIONS_PER_HOUR,
+    RATE_WINDOW_MS,
+  );
+  if (!res.ok) {
+    const mins = Math.ceil(res.retryInMs / 60_000);
     throw new ConvexError(
       `Hourly message limit reached — try again in ${mins} minute${mins === 1 ? "" : "s"}`,
     );
-  }
-
-  const patch = {
-    rateWindowStart: fresh ? now : start,
-    rateWindowCount: count + 1,
-  };
-  if (settings) {
-    await ctx.db.patch(settings._id, patch);
-  } else {
-    await ctx.db.insert("chatSettings", {
-      workspaceId,
-      userId,
-      defaultModel: DEFAULT_MODEL,
-      sendOnEnter: true,
-      updatedAt: now,
-      ...patch,
-    });
   }
 }
 

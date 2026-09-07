@@ -70,29 +70,34 @@ async function mkTask(t: TestT, userId: Id<"users">, ws: Id<"workspaces">) {
 }
 
 /** Spend the user's scheduled window without running anything. */
+const quotaRow = (t: TestT, userId: Id<"users">, kind: string) =>
+  t.run(async (ctx) =>
+    ctx.db
+      .query("userQuotas")
+      .withIndex("by_user_kind", (q) => q.eq("userId", userId).eq("kind", kind))
+      .unique(),
+  );
+
 async function exhaustWindow(
   t: TestT,
   userId: Id<"users">,
   ws: Id<"workspaces">,
 ) {
+  // The window lives in userQuotas now, keyed on the USER alone — it moved off
+  // chatSettings because that row is per-workspace and user-deletable, so a
+  // second workspace or a preferences reset handed back a fresh allowance.
+  void ws;
   await t.run(async (ctx) => {
     const row = await ctx.db
-      .query("chatSettings")
-      .withIndex("by_user_workspace", (q) =>
-        q.eq("userId", userId).eq("workspaceId", ws),
+      .query("userQuotas")
+      .withIndex("by_user_kind", (q) =>
+        q.eq("userId", userId).eq("kind", "schedRun"),
       )
       .unique();
-    const patch = { schedRunWindowStart: Date.now(), schedRunWindowCount: 60 };
-    if (row) await ctx.db.patch(row._id, patch);
+    const next = { windowStart: Date.now(), windowCount: 60 };
+    if (row) await ctx.db.patch(row._id, next);
     else
-      await ctx.db.insert("chatSettings", {
-        workspaceId: ws,
-        userId,
-        defaultModel: DEFAULT_MODEL,
-        sendOnEnter: true,
-        updatedAt: Date.now(),
-        ...patch,
-      });
+      await ctx.db.insert("userQuotas", { userId, kind: "schedRun", ...next });
   });
 }
 
@@ -155,10 +160,10 @@ describe("the scheduled-execution window queues rather than drops", () => {
 
     // The window ages out.
     await t.run(async (ctx) => {
-      const row = await ctx.db.query("chatSettings").first();
+      const row = await ctx.db.query("userQuotas").first();
       if (row) {
         await ctx.db.patch(row._id, {
-          schedRunWindowStart: Date.now() - 2 * 60 * 60 * 1000,
+          windowStart: Date.now() - 2 * 60 * 60 * 1000,
         });
       }
     });
@@ -179,8 +184,8 @@ describe("the scheduled-execution window queues rather than drops", () => {
       limit: 5,
       maxPerUser: 1,
     });
-    const row = await t.run(async (ctx) => ctx.db.query("chatSettings").first());
-    expect(row?.schedRunWindowCount).toBe(1);
+    const row = await t.run(async (ctx) => ctx.db.query("userQuotas").first());
+    expect(row?.windowCount).toBe(1);
     await drain(t);
   });
 
@@ -193,11 +198,12 @@ describe("the scheduled-execution window queues rather than drops", () => {
       limit: 5,
       maxPerUser: 1,
     });
-    const row = await t.run(async (ctx) => ctx.db.query("chatSettings").first());
-    expect(row?.schedRunWindowCount).toBe(1);
+    const row = await t.run(async (ctx) => ctx.db.query("userQuotas").first());
+    expect(row?.windowCount).toBe(1);
     // The two budgets are separate on purpose: unattended work must not spend a
     // user's interactive allowance.
-    expect(row?.rateWindowCount ?? 0).toBe(0);
+    const chatRow = await quotaRow(t, userId, "chat");
+    expect(chatRow?.windowCount ?? 0).toBe(0);
     await drain(t);
   });
 

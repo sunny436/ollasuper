@@ -955,17 +955,19 @@ describe("send() invariants", () => {
 
     // Park the window counter just under the limit rather than sending 120
     // messages — the boundary is the property, the loop is just cost.
+    // The counter lives in userQuotas, keyed on the USER alone. It moved off
+    // chatSettings because that row is per-workspace and chat.settings.reset
+    // deletes it — so a second workspace, or clearing your own preferences,
+    // used to hand back a full allowance.
     await t.run(async (ctx) => {
-      await ctx.db.insert("chatSettings", {
-        workspaceId: ws,
+      await ctx.db.insert("userQuotas", {
         userId: owner,
-        defaultModel: "anthropic/claude-opus-5",
-        sendOnEnter: true,
-        rateWindowStart: Date.now(),
-        rateWindowCount: 119,
-        updatedAt: Date.now(),
+        kind: "chat",
+        windowStart: Date.now(),
+        windowCount: 119,
       });
     });
+    void ws;
 
     const ok = await u.mutation(api.chat.messages.send, {
       threadId,

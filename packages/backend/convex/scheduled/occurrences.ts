@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { consumeWindow } from "../quotas";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { internalMutation, internalQuery } from "../_generated/server";
@@ -302,38 +303,17 @@ async function underScheduledRateLimit(
   userId: Id<"users">,
   workspaceId: Id<"workspaces">,
 ): Promise<boolean> {
-  const now = Date.now();
-  const settings = await ctx.db
-    .query("chatSettings")
-    .withIndex("by_user_workspace", (q) =>
-      q.eq("userId", userId).eq("workspaceId", workspaceId),
-    )
-    .unique();
-
-  const start = settings?.schedRunWindowStart ?? 0;
-  const fresh = now - start >= SCHED_WINDOW_MS;
-  const count = fresh ? 0 : (settings?.schedRunWindowCount ?? 0);
-  if (count >= SCHED_RUNS_PER_HOUR) return false;
-
-  const patch = {
-    schedRunWindowStart: fresh ? now : start,
-    schedRunWindowCount: count + 1,
-  };
-  if (settings) {
-    await ctx.db.patch(settings._id, patch);
-  } else {
-    // Mirrors chat's assertRateLimit: the row is created on first use rather
-    // than requiring a migration for users who have never opened settings.
-    await ctx.db.insert("chatSettings", {
-      workspaceId,
-      userId,
-      defaultModel: DEFAULT_MODEL,
-      sendOnEnter: true,
-      updatedAt: now,
-      ...patch,
-    });
-  }
-  return true;
+  // Per USER, not per workspace — see convex/quotas.ts. Unattended work still
+  // gets its own budget so it can never spend the interactive allowance.
+  void workspaceId;
+  const res = await consumeWindow(
+    ctx,
+    userId,
+    "schedRun",
+    SCHED_RUNS_PER_HOUR,
+    SCHED_WINDOW_MS,
+  );
+  return res.ok;
 }
 
 // ── ingress op: sched-claim ──────────────────────────────────────────────────

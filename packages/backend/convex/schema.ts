@@ -868,6 +868,16 @@ export default defineSchema({
     .index("by_thread", ["threadId"])
     .index("by_user", ["userId"]),
 
+  // Server-owned per-USER rate windows. Deliberately NOT on chatSettings: that
+  // row is per-workspace and is deleted by chat.settings.reset, so a user could
+  // multiply or simply erase their own allowance. See convex/quotas.ts.
+  userQuotas: defineTable({
+    userId: v.id("users"),
+    kind: v.string(),
+    windowStart: v.number(),
+    windowCount: v.number(),
+  }).index("by_user_kind", ["userId", "kind"]),
+
   chatSettings: defineTable({
     workspaceId: v.id("workspaces"),
     userId: v.id("users"),
