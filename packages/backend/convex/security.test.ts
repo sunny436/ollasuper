@@ -182,3 +182,68 @@ describe("maintained counters stay accurate", () => {
     expect(await counter(ws, "files")).toBe(0);
   });
 });
+
+// --- invitation privilege escalation ---------------------------------------
+//
+// `changeRole` has always refused anything outside ["admin","member"] and
+// refused to touch an owner. `invite` validated nothing at all, and — the part
+// that actually matters — `acceptInviteImpl` inserted the STORED role verbatim.
+// So issuance-side validation alone would leave every invite row that already
+// exists in a live database still able to confer ownership on accept.
+describe("invitation cannot confer ownership", () => {
+  test("an admin cannot ISSUE an owner invite", async () => {
+    const t = convexTest(schema, modules);
+    const { ws, owner } = await seedWorkspace(t);
+    await expect(
+      t.withIdentity(as(owner)).mutation(api.orgs.invite, {
+        workspaceId: ws,
+        email: "victim@t.test",
+        role: "owner",
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("an arbitrary role string is refused at issuance", async () => {
+    const t = convexTest(schema, modules);
+    const { ws, owner } = await seedWorkspace(t);
+    await expect(
+      t.withIdentity(as(owner)).mutation(api.orgs.invite, {
+        workspaceId: ws,
+        email: "victim@t.test",
+        role: "superuser",
+      }),
+    ).rejects.toThrow();
+  });
+
+  // THE ONE THAT MATTERS: a row that already says owner — as any admin could
+  // have created before the issuance check existed — must not grant ownership.
+  test("a pre-existing owner invite does not grant ownership on accept", async () => {
+    const t = convexTest(schema, modules);
+    const { ws, outsider } = await seedWorkspace(t);
+    const inviteId = await t.run(async (ctx) => {
+      await ctx.db.patch(outsider, { email: "outsider@t.test" });
+      return ctx.db.insert("invites", {
+        workspaceId: ws,
+        email: "outsider@t.test",
+        role: "owner",
+        invitedBy: outsider,
+        accepted: false,
+        createdAt: Date.now(),
+      });
+    });
+
+    await t
+      .withIdentity(as(outsider))
+      .mutation(api.orgs.acceptInvite, { inviteId })
+      .catch(() => undefined);
+
+    const role = await t.run(async (ctx) => {
+      const rows = await ctx.db
+        .query("members")
+        .withIndex("by_user", (q) => q.eq("userId", outsider))
+        .collect();
+      return rows.find((r) => r.workspaceId === ws)?.role ?? null;
+    });
+    expect(role).not.toBe("owner");
+  });
+});

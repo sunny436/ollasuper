@@ -10,6 +10,22 @@ import { notify } from "./notifications";
 
 type Role = "owner" | "admin" | "member";
 
+/**
+ * The roles an invitation or a role change may ever confer.
+ *
+ * OWNERSHIP IS CONFERRED ONLY BY CREATING A WORKSPACE. `changeRole` always
+ * enforced that; `invite` validated nothing, and `acceptInviteImpl` inserted the
+ * STORED role verbatim — so an invite row written before this check could still
+ * confer ownership when accepted, and issuance-side validation alone would not
+ * have reached rows already sitting in a live database. The allowlist lives here
+ * once so the three callers cannot drift apart again.
+ */
+const ASSIGNABLE_ROLES: readonly string[] = ["admin", "member"];
+
+function assertAssignableRole(role: string): void {
+  if (!ASSIGNABLE_ROLES.includes(role)) throw new ConvexError("Invalid role");
+}
+
 async function membership(
   ctx: QueryCtx,
   userId: Id<"users">,
@@ -148,6 +164,7 @@ export const invite = mutation({
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     await requireRole(ctx, userId, workspaceId, ["owner", "admin"]);
+    assertAssignableRole(role);
     const id = await ctx.db.insert("invites", {
       workspaceId,
       email: email.toLowerCase(),
@@ -251,6 +268,9 @@ async function acceptInviteImpl(
 ) {
   const inv = await ctx.db.get(inviteId);
   if (!inv || inv.accepted) throw new Error("Invite not found");
+  // Fail closed on a role this system may not confer, including one stored by
+  // an older build that had no issuance check.
+  assertAssignableRole(inv.role);
   const existing = await membership(ctx, userId, inv.workspaceId);
   if (!existing) {
     await ctx.db.insert("members", {
@@ -314,7 +334,7 @@ export const changeRole = mutation({
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new ConvexError("Not authenticated");
     await requireRole(ctx, userId, workspaceId, ["owner", "admin"]);
-    if (!["admin", "member"].includes(role)) throw new ConvexError("Invalid role");
+    assertAssignableRole(role);
     const m = await ctx.db.get(memberId);
     if (!m || m.workspaceId !== workspaceId) throw new ConvexError("Not found");
     if (m.role === "owner") throw new ConvexError("Cannot change the owner's role");

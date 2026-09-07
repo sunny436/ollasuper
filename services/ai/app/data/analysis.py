@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 from typing import Any
 
 import numpy as np
@@ -219,6 +220,31 @@ _SQL_FORBIDDEN = re.compile(
 )
 
 
+# DuckDB is a full analytics engine, not a calculator. `read_csv`,
+# `read_parquet`, `read_json_auto` and `glob` are TABLE FUNCTIONS, so they are
+# valid inside an ordinary SELECT and no keyword regex ever sees them — the old
+# guard let a model read any file this process could reach. The real boundary is
+# therefore the CONNECTION's configuration, not the query text:
+#
+#   enable_external_access=False   kills every file/http reader outright
+#   lock_configuration=True        stops a query SET-ing that back on
+#   *_extensions=False             no new capability may be loaded at runtime
+#
+# The regexes below are kept, but they are defence in depth now rather than the
+# only control. Registered DataFrames are unaffected: register() and multi-table
+# JOINs work exactly as before, which is what run_sql exists to do.
+_SQL_CONFIG = {
+    "enable_external_access": False,
+    "autoinstall_known_extensions": False,
+    "autoload_known_extensions": False,
+    "allow_community_extensions": False,
+    "lock_configuration": True,
+    "threads": 1,
+    "memory_limit": "256MB",
+}
+_SQL_DEADLINE_S = 20.0
+
+
 def run_sql(
     tables: dict[str, pd.DataFrame],
     sql: str,
@@ -227,7 +253,9 @@ def run_sql(
 ) -> dict:
     """Execute a read-only SQL SELECT over the registered dataframes (each keyed by
     its sanitized table name). Multi-table JOINs are supported. Read-only: only
-    SELECT/WITH are allowed; DML/DDL/ATTACH/COPY/etc. are rejected."""
+    SELECT/WITH are allowed; DML/DDL/ATTACH/COPY/etc. are rejected, external file
+    and network access is disabled at the connection, and exactly one statement
+    may be submitted."""
     import duckdb
 
     if not sql or not sql.strip():
@@ -236,16 +264,38 @@ def run_sql(
         raise DataError("only read-only SELECT / WITH queries are allowed.")
     if _SQL_FORBIDDEN.search(sql):
         raise DataError("only read-only SELECT queries are allowed (no writes/DDL).")
-    con = duckdb.connect(database=":memory:")
+
+    con = duckdb.connect(database=":memory:", config=_SQL_CONFIG)
     try:
+        # EXACTLY ONE statement, decided by the PARSER rather than by looking at
+        # the first keyword. `SELECT 1; <anything>` passed the old regex, and
+        # DuckDB returns the LAST statement's result — so the check that mattered
+        # was never applied to the statement that ran.
+        try:
+            statements = con.extract_statements(sql)
+        except Exception as e:  # noqa: BLE001 — surface parser errors to the model
+            raise DataError(f"SQL error: {str(e).splitlines()[0][:300]}") from e
+        if len(statements) != 1:
+            raise DataError("submit exactly one SELECT statement.")
+        if statements[0].type != duckdb.StatementType.SELECT:
+            raise DataError("only read-only SELECT queries are allowed.")
+
         for tname, tdf in tables.items():
             con.register(tname, tdf)
+
+        # A runaway query otherwise holds its worker until the turn dies;
+        # interrupt() is the only way back in from another thread.
+        deadline = threading.Timer(_SQL_DEADLINE_S, con.interrupt)
+        deadline.daemon = True
+        deadline.start()
         try:
             cur = con.execute(sql)
             rows = cur.fetchmany(max_rows + 1)
             cols = [d[0] for d in cur.description] if cur.description else []
         except Exception as e:  # noqa: BLE001 — surface DuckDB errors to the model
             raise DataError(f"SQL error: {str(e).splitlines()[0][:300]}") from e
+        finally:
+            deadline.cancel()
         truncated = len(rows) > max_rows
         recs = [
             {cols[i]: _jsonable(v) for i, v in enumerate(r)} for r in rows[:max_rows]

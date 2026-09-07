@@ -148,3 +148,57 @@ def test_time_series_unparseable_dates_raise():
     df = pd.DataFrame({"d": ["x", "y"], "v": [1, 2]})
     with pytest.raises(A.DataError):
         A.time_series(df, date_col="d", value_col="v")
+
+
+# --- run_sql containment (security regressions) ---------------------------
+#
+# The guard used to be two regexes: "starts with SELECT/WITH" plus a forbidden
+# keyword list. Neither sees a DuckDB *table function*, so `read_csv` and its
+# siblings are valid inside a perfectly ordinary SELECT and read any file the
+# service process can reach. Both escapes below were reproduced against the
+# shipping code before the fix landed.
+@pytest.mark.parametrize(
+    "reader",
+    [
+        "SELECT * FROM read_csv('pyproject.toml')",
+        "SELECT * FROM read_parquet('pyproject.toml')",
+        "SELECT * FROM read_json_auto('pyproject.toml')",
+        "SELECT * FROM glob('*')",
+        "WITH x AS (SELECT * FROM read_csv('pyproject.toml')) SELECT * FROM x",
+    ],
+)
+def test_sql_cannot_read_the_filesystem(reader):
+    with pytest.raises(A.DataError):
+        A.run_sql({"sales": _df()}, reader, max_rows=10)
+
+
+def test_sql_rejects_multiple_statements():
+    # Only the leading keyword was ever checked, so a second statement rode in
+    # behind a innocuous first one — and DuckDB returns the LAST result.
+    with pytest.raises(A.DataError):
+        A.run_sql({"sales": _df()}, "SELECT 1 AS x; SELECT 2 AS y", max_rows=10)
+
+
+def test_sql_cannot_unlock_its_own_configuration():
+    # lock_configuration must hold: no SET may re-enable external access.
+    with pytest.raises(A.DataError):
+        A.run_sql(
+            {"sales": _df()},
+            "SET enable_external_access=true",
+            max_rows=10,
+        )
+
+
+def test_sql_still_joins_registered_tables():
+    # The containment must not cost the feature: multi-table JOINs over the
+    # registered DataFrames are the whole point of run_sql.
+    orders = pd.DataFrame({"k": [1, 2, 3], "a": ["x", "y", "z"]})
+    payments = pd.DataFrame({"k": [2, 3, 4], "b": [20, 30, 40]})
+    r = A.run_sql(
+        {"orders": orders, "payments": payments},
+        "SELECT orders.k, orders.a, payments.b FROM orders "
+        "JOIN payments USING (k) ORDER BY orders.k",
+        max_rows=10,
+    )
+    assert r["row_count"] == 2
+    assert r["rows"][0] == {"k": 2, "a": "y", "b": 20}

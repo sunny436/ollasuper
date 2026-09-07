@@ -96,6 +96,24 @@ async function exhaustWindow(
   });
 }
 
+/**
+ * Run scheduled functions to completion inside the test.
+ *
+ * These tests drive occurrence claims, which create messages, which schedule
+ * chat.stream.dispatch. finishInProgressScheduledFunctions() only awaits
+ * functions that have already STARTED, and a ctx.scheduler.runAfter(0, ...) is
+ * queued on a macrotask — so the event loop has to be yielded first. Without
+ * this the dispatch starts after the test's transaction has closed and surfaces
+ * as an unhandled "Write outside of transaction", which made the whole suite
+ * exit 1 while every assertion passed. Mirrors chat.security.test.ts.
+ */
+async function drain(t: ReturnType<typeof convexTest>) {
+  for (let i = 0; i < 3; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
+
 describe("the scheduled-execution window queues rather than drops", () => {
   test("an exhausted window leaves the occurrence QUEUED, not failed", async () => {
     const t = convexTest(schema, modules);
@@ -117,6 +135,7 @@ describe("the scheduled-execution window queues rather than drops", () => {
     // did not cause.
     expect(occ?.status).toBe("queued");
     expect(occ?.attempts).toBe(0);
+    await drain(t);
   });
 
   test("it runs as soon as the window rolls — nothing is lost", async () => {
@@ -148,6 +167,7 @@ describe("the scheduled-execution window queues rather than drops", () => {
       maxPerUser: 1,
     });
     expect(claims).toHaveLength(1);
+    await drain(t);
   });
 
   test("a claimed run consumes exactly one unit of the window", async () => {
@@ -161,6 +181,7 @@ describe("the scheduled-execution window queues rather than drops", () => {
     });
     const row = await t.run(async (ctx) => ctx.db.query("chatSettings").first());
     expect(row?.schedRunWindowCount).toBe(1);
+    await drain(t);
   });
 
   test("the interactive chat window is untouched by scheduled work", async () => {
@@ -177,6 +198,7 @@ describe("the scheduled-execution window queues rather than drops", () => {
     // The two budgets are separate on purpose: unattended work must not spend a
     // user's interactive allowance.
     expect(row?.rateWindowCount ?? 0).toBe(0);
+    await drain(t);
   });
 
   test("an exhausted SCHEDULED window does not block interactive chat", async () => {
@@ -194,6 +216,7 @@ describe("the scheduled-execution window queues rather than drops", () => {
         clientId: "c1",
       }),
     ).resolves.toBeDefined();
+    await drain(t);
   });
 
   test("one user's exhausted window does not stall another's task", async () => {
@@ -212,6 +235,7 @@ describe("the scheduled-execution window queues rather than drops", () => {
     });
     expect(claims).toHaveLength(1);
     expect(claims[0].taskId).toBe(tb);
+    await drain(t);
   });
 });
 
