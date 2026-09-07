@@ -213,10 +213,15 @@ export const repointBlob = internalMutation({
  * preserve and deleting is what revokes them.
  *
  * Dry run by default. Pass { apply: true } to make changes.
+ *
+ * `only` narrows the run to explicitly named storage ids. A destructive sweep
+ * whose target set is computed at call time is exactly the shape an operator (or
+ * a reviewer) cannot check, so naming the blobs makes the intent auditable and
+ * the blast radius exact. Omitted = every executable blob, as before.
  */
 export const neutralizeExecutableBlobs = internalAction({
-  args: { apply: v.optional(v.boolean()) },
-  handler: async (ctx, { apply }) => {
+  args: { apply: v.optional(v.boolean()), only: v.optional(v.array(v.string())) },
+  handler: async (ctx, { apply, only }) => {
     // Annotated to break the circular inference Convex hits when a function
     // runQuery's a sibling in its OWN module (TS7022/7023) — the same fix the
     // Projects work needed for dispatchPayload.
@@ -234,7 +239,9 @@ export const neutralizeExecutableBlobs = internalAction({
     let restored = 0;
     let deleted = 0;
 
-    for (const r of rows) {
+    const targets =
+      only && only.length > 0 ? rows.filter((r) => only.includes(r.storageId)) : rows;
+    for (const r of targets) {
       if (!r.owner) {
         plan.push({ storageId: r.storageId, size: r.size, action: "delete-orphan" });
         if (apply) {
@@ -265,7 +272,7 @@ export const neutralizeExecutableBlobs = internalAction({
       await ctx.storage.delete(r.storageId as Id<"_storage">);
       restored += 1;
     }
-    return { apply: !!apply, total: rows.length, restored, deleted, plan };
+    return { apply: !!apply, total: targets.length, restored, deleted, plan };
   },
 });
 
