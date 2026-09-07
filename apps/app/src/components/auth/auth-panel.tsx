@@ -194,7 +194,6 @@ export function AuthPanel() {
 
   // Explain an involuntary sign-out. Without this, a user displaced by a login
   // on another device just finds themselves at a login screen with no reason.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: run once per mount
   useEffect(() => {
     if (consumeDisplacedFlag()) {
       toast.error("You were signed out because your account was used on another device.");

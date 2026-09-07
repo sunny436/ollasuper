@@ -247,3 +247,49 @@ describe("invitation cannot confer ownership", () => {
     expect(role).not.toBe("owner");
   });
 });
+
+function unsetEnv(key: string) {
+  delete process.env[key];
+}
+
+// --- server-to-server secret checks -----------------------------------------
+//
+// Every secret comparison in http.ts is constant-time except, until now,
+// /backend/webhook — which used a plain !== that short-circuits on the first
+// differing byte. Timing itself is not asserted here (a unit test cannot
+// measure it reliably); what IS asserted is the behaviour a naive rewrite would
+// break: a wrong secret of the SAME LENGTH is still refused, and a correct one
+// is still accepted, so the constant-time path cannot be "fixed" into a
+// length-only check.
+describe("the backend webhook secret check", () => {
+  test("accepts the right secret and refuses a same-length wrong one", async () => {
+    const t = convexTest(schema, modules);
+    process.env.BACKEND_WEBHOOK_SECRET = "abcdefghijklmnop";
+
+    const post = (secret: string) =>
+      t.fetch("/backend/webhook", {
+        method: "POST",
+        headers: { "x-webhook-secret": secret, "content-type": "application/json" },
+        body: JSON.stringify({ type: "event" }),
+      });
+
+    // Same length, different bytes — the case a length-only comparison passes.
+    expect((await post("abcdefghijklmnoq")).status).toBe(401);
+    // Different length.
+    expect((await post("short")).status).toBe(401);
+    // Correct.
+    expect((await post("abcdefghijklmnop")).status).not.toBe(401);
+    unsetEnv("BACKEND_WEBHOOK_SECRET");
+  });
+
+  test("an unset secret closes the endpoint rather than opening it", async () => {
+    const t = convexTest(schema, modules);
+    unsetEnv("BACKEND_WEBHOOK_SECRET");
+    const res = await t.fetch("/backend/webhook", {
+      method: "POST",
+      headers: { "x-webhook-secret": "anything", "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(401);
+  });
+});

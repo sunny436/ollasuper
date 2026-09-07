@@ -142,9 +142,9 @@ export async function requireStreamAccess(
 /**
  * Constant-time string comparison for the server-to-server ingress secret.
  *
- * The existing /backend/webhook handler uses a plain `!==`, which short-circuits
- * on the first differing byte. Over a network that channel is weak either way,
- * but this is eight lines and this repo maintains a security suite.
+ * http.ts has its own copy for the ingress and webhook paths; this one is kept
+ * for callers outside that module. Over a network the channel is weak either
+ * way, but this is eight lines and this repo maintains a security suite.
  *
  * Note: like hmac.compare_digest, this still leaks length. Acceptable for a
  * fixed-length hex secret.

@@ -20,8 +20,11 @@ http.route({
   path: "/backend/webhook",
   method: "POST",
   handler: httpAction(async (ctx, req) => {
+    // Constant-time, like every other secret check in this file. A plain !==
+    // short-circuits on the first differing byte; the helper is defined above
+    // and its own comment named this handler as the one that ignored it.
     const secret = req.headers.get("x-webhook-secret");
-    if (!secret || secret !== process.env.BACKEND_WEBHOOK_SECRET) {
+    if (!timingSafeEqual(secret, process.env.BACKEND_WEBHOOK_SECRET)) {
       return new Response("unauthorized", { status: 401 });
     }
     const payload = (await req
@@ -65,7 +68,7 @@ const aiJson = (body: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-/** Constant-time compare. The existing webhook uses `!==`, which short-circuits. */
+/** Constant-time compare — used by every secret check in this file. */
 function timingSafeEqual(a: string | null, b: string | undefined): boolean {
   if (!a || !b || a.length !== b.length) return false;
   let diff = 0;

@@ -44,7 +44,6 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: run once per mount
   useEffect(() => {
     void heartbeat({})
       .then((r) => {
