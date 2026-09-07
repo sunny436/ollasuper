@@ -22,6 +22,7 @@ import type * as authPurge from "../authPurge.js";
 import type * as authReconcile from "../authReconcile.js";
 import type * as authSessions from "../authSessions.js";
 import type * as backend from "../backend.js";
+import type * as blobSafety from "../blobSafety.js";
 import type * as chat_approvals from "../chat/approvals.js";
 import type * as chat_artifacts from "../chat/artifacts.js";
 import type * as chat_attachments from "../chat/attachments.js";
@@ -108,6 +109,7 @@ declare const fullApi: ApiFromModules<{
   authReconcile: typeof authReconcile;
   authSessions: typeof authSessions;
   backend: typeof backend;
+  blobSafety: typeof blobSafety;
   "chat/approvals": typeof chat_approvals;
   "chat/artifacts": typeof chat_artifacts;
   "chat/attachments": typeof chat_attachments;

@@ -1,6 +1,7 @@
 import { ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
+import { internalQuery } from "./_generated/server";
 
 /**
  * What a browser will EXECUTE if it navigates to a stored blob.
@@ -57,3 +58,33 @@ export async function assertNonExecutableBlob(
     );
   }
 }
+
+/**
+ * How many stored blobs a browser would still execute.
+ *
+ * Refusing new ones (above) is prospective only. Blobs stored BEFORE that guard
+ * keep their content-type, and `ctx.storage.getUrl()` URLs are bearer
+ * capabilities with no expiry — so anything already handed out stays live until
+ * the underlying blob is gone. This is the read-only census that decides whether
+ * remediation is needed and how big it is.
+ */
+export const auditExecutableBlobs = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const blobs = await ctx.db.system.query("_storage").take(5000);
+    const byType: Record<string, number> = {};
+    const executable: Array<{ storageId: string; contentType: string; size: number }> = [];
+    for (const b of blobs) {
+      const ct = (b.contentType ?? "(none)").toLowerCase();
+      byType[ct] = (byType[ct] ?? 0) + 1;
+      if (isExecutableContentType(b.contentType)) {
+        executable.push({
+          storageId: b._id,
+          contentType: b.contentType ?? "",
+          size: b.size,
+        });
+      }
+    }
+    return { scanned: blobs.length, byType, executable };
+  },
+});
