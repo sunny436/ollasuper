@@ -1,7 +1,8 @@
-import { ConvexError } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
-import { internalQuery } from "./_generated/server";
+import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 
 /**
  * What a browser will EXECUTE if it navigates to a stored blob.
@@ -144,5 +145,107 @@ export const classifyExecutableBlobs = internalQuery({
       });
     }
     return { executable: out.length, rows: out };
+  },
+});
+
+/** Repoint one owning row at a re-stored, non-executable copy. */
+export const repointBlob = internalMutation({
+  args: {
+    table: v.string(),
+    id: v.string(),
+    newStorageId: v.id("_storage"),
+  },
+  handler: async (ctx, { table, id, newStorageId }) => {
+    // Narrow by table rather than trusting a caller-supplied generic id.
+    if (table === "chatAttachments") {
+      const row = await ctx.db.get(id as Id<"chatAttachments">);
+      if (row) await ctx.db.patch(row._id, { storageId: newStorageId });
+    } else if (table === "userFiles") {
+      const row = await ctx.db.get(id as Id<"userFiles">);
+      if (row) await ctx.db.patch(row._id, { storageId: newStorageId });
+    } else if (table === "chatArtifacts") {
+      const row = await ctx.db.get(id as Id<"chatArtifacts">);
+      if (row) await ctx.db.patch(row._id, { storageId: newStorageId });
+    } else if (table === "files") {
+      const row = await ctx.db.get(id as Id<"files">);
+      if (row) await ctx.db.patch(row._id, { storageId: newStorageId });
+    } else if (table === "users") {
+      const row = await ctx.db.get(id as Id<"users">);
+      if (row) await ctx.db.patch(row._id, { imageId: newStorageId });
+    }
+  },
+});
+
+/**
+ * Neutralise blobs a browser would execute, without losing anyone's bytes.
+ *
+ * PROSPECTIVE PROTECTION IS NOT ENOUGH. `getUrl()` hands out bearer URLs with no
+ * expiry, so an executable blob stored before the registration guard stays
+ * live — and revoking such a URL is only possible by removing the blob it points
+ * at. Re-storing under a non-executable type and deleting the original does
+ * exactly that: the old URL 404s, the bytes survive at a new id.
+ *
+ * Nothing user-visible changes. Both serving routes take their content-type from
+ * the ROW (`/artifact/file` uses allowed.mime; attachments return a.contentType),
+ * so a download still arrives correctly typed. Only the RAW getUrl path — the
+ * one that renders same-origin — is neutered.
+ *
+ * Orphans (no row references them) are deleted outright; there is nothing to
+ * preserve and deleting is what revokes them.
+ *
+ * Dry run by default. Pass { apply: true } to make changes.
+ */
+export const neutralizeExecutableBlobs = internalAction({
+  args: { apply: v.optional(v.boolean()) },
+  handler: async (ctx, { apply }) => {
+    // Annotated to break the circular inference Convex hits when a function
+    // runQuery's a sibling in its OWN module (TS7022/7023) — the same fix the
+    // Projects work needed for dispatchPayload.
+    type Row = {
+      storageId: string;
+      contentType: string;
+      size: number;
+      owner: { table: string; id: string; name: string } | null;
+    };
+    const { rows } = (await ctx.runQuery(
+      internal.blobSafety.classifyExecutableBlobs,
+      {},
+    )) as { executable: number; rows: Row[] };
+    const plan: Array<Record<string, unknown>> = [];
+    let restored = 0;
+    let deleted = 0;
+
+    for (const r of rows) {
+      if (!r.owner) {
+        plan.push({ storageId: r.storageId, size: r.size, action: "delete-orphan" });
+        if (apply) {
+          await ctx.storage.delete(r.storageId as Id<"_storage">);
+          deleted += 1;
+        }
+        continue;
+      }
+      plan.push({
+        storageId: r.storageId,
+        size: r.size,
+        owner: `${r.owner.table}:${r.owner.name}`,
+        action: "restore-as-text-plain",
+      });
+      if (!apply) continue;
+
+      const blob = await ctx.storage.get(r.storageId as Id<"_storage">);
+      if (!blob) continue;
+      const safe = new Blob([await blob.arrayBuffer()], { type: "text/plain" });
+      const newStorageId = await ctx.storage.store(safe);
+      await ctx.runMutation(internal.blobSafety.repointBlob, {
+        table: r.owner.table,
+        id: r.owner.id,
+        newStorageId,
+      });
+      // Only after the row points at the copy — otherwise a failure here would
+      // leave a row pointing at nothing.
+      await ctx.storage.delete(r.storageId as Id<"_storage">);
+      restored += 1;
+    }
+    return { apply: !!apply, total: rows.length, restored, deleted, plan };
   },
 });
