@@ -88,3 +88,61 @@ export const auditExecutableBlobs = internalQuery({
     return { scanned: blobs.length, byType, executable };
   },
 });
+
+/**
+ * Which row, if any, owns each executable blob.
+ *
+ * Remediation differs by owner: a referenced blob must keep its bytes and have
+ * its row repointed, while an orphan (no row anywhere) can simply go. Deciding
+ * that from a census alone would risk deleting data someone still owns.
+ */
+export const classifyExecutableBlobs = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const blobs = await ctx.db.system.query("_storage").take(5000);
+    const targets = blobs.filter((b) => isExecutableContentType(b.contentType));
+
+    // The five tables that reference storage. attachments/userFiles have a
+    // by_storage index; the rest are small enough to scan.
+    const [artifacts, plainFiles, users] = await Promise.all([
+      ctx.db.query("chatArtifacts").take(5000),
+      ctx.db.query("files").take(5000),
+      ctx.db.query("users").take(5000),
+    ]);
+
+    const out = [];
+    for (const b of targets) {
+      const att = await ctx.db
+        .query("chatAttachments")
+        .withIndex("by_storage", (q) => q.eq("storageId", b._id))
+        .first();
+      const uf = await ctx.db
+        .query("userFiles")
+        .withIndex("by_storage", (q) => q.eq("storageId", b._id))
+        .first();
+      const art = artifacts.find((r) => r.storageId === b._id);
+      const pf = plainFiles.find((r) => r.storageId === b._id);
+      const av = users.find((r) => r.imageId === b._id);
+
+      const owner = att
+        ? { table: "chatAttachments", id: att._id, name: att.name }
+        : uf
+          ? { table: "userFiles", id: uf._id, name: uf.name }
+          : art
+            ? { table: "chatArtifacts", id: art._id, name: art.filename }
+            : pf
+              ? { table: "files", id: pf._id, name: pf.name }
+              : av
+                ? { table: "users", id: av._id, name: "avatar" }
+                : null;
+
+      out.push({
+        storageId: b._id,
+        contentType: b.contentType ?? "",
+        size: b.size,
+        owner,
+      });
+    }
+    return { executable: out.length, rows: out };
+  },
+});
