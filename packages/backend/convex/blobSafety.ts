@@ -249,3 +249,36 @@ export const neutralizeExecutableBlobs = internalAction({
     return { apply: !!apply, total: rows.length, restored, deleted, plan };
   },
 });
+
+/**
+ * Does every row that references a blob still point at one that exists?
+ *
+ * The remediation above repoints a row and only then deletes the original, but
+ * `repointBlob` resolves its target with a cast — and a cast that missed would
+ * make the patch a silent no-op, after which the delete would strand the row.
+ * This is the check that the remediation did not destroy anyone's access.
+ */
+export const auditDanglingBlobRefs = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const dangling: Array<{ table: string; id: string; name: string }> = [];
+    const check = async (table: string, id: string, name: string, sid: Id<"_storage"> | undefined) => {
+      if (!sid) return;
+      const meta = await ctx.db.system.get(sid);
+      if (!meta) dangling.push({ table, id, name });
+    };
+    for (const r of await ctx.db.query("chatAttachments").take(5000)) {
+      await check("chatAttachments", r._id, r.name, r.storageId);
+    }
+    for (const r of await ctx.db.query("chatArtifacts").take(5000)) {
+      await check("chatArtifacts", r._id, r.filename, r.storageId);
+    }
+    for (const r of await ctx.db.query("userFiles").take(5000)) {
+      await check("userFiles", r._id, r.name, r.storageId ?? undefined);
+    }
+    for (const r of await ctx.db.query("files").take(5000)) {
+      await check("files", r._id, r.name, r.storageId);
+    }
+    return { dangling: dangling.length, rows: dangling.slice(0, 20) };
+  },
+});
