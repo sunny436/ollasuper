@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from app.agent.tool_labels import action_label
 from app.clients.convex import ConvexClient, ConvexRejected, ConvexUnavailable
 from app.config import Settings
-from app.logging import get_logger, redact_obj, redact_text
+from app.logging import configured_secrets, get_logger, redact_obj, redact_text
 from app.models.events import EventType, make_event
 
 # A TOOL event means the turn is actively doing tool work — the signal that rolls
@@ -602,12 +602,17 @@ class DeltaWriter:
         if type in _TOOL_EVENT_TYPES and self.on_tool_activity is not None:
             with contextlib.suppress(Exception):  # bookkeeping is never fatal
                 self.on_tool_activity()
+        # The CONFIGURED secrets as well as the shape regexes: this body is
+        # PERSISTED in the Convex tool ledger, and a configured key that does not
+        # look like `sk-`/`bearer `/`data:` matched no shape and was written
+        # verbatim.
+        _secrets = configured_secrets()
         if "arguments" in body:
-            body["arguments"] = redact_obj(body["arguments"])
+            body["arguments"] = redact_obj(body["arguments"], _secrets)
         if "result" in body:
-            body["result"] = redact_obj(body["result"])
+            body["result"] = redact_obj(body["result"], _secrets)
         if isinstance(body.get("content"), str):
-            body["content"] = redact_text(body["content"])
+            body["content"] = redact_text(body["content"], _secrets)
         # The ONE chokepoint every TOOL_CALL passes through (generic + reserved
         # tools) — stamp a human-readable action label for the execution-status UI
         # so it never renders a raw endpoint name. Guarded: a label never blocks a

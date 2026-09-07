@@ -60,7 +60,22 @@ def redact_obj(obj: Any, secrets: tuple[str, ...] = ()) -> Any:
         return {k: redact_obj(v, secrets) for k, v in obj.items()}
     if isinstance(obj, list):
         return [redact_obj(v, secrets) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(redact_obj(v, secrets) for v in obj)
     return obj
+
+
+_CONFIGURED_SECRETS: tuple[str, ...] = ()
+
+
+def configured_secrets() -> tuple[str, ...]:
+    """The secrets `configure()` was given.
+
+    An egress point that is initialised SEPARATELY from the log handler — the
+    Sentry before_send hook — needs the same values. Without this it fell back
+    to shape-matching alone, which never matches a configured key that does not
+    look like `sk-`/`bearer `/`data:`."""
+    return _CONFIGURED_SECRETS
 
 
 # Per-generation correlation, task-isolated: contextvars are COPIED per asyncio
@@ -117,13 +132,33 @@ class RedactFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
             record.msg = self._scrub(record.msg)
+        # %-style arguments live in record.args and are merged into the message
+        # only at FORMAT time, so scrubbing record.msg alone misses the whole of
+        # log.info("key=%s", secret).
+        if record.args:
+            record.args = redact_obj(record.args, self._secrets)
         for key, value in list(record.__dict__.items()):
-            if key not in _RESERVED and isinstance(value, str):
-                record.__dict__[key] = self._scrub(value)
+            if key not in _RESERVED:
+                # redact_obj, not isinstance(str): a secret one level inside an
+                # `extra` dict is not a string, and was skipped entirely.
+                record.__dict__[key] = redact_obj(value, self._secrets)
         return True
 
 
 class JsonFormatter(logging.Formatter):
+    """One JSON line per record, redacted where the bytes are actually produced.
+
+    Redaction happens HERE as well as in RedactFilter because two of the strings
+    that can carry a secret do not exist yet when a filter runs: the
+    %-interpolated message, and the traceback rendered from exc_info. The final
+    pass over the serialised line catches the third — an `extra` whose repr
+    holds a secret, produced by `default=str` after every value-walking redactor
+    has already finished."""
+
+    def __init__(self, secrets: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self._secrets = tuple(s for s in secrets if s and len(s) >= 8)
+
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
             "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
@@ -136,12 +171,16 @@ class JsonFormatter(logging.Formatter):
                 payload[key] = value
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
-        return json.dumps(payload, default=str)
+        line = json.dumps(redact_obj(payload, self._secrets), default=str)
+        return redact_text(line, self._secrets)
 
 
 def configure(level: str = "INFO", secrets: tuple[str, ...] = ()) -> None:
+    global _CONFIGURED_SECRETS
+    _CONFIGURED_SECRETS = tuple(s for s in secrets if s and len(s) >= 8)
+
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter())
+    handler.setFormatter(JsonFormatter(secrets))
     handler.addFilter(RedactFilter(secrets))
     # After redaction: the injected ids are correlation values, not secrets.
     handler.addFilter(ContextFilter())
