@@ -41,6 +41,25 @@ export function isExecutableContentType(ct: string | null | undefined): boolean 
 }
 
 /**
+ * The content-type to STORE a blob under, given the type it was declared as.
+ *
+ * Refusing is right where the executable type is never legitimate (an avatar, a
+ * chat attachment). It is wrong for artifacts: generating an .html report or an
+ * .svg chart is a shipped feature, and the census found real user deliverables
+ * of both kinds. So the bytes are stored under a type no browser will execute,
+ * while the DECLARED mime stays on the artifact row — `/artifact/file` serves
+ * `content-type` from that row and forces `content-disposition: attachment`, so
+ * the download is byte- and type-identical and only the raw storage URL, which
+ * is same-origin with the app, stops being executable.
+ *
+ * This is the prospective half of the remediation that restored the 12
+ * already-stored executable blobs to text/plain.
+ */
+export function neutralizedBlobType(declared: string): string {
+  return isExecutableContentType(declared) ? "text/plain" : declared;
+}
+
+/**
  * Refuse a blob the browser would execute, judged on the BLOB's stored type.
  *
  * Deliberately not a sanitiser: re-storing the bytes under a safe type would mean

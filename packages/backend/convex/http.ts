@@ -6,6 +6,7 @@ import { auth } from "./auth";
 import { EVENT_TYPES } from "./chat/events";
 import { env } from "./env";
 import { polar } from "./subscriptions";
+import { neutralizedBlobType } from "./blobSafety";
 
 const http = httpRouter();
 
@@ -936,7 +937,16 @@ http.route({
     const pageHeader = req.headers.get("x-artifact-page");
     const page =
       pageHeader && /^\d{1,6}$/.test(pageHeader) ? Number(pageHeader) : undefined;
-    const storageId = await ctx.storage.store(new Blob([ab], { type: mime }));
+    // Store under a NON-EXECUTABLE type. The blob's own type is what a raw
+    // ctx.storage.getUrl() serves, and that URL is same-origin with the app, so
+    // a text/html artifact was stored XSS — which is not hypothetical: the
+    // census found three html artifacts and one svg already stored this way,
+    // because `mime` here is simply the worker's request content-type. The
+    // declared mime still goes on the row below, and /artifact/file serves the
+    // download from THAT, so nothing about the feature changes.
+    const storageId = await ctx.storage.store(
+      new Blob([ab], { type: neutralizedBlobType(mime) }),
+    );
     const res = await ctx.runMutation(internal.chat.artifacts.registerArtifact, {
       streamId,
       storageId,

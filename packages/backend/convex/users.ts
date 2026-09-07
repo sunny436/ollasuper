@@ -17,6 +17,7 @@ import { deleteResearchRunsForUser } from "./researchRuns";
 import { deleteMutationsForUser } from "./seoMutations";
 import { polar } from "./subscriptions";
 import { username } from "./utils/validators";
+import { assertNonExecutableBlob } from "./blobSafety";
 
 /**
  * The display name behind an address, for addressing an auth email.
@@ -135,6 +136,14 @@ export const updateUserImage = mutation({
     if (!userId) {
       return;
     }
+    // This id becomes `user.imageId`, and `users.ts` mints its URL with
+    // ctx.storage.getUrl() — which on this deployment is the APP'S OWN ORIGIN.
+    // An avatar uploaded as text/html is therefore stored same-origin script
+    // execution, reachable by anyone who is handed the URL. generateUploadUrl
+    // lets the client choose the blob's content-type, so the check has to be
+    // here, on the blob's real metadata, at the moment it becomes a row.
+    // An avatar is an image; refusing costs the feature nothing.
+    await assertNonExecutableBlob(ctx, args.imageId);
     ctx.db.patch(userId, { imageId: args.imageId });
   },
 });
