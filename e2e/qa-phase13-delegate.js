@@ -4,7 +4,7 @@
 const { chromium } = require("playwright");
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 
 const gen = (page) => page.getByRole("button", { name: "Stop generating" });
 const settle = async (page, ms = 240000) => { const dl = Date.now() + ms; while (Date.now() < dl) { if ((await gen(page).count()) === 0) return true; await page.waitForTimeout(300); } return false; };

@@ -3,7 +3,7 @@ const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
 // Fallback is for the EPHEMERAL CI stack only (localhost, torn down after the
 // run). Any deployment reachable from the internet must set ADMIN_PASSWORD.
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 const errs = [], results = []; let cur = BASE;
 // Wait for the rail to reach a visibility state, polling instead of sleeping.
 // Fails in 8s if it genuinely never gets there, so a real break is still loud.

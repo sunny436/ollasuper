@@ -7,7 +7,7 @@ const { chromium } = require("playwright");
 
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 
 // Every prefix this phase's scripts create tasks under.
 const TEST_PREFIXES = ["e2e-sched", "p5-accept", "p5-diag", "restart-drill"];

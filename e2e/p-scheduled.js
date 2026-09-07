@@ -13,7 +13,7 @@ const { chromium } = require("playwright");
 
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 
 // Every task this run creates is prefixed, so cleanup is unambiguous and a
 // half-finished run never collides with the next one.

@@ -30,7 +30,7 @@ const path = require("path");
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const CONVEX_URL = process.env.CONVEX_URL || "http://127.0.0.1:3210";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 const VM = process.env.VM_SSH || "root@172.16.70.25";
 
 const RUN = Date.now().toString(36).slice(-6);

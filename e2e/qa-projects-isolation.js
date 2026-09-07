@@ -31,7 +31,7 @@ const { anyApi } = require("convex/server");
 
 const CONVEX_URL = process.env.CONVEX_URL || "http://127.0.0.1:3210";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 // Optional second identity. Without it the cross-USER probes are NOT RUN and
 // say so; the cross-PROJECT probes below do not need it.
 const PEER_EMAIL = process.env.PEER_EMAIL || "";

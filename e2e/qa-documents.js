@@ -14,7 +14,7 @@ const path = require("path");
 
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 const WAIT_MS = Number(process.env.QA_WAIT_MS || 240000);
 const OUT = process.env.QA_OUT || "documents-results.log";
 const ONLY = process.env.QA_ONLY;

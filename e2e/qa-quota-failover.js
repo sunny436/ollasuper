@@ -5,7 +5,7 @@
 const { chromium } = require("playwright");
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 const BROKEN = process.env.QA_BROKEN_MODEL || "GLM 5.2";
 const BROKEN_ID = process.env.QA_BROKEN_ID || "glm-5.2";
 

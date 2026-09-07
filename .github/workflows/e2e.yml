@@ -13,7 +13,7 @@ env:
     CONVEX_CLOUD_ORIGIN=http://127.0.0.1:3210
     CONVEX_SITE_ORIGIN=http://127.0.0.1:3211
   # Ephemeral-CI admin password. Compliant with the sign-up policy (upper/lower/
-  # digit/special, not common, and — unlike the old MyosAdmin#2026 — does NOT
+  # digit/special, not common, and — unlike the retired repo-literal password — does NOT
   # contain the admin@myos.test local-part "admin" or domain label "myos").
   ADMIN_PASSWORD: "Sentry9#Vault"
 

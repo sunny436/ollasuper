@@ -3,7 +3,7 @@ const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
 // Fallback is for the EPHEMERAL CI stack only (localhost, torn down after the
 // run). Any deployment reachable from the internet must set ADMIN_PASSWORD.
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 const errs = [], results = [];
 const step = async (n, f) => { try { await f(); results.push(true); console.log("PASS  " + n); } catch (e) { results.push(false); console.log("FAIL  " + n + " — " + e.message.split("\n")[0]); } };
 (async () => {

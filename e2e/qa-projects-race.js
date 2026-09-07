@@ -71,7 +71,7 @@ const settle = async (c, threadId, ms = 120000) => {
 (async () => {
   console.log(`convex=${CONVEX_URL} run=${RUN}`);
   const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-  const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+  const PASSWORD = require("./creds").adminPassword();
   let C;
   let ws;
   let pA;

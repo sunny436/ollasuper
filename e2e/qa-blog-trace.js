@@ -8,7 +8,7 @@ const fs = require("node:fs");
 
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PASSWORD = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PASSWORD = require("./creds").adminPassword();
 const WAIT_MS = Number(process.env.QA_WAIT_MS || 600000);
 const OUT = process.env.QA_OUT || "/tmp/blog-trace.txt";
 const PROMPT = process.env.QA_PROMPT ||

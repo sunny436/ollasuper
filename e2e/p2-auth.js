@@ -27,7 +27,7 @@ const PW = "TestUser#2026", NEWPW = "NewPass#2026";
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
 // Fallback is for the EPHEMERAL CI stack only; set ADMIN_PASSWORD for any
 // internet-reachable deployment.
-const ADMIN_PW = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const ADMIN_PW = require("./creds").adminPassword();
 const errs = [], results = []; let cur = BASE;
 const step = async (n, f) => {
   try {

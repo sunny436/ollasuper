@@ -3,7 +3,7 @@
 // then tested during a final streaming reply.
 const { chromium } = require("playwright");
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
-const EMAIL = "admin@myos.test", PASSWORD = "MyosAdmin#2026";
+const EMAIL = "admin@myos.test", PASSWORD = require("./creds").adminPassword();
 const errs = [];
 const SCROLLER = `[...document.querySelectorAll("div")].find(d => getComputedStyle(d).overflowY === "auto" && (d.className||"").includes("overscroll-contain") && !d.closest("nav"))`;
 const settle = async (page, ms=60000) => { const s=page.getByRole("button",{name:"Stop generating"}); const dl=Date.now()+ms; while(Date.now()<dl){ if((await s.count())===0) return; await page.waitForTimeout(300);} };

@@ -5,7 +5,7 @@ const { anyApi } = require("convex/server");
 const api = anyApi;
 const URL = process.env.CONVEX_URL || "http://127.0.0.1:3210";
 const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PW = process.env.ADMIN_PASSWORD || "MyosAdmin#2026";
+const PW = require("./creds").adminPassword();
 
 async function run() {
   const c = new ConvexHttpClient(URL);
