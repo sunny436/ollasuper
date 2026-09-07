@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
+import { assertNonExecutableBlob } from "./blobSafety";
 import { mutation, query } from "./_generated/server";
 import { audit } from "./auditLog";
 import { bump } from "./counters";
@@ -30,6 +31,7 @@ export const saveFile = mutation({
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     await requireMember(ctx, userId, a.workspaceId);
+    await assertNonExecutableBlob(ctx, a.storageId);
     const id = await ctx.db.insert("files", {
       workspaceId: a.workspaceId,
       userId,

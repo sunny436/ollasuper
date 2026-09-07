@@ -1,4 +1,5 @@
 import { ConvexError, v } from "convex/values";
+import { isExecutableContentType } from "../blobSafety";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { mutation, query } from "../_generated/server";
@@ -176,6 +177,13 @@ export const register = mutation({
     // is decorative: upload 500MB, then call register({ size: 1 }). The Python
     // service later pulls the whole blob into memory to build a data: URI.
     const meta = await ctx.db.system.get(args.storageId);
+    // The BLOB's type is what Convex serves, not args.contentType — and
+    // ctx.storage.getUrl() puts it on the app's own origin. See blobSafety.ts.
+    if (isExecutableContentType(meta?.contentType)) {
+      throw new ConvexError(
+        `Unsupported file type: ${meta?.contentType}. Upload it declared as text/plain instead.`,
+      );
+    }
     const realSize = meta?.size ?? args.size;
     // Split the guard so an empty (0-byte) file gets a truthful message instead
     // of the nonsensical "too large".

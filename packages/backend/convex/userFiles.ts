@@ -1,5 +1,6 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import { isExecutableContentType } from "./blobSafety";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
@@ -90,6 +91,11 @@ export const saveFile = mutation({
 
     // Re-measure the real blob server-side; the client size is untrusted.
     const meta = await ctx.db.system.get(a.storageId);
+    if (isExecutableContentType(meta?.contentType)) {
+      throw new ConvexError(
+        `Unsupported file type: ${meta?.contentType}. Upload it declared as text/plain instead.`,
+      );
+    }
     const size = meta?.size ?? a.size;
 
     const now = Date.now();

@@ -1,5 +1,7 @@
 "use client";
 
+import { storageContentType } from "@/lib/upload-content-type";
+
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, usePaginatedQuery } from "convex/react";
@@ -72,7 +74,7 @@ export function ProjectSources({
         headers: {
           // A code file can have an EMPTY browser MIME, which Convex storage
           // rejects with a 400.
-          "Content-Type": file.type || "application/octet-stream",
+          "Content-Type": storageContentType(file.type),
         },
         body: file,
       });

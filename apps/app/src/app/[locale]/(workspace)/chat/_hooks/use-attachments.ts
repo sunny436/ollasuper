@@ -1,5 +1,7 @@
 "use client";
 
+import { storageContentType } from "@/lib/upload-content-type";
+
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
@@ -101,10 +103,7 @@ export function useAttachments(threadId: string | null) {
           // Code files (.py, …) can have an EMPTY browser MIME, which Convex
           // storage rejects with a 400. Fall back so the upload always has a
           // valid content-type (register/classify handle the real kind).
-          xhr.setRequestHeader(
-            "Content-Type",
-            file.type || "application/octet-stream",
-          );
+          xhr.setRequestHeader("Content-Type", storageContentType(file.type));
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
               patch(localId, {

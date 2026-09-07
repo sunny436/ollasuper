@@ -1,5 +1,7 @@
 "use client";
 
+import { storageContentType } from "@/lib/upload-content-type";
+
 import { ConfirmButton } from "@/components/confirm-button";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
@@ -89,7 +91,7 @@ export default function FilesSection() {
       const url = await generateUploadUrl({ workspaceId: current });
       const res = await fetch(url, {
         method: "POST",
-        headers: { "content-type": file.type || "application/octet-stream" },
+        headers: { "content-type": storageContentType(file.type) },
         body: file,
       });
       const { storageId } = await res.json();
