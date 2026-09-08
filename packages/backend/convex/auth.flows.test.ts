@@ -685,19 +685,29 @@ describe("no flow reveals whether an address is registered", () => {
     expect(unknown).toEqual(known);
   });
 
-  test("email-verification resolves identically for known and unknown addresses", async () => {
+  test("email-verification is INDISTINGUISHABLE known vs unknown (oracle closed)", async () => {
+    // A garbage/absent code must fail the SAME way whether or not the address
+    // has an account. Previously a known address let the library throw
+    // "Could not verify code" while an unknown one returned null — an
+    // enumeration oracle that convex-test hid (its fake never threw) but prod
+    // exposed. Both must now throw the same ConvexError.
     const t = convexTest(schema, modules);
     await createVerifiedUser(t, "known2@gmail.com");
 
-    const known = await signIn(t, {
-      email: "known2@gmail.com",
-      flow: "email-verification",
-    });
-    const unknown = await signIn(t, {
-      email: "missing2@gmail.com",
-      flow: "email-verification",
-    });
-    expect(unknown).toEqual(known);
+    const grab = async (email: string) => {
+      try {
+        await signIn(t, { email, code: "00000000", flow: "email-verification" });
+        return { threw: false, msg: "" };
+      } catch (e) {
+        return { threw: true, msg: (e as { data?: string }).data ?? String(e) };
+      }
+    };
+    const known = await grab("known2@gmail.com");
+    const unknown = await grab("missing2@gmail.com");
+    expect(known.threw).toBe(true);
+    expect(unknown.threw).toBe(true);
+    expect(known.msg).toBe(unknown.msg);
+    expect(known.msg).toMatch(/Invalid or expired verification code/);
   });
 
   /** A reset for an unknown address must not email anyone. */
