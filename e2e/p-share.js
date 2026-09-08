@@ -148,9 +148,14 @@ async function openPublic(browser, url) {
     await page.goto(page.url().replace("/settings/shared", "/chat"), {
       waitUntil: "domcontentloaded",
     });
-    // reopen the thread from the rail
+    // Reopen the thread from the rail.
+    //
+    // Must filter on the /chat/ href: the rail also carries the Projects and
+    // Scheduled nav links, and they come FIRST in DOM order — so .first() used
+    // to navigate to /projects and this step then timed out looking for a
+    // message action that was never on screen.
     await page
-      .locator('nav[aria-label="Conversations"] a')
+      .locator('nav[aria-label="Conversations"] a[href*="/chat/"]')
       .first()
       .click()
       .catch(() => {});
