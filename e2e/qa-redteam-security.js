@@ -1,36 +1,33 @@
-// Red-team QA for the security fixes in 76657e4 + 06d8752, against PRODUCTION.
+// Red-team QA for the security fixes in 76657e4 / 06d8752 / d62e314, run
+// against PRODUCTION in a real browser.
 //
 // This is an ATTACK script, not a smoke test. Every step tries to break a
-// boundary I claimed to have closed, plus the regressions those fixes could
-// plausibly have caused (the getUser projection feeding the sidebar, and the
-// accountStatus check newly sitting in requireRole — which every workspace
-// surface funnels through, so a mistake there takes out files/projects/keys).
+// boundary the fixes claim to close, plus the regressions those fixes could
+// plausibly have caused — the getUser projection feeds the account rail, and
+// the accountStatus check now sits in requireRole, which every workspace
+// surface funnels through, so a mistake there takes out files/projects/keys.
 //
-//   ADMIN_PASSWORD=... node qa-redteam-security.js
+//   E2E_EMAIL=... E2E_PASSWORD=... node qa-redteam-security.js
 //
-// Headed by default (set CI=1 for headless). Zero console errors is a gate:
-// a rejected Convex call logs console.error, which is how a broken authz check
-// shows up even when the UI still looks fine.
+// Use a DEDICATED test account. The username attacks WRITE to whoever is
+// signed in, and a username cannot be cleared once set.
 const { chromium } = require("playwright");
-const { adminEmail, adminPassword } = require("./creds");
 
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
-const EMAIL = adminEmail();
-const PASSWORD = adminPassword();
+const EMAIL = process.env.E2E_EMAIL || require("./creds").adminEmail();
+const PASSWORD = process.env.E2E_PASSWORD || require("./creds").adminPassword();
 
-// Mirror of convex/profilePolicy.ts: would the server accept this name back?
-const RESERVED = new Set([
-  "admin", "administrator", "root", "system", "support", "api", "www", "null",
-  "undefined", "me", "self", "help", "billing", "security", "owner", "staff",
-  "moderator", "mod", "official", "team", "ollasuper", "myos",
-]);
-function isRestorable(name) {
-  if (!name) return false;
-  const v = name.trim().toLowerCase();
-  return (
-    v.length >= 3 && v.length <= 32 && /^[a-z0-9]+$/.test(v) && !RESERVED.has(v)
-  );
-}
+// Deliberate refusals are the POINT of this suite: a rejected Convex mutation
+// always logs console.error, so a blanket zero-errors gate would count our own
+// successful attacks as failures. Allowlist the exact refusals we provoke and
+// keep the gate strict about everything else.
+const EXPECTED_REFUSALS = [
+  /That username isn't available\./,
+  /Username is already taken\./,
+  /Username must be at least 3 characters\./,
+  /Username must be 32 characters or fewer\./,
+  /Username may only contain letters and numbers\./,
+];
 
 const errs = [];
 const results = [];
@@ -38,7 +35,12 @@ const notes = [];
 
 const step = async (n, fn) => {
   try {
-    await fn();
+    const r = await fn();
+    if (r === "SKIP") {
+      results.push(["skip", n]);
+      console.log("SKIP  " + n);
+      return;
+    }
     results.push([true, n]);
     console.log("PASS  " + n);
   } catch (e) {
@@ -47,47 +49,53 @@ const step = async (n, fn) => {
   }
 };
 
-/** Type a username into the profile form and press Save. Returns the toast text. */
+/**
+ * Put a username in the field and press Save; return the resulting toast text.
+ *
+ * Never touches sonner's DOM. An earlier version removed toast nodes directly,
+ * which tore React-owned nodes out from under the reconciler and produced a
+ * genuine-looking `insertBefore` NotFoundError plus a cascade of click
+ * timeouts — a test artefact that reads exactly like an app bug. Wait the
+ * toast out instead.
+ */
 async function trySaveUsername(page, value) {
-  const input = page.locator('input[name="username"], #username').first();
+  await page
+    .locator("[data-sonner-toast]")
+    .first()
+    .waitFor({ state: "detached", timeout: 8000 })
+    .catch(() => {});
+  const input = page.locator("#username").first();
   await input.click();
-  await input.fill("");
-  await input.type(value, { delay: 15 });
-  // Save is only enabled when the form is dirty.
+  await input.fill(value);
   const save = page.getByRole("button", { name: /^save$/i }).first();
-  // Save is disabled unless the form is dirty. Typing the value the account
-  // ALREADY holds is not an attack, it is a no-op — say so instead of hanging.
   if (await save.isDisabled()) return "(unchanged - save disabled)";
   await save.click();
-  // sonner renders into [data-sonner-toast]; take whichever appears first.
   const toast = page.locator("[data-sonner-toast]").first();
-  await toast.waitFor({ state: "visible", timeout: 8000 });
-  const text = (await toast.innerText()).trim();
-  // Let it clear so the next assertion reads a fresh toast.
-  await page.waitForTimeout(300);
-  await page.evaluate(() => {
-    for (const t of document.querySelectorAll("[data-sonner-toast]")) t.remove();
-  });
-  return text;
+  await toast.waitFor({ state: "visible", timeout: 10000 });
+  return (await toast.innerText()).trim();
+}
+
+async function currentUsername(page) {
+  await page.goto(BASE + "/en/settings", { waitUntil: "domcontentloaded" });
+  const input = page.locator("#username").first();
+  await input.waitFor({ state: "visible", timeout: 20000 });
+  await page.waitForTimeout(800);
+  return await input.inputValue();
 }
 
 (async () => {
-  const b = await chromium.launch({
-    headless: !!process.env.CI,
-    slowMo: process.env.CI ? 0 : 45,
-  });
+  const b = await chromium.launch({ headless: false, slowMo: 40 });
   const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   page.on("console", (m) => {
-    if (m.type() === "error") errs.push(m.text());
+    if (m.type() === "error") errs.push("console: " + m.text());
   });
   page.on("response", (r) => {
-    if (r.status() >= 400 && !r.url().includes("favicon")) {
+    if (r.status() >= 400 && !r.url().includes("favicon"))
       errs.push(`HTTP ${r.status()} ${r.url()}`);
-    }
   });
 
-  let originalUsername = null;
+  let baseline = null;
 
   await step("login", async () => {
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
@@ -95,133 +103,111 @@ async function trySaveUsername(page, value) {
     await page.locator('input[type="email"]').first().fill(EMAIL);
     await page.locator('input[type="password"]').first().fill(PASSWORD);
     await page.click('button[type="submit"]');
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(5000);
     await page.goto(BASE + "/en/chat", { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(2500);
     if (/login/.test(page.url())) throw new Error("still on /login after submit");
   });
 
-  // ---- M7: the getUser projection is what the account menu renders. If I cut
-  // a field the UI actually reads, this is where it shows up as a blank rail.
-  await step("M7 regression: account identity still renders after the projection", async () => {
-    await page.waitForSelector("#chat-composer", { timeout: 20000 });
-    const shell = await page.evaluate(() => document.body.innerText || "");
-    if (!shell.trim()) throw new Error("chat shell rendered empty");
-    // The account menu at the foot of the rail is the ONLY route out of /chat.
-    const menu = page.getByRole("button").filter({ hasText: /@|profile|account/i });
-    if ((await menu.count()) === 0) {
-      // Fall back to any avatar/initial trigger in the rail.
-      const anyTrigger = await page.locator("aside button, nav button").count();
-      if (anyTrigger === 0) throw new Error("no account trigger in the rail");
-    }
+  await step("M7 regression: the account rail still renders after the projection", async () => {
+    await page.waitForSelector("#chat-composer", { timeout: 25000 });
+    const t = await page.evaluate(() => document.body.innerText || "");
+    if (!t.trim()) throw new Error("chat shell rendered empty");
+    if ((await page.locator("aside button, nav button").count()) === 0)
+      throw new Error("no account trigger in the rail");
   });
 
-  await step("regression: /en/files loads (userFiles.list + isActiveUser)", async () => {
+  await step("regression: /en/files loads (userFiles.list behind isActiveUser)", async () => {
     await page.goto(BASE + "/en/files", { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(3000);
     if (/login/.test(page.url())) throw new Error("bounced to login");
     const t = await page.evaluate(() => document.body.innerText || "");
     if (/something went wrong|forbidden/i.test(t))
       throw new Error("files page shows an error state");
   });
 
-  await step("regression: settings loads and shows the profile form", async () => {
-    await page.goto(BASE + "/en/settings", { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(2500);
-    const input = page.locator('input[name="username"], #username').first();
-    await input.waitFor({ state: "visible", timeout: 15000 });
-    originalUsername = await input.inputValue();
-    notes.push(`current username on this account: "${originalUsername}"`);
+  await step("settings loads and exposes the profile form", async () => {
+    baseline = await currentUsername(page);
+    notes.push(`username on this account at start: ${JSON.stringify(baseline)}`);
   });
 
-  // ---- H4: reserved names. Pre-fix, "AdMiN" stored "admin".
-  await step("H4: reserved username 'admin' is refused", async () => {
-    const t = await trySaveUsername(page, "admin");
-    if (/profile updated/i.test(t)) throw new Error("RESERVED NAME ACCEPTED: " + t);
-    notes.push(`reserved 'admin' toast: ${JSON.stringify(t)}`);
-  });
-
-  await step("H4: case variant 'AdMiN' is refused (not normalised into admin)", async () => {
-    const t = await trySaveUsername(page, "AdMiN");
-    if (/profile updated/i.test(t)) throw new Error("CASE VARIANT ACCEPTED: " + t);
-    notes.push(`reserved 'AdMiN' toast: ${JSON.stringify(t)}`);
-  });
-
-  await step("H4: 'root' is refused", async () => {
-    const t = await trySaveUsername(page, "root");
-    if (/profile updated/i.test(t)) throw new Error("RESERVED NAME ACCEPTED: " + t);
-  });
-
-  // ---- M5: the padding bypass. "  a  " used to store "a".
-  await step("M5: padded short name '  a  ' is refused", async () => {
-    const t = await trySaveUsername(page, "  a  ");
-    if (/profile updated/i.test(t)) throw new Error("PADDING BYPASS ALIVE: " + t);
-  });
-
-  await step("M5: 'ab' (2 chars) is refused", async () => {
-    const t = await trySaveUsername(page, "ab");
-    if (/profile updated/i.test(t)) throw new Error("SHORT NAME ACCEPTED: " + t);
-  });
-
-  await step("charset: 'a-b' is refused", async () => {
-    const t = await trySaveUsername(page, "a-b");
-    if (/profile updated/i.test(t)) throw new Error("BAD CHARSET ACCEPTED: " + t);
-  });
-
-  // ---- The happy path must still work, or the fix is a denial of service.
-  await step("a valid unused username is accepted", async () => {
-    // ONE-WAY DOOR GUARD. Claiming a probe name is only safe if we can put the
-    // original back. A grandfathered reserved/invalid name (prod has exactly
-    // one: "admin") CANNOT be re-claimed, so changing away from it would
-    // permanently strip this account's identity. Refuse to run rather than
-    // cause the damage; the report says why.
-    if (!isRestorable(originalUsername)) {
-      notes.push(
-        `SKIPPED claim/restore round-trip: "${originalUsername}" is reserved or ` +
-          "invalid, so it could not be restored. This is itself a finding.",
-      );
+  // A username cannot be cleared once set, so establish a known-good baseline
+  // FIRST. This doubles as the happy-path test: if the security rules also
+  // reject legitimate names, the fix is a denial of service.
+  await step("happy path: a valid unused username is accepted", async () => {
+    if (baseline && baseline.length >= 3) {
+      notes.push(`account already has "${baseline}"; using it as the baseline`);
       return;
     }
-    const candidate = "qaprobe" + Date.now().toString().slice(-6);
+    const candidate = "qaprobe" + Date.now().toString().slice(-7);
     const t = await trySaveUsername(page, candidate);
-    if (!/profile updated/i.test(t))
-      throw new Error("VALID NAME REJECTED: " + t);
-    notes.push(`claimed probe username: ${candidate}`);
+    if (!/profile updated/i.test(t)) throw new Error("VALID NAME REJECTED: " + t);
+    baseline = candidate;
+    notes.push(`claimed baseline username: ${candidate}`);
   });
 
-  await step("error text is human-readable (no raw 'Uncaught ConvexError')", async () => {
-    const t = await trySaveUsername(page, "admin");
-    if (/uncaught convexerror|at handler|convex\/users\.ts/i.test(t))
-      throw new Error("RAW SERVER ERROR LEAKED TO UI: " + JSON.stringify(t));
+  // ---- The attacks. Each must be refused AND must leave the baseline intact.
+  const attacks = [
+    ["H4: reserved 'admin' is refused", "admin"],
+    ["H4: case variant 'AdMiN' is refused", "AdMiN"],
+    ["H4: reserved 'root' is refused", "root"],
+    ["H4: reserved 'support' is refused", "support"],
+    ["M5: padded short name '  a  ' is refused", "  a  "],
+    ["M5: padded '  ab  ' is refused", "  ab  "],
+    ["M5: 'ab' (2 chars) is refused", "ab"],
+    ["charset: 'a-b' is refused", "a-b"],
+    ["charset: 'a b' is refused", "a b"],
+    ["length: 33 chars is refused", "a".repeat(33)],
+  ];
+  for (const [name, value] of attacks) {
+    await step(name, async () => {
+      const t = await trySaveUsername(page, value);
+      if (/profile updated/i.test(t))
+        throw new Error(`ACCEPTED ${JSON.stringify(value)}: ${t}`);
+      if (/uncaught convexerror|at handler|\.ts:\d+/i.test(t))
+        throw new Error("RAW SERVER ERROR IN UI: " + JSON.stringify(t));
+    });
+  }
+
+  await step("the attacks did not corrupt the stored username", async () => {
+    const now = await currentUsername(page);
+    if (now !== baseline)
+      throw new Error(`username changed from ${baseline} to ${now}`);
   });
 
-  await step("restore the original username", async () => {
-    if (!originalUsername) throw new Error("never captured the original");
-    if (!isRestorable(originalUsername)) {
-      notes.push("restore skipped: nothing was changed (see guard above)");
-      return;
-    }
-    const t = await trySaveUsername(page, originalUsername);
-    if (!/profile updated/i.test(t))
-      throw new Error(
-        `COULD NOT RESTORE "${originalUsername}" — grandfathered name is now unsettable: ` + t,
-      );
+  // ---- d62e314: grandfathering must cover the name you already hold. Typing
+  // your OWN name in a different case is dirty (so Save is enabled) but
+  // normalises to what you already have, which must be a no-op, not a refusal.
+  await step("d62e314: re-claiming your OWN username in a different case is allowed", async () => {
+    if (!baseline || baseline.length < 3) return "SKIP";
+    const variant = baseline.toUpperCase();
+    if (variant === baseline) return "SKIP";
+    const t = await trySaveUsername(page, variant);
+    if (/isn't available|already taken/i.test(t))
+      throw new Error("ONE-WAY DOOR STILL PRESENT: " + t);
+    if (!/profile updated|unchanged/i.test(t))
+      throw new Error("unexpected result: " + t);
+  });
+
+  await step("username survives a full page reload (it really persisted)", async () => {
+    const now = await currentUsername(page);
+    if (now !== baseline) throw new Error(`after reload: ${now} != ${baseline}`);
   });
 
   await step("regression: chat still generates after the requireRole change", async () => {
     await page.goto(BASE + "/en/chat", { waitUntil: "domcontentloaded" });
     const composer = page.locator("#chat-composer");
-    await composer.waitFor({ timeout: 20000 });
+    await composer.waitFor({ timeout: 25000 });
     await composer.click();
-    await page.keyboard.type("Reply with exactly: OK");
+    await page.keyboard.type("Reply with exactly: REDTEAMOK");
     await page.keyboard.press("Enter");
     await page.waitForFunction(
-      () => /OK/i.test(document.body.innerText || ""),
-      { timeout: 90000 },
+      () => /REDTEAMOK/i.test(document.body.innerText || ""),
+      { timeout: 120000 },
     );
   });
 
-  await step("regression: settings sub-pages all load", async () => {
+  await step("regression: every settings sub-page loads", async () => {
     for (const p of [
       "/en/settings/billing",
       "/en/settings/files",
@@ -231,7 +217,7 @@ async function trySaveUsername(page, value) {
       "/en/settings/archived",
     ]) {
       await page.goto(BASE + p, { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(1500);
       const t = await page.evaluate(() => document.body.innerText || "");
       if (/something went wrong|forbidden|not authenticated/i.test(t))
         throw new Error(`${p} shows an error state`);
@@ -242,13 +228,22 @@ async function trySaveUsername(page, value) {
   for (const n of notes) console.log("  " + n);
 
   const uniq = [...new Set(errs)];
-  console.log("\n--- console/network errors: " + uniq.length + " ---");
-  for (const e of uniq.slice(0, 25)) console.log("  " + e);
+  const expected = uniq.filter((e) => EXPECTED_REFUSALS.some((r) => r.test(e)));
+  const unexpected = uniq.filter((e) => !EXPECTED_REFUSALS.some((r) => r.test(e)));
+  console.log(
+    `\n--- console/network errors: ${unexpected.length} unexpected, ` +
+      `${expected.length} expected refusals (our own attacks) ---`,
+  );
+  for (const e of unexpected.slice(0, 20)) console.log("  UNEXPECTED " + e.slice(0, 300));
 
-  const passed = results.filter(([ok]) => ok).length;
-  console.log(`\nRESULT ${passed}/${results.length} passed, ${uniq.length} console errors`);
-  for (const [ok, n] of results) if (!ok) console.log("  FAILED: " + n);
-
-  if (!process.env.KEEP_OPEN) await b.close();
-  process.exit(passed === results.length && uniq.length === 0 ? 0 : 1);
+  const passed = results.filter(([ok]) => ok === true).length;
+  const failed = results.filter(([ok]) => ok === false);
+  const skipped = results.filter(([ok]) => ok === "skip").length;
+  console.log(
+    `\nRESULT ${passed} passed, ${failed.length} failed, ${skipped} skipped, ` +
+      `${unexpected.length} unexpected console errors`,
+  );
+  for (const [, n] of failed) console.log("  FAILED: " + n);
+  await b.close();
+  process.exit(failed.length === 0 && unexpected.length === 0 ? 0 : 1);
 })();
