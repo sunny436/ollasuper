@@ -27,8 +27,10 @@ report states plainly which tier production runs.
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
 import os
+import shlex
 import shutil
 import signal
 import struct
@@ -71,9 +73,37 @@ def _prlimit_prefix() -> list[str]:
 def _unshare_prefix() -> list[str]:
     if shutil.which("unshare"):
         # -r maps caller->root in a userns (works without privileges); -n gives a
-        # private network namespace with no interface up: no SSRF, no exfil.
-        return ["unshare", "-rn", "--"]
+        # private network namespace (no SSRF/exfil); -m gives a private MOUNT
+        # namespace so the wrapper can mask secret files without affecting the host.
+        return ["unshare", "-rnm", "--"]
     return []
+
+
+def _secret_masks() -> list[str]:
+    """Absolute paths of on-disk secrets to make unreadable inside the sandbox.
+
+    The env is already stripped, but `unshare -r` maps the caller to root inside
+    the userns, so a decoder RCE still reads root-owned 0600 files like the AI
+    `.env` (OPENROUTER_API_KEY, AI_INGRESS_SECRET, KNOWLEDGE_DATABASE_URL) and the
+    Convex admin key — and could smuggle them out through the decoder's OWN output
+    (the returned image/text is fed to the model). The network cut does not close
+    that. Each of these is bind-masked with /dev/null inside the mount namespace.
+    """
+    cwd = os.getcwd()
+    root = os.path.abspath(os.path.join(cwd, "..", ".."))
+    candidates: list[str] = []
+    # Every .env* under the AI service dir and the whole repo's env files.
+    candidates += glob.glob(os.path.join(cwd, ".env*"))
+    candidates += glob.glob(os.path.join(root, "**", ".env"), recursive=True)
+    candidates += glob.glob(os.path.join(root, "**", ".env.local"), recursive=True)
+    # Convex admin key + cloud key live outside the repo too.
+    candidates += ["/root/.cvx-cloud-key", "/root/cloud-logs.sh"]
+    # De-dup, keep only ones that exist and are files.
+    seen: list[str] = []
+    for c in {os.path.abspath(x) for x in candidates}:
+        if c not in seen and os.path.isfile(c):
+            seen.append(c)
+    return seen
 
 
 def _tier() -> tuple[int, str]:
@@ -101,7 +131,21 @@ def sandbox_status() -> dict:
 
 def _argv(op: str, params: dict) -> list[str]:
     inner = [sys.executable, "-m", "app.sandbox.worker", op, json.dumps(params)]
-    return [*_unshare_prefix(), *_prlimit_prefix(), *inner]
+    ushare = _unshare_prefix()
+    limit = _prlimit_prefix()
+    # With a mount namespace (unshare -m present), mask the secret files with
+    # /dev/null before exec, inside a tiny /bin/sh. `exec "$@"` runs the real
+    # command from POSITIONAL args, so the op/params JSON never goes through the
+    # shell as text (no quoting/injection surface).
+    if ushare and "-rnm" in ushare:
+        masks = _secret_masks()
+        script = "".join(
+            f'mount --bind /dev/null {shlex.quote(m)} 2>/dev/null || true; '
+            for m in masks
+        )
+        script += 'exec "$@"'
+        return [*ushare, "/bin/sh", "-c", script, "sandbox", *limit, *inner]
+    return [*ushare, *limit, *inner]
 
 
 def _run_child(
