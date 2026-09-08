@@ -28,6 +28,6 @@
     "@edge-runtime/vm": "^5.0.0",
     "@types/nodemailer": "^8.0.1",
     "convex-test": "0.0.41",
-    "vitest": "^2.1.9"
+    "vitest": "^3.2.6"
   }
 }
