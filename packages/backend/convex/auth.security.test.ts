@@ -21,6 +21,17 @@ import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.*s", "!./**/*.test.*"]);
 
+// deleteUserAccount now schedules a durable content/blob cascade
+// (authDeletion.cascadeUserContent). A test that deletes an account must run
+// that follow-up work to completion, or its scheduled mutation writes after the
+// test's transaction closes -> "Write outside of transaction".
+async function drainScheduled(t: ReturnType<typeof convexTest>) {
+  for (let i = 0; i < 8; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
+
 /** Create a user plus N sessions, each with a refresh token, as sign-in would. */
 async function seedSessions(t: ReturnType<typeof convexTest>, count: number) {
   return t.run(async (ctx) => {
@@ -895,6 +906,7 @@ describe("account deletion tears down all auth state", () => {
     const userId = await seedFullyLoadedUser(t);
 
     await t.mutation(internal.users.deleteUserAccount, { userId });
+    await drainScheduled(t);
 
     const left = await t.run(async (ctx) => ({
       users: await ctx.db.query("users").collect(),
@@ -1052,6 +1064,7 @@ describe("deletion is idempotent", () => {
     expect(before.passwordHash).toBe("hashed");
 
     await t.mutation(internal.users.deleteUserAccount, { userId });
+    await drainScheduled(t);
 
     const after = await t.query(internal.users.deletionFactorForUser, { userId });
     expect(after.userExists).toBe(false);

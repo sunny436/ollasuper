@@ -234,6 +234,30 @@ export const deleteUserAccount = internalMutation({
     await deleteMutationsForUser(ctx, args.userId);
     // Deep Research: purge the user's durable research runs (user-trust owner-scoped).
     await deleteResearchRunsForUser(ctx, args.userId);
+
+    // The avatar blob, synchronously — it is exactly one, and a deleted account
+    // should not leave its face in storage. (getUrl for it is minted only behind
+    // the owner check in getUser, so it was never reachable after this row goes,
+    // but the BYTES would orphan without this.)
+    const doomed = await ctx.db.get(args.userId);
+    if (doomed?.imageId) {
+      try {
+        await ctx.storage.delete(doomed.imageId);
+      } catch {
+        // idempotent: a missing blob is fine.
+      }
+    }
+
+    // Private CHAT content + its blobs + the user's public SHARES are far more
+    // than one mutation can delete, so they run as a durable, self-rescheduling
+    // cascade (authDeletion.cascadeUserContent). Scheduled BEFORE the user row is
+    // deleted, but it keys on the userId value, which stays valid as a filter
+    // once the row is gone. Shares go first there, so public access to a deleted
+    // user's conversations is revoked ahead of everything else.
+    await ctx.scheduler.runAfter(0, internal.authDeletion.cascadeUserContent, {
+      userId: args.userId,
+    });
+
     await ctx.db.delete(args.userId);
   },
 });
