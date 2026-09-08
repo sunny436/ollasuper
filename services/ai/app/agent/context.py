@@ -125,15 +125,26 @@ def build_system_prompt(
     agentic: bool = False,
     project_instructions: str | None = None,
 ) -> str:
-    persona = custom.strip() if custom and custom.strip() else SYSTEM_BASE
-    # The agentic orientation LEADS so it survives a user's custom instructions
-    # (which replace the persona base, never the core capability behavior). Only
-    # included when the model actually has capabilities this turn.
+    # SYSTEM_BASE IS UNCONDITIONAL.
+    #
+    # It used to be REPLACED by `custom` (`persona = custom or SYSTEM_BASE`),
+    # and on a NON-agentic turn `parts` was `[persona]` alone — so a user's
+    # saved system prompt became the entire system message: no platform base,
+    # no capability orientation, nothing above it. A saved preference is user
+    # data; it must not be able to delete the platform's ground rules.
+    #
+    # The persona now sits in its own block BENEATH them, exactly as
+    # <project_instructions> already does. It still steers strongly — it is the
+    # most specific instruction present — but authority comes from position, so
+    # it cannot erase what precedes it and nothing has to pattern-match hostile
+    # wording.
     parts = (
-        [CAPABILITY_ORIENTATION, PARALLEL_TOOL_GUIDANCE, CHART_GUIDANCE, persona]
+        [CAPABILITY_ORIENTATION, PARALLEL_TOOL_GUIDANCE, CHART_GUIDANCE, SYSTEM_BASE]
         if agentic
-        else [persona]
+        else [SYSTEM_BASE]
     )
+    if custom and custom.strip():
+        parts.append("<user_persona>\n" + custom.strip() + "\n</user_persona>")
     if about and about.strip():
         parts.append(f"<about_the_user>\n{about.strip()}\n</about_the_user>")
     if style and style.strip():

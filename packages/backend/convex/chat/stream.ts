@@ -55,15 +55,36 @@ const SCHEDULED_OUTPUT_DIRECTIVE = [
  * on its own would silently discard whatever global system prompt the user has
  * configured — for scheduled runs only, where they would never see it happen.
  */
+/**
+ * Append the scheduled-output directive, WITHOUT overflowing the contract.
+ *
+ * `GenerateRequest.systemPrompt` is `max_length=8000`, and Convex already
+ * clamps stored prompts to exactly 8000 — so concatenating the directive onto
+ * a max-length prompt pushed the request PAST the limit and Pydantic rejected
+ * it. The effect was that a user with a full-length system prompt had EVERY
+ * scheduled run fail with a 400, while ordinary chat kept working.
+ *
+ * The directive is what makes a scheduled run emit a usable report, so it wins
+ * the space it needs; the user's prompt is trimmed by CODE POINT (never mid
+ * emoji) to fit beneath it.
+ */
 function withScheduledDirective(
   resolved: string | null,
   isScheduled: boolean,
 ): string | null {
   if (!isScheduled) return resolved;
-  return resolved
-    ? `${resolved}\n\n${SCHEDULED_OUTPUT_DIRECTIVE}`
-    : SCHEDULED_OUTPUT_DIRECTIVE;
+  if (!resolved) return SCHEDULED_OUTPUT_DIRECTIVE;
+  const joiner = "\n\n";
+  const room =
+    MAX_SYSTEM_PROMPT_CHARS - SCHEDULED_OUTPUT_DIRECTIVE.length - joiner.length;
+  if (room <= 0) return SCHEDULED_OUTPUT_DIRECTIVE;
+  const points = [...resolved];
+  const head = points.length <= room ? resolved : points.slice(0, room).join("");
+  return `${head}${joiner}${SCHEDULED_OUTPUT_DIRECTIVE}`;
 }
+
+/** Mirrors GenerateRequest.systemPrompt's `max_length` in the Python contract. */
+const MAX_SYSTEM_PROMPT_CHARS = 8000;
 
 const STALL_MS = 90_000;
 // Phase 7: how many times the reaper re-dispatches a crashed turn before giving
@@ -631,7 +652,15 @@ export const dispatchPayload = internalQuery({
         isScheduled,
       ),
       customInstructionsAbout: settings?.customInstructionsAbout ?? null,
+      // The legacy prose string still travels so a Python build that predates
+      // `personalization` — or a rollback to one — keeps styling replies.
       customInstructionsStyle: settings?.customInstructionsStyle ?? null,
+      // CANONICAL personalization. Python compiles it; this plane never builds
+      // prompt text from it. Absent (older row, or none saved) means defaults.
+      //
+      // DEPLOY ORDER IS LOAD-BEARING: GenerateRequest is `extra="forbid"`, so a
+      // Python build without this field 400s every turn. Python first, always.
+      personalization: settings?.personalization ?? null,
       summary: isScheduled ? null : (thread.summary ?? null),
       summaryThroughSeq: isScheduled ? 0 : (thread.summaryThroughSeq ?? 0),
       // The platform context layer. Metadata only — artifact CONTENT is never

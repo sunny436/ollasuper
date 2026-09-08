@@ -890,7 +890,47 @@ export default defineSchema({
     defaultModel: v.string(),
     systemPrompt: v.optional(v.string()),
     customInstructionsAbout: v.optional(v.string()),
+    // LEGACY prose style string. Kept written, and kept being sent, purely so a
+    // rollback to a Python build that predates `personalization` still styles
+    // replies. The canonical object below is the source of truth.
     customInstructionsStyle: v.optional(v.string()),
+    // CANONICAL personalization. Structured because the prose string above was
+    // round-tripped by exact substring match on the client, so rewording one
+    // sentence silently switched a widget off for every stored user.
+    //
+    // Optional + additive: pre-migration rows validate untouched on the live
+    // deployment, and an absent object simply means "product defaults".
+    personalization: v.optional(
+      v.object({
+        // Bumped only if a future shape cannot be read by the current reader.
+        version: v.number(),
+        // Ignored, never deleted: disabling keeps the stored preferences so
+        // re-enabling restores exactly what the user had.
+        enabled: v.boolean(),
+        baseStyle: v.union(
+          v.literal("default"),
+          v.literal("friendly"),
+          v.literal("concise"),
+          v.literal("formal"),
+          v.literal("playful"),
+        ),
+        characteristics: v.array(
+          v.union(
+            v.literal("warm"),
+            v.literal("enthusiastic"),
+            v.literal("headers"),
+            v.literal("emoji"),
+          ),
+        ),
+        responseSpeed: v.union(
+          v.literal("fast"),
+          v.literal("balanced"),
+          v.literal("thorough"),
+        ),
+        // "auto" = follow the user's own language. A label, never free text.
+        responseLanguage: v.optional(v.string()),
+      }),
+    ),
     sendOnEnter: v.boolean(),
     // Ambience theme intensity (0-100), synced across a user's devices. Optional
     // and additive so pre-migration rows validate on the live deployment.

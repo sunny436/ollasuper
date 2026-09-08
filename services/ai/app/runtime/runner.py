@@ -48,6 +48,7 @@ from app.agent.memory import (
     REMEMBER_TOOL_SPEC,
 )
 from app.agent.orchestration_tools import FIND_CAPABILITIES_TOOL_SPEC
+from app.agent.personalization import compile_personalization
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
@@ -472,10 +473,44 @@ async def run_generation(
             or research_as_tool
             or data_as_tool
         )
+        # CANONICAL personalization -> one coherent style block + a real output
+        # ceiling. `legacy_style` is the pre-canonical prose string and is used
+        # ONLY when no canonical object arrived, so an older Convex deploy or a
+        # rollback behaves exactly as it did before.
+        personal = compile_personalization(
+            req.personalization,
+            default_output_tokens=settings.ai_max_output_tokens,
+            legacy_style=req.customInstructionsStyle,
+        )
+        # Enough to debug "my style is not being applied" in production, and
+        # deliberately no more: the shape of the settings, never the custom
+        # instructions or the persona text, which are private user content.
+        log.info(
+            "personalization.compiled",
+            extra={
+                "canonical": req.personalization is not None,
+                "enabled": bool(
+                    req.personalization.enabled if req.personalization else False
+                ),
+                "base_style": (
+                    req.personalization.baseStyle if req.personalization else None
+                ),
+                "speed": (
+                    req.personalization.responseSpeed if req.personalization else None
+                ),
+                "traits": (
+                    len(req.personalization.characteristics)
+                    if req.personalization
+                    else 0
+                ),
+                "styled": personal.style_block is not None,
+                "out_cap": personal.max_output_tokens,
+            },
+        )
         system = build_system_prompt(
             custom=req.systemPrompt,
             about=req.customInstructionsAbout,
-            style=req.customInstructionsStyle,
+            style=personal.style_block,
             summary=req.summary,
             summary_through_seq=req.summaryThroughSeq,
             rag=rag_text,
@@ -646,6 +681,11 @@ async def run_generation(
             settings,
             model=req.model,
             context_window=req.contextWindow,
+            # The one model PARAMETER personalization may touch. None leaves the
+            # caller default; a value is still clamped by _clamp_output against
+            # this model's measured window, so a small-window model is never
+            # asked for an output it cannot produce.
+            max_tokens=personal.max_output_tokens,
             base_url=settings.ollima_base_url,
             api_key=settings.ollima_api_key,
         )
@@ -659,6 +699,7 @@ async def run_generation(
             settings,
             model=req.model,
             context_window=req.contextWindow,
+            max_tokens=personal.max_output_tokens,
             streaming=False,
             base_url=settings.ollima_base_url,
             api_key=settings.ollima_api_key,

@@ -41,6 +41,34 @@ CONTEXT_WINDOW: dict[str, int] = {
 }
 
 
+class Personalization(BaseModel):
+    """The user's explicit style preferences, as STRUCTURED data.
+
+    Deliberately not a prose string: the previous design concatenated fixed
+    sentences on the client and read them back by substring match, so rewording
+    one sentence silently switched that widget off for every stored user.
+
+    `extra="forbid"` matches this module's stated philosophy — a field the
+    server does not know about is a loud 400, not a silent drop. Deploy order
+    (Python before Convex) is what keeps that safe.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 1
+    enabled: bool = True
+    baseStyle: Literal["default", "friendly", "concise", "formal", "playful"] = (
+        "default"
+    )
+    characteristics: list[Literal["warm", "enthusiastic", "headers", "emoji"]] = Field(
+        default_factory=list, max_length=8
+    )
+    responseSpeed: Literal["fast", "balanced", "thorough"] = "balanced"
+    # "auto" (or absent) = follow the user's own language. Short by design: this
+    # is a label, never free text that ends up in the prompt unbounded.
+    responseLanguage: str | None = Field(default=None, max_length=32)
+
+
 class Attachment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -267,6 +295,10 @@ class GenerateRequest(BaseModel):
     # conservative default in CONTEXT_WINDOW.
     contextWindow: int = 0
     systemPrompt: str | None = Field(default=None, max_length=8000)
+    # CANONICAL personalization. Optional so an older Convex deploy — or a
+    # rollback — simply omits it and the legacy `customInstructionsStyle` string
+    # below still drives the style block, unchanged.
+    personalization: Personalization | None = None
     customInstructionsAbout: str | None = Field(default=None, max_length=2000)
     customInstructionsStyle: str | None = Field(default=None, max_length=2000)
     summary: str | None = Field(default=None, max_length=8000)

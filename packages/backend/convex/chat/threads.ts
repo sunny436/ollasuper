@@ -6,6 +6,7 @@ import { internalMutation, mutation, query } from "../_generated/server";
 import { audit } from "../auditLog";
 import { bump } from "../counters";
 import { requireMember } from "../orgs";
+import { clampText } from "./settings";
 import { requireProjectAccessByString } from "../projects";
 import { deleteResearchRunsForThread } from "../researchRuns";
 import { deleteMutationsForThread } from "../seoMutations";
@@ -295,7 +296,16 @@ export const create = mutation({
       ...(projectId ? { projectId } : {}),
       pinned: false,
       model,
-      systemPrompt: settings?.systemPrompt,
+      // NOT snapshotted from settings any more.
+      //
+      // Copying the global prompt in here made every new thread carry its own
+      // copy, and `stream.ts` resolves `thread.systemPrompt ?? settings...` —
+      // so the copy always won and a later change to the global prompt never
+      // reached any existing chat. Leaving it unset means "follow the global
+      // setting", and the field now means what its name says: a deliberate
+      // per-chat OVERRIDE, written only by setSystemPrompt.
+      //
+      // Threads created before this keep their copy; nothing is rewritten.
       nextSeq: 0,
       messageCount: 0,
       tokensIn: 0,
@@ -356,7 +366,10 @@ export const setSystemPrompt = mutation({
     const userId = await requireUserId(ctx);
     await requireThreadAccess(ctx, userId, threadId);
     await ctx.db.patch(threadId, {
-      systemPrompt: systemPrompt?.slice(0, 8000) ?? undefined,
+      // Code-point safe: `.slice` cuts UTF-16 units and would store a lone
+      // surrogate when the cut lands mid-emoji.
+      systemPrompt:
+        systemPrompt === null ? undefined : clampText(systemPrompt, 8000),
       updatedAt: Date.now(),
     });
   },

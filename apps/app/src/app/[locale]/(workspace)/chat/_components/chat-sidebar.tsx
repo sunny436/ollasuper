@@ -1,6 +1,7 @@
 "use client";
 
 import { FilesSection } from "./files-section";
+import { ChatInstructionsDialog } from "./chat-instructions-dialog";
 import { MoveToProjectDialog } from "./move-to-project-dialog";
 import { IntelligenceCore } from "./intelligence-core";
 import { clearDisplayCaches } from "@/lib/display-cache";
@@ -20,6 +21,7 @@ import {
   CalendarClock,
   CreditCard,
   FolderInput,
+  SlidersHorizontal,
   FolderKanban,
   LogOut,
   MessageSquare,
@@ -247,6 +249,9 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const removeThread = useMutation(api.chat.threads.remove);
   const archiveThread = useMutation(api.chat.threads.archive);
   const setPinned = useMutation(api.chat.threads.setPinned);
+  const [instructThread, setInstructThread] = useState<Id<"chatThreads"> | null>(
+    null,
+  );
   const [movingThread, setMovingThread] = useState<Id<"chatThreads"> | null>(
     null,
   );
@@ -457,6 +462,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                       if (ok) toast.success("Chat archived");
                     }}
                     onMove={() => setMovingThread(t._id)}
+                    onInstructions={() => setInstructThread(t._id)}
                     onDelete={async () => {
                       if (!window.confirm(`Delete “${t.title}”?`)) return;
                       await guard(
@@ -483,6 +489,10 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         )}
       </div>
 
+      <ChatInstructionsDialog
+        threadId={instructThread}
+        onClose={() => setInstructThread(null)}
+      />
       <MoveToProjectDialog
         threadId={movingThread}
         onClose={() => setMovingThread(null)}
@@ -498,6 +508,7 @@ function ThreadMenu({
   onPin,
   onRename,
   onMove,
+  onInstructions,
   onArchive,
   onDelete,
 }: {
@@ -505,6 +516,7 @@ function ThreadMenu({
   onPin: () => void;
   onRename: () => void;
   onMove: () => void;
+  onInstructions: () => void;
   onArchive: () => void;
   onDelete: () => void;
 }) {
@@ -558,6 +570,15 @@ function ThreadMenu({
             >
               <FolderInput className="h-3.5 w-3.5" />
               Move to project
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setOpen(false);
+                onInstructions();
+              }}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              Chat instructions
             </MenuItem>
             <MenuItem
               onClick={() => {
