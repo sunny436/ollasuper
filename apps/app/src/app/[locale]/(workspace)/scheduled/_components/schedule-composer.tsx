@@ -423,7 +423,7 @@ export function ScheduleComposer({
         )}
       </div>
 
-      {turns.length > 0 && (
+      {(turns.length > 0 || phase === "parsing") && (
         <div className="space-y-2 px-1">
           {turns.slice(-4).map((t, i) => (
             <p
@@ -436,6 +436,19 @@ export function ScheduleComposer({
               {t.content}
             </p>
           ))}
+          {/*
+            A parse can take several seconds. The input disables and the send
+            arrow turns into a cancel X, but nothing on screen said work was
+            happening, so the composer read as frozen and testers clicked again.
+            This is the same <p> an assistant turn uses, driven by the `phase`
+            state that already exists — no timer, no new state, and no invented
+            progress figure.
+          */}
+          {phase === "parsing" && (
+            <p className="text-xs text-muted-foreground" aria-live="polite">
+              Working out the schedule…
+            </p>
+          )}
         </div>
       )}
 

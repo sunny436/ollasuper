@@ -9,7 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@v1/ui/dialog";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { Check, Copy } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -21,8 +21,17 @@ export type ShareParams =
   | null;
 
 /**
- * Share modal for a whole conversation or a single turn. Creates the link ONCE
- * per open (dedup on the server), then shows Copy + social buttons + the expiry.
+ * Share modal for a whole conversation or a single turn.
+ *
+ * OPENING THIS DIALOG MUST NOT PUBLISH ANYTHING. It used to call `create` from
+ * a useEffect on open, so a user who opened it and immediately closed it had
+ * already published a snapshot: `getByToken` is unauthenticated, so the
+ * conversation was readable by anyone with the URL for the full TTL, and
+ * closing the dialog did not undo it. Opening now only READS
+ * (`shares.activeForTarget`): an existing live link is shown as before, and a
+ * new one is minted only by the explicit button. `create` itself is unchanged,
+ * so dedup, forceNew, expiry, revocation and the rate limit all behave exactly
+ * as they did.
  * Radix portals to document.body, so DialogContent carries `className="workspace"`
  * to keep the glass tokens (model-picker.tsx precedent).
  */
@@ -36,9 +45,18 @@ export function ShareDialog({
   params: ShareParams;
 }) {
   const create = useMutation(api.chat.shares.create);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">(
-    "loading",
+  // Read-only: never mints. `undefined` = still loading, `null` = none exists.
+  const existing = useQuery(
+    api.chat.shares.activeForTarget,
+    open && params
+      ? params.shareType === "full_chat"
+        ? { shareType: "full_chat" as const, threadId: params.threadId }
+        : { shareType: "single_turn" as const, messageId: params.messageId }
+      : "skip",
   );
+  const [status, setStatus] = useState<
+    "loading" | "none" | "ready" | "error" | "creating"
+  >("loading");
   const [link, setLink] = useState("");
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
@@ -50,18 +68,27 @@ export function ShareDialog({
       requested.current = false;
       setStatus("loading");
       setLink("");
+      setExpiresAt(null);
       setCopied(false);
       return;
     }
-    if (!params || requested.current) return;
-    requested.current = true;
-    void doCreate(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+    // Adopt whatever the read-only lookup found. NO mutation runs here — that
+    // is the entire point of the fix. `requested` guards against clobbering a
+    // link the user just minted when this query re-resolves.
+    if (existing === undefined || requested.current) return;
+    if (existing === null) {
+      setStatus("none");
+      return;
+    }
+    setLink(`${window.location.origin}/share/${existing.token}`);
+    setExpiresAt(existing.expiresAt);
+    setStatus("ready");
+  }, [open, existing]);
 
   async function doCreate(forceNew: boolean) {
     if (!params) return;
-    setStatus("loading");
+    requested.current = true;
+    setStatus("creating");
     try {
       const res =
         params.shareType === "full_chat"
@@ -111,7 +138,25 @@ export function ShareDialog({
         </DialogHeader>
 
         {status === "loading" && (
+          <p className="py-2 text-sm text-primary/60">Checking…</p>
+        )}
+        {status === "creating" && (
           <p className="py-2 text-sm text-primary/60">Creating a share link…</p>
+        )}
+        {status === "none" && (
+          <div className="space-y-3 py-2">
+            <p className="text-sm text-primary/60">
+              No link exists for this yet. Nothing is shared until you create
+              one.
+            </p>
+            <button
+              type="button"
+              onClick={() => void doCreate(false)}
+              className="rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:brightness-110"
+            >
+              Create link
+            </button>
+          </div>
         )}
         {status === "error" && (
           <div className="py-2">

@@ -6,6 +6,7 @@ import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { FolderKanban, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
 /**
@@ -19,6 +20,18 @@ import { toast } from "sonner";
  * user has archived.
  *
  * The dialog holds no chat state of its own; it mutates and closes.
+ *
+ * IT MUST BE PORTALLED. This renders from inside ChatSidebar, and the rail that
+ * contains it (`workspace-rail.tsx`) is `backdrop-blur-xl` + `overflow-hidden`.
+ * `backdrop-filter` makes that element the containing block for `position:
+ * fixed` descendants, so `left-1/2 -translate-x-1/2` centred the dialog on the
+ * 272px RAIL rather than the viewport: 136 - 208 = -72px, and `overflow-hidden`
+ * then clipped it. The reported symptom was "Move to project is hard to read" —
+ * it was not a contrast problem, the first 72px of every line was off-screen
+ * ("Move to project" read as "to project"). Portalling to document.body escapes
+ * both the containing block and the clip. `className="workspace"` is required
+ * on anything portalled out of the chat subtree or it renders against the base
+ * palette instead of the workspace tokens (see share-dialog.tsx).
  */
 
 const PAGE = 30;
@@ -84,8 +97,11 @@ export function MoveToProjectDialog({
     }
   };
 
-  return (
-    <>
+  // Rendered client-side only; there is no document during SSR.
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div className="workspace">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
       <div
         className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
@@ -187,7 +203,8 @@ export function MoveToProjectDialog({
           </div>
         )}
       </div>
-    </>
+    </div>,
+    document.body,
   );
 }
 

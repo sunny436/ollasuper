@@ -151,6 +151,105 @@ async function assertShareRate(
 }
 
 /** Create a share link. One mutation, branching on shareType. Owner-only. */
+/**
+ * The one definition of "this user already has a live share for this target".
+ *
+ * `create` deduped with this inline; the dialog now needs the SAME question
+ * answered without writing anything, and two copies of the predicate would
+ * drift — at which point the dialog would offer to create a link that `create`
+ * then refuses to mint, or vice versa.
+ */
+async function findActiveShare(
+  ctx: QueryCtx,
+  target: {
+    userId: Id<"users">;
+    chatId: Id<"chatThreads">;
+    shareType: "full_chat" | "single_turn";
+    messageId?: Id<"chatMessages">;
+  },
+): Promise<Doc<"chatShares"> | null> {
+  const now = Date.now();
+  const existing = await ctx.db
+    .query("chatShares")
+    .withIndex("by_chat", (q) => q.eq("chatId", target.chatId))
+    .collect();
+  return (
+    existing.find(
+      (s) =>
+        s.userId === target.userId &&
+        s.shareType === target.shareType &&
+        (s.messageId ?? null) === (target.messageId ?? null) &&
+        !s.revokedAt &&
+        s.expiresAt > now,
+    ) ?? null
+  );
+}
+
+/**
+ * Does a live share ALREADY exist for this target? Read-only, by design.
+ *
+ * The share dialog used to call `create` from a useEffect on open, so merely
+ * opening it inserted a chatShares row — and `getByToken` is unauthenticated,
+ * so the conversation became publicly readable for the full TTL without the
+ * user ever confirming. Closing the dialog did not undo it. This query is what
+ * lets the dialog show an existing link without publishing a new one; minting
+ * now requires the explicit button, which calls `create` unchanged.
+ *
+ * RETURNS NULL RATHER THAN THROWING for a missing or someone else's target.
+ * Two reasons: a rejected Convex call logs console.error and every e2e script
+ * asserts zero console errors, and "throws" vs "returns null" would make this
+ * an existence oracle for another user's threadId.
+ */
+export const activeForTarget = query({
+  args: {
+    shareType: v.union(v.literal("full_chat"), v.literal("single_turn")),
+    threadId: v.optional(v.string()),
+    messageId: v.optional(v.id("chatMessages")),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getUserIdOrNull(ctx);
+    if (!userId) return null;
+
+    let chatId: Id<"chatThreads">;
+    let messageId: Id<"chatMessages"> | undefined;
+
+    try {
+      if (args.shareType === "full_chat") {
+        if (!args.threadId) return null;
+        const id = ctx.db.normalizeId("chatThreads", args.threadId);
+        if (!id) return null;
+        await requireThreadAccess(ctx, userId, id);
+        chatId = id;
+      } else {
+        if (!args.messageId) return null;
+        const { message, thread } = await requireMessageAccess(
+          ctx,
+          userId,
+          args.messageId,
+        );
+        chatId = thread._id;
+        messageId = message._id;
+      }
+    } catch {
+      // Not yours, or gone. Indistinguishable on purpose.
+      return null;
+    }
+
+    const match = await findActiveShare(ctx, {
+      userId,
+      chatId,
+      shareType: args.shareType,
+      messageId,
+    });
+    if (!match) return null;
+    return {
+      token: match.token,
+      expiresAt: match.expiresAt,
+      shareType: match.shareType,
+    };
+  },
+});
+
 export const create = mutation({
   args: {
     shareType: v.union(v.literal("full_chat"), v.literal("single_turn")),
@@ -206,19 +305,12 @@ export const create = mutation({
 
     // Dedup: reuse an existing active share for the same target unless forceNew.
     if (!args.forceNew) {
-      const now = Date.now();
-      const existing = await ctx.db
-        .query("chatShares")
-        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
-        .collect();
-      const match = existing.find(
-        (s) =>
-          s.userId === userId &&
-          s.shareType === args.shareType &&
-          (s.messageId ?? null) === (messageId ?? null) &&
-          !s.revokedAt &&
-          s.expiresAt > now,
-      );
+      const match = await findActiveShare(ctx, {
+        userId,
+        chatId,
+        shareType: args.shareType,
+        messageId,
+      });
       if (match) {
         return {
           token: match.token,

@@ -8,7 +8,9 @@ property of the code's shape rather than a rule someone has to remember.
 from __future__ import annotations
 
 import ast
+import json as _json
 import pathlib
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -20,7 +22,10 @@ from app.routers.schedule import (
     ParseRequest,
     _extract_json,
     _missing,
+    _repair_prompt,
+    _same_text,
     _sanitize,
+    parse,
 )
 from app.routers.schedule import (
     parse_candidates as _candidates,
@@ -337,3 +342,186 @@ def test_a_provider_timeout_is_not_treated_as_exhausted_capacity():
 
     assert not is_quota_error(TimeoutError("timed out"))
     assert not is_quota_error(Exception("APITimeoutError: Request timed out."))
+
+
+# --------------------------------------------------------------------------
+# Repairing an instruction the model failed to write (QA #9 / #10).
+#
+# The reported symptom was "OllaSuper generates a task it then refuses to
+# create, until you change one character". The cause was never the composer:
+# a weak model returns `prompt` empty or echoing the request, `_missing` /
+# the echo guard mark it unresolved, and unresolved blocks Create. These
+# tests pin the repair pass AND the guard it must never weaken.
+# --------------------------------------------------------------------------
+def _settings(repair: bool = True):
+    return SimpleNamespace(ai_schedule_repair_enabled=repair)
+
+
+def _request(settings):
+    state = SimpleNamespace(settings=settings)
+    return SimpleNamespace(app=SimpleNamespace(state=state))
+
+
+async def test_repair_turns_a_bare_topic_into_a_real_instruction(monkeypatch):
+    async def fake(_s, _m, _payload, system=None):
+        assert "NEVER INVENT SUBJECT MATTER" in system
+        return (
+            _json.dumps(
+                {
+                    "title": "Politics Briefing",
+                    "prompt": "Summarise the most important political "
+                    "developments since the last briefing, grouped under short "
+                    "headings, with a source link for each item.",
+                }
+            ),
+            None,
+        )
+
+    monkeypatch.setattr("app.routers.schedule._invoke", fake)
+    out = await _repair_prompt(_settings(), "m", "Politics")
+    assert out is not None
+    title, prompt = out
+    assert title == "Politics Briefing"
+    assert not _same_text(prompt, "Politics")
+    assert len(prompt) > len("Politics")
+
+
+async def test_a_repair_that_echoes_again_is_rejected(monkeypatch):
+    async def fake(_s, _m, _payload, system=None):
+        return _json.dumps({"title": "Politics", "prompt": "Politics"}), None
+
+    monkeypatch.setattr("app.routers.schedule._invoke", fake)
+    assert await _repair_prompt(_settings(), "m", "Politics") is None
+
+
+async def test_a_repair_that_is_empty_or_unparseable_is_rejected(monkeypatch):
+    async def empty(_s, _m, _payload, system=None):
+        return _json.dumps({"title": "x", "prompt": "   "}), None
+
+    monkeypatch.setattr("app.routers.schedule._invoke", empty)
+    assert await _repair_prompt(_settings(), "m", "Politics") is None
+
+    async def junk(_s, _m, _payload, system=None):
+        return "not json at all", None
+
+    monkeypatch.setattr("app.routers.schedule._invoke", junk)
+    assert await _repair_prompt(_settings(), "m", "Politics") is None
+
+
+async def test_a_failing_repair_never_raises(monkeypatch):
+    async def boom(_s, _m, _payload, system=None):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr("app.routers.schedule._invoke", boom)
+    assert await _repair_prompt(_settings(), "m", "Politics") is None
+
+
+def _parser_reply(**over):
+    base = {
+        "title": "Politics",
+        "prompt": "Politics",
+        "kind": "daily",
+        "hour": 9,
+        "minute": 0,
+        "timezone": "Asia/Kolkata",
+        "needs": [],
+    }
+    base.update(over)
+    return _json.dumps(base)
+
+
+async def test_generate_then_create_needs_no_edit(monkeypatch):
+    """The end-to-end shape of QA #10: a topic-only request must come back
+    creatable — nothing left in `needs` that the user has to retype."""
+    calls: list[str] = []
+
+    async def fake(_s, _m, _payload, system=None):
+        if system and "You write the instruction" in system:
+            calls.append("repair")
+            return (
+                _json.dumps(
+                    {
+                        "title": "Politics Briefing",
+                        "prompt": "Summarise the most important political "
+                        "developments since the last briefing.",
+                    }
+                ),
+                None,
+            )
+        calls.append("parse")
+        return _parser_reply(), None
+
+    monkeypatch.setattr("app.routers.schedule._invoke", fake)
+    monkeypatch.setattr("app.routers.schedule.parse_candidates", lambda _s: ["m"])
+
+    res = await parse(ParseRequest(text="Politics"), _request(_settings()))
+    assert res.ok and res.schedule is not None
+    assert calls == ["parse", "repair"]
+    # The echo guard would have put "prompt" here; the repair is what removes it.
+    assert "prompt" not in res.needs
+    assert "title" not in res.needs
+    assert not _same_text(res.schedule.prompt, "Politics")
+
+
+async def test_the_echo_guard_still_blocks_when_repair_cannot_help(monkeypatch):
+    """The fail-safe. A task whose instruction is just the topic must never
+    become creatable — that is the run that asks the assistant to 'do Politics'."""
+
+    async def fake(_s, _m, _payload, system=None):
+        if system and "You write the instruction" in system:
+            return _json.dumps({"title": "Politics", "prompt": "Politics"}), None
+        return _parser_reply(), None
+
+    monkeypatch.setattr("app.routers.schedule._invoke", fake)
+    monkeypatch.setattr("app.routers.schedule.parse_candidates", lambda _s: ["m"])
+
+    res = await parse(ParseRequest(text="Politics"), _request(_settings()))
+    assert res.ok
+    assert "prompt" in res.needs
+
+
+async def test_a_good_prompt_is_never_repaired(monkeypatch):
+    calls: list[str] = []
+
+    async def fake(_s, _m, _payload, system=None):
+        calls.append(
+            "repair"
+            if system and "You write the instruction" in system
+            else "parse"
+        )
+        return (
+            _parser_reply(
+                title="AI News Summary",
+                prompt="Summarise the most important AI news from the past week.",
+            ),
+            None,
+        )
+
+    monkeypatch.setattr("app.routers.schedule._invoke", fake)
+    monkeypatch.setattr("app.routers.schedule.parse_candidates", lambda _s: ["m"])
+
+    res = await parse(
+        ParseRequest(text="ai news summary every day at 9am"), _request(_settings())
+    )
+    assert res.ok
+    assert calls == ["parse"]  # no second call
+    assert "prompt" not in res.needs
+
+
+async def test_the_kill_switch_restores_the_old_behaviour(monkeypatch):
+    calls: list[str] = []
+
+    async def fake(_s, _m, _payload, system=None):
+        calls.append(
+            "repair"
+            if system and "You write the instruction" in system
+            else "parse"
+        )
+        return _parser_reply(), None
+
+    monkeypatch.setattr("app.routers.schedule._invoke", fake)
+    monkeypatch.setattr("app.routers.schedule.parse_candidates", lambda _s: ["m"])
+
+    res = await parse(ParseRequest(text="Politics"), _request(_settings(repair=False)))
+    assert calls == ["parse"]
+    assert "prompt" in res.needs

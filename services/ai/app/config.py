@@ -433,6 +433,13 @@ class Settings(BaseSettings):
     # explicit parser model had a "fallback" identical to its primary and
     # therefore no second attempt at all.
     ai_schedule_model_fallback: str = "deepseek-v4-flash"
+    # ONE extra model call, only when the parser came back with no usable
+    # instruction — an empty `prompt`, or a `prompt` that is just the user's own
+    # sentence echoed back. Without it the composer hands that failure to the
+    # user as a blocked Create, which reads as "OllaSuper generated a task it
+    # then refuses to save". Off = today's behaviour exactly (the echo guard
+    # still blocks), so this is a kill switch, not a feature gate.
+    ai_schedule_repair_enabled: bool = True
     # Title generation model — intentionally a tiny/fast model (Gemini Flash).
     # NOTE: gemini-2.0-flash-001 was RETIRED by OpenRouter (404 "No endpoints
     # found"); the live successor is gemini-2.5-flash-lite (multimodal, cheap).

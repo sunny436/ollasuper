@@ -67,6 +67,25 @@ export default function FilesSection() {
     current ? { workspaceId: current } : "skip",
     { initialNumItems: 20 },
   );
+  // THE SECOND FILE SYSTEM. The chat rail's "Files" is a DIFFERENT table:
+  // `userFiles` is the per-user knowledge base (ingested + embedded, pinned to
+  // the caller's own userId), while `files` above is workspace-scoped storage
+  // any member can see. Both were labelled "Files", so the rail could say
+  // "1 file - Ready" while this page said "No files yet" and neither was wrong.
+  // Listing both here, clearly separated, is what makes the two consistent.
+  // The queries stay untouched, so each keeps its own scope and nothing becomes
+  // visible to anyone who could not already see it.
+  const {
+    results: knowledge,
+    status: knowledgeStatus,
+    loadMore: loadMoreKnowledge,
+  } = usePaginatedQuery(
+    api.userFiles.list,
+    current ? { workspaceId: current } : "skip",
+    { initialNumItems: 20 },
+  );
+  const removeKnowledge = useMutation(api.userFiles.remove);
+  const retryKnowledge = useMutation(api.userFiles.retry);
   const generateUploadUrl = useMutation(api.files.generateUploadUrl);
   const saveFile = useMutation(api.files.saveFile);
   const removeFile = useMutation(api.files.remove);
@@ -129,7 +148,7 @@ export default function FilesSection() {
             Files
           </h1>
           <p className="mt-1 text-sm text-primary/55">
-            Workspace-scoped uploads, grouped by type.
+            Workspace uploads, plus the chat files only you can see.
           </p>
         </div>
         <label className="cursor-pointer">
@@ -228,6 +247,89 @@ export default function FilesSection() {
           </Button>
         </div>
       )}
+
+      {/* Deliberately its own section, NOT folded into the type grouping above:
+          these rows have a different owner and a different visibility rule, and
+          merging them would misrepresent who can see what. */}
+      <div className="overflow-hidden rounded-2xl border border-border bg-card/60 backdrop-blur-xl">
+        <div className="flex items-center gap-2 border-b border-border px-5 py-3">
+          <FileText className="h-4 w-4 text-primary/50" />
+          <h2 className="text-sm font-medium text-primary/85">Chat files</h2>
+          <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/50">
+            {knowledge.length}
+          </span>
+          <span className="ml-auto text-[11px] text-primary/45">
+            Uploaded in chat · only you can see these
+          </span>
+        </div>
+        {knowledgeStatus === "LoadingFirstPage" ? (
+          <p className="px-5 py-6 text-center text-sm text-primary/50">
+            Loading…
+          </p>
+        ) : knowledge.length === 0 ? (
+          <p className="px-5 py-6 text-center text-sm text-primary/50">
+            No chat files yet — attach one in a conversation.
+          </p>
+        ) : (
+          <div className="divide-y divide-border/60">
+            {knowledge.map((f) => (
+              <div
+                key={f._id}
+                className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <span className="truncate text-sm text-primary/85">
+                    {f.name}
+                  </span>
+                  <p className="mt-0.5 text-xs text-primary/45">
+                    {fmtSize(f.size)} ·{" "}
+                    {new Date(f.createdAt).toLocaleDateString()} ·{" "}
+                    {f.status === "ready"
+                      ? "Ready"
+                      : f.status === "processing"
+                        ? "Processing…"
+                        : "Failed"}
+                  </p>
+                </div>
+                {f.status === "failed" && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-primary/70 transition hover:bg-primary/5"
+                    onClick={async () => {
+                      await retryKnowledge({ fileId: f._id });
+                      toast.success("Retrying");
+                    }}
+                  >
+                    Retry
+                  </button>
+                )}
+                <ConfirmButton
+                  label="Delete"
+                  title="Delete file?"
+                  description={f.name}
+                  confirmLabel="Delete"
+                  className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-500 transition hover:bg-red-500/10"
+                  onConfirm={async () => {
+                    await removeKnowledge({ fileId: f._id });
+                    toast.success("File deleted");
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+        {knowledgeStatus === "CanLoadMore" && (
+          <div className="flex justify-center border-t border-border py-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => loadMoreKnowledge(20)}
+            >
+              Load more
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

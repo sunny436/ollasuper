@@ -299,6 +299,139 @@ describe("chat shares", () => {
     expect(c.token).not.toBe(a.token);
   });
 
+  // ---- QA #6: opening the dialog must not publish anything ---------------
+  //
+  // The dialog used to call `create` from a useEffect on open, so opening it
+  // and closing it again left a live public link — `getByToken` is
+  // unauthenticated, so the conversation was readable by anyone with the URL
+  // for the full TTL. `activeForTarget` is the read-only lookup that replaced
+  // it: it answers "is one already live?" without ever writing.
+  test("#6: activeForTarget never creates a share", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const { threadId } = await seedThread(t, owner, ws);
+    const u = t.withIdentity(as(owner));
+
+    const before = await u.query(api.chat.shares.activeForTarget, {
+      shareType: "full_chat",
+      threadId,
+    });
+    expect(before).toBeNull();
+    // The property that actually matters: nothing was persisted.
+    expect(await t.run((ctx) => ctx.db.query("chatShares").collect())).toEqual([]);
+
+    // Calling it repeatedly is still a no-op — this runs on every dialog open.
+    await u.query(api.chat.shares.activeForTarget, {
+      shareType: "full_chat",
+      threadId,
+    });
+    expect(await t.run((ctx) => ctx.db.query("chatShares").collect())).toEqual([]);
+  });
+
+  test("#6: after an explicit create, the same link is returned", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const { threadId } = await seedThread(t, owner, ws);
+    const u = t.withIdentity(as(owner));
+
+    const made = await u.mutation(api.chat.shares.create, {
+      shareType: "full_chat",
+      threadId,
+    });
+    const found = await u.query(api.chat.shares.activeForTarget, {
+      shareType: "full_chat",
+      threadId,
+    });
+    expect(found?.token).toBe(made.token);
+    expect(found?.expiresAt).toBe(made.expiresAt);
+    // Still exactly one row: the lookup did not mint a second.
+    expect(
+      (await t.run((ctx) => ctx.db.query("chatShares").collect())).length,
+    ).toBe(1);
+  });
+
+  test("#6: a revoked or expired share reads as none, so the UI offers a new one", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const { threadId } = await seedThread(t, owner, ws);
+    const u = t.withIdentity(as(owner));
+    const made = await u.mutation(api.chat.shares.create, {
+      shareType: "full_chat",
+      threadId,
+    });
+    const row = await t.run((ctx) =>
+      ctx.db
+        .query("chatShares")
+        .withIndex("by_token", (q) => q.eq("token", made.token))
+        .unique(),
+    );
+    await t.run((ctx) => ctx.db.patch(row!._id, { revokedAt: Date.now() }));
+    expect(
+      await u.query(api.chat.shares.activeForTarget, {
+        shareType: "full_chat",
+        threadId,
+      }),
+    ).toBeNull();
+  });
+
+  test("#6: single_turn is scoped to its own message", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const { threadId, asstMsgId } = await seedThread(t, owner, ws);
+    const u = t.withIdentity(as(owner));
+    await u.mutation(api.chat.shares.create, {
+      shareType: "single_turn",
+      messageId: asstMsgId,
+    });
+    // A full_chat share of the same thread is a DIFFERENT target.
+    expect(
+      await u.query(api.chat.shares.activeForTarget, {
+        shareType: "full_chat",
+        threadId,
+      }),
+    ).toBeNull();
+    expect(
+      await u.query(api.chat.shares.activeForTarget, {
+        shareType: "single_turn",
+        messageId: asstMsgId,
+      }),
+    ).not.toBeNull();
+  });
+
+  test("#6: another user's target reads as none and does NOT throw", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, other, ws } = await seed(t);
+    const { threadId } = await seedThread(t, owner, ws);
+    await t.withIdentity(as(owner)).mutation(api.chat.shares.create, {
+      shareType: "full_chat",
+      threadId,
+    });
+    // Returning null rather than throwing is deliberate twice over: a rejected
+    // Convex call logs console.error and every e2e script asserts zero of
+    // those, and "throws vs null" would be an existence oracle for someone
+    // else's threadId.
+    await expect(
+      t
+        .withIdentity(as(other))
+        .query(api.chat.shares.activeForTarget, {
+          shareType: "full_chat",
+          threadId,
+        }),
+    ).resolves.toBeNull();
+    await expect(
+      t.withIdentity(as(other)).query(api.chat.shares.activeForTarget, {
+        shareType: "full_chat",
+        threadId: "not-a-real-id",
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      t.query(api.chat.shares.activeForTarget, {
+        shareType: "full_chat",
+        threadId,
+      }),
+    ).resolves.toBeNull();
+  });
+
   test("cannot share while the response is streaming", async () => {
     const t = convexTest(schema, modules);
     const { owner, ws } = await seed(t);

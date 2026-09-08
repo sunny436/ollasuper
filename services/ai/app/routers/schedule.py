@@ -271,8 +271,14 @@ def parse_candidates(settings) -> list[str]:
     return live or seen
 
 
-async def _invoke(settings, model: str, payload: dict) -> tuple[str, str | None]:
-    """One model attempt. Returns the raw reply and its finish reason."""
+async def _invoke(
+    settings, model: str, payload: dict, system: str = _SYSTEM
+) -> tuple[str, str | None]:
+    """One model attempt. Returns the raw reply and its finish reason.
+
+    `system` is a parameter because the repair pass below needs the SAME
+    provider/timeout/retry configuration with a different, much narrower brief.
+    """
     llm = build_llm(
         settings,
         model=model,
@@ -285,7 +291,7 @@ async def _invoke(settings, model: str, payload: dict) -> tuple[str, str | None]
     )
     reply = await llm.ainvoke(
         [
-            ("system", _SYSTEM),
+            ("system", system),
             ("user", json.dumps(payload, ensure_ascii=False)),
         ]
     )
@@ -293,6 +299,71 @@ async def _invoke(settings, model: str, payload: dict) -> tuple[str, str | None]
     meta = getattr(reply, "response_metadata", None) or {}
     finish = meta.get("finish_reason")
     return raw, finish if isinstance(finish, str) else None
+
+
+# The parser is asked for a dozen fields at once and, on a weak model, the
+# `prompt` is where that budget runs out: it comes back empty or as the user's
+# own sentence. `_SYSTEM` already forbids both. Re-asking for that ONE field,
+# with the same rules and nothing else to think about, is a far smaller task
+# than the full structured parse and is what actually gets it written.
+#
+# The rules here are copied from _SYSTEM deliberately rather than referenced:
+# this reply must stand alone, and "never invent subject matter" is the line
+# that keeps a terse topic from being answered with a topic we made up.
+_REPAIR_SYSTEM = """You write the instruction for a scheduled task.
+
+You are given what the user typed. Return ONLY a JSON object:
+
+  {"title": "...", "prompt": "..."}
+
+prompt  The instruction that will be delivered ON ITS OWN to an AI assistant
+        with NO other context — not this conversation, not the title, not the
+        schedule. It must be a real instruction, never a restatement of the
+        request and never a two-word summary.
+title   A short human name for the work, 2-5 words. Never a placeholder.
+
+RULES
+  - NEVER INVENT SUBJECT MATTER. No topics, companies, regions, metrics or
+    sources the user did not ask for. The subject is whatever they said.
+  - When the user was terse, STILL WRITE A COMPLETE INSTRUCTION. Add only
+    PRESENTATION detail — structure, ordering, length, "cite your sources",
+    "link each item". That is how an answer is delivered, not what it is about.
+  - EXCLUDE scheduling words ("every Sunday", "at 8 AM", "create a scheduler").
+    KEEP any period that describes the WORK ("from the previous week").
+  - Address the assistant directly. Never write "the user wants".
+
+Example:
+  user typed: "Politics"
+  {"title": "Politics Briefing",
+   "prompt": "Summarise the most important political developments since the
+   last briefing. Group related stories under short headings, focus on what
+   genuinely matters rather than everything published, give one or two
+   sentences on why each one matters, and include a source link for each item."}
+"""
+
+
+async def _repair_prompt(
+    settings, model: str, text: str
+) -> tuple[str, str] | None:
+    """Re-ask for title+prompt alone. Returns (title, prompt) or None."""
+    try:
+        raw, _ = await _invoke(
+            settings, model, {"user_typed": text}, system=_REPAIR_SYSTEM
+        )
+    except Exception as e:  # noqa: BLE001 — a failed repair is a no-op, never a 500
+        log.warning("schedule.repair_failed", extra={"error": type(e).__name__})
+        return None
+    data = _extract_json(raw)
+    if not isinstance(data, dict):
+        return None
+    prompt = data.get("prompt")
+    title = data.get("title")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    # The whole point was to stop echoing; an echoed repair is not a repair.
+    if _same_text(prompt, text):
+        return None
+    return (title.strip() if isinstance(title, str) else ""), prompt.strip()
 
 
 @router.post("/parse", response_model=ParseResponse)
@@ -318,9 +389,11 @@ async def parse(req: ParseRequest, request: Request) -> ParseResponse:
 
     raw: str | None = None
     finish: str | None = None
+    used_model: str | None = None
     for attempt, model in enumerate(candidates):
         try:
             raw, finish = await _invoke(settings, model, payload)
+            used_model = model
             break
         except Exception as e:  # noqa: BLE001 — degrade to the manual form, never 500
             # A capacity refusal is remembered so the next parse skips this model
@@ -357,6 +430,41 @@ async def parse(req: ParseRequest, request: Request) -> ParseResponse:
     # Normalise into something the Phase 1 validator will accept, and drop
     # anything inconsistent rather than passing it on.
     schedule = _sanitize(schedule, req.timezone)
+
+    # NO USABLE INSTRUCTION? ASK ONCE MORE BEFORE GIVING UP ON IT.
+    #
+    # `_missing` flags an empty prompt and the guard below flags one that just
+    # echoes the request. Both used to end the same way: the field was handed
+    # back to the user as unresolved, which blocks Create — so a task OllaSuper
+    # had just "generated" could not be created without editing it first. That
+    # is the reported bug, and its cause is that the instruction was never
+    # written, not that the composer mishandled it.
+    #
+    # Running here, BEFORE `_missing`, means everything downstream is unchanged:
+    # a successful repair simply arrives as a schedule that was always fine, and
+    # a failed one falls through to exactly today's behaviour. The guard is
+    # never loosened — it stays the fail-safe that stops a topic being saved as
+    # an instruction.
+    if (
+        settings.ai_schedule_repair_enabled
+        and used_model
+        and (
+            not schedule.prompt.strip()
+            or not schedule.title.strip()
+            or _same_text(schedule.prompt, req.text)
+        )
+    ):
+        repaired = await _repair_prompt(settings, used_model, req.text)
+        if repaired:
+            title, prompt = repaired
+            if not schedule.prompt.strip() or _same_text(schedule.prompt, req.text):
+                schedule.prompt = prompt
+            # Only ever FILLS a title; a good one the parser found is kept.
+            if not schedule.title.strip() and title:
+                schedule.title = title
+            log.info("schedule.prompt_repaired", extra={"model": used_model})
+        else:
+            log.info("schedule.repair_ineffective", extra={"model": used_model})
 
     needs = _missing(schedule)
     ambiguous = _ambiguous(schedule, req.text, req.draft is not None)

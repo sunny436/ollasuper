@@ -96,8 +96,34 @@ async function openPublic(browser, url) {
       .catch(() => {});
   });
 
+  // Opening the dialog used to CREATE the link. It no longer does, because
+  // `getByToken` is unauthenticated: a user who opened this and closed it had
+  // already published the conversation for the full TTL without confirming.
+  // This step is the regression guard for that.
+  await step("open Share → close → nothing was published", async () => {
+    await page.getByRole("button", { name: "Share conversation" }).click();
+    await page
+      .locator('[role="dialog"]')
+      .getByRole("button", { name: /create link/i })
+      .waitFor({ timeout: 15000 });
+    const leaked = await page.evaluate(() => {
+      const el = document.querySelector('[role="dialog"] input[readonly]');
+      return el ? el.value : "";
+    });
+    if (/\/share\//.test(leaked)) {
+      throw new Error("a link existed before the user confirmed: " + leaked);
+    }
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(800);
+  });
+
   await step("Share Chat → get a public link", async () => {
     await page.getByRole("button", { name: "Share conversation" }).click();
+    // Minting is now an explicit action.
+    await page
+      .locator('[role="dialog"]')
+      .getByRole("button", { name: /create link/i })
+      .click();
     const input = page.locator('[role="dialog"] input[readonly]');
     await input.waitFor({ timeout: 15000 });
     await page.waitForFunction(
@@ -161,6 +187,10 @@ async function openPublic(browser, url) {
       .catch(() => {});
     await page.waitForTimeout(1500);
     await page.getByRole("button", { name: "Share response" }).first().click();
+    await page
+      .locator('[role="dialog"]')
+      .getByRole("button", { name: /create link/i })
+      .click();
     const input = page.locator('[role="dialog"] input[readonly]');
     await page.waitForFunction(
       () => {
