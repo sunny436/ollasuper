@@ -26,6 +26,7 @@ import httpx
 from app.config import Settings
 from app.logging import get_logger
 from app.models.tools import ToolDefinition
+from app.security.ssrf import SsrfError, assert_payload_urls_safe
 from app.tools.discovery import DiscoveryResult, discover_from_spec
 from app.tools.errors import ToolError, ToolErrorKind
 
@@ -359,6 +360,18 @@ class OllagraphAdapter:
         provider can enforce tenant/user isolation.
         """
         self._validate_input(payload, input_schema)
+        # SSRF BOUNDARY: a tool payload can carry a model-supplied `url` that
+        # Ollagraph then fetches. Refuse to forward any URL that points at
+        # loopback / private / metadata / internal targets, resolved via DNS.
+        # Default-closed: unsafe URLs never leave this process.
+        try:
+            await assert_payload_urls_safe(payload)
+        except SsrfError as e:
+            raise ToolError(
+                ToolErrorKind.INVALID_INPUT,
+                f"unsafe url refused: {e}",
+                tool_id=tool.tool_id,
+            ) from e
         headers = self._auth_headers(
             tool, user_id=user_id, workspace_id=workspace_id
         )
