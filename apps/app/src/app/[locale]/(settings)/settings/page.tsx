@@ -25,6 +25,93 @@ function usernameError(name: string): string | null {
   return null;
 }
 
+/**
+ * Change password — the self-service credential rotation this app lacked.
+ *
+ * Without it the ONLY way to change a password was the emailed reset code, and
+ * on a deployment whose mail transport refuses local catchers an address that
+ * cannot receive mail could never rotate its credential at all. The server
+ * action enforces the same policy as sign-up/reset, verifies the current
+ * password, and revokes every other session plus its refresh tokens.
+ */
+function ChangePasswordSection() {
+  const changePassword = useAction(api.authPassword.changePassword);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const mismatch = confirm.length > 0 && next !== confirm;
+  const ready = current.length > 0 && next.length > 0 && !mismatch && !busy;
+
+  const onSubmit = async () => {
+    if (!ready) return;
+    setBusy(true);
+    try {
+      await changePassword({ currentPassword: current, newPassword: next });
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      toast.success("Password changed. Other sessions were signed out.");
+    } catch (e) {
+      const msg =
+        (e as { data?: string })?.data ??
+        (e as Error)?.message ??
+        "Could not change the password.";
+      toast.error(String(msg).replace(/^Uncaught ConvexError:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-border bg-card/60 backdrop-blur-xl">
+      <div className="flex flex-col gap-2 p-6">
+        <h2 className="text-lg font-medium text-primary">Change password</h2>
+        <p className="text-sm font-normal text-primary/60">
+          Changing your password signs out every other device.
+        </p>
+        <div className="mt-2 flex flex-col gap-3 sm:max-w-md">
+          <Input
+            type="password"
+            autoComplete="current-password"
+            placeholder="Current password"
+            aria-label="Current password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+          />
+          <Input
+            type="password"
+            autoComplete="new-password"
+            placeholder="New password"
+            aria-label="New password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+          />
+          <Input
+            type="password"
+            autoComplete="new-password"
+            placeholder="Confirm new password"
+            aria-label="Confirm new password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+          />
+          {mismatch && (
+            <p className="text-sm text-destructive">
+              The two new passwords do not match.
+            </p>
+          )}
+        </div>
+      </div>
+      <div className="flex min-h-14 items-center justify-end rounded-b-2xl border-t border-border bg-card/40 px-6 py-3">
+        <Button type="button" size="sm" disabled={!ready} onClick={onSubmit}>
+          {busy ? "Changing…" : "Change password"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function ProfileSection() {
   const t = useScopedI18n("settings");
   const user = useQuery(api.users.getUser);
@@ -253,6 +340,8 @@ export default function ProfileSection() {
           </Button>
         </div>
       </div>
+
+      <ChangePasswordSection />
 
       {/* Delete account */}
       <div className="rounded-2xl border border-destructive/60 bg-card/60 backdrop-blur-xl">

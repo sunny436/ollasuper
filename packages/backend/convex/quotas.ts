@@ -25,7 +25,14 @@ import { internalMutation } from "./_generated/server";
  */
 
 /** One window per user per kind, so kinds can never spend each other's budget. */
-export type QuotaKind = "chat" | "parse" | "schedRun" | "seoRun";
+export type QuotaKind =
+  | "chat"
+  | "parse"
+  | "schedRun"
+  | "seoRun"
+  // Authenticated password-change attempts. Bounds the password oracle that
+  // verifying `currentPassword` necessarily creates for a session holder.
+  | "passwordChange";
 
 export type WindowResult =
   | { ok: true }

@@ -8,6 +8,7 @@ import {
   assertUsableEmail,
   googleProfile,
   isCommonPassword,
+  assertPasswordRequirements,
   normalizeEmail,
 } from "./authPolicy";
 import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
@@ -60,27 +61,7 @@ const PasswordWithFlows = OllaSuperPassword({
   },
   // Runs on BOTH sign-up and password-reset. One specific message per failing
   // rule so the user knows exactly what to fix.
-  validatePasswordRequirements: (password: string) => {
-    if (password.length < 8)
-      throw new ConvexError("Password must be at least 8 characters.");
-    // Upper bound, matching Better Auth. scrypt is deliberately expensive, so an
-    // unbounded password is a CPU denial-of-service against an endpoint that
-    // needs no authentication to reach.
-    if (password.length > 128)
-      throw new ConvexError("Password must be 128 characters or fewer.");
-    if (!/[a-z]/.test(password))
-      throw new ConvexError("Password must include a lowercase letter.");
-    if (!/[A-Z]/.test(password))
-      throw new ConvexError("Password must include an uppercase letter.");
-    if (!/\d/.test(password))
-      throw new ConvexError("Password must include a number.");
-    if (!/[^A-Za-z0-9]/.test(password))
-      throw new ConvexError("Password must include a special character.");
-    if (isCommonPassword(password))
-      throw new ConvexError(
-        "This password is too common — choose something less predictable.",
-      );
-  },
+  validatePasswordRequirements: assertPasswordRequirements,
 });
 
 /**

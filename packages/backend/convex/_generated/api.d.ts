@@ -16,6 +16,7 @@ import type * as auth from "../auth.js";
 import type * as authCodes from "../authCodes.js";
 import type * as authEvents from "../authEvents.js";
 import type * as authEventsPurge from "../authEventsPurge.js";
+import type * as authPassword from "../authPassword.js";
 import type * as authPolicy from "../authPolicy.js";
 import type * as authProbe from "../authProbe.js";
 import type * as authPurge from "../authPurge.js";
@@ -103,6 +104,7 @@ declare const fullApi: ApiFromModules<{
   authCodes: typeof authCodes;
   authEvents: typeof authEvents;
   authEventsPurge: typeof authEventsPurge;
+  authPassword: typeof authPassword;
   authPolicy: typeof authPolicy;
   authProbe: typeof authProbe;
   authPurge: typeof authPurge;

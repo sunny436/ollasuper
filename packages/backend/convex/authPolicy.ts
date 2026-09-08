@@ -163,6 +163,36 @@ export function isCommonPassword(password: string): boolean {
  * email are both available. Guards on length >= 3 so a one/two-char local part
  * or initial cannot flag every password.
  */
+/**
+ * The character-class / length / common-password rules.
+ *
+ * Extracted from the inline `validatePasswordRequirements` lambda in auth.ts so
+ * the authenticated change-password flow enforces exactly the same rules as
+ * sign-up and reset. A second copy of a password policy is a second thing to
+ * forget to update, and the rule that drifts is the one that matters.
+ */
+export function assertPasswordRequirements(password: string): void {
+  if (password.length < 8)
+    throw new ConvexError("Password must be at least 8 characters.");
+  // Upper bound, matching Better Auth. scrypt is deliberately expensive, so an
+  // unbounded password is a CPU denial-of-service against an endpoint that
+  // needs no authentication to reach.
+  if (password.length > 128)
+    throw new ConvexError("Password must be 128 characters or fewer.");
+  if (!/[a-z]/.test(password))
+    throw new ConvexError("Password must include a lowercase letter.");
+  if (!/[A-Z]/.test(password))
+    throw new ConvexError("Password must include an uppercase letter.");
+  if (!/\d/.test(password))
+    throw new ConvexError("Password must include a number.");
+  if (!/[^A-Za-z0-9]/.test(password))
+    throw new ConvexError("Password must include a special character.");
+  if (isCommonPassword(password))
+    throw new ConvexError(
+      "This password is too common — choose something less predictable.",
+    );
+}
+
 export function assertPasswordNotIdentity(
   password: string,
   email: string,
