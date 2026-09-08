@@ -167,6 +167,14 @@ async function sweepAccountTables(
     .take(ROWS_PER_SUBQUERY);
   for (const f of uploads) {
     if (f.storageId) await deleteBlob(ctx, f.storageId);
+    // THE CONVEX ROW AND ITS BLOB ARE ONLY HALF THE FILE. The extracted text
+    // and its embeddings live in the PYTHON plane's Postgres, keyed by the
+    // `ingestId` capability. `userFiles.remove` purges them; account deletion
+    // did NOT, so a deleted user's documents survived in the knowledge DB
+    // with a dangling user_id. Same scheduled action, same capability.
+    await ctx.scheduler.runAfter(0, internal.userFiles.purge, {
+      ingestId: f.ingestId,
+    });
     await ctx.db.delete(f._id);
     did = true;
   }

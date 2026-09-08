@@ -423,19 +423,44 @@ export const reapStalled = internalMutation({
   },
 });
 
+/** Reclaim the Postgres bytes/chunks/embeddings for one ingest.
+ *
+ *  THIS IS THE ONLY THING THAT DELETES A USER'S DOCUMENT TEXT AND EMBEDDINGS.
+ *  There is no orphan sweeper — checked, no such cron exists — so an earlier
+ *  comment here claiming a leftover row is "swept later" was simply wrong, and
+ *  a swallowed failure was permanent silent data retention. That matters most
+ *  on the account-deletion path, where this is the difference between a user's
+ *  documents being gone and being merely unreferenced. Hence a bounded retry:
+ *  a Python restart or a brief outage no longer costs the deletion guarantee,
+ *  and the cap stops a permanently-down plane from looping forever. */
+const PURGE_MAX_ATTEMPTS = 5;
+
 export const purge = internalAction({
-  args: { ingestId: v.string() },
-  handler: async (ctx, { ingestId }) => {
+  args: { ingestId: v.string(), attempt: v.optional(v.number()) },
+  handler: async (ctx, { ingestId, attempt = 0 }) => {
     const base = process.env.AI_BASE_URL;
     const key = process.env.AI_SERVICE_KEY;
     if (!base || !key) return;
+    let ok = false;
     try {
-      await fetch(
+      const res = await fetch(
         `${base.replace(/\/$/, "")}/v1/ingest/${encodeURIComponent(ingestId)}`,
         { method: "DELETE", headers: { "x-service-key": key } },
       );
+      ok = res.ok;
     } catch {
-      // A leftover Postgres row is unreferenced and swept later; never fatal.
+      ok = false;
     }
+    if (ok) return;
+    if (attempt + 1 >= PURGE_MAX_ATTEMPTS) {
+      console.error("userfile purge exhausted", { ingestId });
+      return;
+    }
+    // Backoff: 30s, 60s, 2m, 4m.
+    await ctx.scheduler.runAfter(
+      30_000 * 2 ** attempt,
+      internal.userFiles.purge,
+      { ingestId, attempt: attempt + 1 },
+    );
   },
 });
