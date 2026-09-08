@@ -310,7 +310,41 @@ export const profileIntegrityReport = internalQuery({
     const duplicates = [...byName.entries()]
       .filter(([, n]) => n > 1)
       .map(([name, n]) => ({ username: name, holders: n }));
-    return { scanned: users.length, duplicates, invalid };
+
+    // DUPLICATE IDENTITIES PER ADDRESS. auth.ts already documents how these
+    // arise: the library writes the RAW identifier over `users.email`, so a
+    // capitalised sign-up leaves a value that the NEXT provider fails to match,
+    // and it creates a second user for the same person. The repair in
+    // afterUserCreatedOrUpdated normalises going forward but cannot undo rows
+    // that already split.
+    //
+    // This matters to DELETION, not just tidiness: the cascade is keyed on one
+    // userId, so deleting "the account" for an address that owns two rows
+    // leaves the other identity — and its content — fully live, while the
+    // person believes they are gone. Counts only, never the addresses: this is
+    // a sizing tool, and it must not become a way to read the user table.
+    const byEmail = new Map<string, number>();
+    for (const u of users) {
+      const key = u.emailNormalized ?? u.email;
+      if (!key) continue;
+      byEmail.set(key, (byEmail.get(key) ?? 0) + 1);
+    }
+    const dupEmailGroups = [...byEmail.values()].filter((n) => n > 1);
+    const duplicateEmails = {
+      addresses: dupEmailGroups.length,
+      extraRows: dupEmailGroups.reduce((a, n) => a + (n - 1), 0),
+    };
+    const missingNormalized = users.filter(
+      (u) => u.email && !u.emailNormalized,
+    ).length;
+
+    return {
+      scanned: users.length,
+      duplicates,
+      invalid,
+      duplicateEmails,
+      missingNormalized,
+    };
   },
 });
 
