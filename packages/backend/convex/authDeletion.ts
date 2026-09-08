@@ -99,6 +99,20 @@ async function purgeThread(ctx: MutationCtx, threadId: Id<"chatThreads">) {
     await ctx.db.delete(art._id);
   }
 
+  // Conversation state + artifacts are thread-scoped and were never purged.
+  for (const r of await ctx.db
+    .query("conversationState")
+    .withIndex("by_thread", (q) => q.eq("threadId", threadId))
+    .take(ROWS_PER_SUBQUERY)) {
+    await ctx.db.delete(r._id);
+  }
+  for (const r of await ctx.db
+    .query("conversationArtifacts")
+    .withIndex("by_thread_seq", (q) => q.eq("threadId", threadId))
+    .take(ROWS_PER_SUBQUERY)) {
+    await ctx.db.delete(r._id);
+  }
+
   // Approvals ([threadId, status] index, queried by the threadId prefix).
   const approvals = await ctx.db
     .query("chatApprovals")
@@ -121,6 +135,150 @@ async function purgeThread(ctx: MutationCtx, threadId: Id<"chatThreads">) {
     attachments.length >= ROWS_PER_SUBQUERY ||
     artifacts.length >= ROWS_PER_SUBQUERY;
   return !more;
+}
+
+
+/**
+ * One bounded pass over the non-chat, user-owned tables. Returns true when it
+ * did work (→ the caller reschedules), false when everything is already gone.
+ */
+async function sweepAccountTables(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+): Promise<boolean> {
+  let did = false;
+
+  // API KEYS FIRST — they are live credentials. Revoke before delete so an
+  // interrupted sweep cannot leave a usable key behind.
+  const keys = await ctx.db
+    .query("apiKeys")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .take(ROWS_PER_SUBQUERY);
+  for (const k of keys) {
+    if (!k.revoked) await ctx.db.patch(k._id, { revoked: true });
+    await ctx.db.delete(k._id);
+    did = true;
+  }
+
+  // userFiles carry a storage blob.
+  const uploads = await ctx.db
+    .query("userFiles")
+    .withIndex("by_user_ws_created", (q) => q.eq("userId", userId))
+    .take(ROWS_PER_SUBQUERY);
+  for (const f of uploads) {
+    if (f.storageId) await deleteBlob(ctx, f.storageId);
+    await ctx.db.delete(f._id);
+    did = true;
+  }
+
+  // Projects and their file edges.
+  const projects = await ctx.db
+    .query("projects")
+    .withIndex("by_user_ws_status_updated", (q) => q.eq("userId", userId))
+    .take(50);
+  for (const pr of projects) {
+    const edges = await ctx.db
+      .query("projectFiles")
+      .withIndex("by_project", (q) => q.eq("projectId", pr._id))
+      .take(ROWS_PER_SUBQUERY);
+    for (const e of edges) await ctx.db.delete(e._id);
+    if (edges.length < ROWS_PER_SUBQUERY) await ctx.db.delete(pr._id);
+    did = true;
+  }
+
+  // Scheduled tasks: revisions + occurrences, then the task (stops future runs).
+  const tasks = await ctx.db
+    .query("scheduledTasks")
+    .withIndex("by_user_updated", (q) => q.eq("userId", userId))
+    .take(25);
+  for (const t of tasks) {
+    const revs = await ctx.db
+      .query("scheduledTaskRevisions")
+      .withIndex("by_task_revision", (q) => q.eq("taskId", t._id))
+      .take(ROWS_PER_SUBQUERY);
+    for (const r of revs) await ctx.db.delete(r._id);
+    const occs = await ctx.db
+      .query("scheduledTaskOccurrences")
+      .withIndex("by_task_scheduled", (q) => q.eq("taskId", t._id))
+      .take(ROWS_PER_SUBQUERY);
+    for (const o of occs) await ctx.db.delete(o._id);
+    if (revs.length < ROWS_PER_SUBQUERY && occs.length < ROWS_PER_SUBQUERY) {
+      await ctx.db.delete(t._id);
+    }
+    did = true;
+  }
+
+  // Flat user-scoped tables.
+  const notifications = await ctx.db
+    .query("notifications")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .take(ROWS_PER_SUBQUERY);
+  for (const n of notifications) {
+    await ctx.db.delete(n._id);
+    did = true;
+  }
+  const settings = await ctx.db
+    .query("chatSettings")
+    .withIndex("by_user_workspace", (q) => q.eq("userId", userId))
+    .take(ROWS_PER_SUBQUERY);
+  for (const c of settings) {
+    await ctx.db.delete(c._id);
+    did = true;
+  }
+  const quotas = await ctx.db
+    .query("userQuotas")
+    .withIndex("by_user_kind", (q) => q.eq("userId", userId))
+    .take(ROWS_PER_SUBQUERY);
+  for (const q0 of quotas) {
+    await ctx.db.delete(q0._id);
+    did = true;
+  }
+  const codes = await ctx.db
+    .query("accountDeletionCodes")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .take(ROWS_PER_SUBQUERY);
+  for (const c of codes) {
+    await ctx.db.delete(c._id);
+    did = true;
+  }
+
+  // Membership rows. The WORKSPACE itself is only removed when this user was its
+  // sole member — a workspace shared with others is refused up front in
+  // deleteCurrentUserAccount, so reaching here with one is not possible.
+  const memberships = await ctx.db
+    .query("members")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .take(25);
+  for (const m of memberships) {
+    const others = await ctx.db
+      .query("members")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", m.workspaceId))
+      .take(2);
+    const sole = others.filter((o) => o.userId !== userId).length === 0;
+    await ctx.db.delete(m._id);
+    if (sole) {
+      const ws = await ctx.db.get(m.workspaceId);
+      if (ws && ws.ownerId === userId) {
+        for (const f of await ctx.db
+          .query("files")
+          .withIndex("by_workspace", (q) => q.eq("workspaceId", m.workspaceId))
+          .take(ROWS_PER_SUBQUERY)) {
+          await deleteBlob(ctx, f.storageId);
+          await ctx.db.delete(f._id);
+        }
+        for (const i of await ctx.db
+          .query("invites")
+          .withIndex("by_workspace", (q) => q.eq("workspaceId", m.workspaceId))
+          .take(ROWS_PER_SUBQUERY)) {
+          await ctx.db.delete(i._id);
+        }
+        await ctx.db.delete(ws._id);
+      }
+    }
+    did = true;
+  }
+
+  return did;
 }
 
 export const cascadeUserContent = internalMutation({
@@ -164,7 +322,24 @@ export const cascadeUserContent = internalMutation({
       return;
     }
 
-    // 3. Nothing left — done. (The avatar blob is handled synchronously in
+    // 3. ACCOUNT-SCOPED SWEEP. Everything above is chat; these are the other
+    //    user-owned tables. Policy per resource, not blanket cascade:
+    //      * apiKeys      -> revoke THEN delete (a live credential must die first,
+    //                        so a crash mid-sweep still leaves it unusable)
+    //      * userFiles    -> row + storage blob
+    //      * projects/projectFiles/scheduledTasks(+revisions/occurrences)/
+    //        notifications/chatSettings/userQuotas/accountDeletionCodes -> delete
+    //      * auditLogs    -> RETAINED: they are the WORKSPACE's compliance record
+    //                        and belong to the other members, not to this user
+    //      * authEvents   -> RETAINED: security history, cron-purged at 90 days
+    const swept = await sweepAccountTables(ctx, userId);
+    if (swept) {
+      await ctx.scheduler.runAfter(0, internal.authDeletion.cascadeUserContent, {
+        userId,
+      });
+      return;
+    }
+    // 4. Nothing left — done. (The avatar blob is handled synchronously in
     //    deleteUserAccount so a deleted account frees it immediately.)
   },
 });

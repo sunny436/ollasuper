@@ -38,6 +38,12 @@ export default defineSchema({
   })
     .index("email", ["email"])
     .index("by_email_normalized", ["emailNormalized"])
+    // Usernames had NO index and therefore no uniqueness: updateUsername did a
+    // bare patch, so two accounts could hold one name — and getUser renders
+    // `username || name` in the sidebar and greeting, making that impersonation.
+    // Additive index only; Convex has no unique constraint, so the check lives
+    // in the mutation, where the serializable transaction makes it race-safe.
+    .index("by_username", ["username"])
     // Additive, and purely so the abandoned-signup purge can select exactly the
     // unverified rows. Without it the purge would scan the whole users table on
     // every pass to find a set that is normally tiny.

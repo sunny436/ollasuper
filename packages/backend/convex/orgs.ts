@@ -7,6 +7,7 @@ import { audit } from "./auditLog";
 import { bump } from "./counters";
 import { requireDevSeed } from "./devGuard";
 import { notify } from "./notifications";
+import { isActiveUser } from "./accountState";
 
 type Role = "owner" | "admin" | "member";
 
@@ -45,6 +46,13 @@ export async function requireRole(
   workspaceId: Id<"workspaces">,
   roles: Role[],
 ) {
+  // SUSPENSION IS A KILL SWITCH, and it has to bite here. accountStatus was
+  // enforced only on sign-in and in chat/authz.ts, so a suspended (or deleted)
+  // user's EXISTING session kept full access to files, projects, scheduled tasks,
+  // workspace members and API keys — every surface funnels through requireRole,
+  // and none of them checked. Same "Forbidden" as a non-member: a suspended
+  // account is not entitled to a more informative answer.
+  if (!(await isActiveUser(ctx, userId))) throw new ConvexError("Forbidden");
   const m = await membership(ctx, userId, workspaceId);
   if (!m || !roles.includes(m.role as Role)) throw new ConvexError("Forbidden");
   return m;

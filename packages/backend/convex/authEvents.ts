@@ -26,7 +26,12 @@ export type AuthEventType =
   | "session_replaced"
   // An unverified duplicate account was absorbed into this one. Kept in the
   // audit trail because it is a real identity change, not bookkeeping.
-  | "account_merged";
+  | "account_merged"
+  // Identity changes on the profile surface. `username` is what other users see
+  // (getUser returns `username || name`), so a change to it is an identity event,
+  // not a preference tweak.
+  | "username_changed"
+  | "profile_updated";
 
 /**
  * Truncate an IP to a network prefix — /24 for IPv4, /48 for IPv6.

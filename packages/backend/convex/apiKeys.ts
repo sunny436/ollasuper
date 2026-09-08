@@ -1,5 +1,5 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import {
   action,
@@ -11,6 +11,7 @@ import {
 } from "./_generated/server";
 import { audit } from "./auditLog";
 import { requireDevSeed } from "./devGuard";
+import { isActiveUser } from "./accountState";
 import { requireMember } from "./orgs";
 
 function toHex(bytes: Uint8Array): string {
@@ -55,7 +56,10 @@ export const create = action({
   args: { workspaceId: v.id("workspaces"), name: v.string() },
   handler: async (ctx, { workspaceId, name }) => {
     const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
+    if (!userId) throw new ConvexError("Not authenticated");
+    // Membership is enforced one hop down in `store` (internalMutation), which
+    // every mint path funnels through — including createForUser. Not repeated
+    // here on purpose: one definition of the check, not two that can drift.
     const key = genKey();
     await ctx.runMutation(internal.apiKeys.store, {
       workspaceId,
@@ -133,6 +137,12 @@ export const resolveByHash = internalQuery({
       .withIndex("by_hash", (q) => q.eq("hash", hash))
       .unique();
     if (!k || k.revoked) return null;
+    // THE KEY IS NOT THE ONLY THING THAT HAS TO BE LIVE. This used to check
+    // `revoked` alone, so a key kept validating after its owner's account was
+    // DELETED or suspended — deletion never touched apiKeys, and getAuthUserId
+    // is not involved on this path at all, so nothing else would have caught it.
+    // A credential must not outlive the identity it speaks for.
+    if (!(await isActiveUser(ctx, k.userId))) return null;
     return {
       userId: k.userId,
       workspaceId: k.workspaceId ?? null,

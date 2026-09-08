@@ -32,7 +32,11 @@ export type QuotaKind =
   | "seoRun"
   // Authenticated password-change attempts. Bounds the password oracle that
   // verifying `currentPassword` necessarily creates for a session holder.
-  | "passwordChange";
+  | "passwordChange"
+  // Account-deletion re-auth attempts. The emailed-code path already caps at 5;
+  // the PASSWORD path had no bound at all, so a stolen session could brute-force
+  // the password through an endpoint nobody thinks of as a login.
+  | "accountDelete";
 
 export type WindowResult =
   | { ok: true }

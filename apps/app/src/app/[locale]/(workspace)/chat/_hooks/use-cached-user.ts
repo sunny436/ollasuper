@@ -10,7 +10,9 @@ const KEY = CACHE_KEYS.user;
 /** The slice of api.users.getUser the greeting + account footer actually read. */
 type CachedUser = {
   name?: string;
-  email?: string;
+  // getUser returns an explicit projection now, and its optional columns come
+  // back as null rather than undefined — accept both.
+  email?: string | null;
   avatarUrl?: string | null;
 };
 

@@ -2,6 +2,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { isActiveUser } from "../accountState";
 import { requireMember } from "../orgs";
 
 /**
@@ -31,13 +32,9 @@ import { requireMember } from "../orgs";
  * Absent means active — every pre-migration row predates the column.
  */
 async function isActive(ctx: QueryCtx, userId: Id<"users">): Promise<boolean> {
-  const user = await ctx.db.get(userId);
-  // A token whose user row is gone is NOT active. getAuthUserId is a bare cast
-  // of the JWT subject with no database lookup, so a deleted account keeps a
-  // usable access token until it expires; deleting its sessions kills the
-  // refresh, and this closes the remainder.
-  if (!user) return false;
-  return !user.accountStatus || user.accountStatus === "active";
+  // Moved to ./accountState so orgs.ts enforces the SAME predicate without the
+  // import cycle this file exists to avoid.
+  return isActiveUser(ctx, userId);
 }
 
 /** The userId is always derived from the session, never accepted as an argument. */

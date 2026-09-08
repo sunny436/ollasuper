@@ -1,12 +1,16 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { isActiveUser } from "./accountState";
+import { consumeWindow } from "./quotas";
 import { normalizeEmail } from "./authPolicy";
-import { revokeOtherSessions } from "./authEvents";
+import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
 import { deliverCode, generateNumericCode } from "./authCodes";
 import { Scrypt } from "lucia";
 import { ConvexError } from "convex/values";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import {
+  type MutationCtx,
   action,
   internalMutation,
   internalQuery,
@@ -16,7 +20,11 @@ import {
 import { deleteResearchRunsForUser } from "./researchRuns";
 import { deleteMutationsForUser } from "./seoMutations";
 import { polar } from "./subscriptions";
-import { username } from "./utils/validators";
+import {
+  USERNAME_TAKEN_MESSAGE,
+  assertUsableUsername,
+  normalizeDisplayName,
+} from "./profilePolicy";
 import { assertNonExecutableBlob } from "./blobSafety";
 
 /**
@@ -65,14 +73,23 @@ export const getUser = query({
     const subscription = await polar.getCurrentSubscription(ctx, {
       userId: user._id,
     });
+    // EXPLICIT PROJECTION, never `...user`. The spread shipped the whole row to
+    // the browser: `imageId` (a storage id — this repo's own rule is that a
+    // storageId never leaves a public function), plus emailNormalized,
+    // accountStatus, passwordChangedAt, lastLoginAt, lastActivityAt and phone.
+    // None of it is rendered; all of it was account metadata an XSS or a curious
+    // user could read. Only what a consumer actually reads is returned.
     return {
-      ...user,
+      _id: user._id,
       // `name` stays `username || name` — the chat account footer + dashboard
       // sidebar render it as the account's display name and would blank out for
       // users with no display name if this changed. `displayName` exposes the
       // raw `users.name` column so the Settings profile editor can edit it.
       name: user.username || user.name,
       displayName: user.name ?? null,
+      username: user.username ?? null,
+      email: user.email ?? null,
+      emailVerified: user.emailVerificationTime !== undefined,
       subscription,
       avatarUrl: user.imageId
         ? await ctx.storage.getUrl(user.imageId)
@@ -86,33 +103,103 @@ export const updateName = mutation({
     name: v.string(),
   },
   handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) {
-      return;
-    }
-    // Display name allows spaces/unicode (unlike `username`), so there is no
-    // format regex — just trim and bound the length. An empty value clears it
-    // (the UI then falls back to `username`).
-    const trimmed = args.name.trim().slice(0, 50);
-    await ctx.db.patch(userId, { name: trimmed || undefined });
+    // THROW, never return silently: a caller with no session used to get a
+    // success it never earned, and the UI reported "saved".
+    const userId = await requireProfileUserId(ctx);
+    await ctx.db.patch(userId, { name: normalizeDisplayName(args.name) });
   },
 });
+
+/**
+ * The userId for any profile write: from the SESSION, never an argument, and
+ * refused outright for a suspended or already-deleted account.
+ */
+async function requireProfileUserId(ctx: MutationCtx): Promise<Id<"users">> {
+  const userId = await getAuthUserId(ctx);
+  if (!userId) throw new ConvexError("Not authenticated");
+  if (!(await isActiveUser(ctx, userId))) {
+    throw new ConvexError("Not authenticated");
+  }
+  return userId;
+}
+
+/**
+ * Claim a username for `userId`, or throw.
+ *
+ * UNIQUENESS LIVES HERE because Convex has no unique constraint — and that is
+ * sufficient rather than a compromise: a Convex mutation is a serializable
+ * transaction, so this read-then-write either sees a conflicting claim or loses
+ * the OCC race and retries. Two users racing the same name cannot both win.
+ *
+ * EXISTING DUPLICATES ARE GRANDFATHERED. The column was never unique, so live
+ * rows may already collide; enforcing retroactively would lock those people out
+ * of their own profile. The rule binds new writes only, and
+ * `profileIntegrityReport` lists what predates it.
+ */
+async function claimUsername(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  raw: string,
+): Promise<string> {
+  const value = assertUsableUsername(raw);
+  const holder = await ctx.db
+    .query("users")
+    .withIndex("by_username", (q) => q.eq("username", value))
+    .first();
+  if (holder && holder._id !== userId) {
+    throw new ConvexError(USERNAME_TAKEN_MESSAGE);
+  }
+  return value;
+}
 
 export const updateUsername = mutation({
   args: {
     username: v.string(),
   },
   handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) {
-      return;
+    const userId = await requireProfileUserId(ctx);
+    const value = await claimUsername(ctx, userId, args.username);
+    const before = (await ctx.db.get(userId))?.username;
+    await ctx.db.patch(userId, { username: value });
+    if (before !== value) {
+      await recordAuthEvent(ctx, {
+        type: "username_changed",
+        userId,
+        // The VALUES are the user's own public identity, not a secret; recording
+        // them is what makes an impersonation attempt reviewable afterwards.
+        meta: { from: before ?? "", to: value },
+      });
     }
-    const validatedUsername = username.safeParse(args.username);
+  },
+});
 
-    if (!validatedUsername.success) {
-      throw new Error(validatedUsername.error.message);
+/**
+ * Existing rows that predate the uniqueness/format rules. Operator-only.
+ */
+export const profileIntegrityReport = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const users = await ctx.db.query("users").collect();
+    const byName = new Map<string, number>();
+    const invalid: { userId: string; username: string; why: string }[] = [];
+    for (const u of users) {
+      const name = u.username;
+      if (!name) continue;
+      byName.set(name, (byName.get(name) ?? 0) + 1);
+      try {
+        assertUsableUsername(name);
+      } catch (e) {
+        invalid.push({
+          userId: u._id,
+          username: name,
+          why: (e as { data?: string }).data ?? "invalid",
+        });
+      }
     }
-    await ctx.db.patch(userId, { username: validatedUsername.data });
+    const duplicates = [...byName.entries()]
+      .filter(([, n]) => n > 1)
+      .map(([name, n]) => ({ username: name, holders: n }));
+    return { scanned: users.length, duplicates, invalid };
   },
 });
 
@@ -414,6 +501,43 @@ export const requestAccountDeletionCode = action({
   },
 });
 
+/** Bound deletion re-auth attempts (the password path had none). */
+export const consumeDeleteAttempt = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, { userId }) => {
+    const res = await consumeWindow(ctx, userId, "accountDelete", 10, 60 * 60 * 1000);
+    return { ok: res.ok };
+  },
+});
+
+/**
+ * Workspaces this user OWNS that still have other members.
+ *
+ * Deleting the account cascades its workspaces, so doing that while other people
+ * are still in one would destroy THEIR data. Deletion is refused instead, naming
+ * the workspaces, so the user transfers ownership or removes members first.
+ */
+export const blockingOwnedWorkspaces = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, { userId }): Promise<string[]> => {
+    const memberships = await ctx.db
+      .query("members")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const blocking: string[] = [];
+    for (const m of memberships) {
+      const ws = await ctx.db.get(m.workspaceId);
+      if (!ws || ws.ownerId !== userId) continue;
+      const others = await ctx.db
+        .query("members")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", m.workspaceId))
+        .take(50);
+      if (others.some((o) => o.userId !== userId)) blocking.push(ws.name);
+    }
+    return blocking;
+  },
+});
+
 export const deleteCurrentUserAccount = action({
   args: {
     password: v.optional(v.string()),
@@ -440,6 +564,15 @@ export const deleteCurrentUserAccount = action({
     // the no-password branch and demanded an emailed code for an account that
     // no longer exists, which is both a dead end and a confusing error.
     if (!factor.userExists) return;
+    // Bound BEFORE the scrypt comparison — the comparison is the expensive part
+    // and the part worth guessing against.
+    const quota: { ok: boolean } = await ctx.runMutation(
+      internal.users.consumeDeleteAttempt,
+      { userId },
+    );
+    if (!quota.ok) {
+      throw new ConvexError("Too many attempts. Try again later.");
+    }
     if (factor.passwordHash) {
       if (!args.password) {
         throw new ConvexError("Enter your password to delete your account.");
@@ -458,6 +591,18 @@ export const deleteCurrentUserAccount = action({
         { userId, code: args.code },
       );
       if (!ok) throw new ConvexError("That code is not valid or has expired.");
+    }
+
+    // NEVER destroy another user's data. Owning a shared workspace blocks
+    // deletion outright rather than silently cascading other members' content.
+    const blocking: string[] = await ctx.runQuery(
+      internal.users.blockingOwnedWorkspaces,
+      { userId },
+    );
+    if (blocking.length > 0) {
+      throw new ConvexError(
+        `You still own ${blocking.length === 1 ? "a workspace" : "workspaces"} with other members (${blocking.join(", ")}). Transfer ownership or remove the members first.`,
+      );
     }
 
     const subscription = await polar.getCurrentSubscription(ctx, {
