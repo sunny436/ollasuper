@@ -101,17 +101,29 @@ const step = async (n, f) => {
     await page.goto(BASE + "/en/settings/personalization", {
       waitUntil: "domcontentloaded",
     });
+    // UPDATED for the canonical personalization UI. Base styles are now a
+    // RADIOGROUP (exactly one) and characteristics stayed toggle buttons (many),
+    // so the two need different roles — this used to select "Friendly" with
+    // getByRole("button"), which no longer matches. State is also no longer
+    // reconstructed by parsing a prose string; it round-trips as stored data.
     const emoji = page.getByRole("button", { name: "Emoji", pressed: false });
-    await emoji.waitFor({ timeout: 10000 });
+    await emoji.waitFor({ timeout: 15000 });
     await emoji.click(); // aria-pressed -> true
-    await page.getByRole("button", { name: "Friendly" }).click();
+    await page.getByRole("radio", { name: "Friendly", exact: true }).click();
+    await page.getByRole("button", { name: "Save" }).click();
+    await page.waitForTimeout(2000);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const pressed = page.getByRole("button", { name: "Emoji", pressed: true });
+    await pressed.waitFor({ timeout: 15000 });
+    const friendly = page.getByRole("radio", { name: "Friendly", exact: true });
+    if ((await friendly.getAttribute("aria-checked")) !== "true") {
+      throw new Error("the base style did not persist");
+    }
+    // Leave the account as we found it.
+    await page.getByRole("radio", { name: "Default", exact: true }).click();
+    await page.getByRole("button", { name: "Emoji", pressed: true }).click();
     await page.getByRole("button", { name: "Save" }).click();
     await page.waitForTimeout(1500);
-    await page.reload({ waitUntil: "domcontentloaded" });
-    // After reload the state is reconstructed from the persisted
-    // customInstructionsStyle, so Emoji must come back pressed.
-    const pressed = page.getByRole("button", { name: "Emoji", pressed: true });
-    await pressed.waitFor({ timeout: 10000 });
   });
 
   await step("Archived / Files / Shared / Billing all render", async () => {
