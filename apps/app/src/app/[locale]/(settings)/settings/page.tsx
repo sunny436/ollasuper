@@ -145,11 +145,22 @@ export default function ProfileSection() {
     }
   }, [user, hydrated]);
 
-  const handleUpdateUserImage = (uploaded: UploadFileResponse[]) =>
-    updateUserImage({
+  // The account rail paints from a localStorage copy until the live query
+  // lands (~2-3s cold), and that copy holds the OLD avatarUrl — so without
+  // this the previous photo comes back on the next load and looks like the
+  // change was lost. Same reason the profile save clears it.
+  const handleUpdateUserImage = async (uploaded: UploadFileResponse[]) => {
+    await updateUserImage({
       imageId: (uploaded[0]?.response as { storageId: Id<"_storage"> })
         .storageId,
     });
+    clearDisplayCaches();
+  };
+
+  const handleRemoveUserImage = async () => {
+    await removeUserImage({});
+    clearDisplayCaches();
+  };
 
   const needsCode = deletionFactor?.needs === "code";
 
@@ -185,10 +196,18 @@ export default function ProfileSection() {
     }
   };
 
+  // TRIMMED ON BOTH SIDES, deliberately. `dirty` used to compare the raw field
+  // while onSave compared `.trim()`, so typing a trailing space over an
+  // unchanged name enabled Save, sent NOTHING, and still toasted "Profile
+  // updated" — the reported "Save sometimes does nothing". Worse, because the
+  // stored value never changed, the field stayed dirty and the button stayed
+  // enabled forever. One definition of "changed" removes both.
+  const nextName = displayName.trim();
+  const nextUsername = username.trim();
   const dirty =
     !!user &&
-    (displayName !== (user.displayName ?? "") ||
-      username !== (user.username ?? ""));
+    (nextName !== (user.displayName ?? "") ||
+      nextUsername !== (user.username ?? ""));
 
   const reset = () => {
     if (!user) return;
@@ -198,7 +217,6 @@ export default function ProfileSection() {
 
   const onSave = async () => {
     if (!user || saving) return;
-    const nextUsername = username.trim();
     if (nextUsername !== (user.username ?? "")) {
       const err = usernameError(nextUsername);
       if (err) {
@@ -208,10 +226,15 @@ export default function ProfileSection() {
     }
     setSaving(true);
     try {
-      if (displayName.trim() !== (user.displayName ?? ""))
-        await updateName({ name: displayName });
+      if (nextName !== (user.displayName ?? ""))
+        await updateName({ name: nextName });
       if (nextUsername !== (user.username ?? ""))
         await updateUsername({ username: nextUsername });
+      // Show the fields exactly as they were SENT. Otherwise a value that only
+      // differed by whitespace stays in the inputs, and the form reads as
+      // unsaved against a row that is now correct.
+      setDisplayName(nextName);
+      setUsername(nextUsername);
       clearDisplayCaches();
       toast.success("Profile updated");
     } catch (e) {
@@ -286,7 +309,7 @@ export default function ProfileSection() {
           {user.avatarUrl && (
             <button
               type="button"
-              onClick={() => removeUserImage({})}
+              onClick={() => void handleRemoveUserImage()}
               className="text-xs text-primary/55 underline-offset-2 transition hover:text-primary/80 hover:underline"
             >
               {t("avatar.resetButton")}

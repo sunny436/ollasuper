@@ -173,9 +173,23 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
         aria-label="Account menu"
         className="group flex w-full items-center gap-2.5 rounded-xl border border-border bg-card/60 p-2 text-left transition-colors duration-200 hover:bg-accent"
       >
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand text-xs font-semibold text-brand-foreground shadow-sm">
-          {(user?.name || user?.email || "?").charAt(0).toUpperCase()}
-        </span>
+        {/* THE PHOTO WAS NEVER RENDERED HERE. Settings and the dashboard rail
+            both show `avatarUrl`, and useCachedUser already fetches and caches
+            it — this footer just painted the initial unconditionally, so a new
+            profile photo appeared everywhere except the surface the user looks
+            at most, which reads as "the avatar did not sync". The initial stays
+            as the fallback for an account with no photo. */}
+        {user?.avatarUrl ? (
+          <img
+            src={user.avatarUrl}
+            alt=""
+            className="h-8 w-8 shrink-0 rounded-lg object-cover shadow-sm"
+          />
+        ) : (
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand text-xs font-semibold text-brand-foreground shadow-sm">
+            {(user?.name || user?.email || "?").charAt(0).toUpperCase()}
+          </span>
+        )}
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-semibold text-primary">
             {user?.name || "Account"}
