@@ -26,7 +26,7 @@ import httpx
 from app.config import Settings
 from app.logging import get_logger
 from app.models.tools import ToolDefinition
-from app.security.ssrf import SsrfError, assert_payload_urls_safe
+from app.ssrf import SsrfError, assert_payload_urls_safe
 from app.tools.discovery import DiscoveryResult, discover_from_spec
 from app.tools.errors import ToolError, ToolErrorKind
 

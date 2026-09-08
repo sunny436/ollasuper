@@ -6,7 +6,7 @@ import ipaddress
 
 import pytest
 
-from app.security.ssrf import (
+from app.ssrf import (
     SsrfError,
     _ip_is_forbidden,
     _walk_urls,
