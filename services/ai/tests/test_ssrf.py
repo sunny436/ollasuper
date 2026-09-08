@@ -20,7 +20,7 @@ from app.ssrf import (
 @pytest.mark.parametrize(
     "ip",
     [
-        "127.0.0.1", "127.0.0.53", "0.0.0.0", "10.0.0.1", "172.16.0.1",
+        "127.0.0.1", "127.0.0.53", "0.0.0.0", "10.0.0.1", "172.16.0.1",  # noqa: S104
         "192.168.1.1", "169.254.169.254", "169.254.1.1", "100.64.0.1",
         "224.0.0.1", "::1", "fe80::1", "fc00::1", "fd00:ec2::254",
         "::ffff:127.0.0.1", "::ffff:169.254.169.254", "::",
@@ -30,7 +30,9 @@ def test_forbidden_ips(ip):
     assert _ip_is_forbidden(ipaddress.ip_address(ip)) is True
 
 
-@pytest.mark.parametrize("ip", ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700::1111"])
+@pytest.mark.parametrize(
+    "ip", ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700::1111"]
+)
 def test_public_ips_allowed(ip):
     assert _ip_is_forbidden(ipaddress.ip_address(ip)) is False
 
@@ -75,13 +77,21 @@ def test_localhost_name_refused():
         assert_public_url("http://localhost/")
 
 
-def test_a_real_public_url_is_allowed():
-    # example.com resolves to a public IP; must NOT raise (needs network).
+def test_a_public_ip_literal_is_allowed():
+    # A public IP literal is allowed with NO DNS (keeps the suite offline).
+    assert_public_url("http://93.184.216.34/")
+    assert_public_url("https://93.184.216.34:443/path?q=1")
+
+
+def test_a_public_hostname_is_allowed_when_it_resolves_public():
+    # DNS path, network-optional: skip cleanly if the environment has no resolver.
+    import socket
+    try:
+        socket.getaddrinfo("example.com", 443)
+    except OSError:
+        import pytest as _pytest
+        _pytest.skip("no DNS in this environment")
     assert_public_url("https://example.com/")
-
-
-def test_a_public_url_with_explicit_443_is_allowed():
-    assert_public_url("https://example.com:443/path?q=1")
 
 
 # --- payload walking (URLs anywhere, any field name) ------------------------

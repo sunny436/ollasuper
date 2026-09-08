@@ -266,7 +266,7 @@ async def test_destination_is_fixed_not_from_args():
     ctx, _, client = _ctx(_ok(called, capture), [scrape])
     try:
         await execute_tool_calls(
-            [_tc("scrape_x", {"url": "http://attacker.example/evil"}, "c1")], ctx
+            [_tc("scrape_x", {"url": "http://93.184.216.34/evil"}, "c1")], ctx
         )
     finally:
         await client.aclose()
@@ -274,7 +274,7 @@ async def test_destination_is_fixed_not_from_args():
     # The URL is base_url + tool.path from the trusted spec; the arg url (the
     # scrape TARGET, fetched by Ollagraph) never touches OUR destination.
     assert capture["url"].endswith("/v1/scrape")
-    assert "attacker.example" not in capture["url"]
+    assert "93.184.216.34" not in capture["url"]
 
 
 # --- 9: tool-result prompt-injection framing ------------------------------
