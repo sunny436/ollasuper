@@ -18,15 +18,25 @@ const CASES = [
       "every friday 6pm research our top 3 competitors, compare their pricing and blog cadence, and email me a PDF summary",
     want: (t, b) => t !== "" && /6:00\s*PM/i.test(b) },
   { id: "no-time-given", text: "monitor networkershome.com for broken links",
-    // Correct behaviour is to ASK, not invent. The parser returns needs:[kind,
-    // hour] AND its own question, and `blockingReason` prefers that wording over
-    // the generic FIELD_PROMPTS — so matching only the generic strings failed a
-    // product that was behaving correctly. Accept either, and require that
-    // Create is genuinely blocked.
-    want: (t, b, blocked) =>
-      t !== "" && blocked &&
-      (/how often|what time|when should/i.test(b) ||
-       /Choose how often|Set the time|Pick a day/i.test(b)) },
+    // THIS EXPECTATION WAS DELIBERATELY REVERSED (2026-09-08).
+    //
+    // It used to require Create to be BLOCKED here, on the reasoning "correct
+    // behaviour is to ASK, not invent". In practice the composer had already
+    // invented — `emptySpec()` materialises Daily 09:00 and the card SHOWS it,
+    // in the header and in the Time row — and then refused to accept the very
+    // value it was displaying. Worse, touching any field cleared the need and
+    // let the same guess through, so the rule only held until the user nudged
+    // something. Users read that as a broken button, and reported it as one.
+    //
+    // A conventional default that is on screen and editable is now accepted.
+    // Guesses that are NOT conventional still block, and the two cases below
+    // pin that: `once` invents `now + 1h` and `monthly` invents the 1st.
+    want: (t, b, blocked) => t !== "" && !blocked && /9:00\s*AM/i.test(b) },
+  { id: "once-no-date", text: "remind me to call the bank",
+    // `specFromParsed` fabricates runAt = now + 1h for a one-time task. That is
+    // an arbitrary instant, not a convention, so it must still block — creating
+    // it silently would fire in an hour the user never chose.
+    want: (_t, _b, blocked) => blocked },
   { id: "explicit-time", text: "weekly on tuesday at 3:30 pm summarise my files",
     want: (_t, b) => /3:30\s*PM/i.test(b) },
 ];

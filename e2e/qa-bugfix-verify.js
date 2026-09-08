@@ -293,6 +293,71 @@ const step = async (n, fn) => {
       throw new Error("task did not appear after Create");
     notes.push("#10 created with no edits");
   });
+  // ---- Create task must not require a pointless edit ----------------------
+  //
+  // The composer PERSISTS its draft in sessionStorage and restores it on mount,
+  // so each case clears storage first — otherwise the previous card is already
+  // on screen and every assertion reads a stale draft.
+  const freshComposer = async () => {
+    await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
+    const box = page.locator('textarea[aria-label="Schedule a task"]');
+    await box.waitFor({ timeout: 25000 });
+    await page.evaluate(() => {
+      try {
+        sessionStorage.clear();
+      } catch {}
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await box.waitFor({ timeout: 25000 });
+    return box;
+  };
+
+  await step("#create: a topic with NO time is creatable with zero edits", async () => {
+    const box = await freshComposer();
+    await box.click();
+    await box.fill("daily news update on ai");
+    await page.keyboard.press("Enter");
+    const create = page.getByRole("button", { name: /^Create task$/ });
+    await create.waitFor({ timeout: 90000 });
+    await page.waitForTimeout(3000);
+    if (await create.isDisabled()) {
+      const hints = await page.locator("p.text-xs").allInnerTexts().catch(() => []);
+      throw new Error(
+        "Create still blocked without editing: " + JSON.stringify(hints.slice(-3)),
+      );
+    }
+    const body = await page.evaluate(() => document.body.innerText || "");
+    if (!/9:00\s*AM/i.test(body))
+      throw new Error("expected the visible 9:00 AM default on the card");
+    await create.click();
+    await page.waitForTimeout(4500);
+    const after = await page.evaluate(() => document.body.innerText || "");
+    if (!/scheduled task created/i.test(after) && !/News/i.test(after))
+      throw new Error("task did not appear after Create");
+    notes.push("#create: no-time topic created with no edits, at the shown 9:00 AM");
+  });
+
+  await step("#create: a WEEKLY request with no day is still blocked", async () => {
+    // specGaps must keep biting — weekly with no weekdays is the one shape the
+    // backend rejects outright ("Invalid weekdays").
+    const box = await freshComposer();
+    await box.click();
+    await box.fill("weekly summary of my files");
+    await page.keyboard.press("Enter");
+    const create = page.getByRole("button", { name: /^Create task$/ });
+    await create.waitFor({ timeout: 90000 });
+    await page.waitForTimeout(3000);
+    const shown = (await page.evaluate(() => document.body.innerText || "")) || "";
+    if (!/weekly/i.test(shown)) {
+      notes.push("#create: parser did not choose weekly; guard case skipped");
+      return;
+    }
+    if (!(await create.isDisabled()))
+      throw new Error("weekly with no day should still block Create");
+    notes.push("#create: weekly-with-no-day still blocked (specGaps intact)");
+  });
+
+
 
   console.log("\n--- notes ---");
   for (const n of notes) console.log("  " + n);

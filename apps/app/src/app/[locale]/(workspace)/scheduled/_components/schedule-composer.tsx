@@ -79,8 +79,60 @@ const FIELD_PROMPTS: Record<string, string> = {
   runAt: "Set the date and time",
 };
 
-function blockingReason(draft: Draft): string | null {
-  const first = draft.unresolved[0];
+/**
+ * Schedule fields the parser can report. Exactly the list the edit path below
+ * already clears on any field change — kept in ONE place because the two
+ * drifting apart is precisely the bug this fixes.
+ */
+const SCHEDULE_NEEDS = ["kind", "hour", "weekdays", "dayOfMonth", "runAt"];
+
+/** Can the chosen cadence even express this field? */
+function appliesTo(kind: ScheduleSpec["kind"], field: string): boolean {
+  if (field === "weekdays") return kind === "weekly";
+  if (field === "dayOfMonth") return kind === "monthly";
+  if (field === "runAt") return kind === "once";
+  return true;
+}
+
+/**
+ * What should actually GATE Create — which is not the same as what the parser
+ * could not determine.
+ *
+ * `unresolved` seeds from the model's `needs`, but the composer has already
+ * materialised a complete spec and put it on screen. Touching any schedule
+ * field drops all five needs and trusts `specGaps` instead, so a guess blocked
+ * Create until the user nudged something, at which point the same guess
+ * silently became an answer. That inconsistency was the reported bug.
+ *
+ * The line drawn here is what the default actually IS:
+ *   - `kind` (Daily) and `hour`/`minute` (9:00) are conventional values shown
+ *     twice on the card and editable in place — they no longer block.
+ *   - `runAt` is `Date.now() + 1h` and `dayOfMonth` is `1`; those are
+ *     FABRICATED, not conventional, so they still block. A one-time task
+ *     silently scheduled an hour out is not a default, it is a guess with
+ *     consequences.
+ *   - `weekdays` is deliberately left empty upstream and keeps blocking via
+ *     `specGaps`.
+ * A need that cannot apply to the chosen cadence (weekdays on a daily spec —
+ * production really does return that) is dropped: the UI offers no way to
+ * answer it, so it would block forever.
+ *
+ * `unresolved` itself is left alone, so ScheduleFields still HIGHLIGHTS every
+ * field the parser guessed. The user sees what was assumed; they are just no
+ * longer stopped by it.
+ */
+function blockingFields(draft: Draft): string[] {
+  const kept = draft.unresolved.filter((f) => {
+    if (f === "kind" || f === "hour" || f === "minute") return false;
+    if (SCHEDULE_NEEDS.includes(f) && !appliesTo(draft.spec.kind, f))
+      return false;
+    return true;
+  });
+  return [...new Set([...kept, ...specGaps(draft.spec)])];
+}
+
+function blockingReason(draft: Draft, blocking: string[]): string | null {
+  const first = blocking[0];
   if (!first) return null;
   // The parser's own wording, but only while it still addresses what is
   // missing. Once its field is answered the question is stale, and showing it
@@ -325,7 +377,7 @@ export function ScheduleComposer({
 
   async function confirm() {
     if (!draft || !current) return;
-    if (draft.unresolved.length > 0) return;
+    if (blockingFields(draft).length > 0) return;
     if (!draft.prompt.trim()) {
       toast.error("A scheduled task needs an instruction");
       return;
@@ -363,7 +415,10 @@ export function ScheduleComposer({
     }
   }
 
-  const reason = draft ? blockingReason(draft) : null;
+  // One derivation feeding both the button and the text beside it, so they can
+  // never disagree about whether something is missing.
+  const blocking = draft ? blockingFields(draft) : [];
+  const reason = draft ? blockingReason(draft, blocking) : null;
 
   return (
     <div className="space-y-3">
@@ -519,14 +574,7 @@ export function ScheduleComposer({
                 // Touching the schedule answers its own gaps, except any the
                 // spec still genuinely has (a weekly with no day chosen yet).
                 const gaps = specGaps(spec);
-                const cleared = resolve(
-                  draft,
-                  "kind",
-                  "hour",
-                  "weekdays",
-                  "dayOfMonth",
-                  "runAt",
-                );
+                const cleared = resolve(draft, ...SCHEDULE_NEEDS);
                 apply({
                   ...draft,
                   spec,
@@ -571,7 +619,7 @@ export function ScheduleComposer({
             <button
               type="button"
               onClick={() => void confirm()}
-              disabled={phase === "creating" || draft.unresolved.length > 0}
+              disabled={phase === "creating" || blocking.length > 0}
               title={reason ?? undefined}
               className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:bg-brand/90 disabled:opacity-40"
             >
