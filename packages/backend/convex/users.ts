@@ -141,6 +141,17 @@ async function claimUsername(
   userId: Id<"users">,
   raw: string,
 ): Promise<string> {
+  // GRANDFATHERING HAS TO BE COMPLETE TO BE COHERENT. Re-saving the name you
+  // ALREADY hold is a no-op, so it must be allowed even when that name would
+  // be refused as a new claim. Without this, the one live row that predates
+  // the rule (username "admin") is told its own username "isn't available",
+  // and the field becomes a ONE-WAY DOOR: assertUsableUsername rejects
+  // reserved names outright, so changing away from it could never be undone.
+  // This grandfathers what you HAVE and nothing more - a different reserved
+  // name is still refused, and nobody else can take this one.
+  const current = (await ctx.db.get(userId))?.username;
+  if (current && raw.trim().toLowerCase() === current) return current;
+
   const value = assertUsableUsername(raw);
   const holder = await ctx.db
     .query("users")

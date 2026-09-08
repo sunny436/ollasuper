@@ -215,7 +215,20 @@ export default function ProfileSection() {
       clearDisplayCaches();
       toast.success("Profile updated");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't save your profile");
+      // A ConvexError arrives with the operator-facing prefix and a stack
+      // attached: "Uncaught ConvexError: <msg>\n  at handler (../convex/...)".
+      // Rendering that raw shows the user internal file paths and line numbers.
+      // `.data` carries the clean message; every other surface in this app
+      // (change-password above, projects, chat send) already strips the prefix.
+      const msg =
+        (e as { data?: string })?.data ??
+        (e as Error)?.message ??
+        "Couldn't save your profile";
+      toast.error(
+        String(msg)
+          .replace(/^Uncaught ConvexError:\s*/, "")
+          .split("\n")[0],
+      );
     } finally {
       setSaving(false);
     }
