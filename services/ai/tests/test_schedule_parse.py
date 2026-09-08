@@ -525,3 +525,70 @@ async def test_the_kill_switch_restores_the_old_behaviour(monkeypatch):
     res = await parse(ParseRequest(text="Politics"), _request(_settings(repair=False)))
     assert calls == ["parse"]
     assert "prompt" in res.needs
+
+
+async def test_a_repaired_field_is_not_still_reported_as_missing(monkeypatch):
+    """Caught on production, not in review.
+
+    The model reports `needs` from its OWN first attempt, so when it returns an
+    echoed prompt it also lists "prompt"/"title" as things it could not do.
+    After the repair those claims are stale — but they were still honoured, so
+    Create stayed blocked on an instruction we now had in hand. Live topics
+    "Stock market" and "weather" both came back needs=[kind,prompt,title,hour]
+    with a perfectly good repaired prompt sitting right there.
+    """
+
+    async def fake(_s, _m, _payload, system=None):
+        if system and "You write the instruction" in system:
+            return (
+                _json.dumps(
+                    {
+                        "title": "Stock Market Briefing",
+                        "prompt": "Summarise the most important stock market "
+                        "developments since the last briefing.",
+                    }
+                ),
+                None,
+            )
+        # The model both echoes AND claims it could not write these.
+        return (
+            _parser_reply(
+                title="",
+                prompt="Stock market",
+                needs=["prompt", "title"],
+            ),
+            None,
+        )
+
+    monkeypatch.setattr("app.routers.schedule._invoke", fake)
+    monkeypatch.setattr("app.routers.schedule.parse_candidates", lambda _s: ["m"])
+
+    res = await parse(ParseRequest(text="Stock market"), _request(_settings()))
+    assert res.ok and res.schedule is not None
+    assert "prompt" not in res.needs
+    assert "title" not in res.needs
+    assert res.schedule.title == "Stock Market Briefing"
+
+
+async def test_a_stale_claim_is_only_ignored_for_fields_actually_repaired(
+    monkeypatch,
+):
+    """The narrow version of the rule: other claimed fields survive untouched."""
+
+    async def fake(_s, _m, _payload, system=None):
+        if system and "You write the instruction" in system:
+            return (
+                _json.dumps({"title": "T", "prompt": "A real instruction."}),
+                None,
+            )
+        return (
+            _parser_reply(prompt="Politics", needs=["prompt", "hour"]),
+            None,
+        )
+
+    monkeypatch.setattr("app.routers.schedule._invoke", fake)
+    monkeypatch.setattr("app.routers.schedule.parse_candidates", lambda _s: ["m"])
+
+    res = await parse(ParseRequest(text="Politics"), _request(_settings()))
+    assert "prompt" not in res.needs
+    assert "hour" in res.needs  # still honoured

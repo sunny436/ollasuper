@@ -445,6 +445,7 @@ async def parse(req: ParseRequest, request: Request) -> ParseResponse:
     # a failed one falls through to exactly today's behaviour. The guard is
     # never loosened — it stays the fail-safe that stops a topic being saved as
     # an instruction.
+    repaired_fields: set[str] = set()
     if (
         settings.ai_schedule_repair_enabled
         and used_model
@@ -459,9 +460,11 @@ async def parse(req: ParseRequest, request: Request) -> ParseResponse:
             title, prompt = repaired
             if not schedule.prompt.strip() or _same_text(schedule.prompt, req.text):
                 schedule.prompt = prompt
+                repaired_fields.add("prompt")
             # Only ever FILLS a title; a good one the parser found is kept.
             if not schedule.title.strip() and title:
                 schedule.title = title
+                repaired_fields.add("title")
             log.info("schedule.prompt_repaired", extra={"model": used_model})
         else:
             log.info("schedule.repair_ineffective", extra={"model": used_model})
@@ -473,7 +476,21 @@ async def parse(req: ParseRequest, request: Request) -> ParseResponse:
     # "I invented the subject", which no deterministic check can see.
     claimed = data.get("needs")
     if isinstance(claimed, list):
-        _extend(needs, [f for f in claimed if isinstance(f, str) and f in _QUESTIONS])
+        # A field the repair just WROTE is not still missing. The model reports
+        # `needs` from its own first attempt, so after a repair it is stale for
+        # exactly the fields that were repaired — and honouring it there would
+        # block Create on an instruction we have in hand, which is the bug this
+        # whole path exists to fix. Everything else it claims is still honoured,
+        # and the deterministic checks below re-add `prompt` anyway if the
+        # repaired value is empty or still an echo. The guard is not weakened.
+        _extend(
+            needs,
+            [
+                f
+                for f in claimed
+                if isinstance(f, str) and f in _QUESTIONS and f not in repaired_fields
+            ],
+        )
     # A prompt identical to the request was never extracted at all: it is the
     # scheduling sentence, and running it produces "I can't create scheduled
     # automations" instead of the work.
