@@ -31,7 +31,11 @@ export type AuthEventType =
   // (getUser returns `username || name`), so a change to it is an identity event,
   // not a preference tweak.
   | "username_changed"
-  | "profile_updated";
+  | "profile_updated"
+  // Operator kill switch. Recorded because suspending or reinstating an
+  // account is an authority decision someone must be able to review later.
+  | "account_suspended"
+  | "account_reinstated";
 
 /**
  * Truncate an IP to a network prefix — /24 for IPv4, /48 for IPv6.

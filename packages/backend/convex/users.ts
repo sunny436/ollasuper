@@ -185,6 +185,80 @@ export const updateUsername = mutation({
 });
 
 /**
+ * ARM THE SUSPENSION KILL SWITCH.
+ *
+ * `accountStatus` is read in five places — passwordProvider sign-in,
+ * chat/authz, scheduled/authz, apiKeys.resolveByHash and (since the audit)
+ * orgs.requireRole — but until now NOTHING in the codebase ever wrote
+ * "suspended". The only write anywhere was auth.ts setting "active" at signup.
+ * So the enforcement was a kill switch with no switch, and the only way to
+ * suspend anyone was to hand-edit the database.
+ *
+ * Deliberately an internalMutation: it is reachable by an operator holding the
+ * admin key (`convex run`) and by nothing else. A PUBLIC admin surface would
+ * be a new privileged endpoint on the internet, which is a bigger risk than
+ * the gap it closes — there is no admin role in this product to gate it with.
+ *
+ * Suspending also REVOKES EVERY SESSION. A kill switch that leaves the
+ * offender's browser working until their token expires is cosmetic; the same
+ * helper the password-change path uses is what makes it immediate.
+ */
+export const setAccountStatus = internalMutation({
+  args: {
+    userId: v.id("users"),
+    status: v.union(v.literal("active"), v.literal("suspended")),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, { userId, status, reason }) => {
+    const user = await ctx.db.get(userId);
+    if (!user) throw new ConvexError("No such user");
+    // "deleted" is owned by the deletion cascade, which tears down auth state
+    // and content. Letting it be set here would mark an account dead while
+    // leaving all of its data live.
+    if (user.accountStatus === "deleted")
+      throw new ConvexError("Account is deleted; status is not settable.");
+    const before = user.accountStatus ?? "active";
+    await ctx.db.patch(userId, { accountStatus: status });
+    let revoked = 0;
+    if (status === "suspended") revoked = await revokeOtherSessions(ctx, userId, null);
+    await recordAuthEvent(ctx, {
+      type: status === "suspended" ? "account_suspended" : "account_reinstated",
+      userId,
+      meta: { from: before, to: status, reason: reason ?? "", revoked: String(revoked) },
+    });
+    return { userId, before, after: status, sessionsRevoked: revoked };
+  },
+});
+
+/**
+ * Enough to IDENTIFY one account, and deliberately not enough to expose it.
+ *
+ * Written for a single question the integrity report raised — who holds the
+ * grandfathered reserved username — where the alternatives were both bad:
+ * dumping the user table, or `deletionFactorForUser`, which returns a password
+ * hash. This returns the email DOMAIN rather than the address, no hash, and no
+ * token, so the answer is obtainable without the data being worth leaking.
+ */
+export const identitySummary = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, { userId }) => {
+    const user = await ctx.db.get(userId);
+    if (!user) return null;
+    const accounts = await ctx.db
+      .query("authAccounts")
+      .withIndex("userIdAndProvider", (q) => q.eq("userId", userId))
+      .collect();
+    return {
+      username: user.username ?? null,
+      emailDomain: (user.email ?? "").split("@")[1] ?? null,
+      accountStatus: user.accountStatus ?? "active",
+      createdAt: user._creationTime,
+      providers: accounts.map((a) => a.provider),
+    };
+  },
+});
+
+/**
  * Existing rows that predate the uniqueness/format rules. Operator-only.
  */
 export const profileIntegrityReport = internalQuery({
