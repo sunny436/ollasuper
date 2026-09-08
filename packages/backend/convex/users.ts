@@ -231,6 +231,32 @@ export const setAccountStatus = internalMutation({
 });
 
 /**
+ * Resolve an address to its id, so the kill switch is actually operable.
+ *
+ * `setAccountStatus` takes a userId, and an operator responding to abuse has
+ * an EMAIL. Without this the switch exists but cannot be aimed without
+ * dumping the user table, which is the thing it should not take. Returns the
+ * id and nothing else. Matches on the normalised address first, exactly as
+ * sign-in does, so a dotted or cased variant resolves to the same account.
+ */
+export const userIdByEmail = internalQuery({
+  args: { email: v.string() },
+  handler: async (ctx, { email }): Promise<Id<"users"> | null> => {
+    const normalized = normalizeEmail(email);
+    const byNormalized = await ctx.db
+      .query("users")
+      .withIndex("by_email_normalized", (q) => q.eq("emailNormalized", normalized))
+      .first();
+    if (byNormalized) return byNormalized._id;
+    const exact = await ctx.db
+      .query("users")
+      .withIndex("email", (q) => q.eq("email", email))
+      .first();
+    return exact?._id ?? null;
+  },
+});
+
+/**
  * Enough to IDENTIFY one account, and deliberately not enough to expose it.
  *
  * Written for a single question the integrity report raised — who holds the
