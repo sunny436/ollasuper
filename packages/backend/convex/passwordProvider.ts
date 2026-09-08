@@ -241,7 +241,13 @@ export function OllaSuperPassword(config: OllaSuperPasswordConfig) {
         if (!config.verify) {
           throw new Error(`Email verification is not enabled for ${provider}`);
         }
-        // Same oracle as `reset` above, same answer.
+        // ENUMERATION ORACLE, closed. The previous version returned null for an
+        // unknown address but let the library THROW "Could not verify code" for a
+        // known one with a wrong/expired code — so submitting any garbage code
+        // told an attacker whether an address had an account. An unknown address
+        // and a known address with a bad code must be INDISTINGUISHABLE, so both
+        // throw the SAME ConvexError; only the correct code for a real pending
+        // account returns a session.
         let verifyAccount: { _id: string } | null = null;
         try {
           ({ account: verifyAccount } = await retrieveAccount(ctx, {
@@ -249,13 +255,19 @@ export function OllaSuperPassword(config: OllaSuperPasswordConfig) {
             account: { id: email },
           }));
         } catch {
-          return null;
+          verifyAccount = null;
         }
-        if (verifyAccount === null) return null;
-        return await signInViaProvider(ctx, config.verify, {
-          accountId: verifyAccount._id as never,
-          params: verifyParams,
-        });
+        if (verifyAccount === null) {
+          throw new ConvexError("Invalid or expired verification code.");
+        }
+        try {
+          return await signInViaProvider(ctx, config.verify, {
+            accountId: verifyAccount._id as never,
+            params: verifyParams,
+          });
+        } catch {
+          throw new ConvexError("Invalid or expired verification code.");
+        }
       } else {
         throw new Error(
           "Missing `flow` param, it must be one of " +
