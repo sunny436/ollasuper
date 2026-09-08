@@ -6,7 +6,7 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { type Block, splitBlocks } from "../_lib/split-blocks";
-import { safeImageUrl, safeUrl } from "../_lib/url-guard";
+import { isLinkableImage, safeImageUrl, safeUrl } from "../_lib/url-guard";
 import { ChartBlock } from "./chart-block";
 import { CodeBlock } from "./code-block";
 import { Mermaid } from "./mermaid";
@@ -108,8 +108,27 @@ const components: Components = {
     );
   },
   img: ({ src, alt, ...props }) => {
-    const safe = safeImageUrl(typeof src === "string" ? src : "");
-    if (!safe) return null;
+    const raw = typeof src === "string" ? src : "";
+    const safe = safeImageUrl(raw);
+    if (!safe) {
+      // An external image is NOT auto-loaded (that is the exfil channel). If it
+      // is a valid http(s) URL, offer it as a click-through link so the user can
+      // still open it deliberately; otherwise drop it.
+      if (isLinkableImage(raw)) {
+        const href = safeUrl(raw);
+        return (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer nofollow"
+            className="text-brand-ink underline underline-offset-2 hover:opacity-80"
+          >
+            {alt || "image"} ↗
+          </a>
+        );
+      }
+      return null;
+    }
     return (
       <img
         {...props}
