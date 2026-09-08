@@ -26,8 +26,10 @@ export async function toPublic(ctx: QueryCtx, m: Doc<"chatMessages">) {
             size: a.size,
             contentType: a.contentType,
             kind: a.kind,
-            // Minted here, after the enclosing thread ownership check.
-            // storageId is deliberately never exposed.
+            // blob-ok: this mapper is deliberately authz-free (cycle-free, imports
+            // only the data model). Ownership is enforced by EVERY caller before
+            // this runs — messages.listPaged/get (requireThreadAccess) and
+            // scheduled.tasks (owner-scoped run). storageId is never exposed.
             url: await ctx.storage.getUrl(a.storageId),
           };
         }),
