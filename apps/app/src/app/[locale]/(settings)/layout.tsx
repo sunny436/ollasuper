@@ -5,7 +5,7 @@ import { AmbienceSync } from "@/lib/ambience/ambience-sync";
 import { WorkspaceProvider } from "@/lib/workspace-provider";
 import { I18nProviderClient } from "@/locales/client";
 import { Menu } from "lucide-react";
-import { useState } from "react";
+import { use, useState } from "react";
 import { Toaster } from "sonner";
 import { AmbientBackdrop } from "./_components/ambient-backdrop";
 import { SettingsSidebar } from "./_components/settings-sidebar";
@@ -31,12 +31,16 @@ export default function SettingsLayout({
   params,
 }: {
   children: React.ReactNode;
-  params: { locale: string };
+  // Next 15: params is a Promise even for a client layout. `use()` unwraps it
+  // during render, which keeps this component synchronous-looking and keeps
+  // I18nProviderClient receiving a plain string.
+  params: Promise<{ locale: string }>;
 }) {
+  const { locale } = use(params);
   const [drawer, setDrawer] = useState(false);
 
   return (
-    <I18nProviderClient locale={params.locale}>
+    <I18nProviderClient locale={locale}>
       <WorkspaceProvider>
         <AmbienceSync />
         {/* .workspace re-points the surface tokens to the deep-space glass

@@ -11,10 +11,11 @@ import { ChatPane } from "./_components/chat-pane";
  * first send. The value is passed on as a RAW STRING and is never trusted here:
  * threads.create resolves and authorizes it server-side.
  */
-export default function ChatIndexPage({
+export default async function ChatIndexPage({
   searchParams,
 }: {
-  searchParams?: { project?: string };
+  searchParams?: Promise<{ project?: string }>;
 }) {
-  return <ChatPane threadId={null} pendingProjectId={searchParams?.project ?? null} />;
+  const sp = await searchParams;
+  return <ChatPane threadId={null} pendingProjectId={sp?.project ?? null} />;
 }

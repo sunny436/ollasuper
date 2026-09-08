@@ -35,7 +35,7 @@ function GlowOrbs({
   orbRef,
   weights,
 }: {
-  orbRef: React.RefObject<HTMLDivElement>;
+  orbRef: React.RefObject<HTMLDivElement | null>;
   weights: ReturnType<typeof phaseWeights>;
 }) {
   return (

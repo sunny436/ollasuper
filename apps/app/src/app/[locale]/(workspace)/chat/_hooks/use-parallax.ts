@@ -14,7 +14,9 @@ import { type RefObject, useEffect, useRef } from "react";
  * first paint transform is identity → hydration-safe).
  */
 export function useParallax(
-  targetRef: RefObject<HTMLElement>,
+  // React 19: useRef<T>(null) yields RefObject<T | null>, so the parameter must
+  // admit null rather than forcing every caller to assert.
+  targetRef: RefObject<HTMLElement | null>,
   { enabled, maxPx = 20 }: { enabled: boolean; maxPx?: number },
 ): void {
   const pointer = useRef({ x: 0, y: 0 });

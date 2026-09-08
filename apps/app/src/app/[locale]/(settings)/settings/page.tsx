@@ -9,7 +9,7 @@ import { Button } from "@v1/ui/button";
 import { Input } from "@v1/ui/input";
 import { UploadInput } from "@v1/ui/upload-input";
 import { useDoubleCheck } from "@v1/ui/utils";
-import type { UploadFileResponse } from "@xixixao/uploadstuff/react";
+import type { UploadFileResponse } from "@v1/ui/upload-input";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { Camera } from "lucide-react";
 import { useEffect, useState } from "react";

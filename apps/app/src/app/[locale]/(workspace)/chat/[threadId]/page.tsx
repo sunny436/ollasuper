@@ -1,7 +1,7 @@
 import { ChatPane } from "../_components/chat-pane";
 
 /**
- * Next 14 — `params` is sync here, not a Promise.
+ * Next 15 — `params` is a Promise and must be awaited.
  *
  * The raw string is passed straight through. It must NOT be cast to
  * Id<"chatThreads">: every Convex function that takes it declares v.string()
@@ -9,10 +9,11 @@ import { ChatPane } from "../_components/chat-pane";
  * throws ArgumentValidationError, which the Convex client logs via
  * console.error, which fails every e2e script's zero-console-error assertion.
  */
-export default function ChatThreadPage({
+export default async function ChatThreadPage({
   params,
 }: {
-  params: { locale: string; threadId: string };
+  params: Promise<{ locale: string; threadId: string }>;
 }) {
-  return <ChatPane threadId={params.threadId} />;
+  const { threadId } = await params;
+  return <ChatPane threadId={threadId} />;
 }

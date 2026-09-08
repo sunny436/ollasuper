@@ -55,9 +55,10 @@ const DESCRIPTION = "A shared AI conversation.";
 export async function generateMetadata({
   params,
 }: {
-  params: { token: string };
+  params: Promise<{ token: string }>;
 }): Promise<Metadata> {
-  const res = await load(params.token);
+  const { token } = await params;
+  const res = await load(token);
   // Never index shared pages; never put message content in metadata.
   const robots = { index: false, follow: false };
   if (res.state !== "ok") {
@@ -113,9 +114,10 @@ function StatePage({ heading, body }: { heading: string; body: string }) {
 export default async function SharePage({
   params,
 }: {
-  params: { token: string };
+  params: Promise<{ token: string }>;
 }) {
-  const res = await load(params.token);
+  const { token } = await params;
+  const res = await load(token);
   if (res.state === "expired") {
     return (
       <StatePage
@@ -175,7 +177,7 @@ export default async function SharePage({
                           // biome-ignore lint/suspicious/noArrayIndexKey: static list
                           key={ai}
                           att={a}
-                          url={`${site}/share/file?t=${params.token}&m=${mi}&a=${ai}`}
+                          url={`${site}/share/file?t=${token}&m=${mi}&a=${ai}`}
                         />
                       ))}
                     </div>
@@ -193,7 +195,7 @@ export default async function SharePage({
                         // biome-ignore lint/suspicious/noArrayIndexKey: static list
                         key={ai}
                         att={a}
-                        url={`${site}/share/file?t=${params.token}&m=${mi}&a=${ai}`}
+                        url={`${site}/share/file?t=${token}&m=${mi}&a=${ai}`}
                       />
                     ))}
                   </div>
