@@ -44,7 +44,7 @@ log = get_logger(__name__)
 # none of OPENROUTER_API_KEY / AI_INGRESS_SECRET / KNOWLEDGE_DATABASE_URL /
 # CONVEX_* is carried. HOME/TMPDIR are pointed at the caller's temp so a decoder
 # that writes scratch files has somewhere harmless to write.
-def _safe_env() -> dict[str, str]:
+def safe_child_env() -> dict[str, str]:
     keep = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP")
     env = {k: os.environ[k] for k in keep if k in os.environ}
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -112,7 +112,7 @@ def _run_child(
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        env=_safe_env(),
+        env=safe_child_env(),
         cwd=os.getcwd(),
         start_new_session=True,  # own process group, so a timeout reaps forks too
     )

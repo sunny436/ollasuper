@@ -18,7 +18,8 @@ import sys
 import pytest
 
 from app.sandbox import ops
-from app.sandbox.harness import _safe_env, sandbox_status
+from app.sandbox.harness import safe_child_env as _safe_env
+from app.sandbox.harness import sandbox_status
 
 POSIX = os.name == "posix" and hasattr(os, "fork")
 
@@ -48,7 +49,7 @@ def test_safe_env_carries_no_secret():
 
 def _run_worker(op: str, params: dict, payload: bytes, env: dict) -> tuple[dict, bytes]:
     """Drive the worker module directly, exactly as the harness does."""
-    proc = subprocess.run(
+    proc = subprocess.run(  # noqa: S603 - fixed argv, test-controlled
         [sys.executable, "-m", "app.sandbox.worker", op, json.dumps(params)],
         input=payload,
         capture_output=True,
@@ -78,7 +79,9 @@ def test_worker_cannot_read_a_secret_from_its_own_environment():
     # it — _safe_env is what the harness passes, so this is the real contract.
     os.environ["OPENROUTER_API_KEY"] = "sk-or-v1-secret-parent-only"
     try:
-        meta, body = _run_worker("image", {"mime": "image/png", "long_edge": 64}, _png(), _safe_env())
+        meta, body = _run_worker(
+            "image", {"mime": "image/png", "long_edge": 64}, _png(), _safe_env()
+        )
     finally:
         os.environ.pop("OPENROUTER_API_KEY", None)
     assert meta["ok"] is True
@@ -90,20 +93,29 @@ def test_worker_env_actually_lacks_the_secret_at_runtime():
     # Stronger: read os.environ INSIDE the child and assert the secret is absent.
     os.environ["OPENROUTER_API_KEY"] = "sk-or-v1-secret-parent-only"
     try:
-        proc = subprocess.run(
-            [sys.executable, "-c", "import os,sys; sys.exit(1 if 'OPENROUTER_API_KEY' in os.environ else 0)"],
+        proc = subprocess.run(  # noqa: S603 - fixed argv, test-controlled
+            [
+                sys.executable,
+                "-c",
+                "import os,sys; "
+                "sys.exit(1 if 'OPENROUTER_API_KEY' in os.environ else 0)",
+            ],
             env=_safe_env(),
             capture_output=True,
             timeout=30,
         )
     finally:
         os.environ.pop("OPENROUTER_API_KEY", None)
-    assert proc.returncode == 0, "OPENROUTER_API_KEY was visible inside the sandboxed child"
+    assert proc.returncode == 0, (
+        "OPENROUTER_API_KEY was visible inside the sandboxed child"
+    )
 
 
 @pytest.mark.skipif(not POSIX, reason="worker subprocess requires posix fork/exec")
 def test_worker_reencodes_an_image_and_reports_mime():
-    meta, body = _run_worker("image", {"mime": "image/png", "long_edge": 16}, _png((80, 40)), _safe_env())
+    meta, body = _run_worker(
+        "image", {"mime": "image/png", "long_edge": 16}, _png((80, 40)), _safe_env()
+    )
     assert meta["ok"] is True
     assert meta["mime"] in ("image/png", "image/jpeg")
     # downscaled to the long edge
@@ -118,7 +130,9 @@ def test_worker_rejects_a_disallowed_decoder():
     # format allowlist means the PSD decoder is never reached — decode error, not
     # a crash and not a successful parse through an un-audited decoder.
     psd = b"8BPS" + b"\x00" * 64
-    meta, _ = _run_worker("image", {"mime": "image/png", "long_edge": 64}, psd, _safe_env())
+    meta, _ = _run_worker(
+        "image", {"mime": "image/png", "long_edge": 64}, psd, _safe_env()
+    )
     assert meta["ok"] is False
     assert meta.get("kind") == "decode"
 

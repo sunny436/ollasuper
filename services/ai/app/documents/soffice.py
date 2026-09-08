@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 
 from app.logging import get_logger
+from app.sandbox.harness import safe_child_env
 
 log = get_logger(__name__)
 
@@ -117,7 +118,12 @@ def _convert_sync(raw: bytes, to: str, src_ext: str, timeout_s: float) -> bytes 
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
-            env={**os.environ, "HOME": profile, "SAL_USE_VCLPLUGIN": "svp"},
+            # STRIPPED env, like the decoder sandbox — soffice parses untrusted
+            # OOXML/PDF, so an exploit in it must not find OPENROUTER_API_KEY,
+            # AI_INGRESS_SECRET, KNOWLEDGE_DATABASE_URL or the Convex admin key in
+            # its environment. It needs only HOME (its isolated profile) and the
+            # headless VCL plugin; the network is already cut by `unshare -rn`.
+            env={**safe_child_env(), "HOME": profile, "SAL_USE_VCLPLUGIN": "svp"},
         )
         try:
             proc.communicate(timeout=float(timeout_s))
