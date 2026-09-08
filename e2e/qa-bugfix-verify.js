@@ -336,6 +336,33 @@ const step = async (n, fn) => {
       throw new Error("task did not appear after Create");
     notes.push("#create: no-time topic created with no edits, at the shown 9:00 AM");
   });
+  await step("#create: a ONE-TIME request with no date is still blocked", async () => {
+    // `specFromParsed` fabricates runAt = Date.now() + 1h for a one-time task.
+    // That is an arbitrary instant, not a convention like 9:00 AM, so it must
+    // keep blocking — creating it silently would fire in an hour the user never
+    // chose. This is the hazard the fix deliberately does NOT open.
+    const box = await freshComposer();
+    await box.click();
+    await box.fill("remind me to call the bank");
+    await page.keyboard.press("Enter");
+    const create = page.getByRole("button", { name: /^Create task$/ });
+    await create.waitFor({ timeout: 120000 });
+    await page.waitForTimeout(4000);
+    const shown = (await page.evaluate(() => document.body.innerText || "")) || "";
+    if (/couldn't read that as a schedule|couldn't reach the scheduling/i.test(shown)) {
+      notes.push("#create: parse unavailable; once-guard case skipped");
+      return;
+    }
+    if (!/does not repeat/i.test(shown)) {
+      notes.push("#create: parser did not choose one-time; once-guard skipped");
+      return;
+    }
+    if (!(await create.isDisabled()))
+      throw new Error("a one-time task with no date must not be creatable");
+    notes.push("#create: once-with-no-date still blocked (no fabricated instant)");
+  });
+
+
 
   await step("#create: a WEEKLY request with no day is still blocked", async () => {
     // specGaps must keep biting — weekly with no weekdays is the one shape the
