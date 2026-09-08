@@ -4,21 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 
 from app.clients.convex import ConvexClient, ConvexRejected, ConvexUnavailable
 from app.config import Settings
 from app.data.loader import is_tabular, render_preview
 from app.logging import get_logger
 from app.models.chat import IMAGE_LONG_EDGE, Attachment, HistoryMessage
+from app.sandbox import ops as sandbox_ops
+from app.sandbox.harness import run_sandboxed
 
 log = get_logger(__name__)
 
 ACCEPTED_IMAGE = {"image/png", "image/jpeg", "image/webp", "image/gif"}
-# The Pillow decoders those four mimes may legitimately reach, and no others.
-_SAFE_IMAGE_FORMATS = ["PNG", "JPEG", "WEBP", "GIF"]
-MAX_IMAGE_BYTES = 3_500_000  # -> ~4.7MB base64, under the 5MB per-image limit
-MAX_PDF_CHARS = 60_000
+_SAFE_IMAGE_FORMATS = sandbox_ops.SAFE_IMAGE_FORMATS
+MAX_IMAGE_BYTES = sandbox_ops.MAX_IMAGE_BYTES
+MAX_PDF_CHARS = sandbox_ops.MAX_PDF_CHARS
 
 # Anthropic rejects empty text content blocks ("text content blocks must be
 # non-empty"). A captionless attachment (or a document that extracts to nothing)
@@ -45,88 +45,29 @@ def _safe_name(name: str) -> str:
     )[:120]
 
 
+# The image/PDF decoders moved to app.sandbox.ops so the sandbox worker can import
+# them WITHOUT dragging in Settings or the Convex client (i.e. without a secret in
+# scope). AttachmentError stays the public error type; the ops raise DecodeError,
+# mapped at the call sites below.
+
+
 def _normalise_image(raw: bytes, mime: str, long_edge: int) -> tuple[bytes, str]:
-    """Downscale and re-encode. Runs in a thread — Pillow is the only CPU-bound
-    work in this service and must not block the event loop."""
-    from PIL import Image
+    """Backwards-compatible synchronous wrapper over the pure op.
 
-    # Decompression bomb guard. A 20,000x20,000 PNG of one flat colour is a few
-    # hundred KB on the wire and ~1.6GB decoded; four of them per turn, on a
-    # --workers 1 uvicorn, OOM-kills the process and takes every concurrent
-    # stream down with it — no finalize, every message stuck until the reaper.
-    # Pillow's own default (~178M px) is set for desktop use and far too high
-    # for a network-fed service.
-    Image.MAX_IMAGE_PIXELS = 40_000_000
-
-    # Pillow dispatches on the file's own MAGIC BYTES, never on the declared
-    # mime — so a ".png" upload that starts with "8BPS" is handed to the PSD
-    # decoder. That is CVE-class territory: GHSA-cfh3-3jmp-rvhc is an
-    # out-of-bounds write in exactly that decoder, affecting >=10.3.0,<12.1.1,
-    # which includes the 11.3.0 pinned here.
-    #
-    # Naming the formats is a better fix than chasing that one CVE: this service
-    # accepts four image types and nothing else (ACCEPTED_IMAGE above, and the
-    # same four in convex/chat/attachments.ts), so every other parser Pillow
-    # ships — PSD, DDS, FLI, FPX, PCX, SGI, XBM and the rest — becomes
-    # unreachable, including the ones whose advisories are not written yet.
+    The async attachment path runs the op in the SANDBOX (run_sandboxed); this
+    thin wrapper is the in-process form kept for direct callers and tests, and it
+    maps the pure DecodeError back onto AttachmentError so the public contract
+    (raises AttachmentError on an unsupported/oversized image) is unchanged.
+    """
     try:
-        img = Image.open(io.BytesIO(raw), formats=_SAFE_IMAGE_FORMATS)
-        img.load()
-    except Image.DecompressionBombError as e:
-        raise AttachmentError("image dimensions are too large to process") from e
-    except OSError as e:
-        raise AttachmentError("image could not be decoded") from e
-    if img.mode not in ("RGB", "RGBA", "L"):
-        img = img.convert("RGB")
-
-    w, h = img.size
-    if max(w, h) > long_edge:
-        scale = long_edge / max(w, h)
-        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
-
-    if mime == "image/png" and img.mode in ("RGB", "RGBA", "L"):
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
-        if buf.tell() <= MAX_IMAGE_BYTES:
-            return buf.getvalue(), "image/png"
-
-    if img.mode == "RGBA":
-        img = img.convert("RGB")
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85, optimize=True)
-    return buf.getvalue(), "image/jpeg"
+        return sandbox_ops.normalise_image(raw, mime, long_edge)
+    except sandbox_ops.DecodeError as e:
+        raise AttachmentError(str(e)) from e
 
 
 def _extract_pdf_text(raw: bytes) -> str:
-    """Inline text for the model. UNTRUSTED input: an encrypted or malformed PDF must
-    NEVER fail the turn (pypdf raises FileNotDecryptedError / PdfStreamError otherwise);
-    it degrades to a short note, and the model can still act on it (e.g. call the
-    document tools to decrypt with a user-supplied password)."""
-    from pypdf import PdfReader
-
-    try:
-        reader = PdfReader(io.BytesIO(raw))
-        if reader.is_encrypted:
-            try:
-                reader.decrypt("")  # many PDFs use an empty owner password
-            except Exception:  # noqa: BLE001,S110 — stays locked; handled below
-                pass
-            if reader.is_encrypted:
-                return "[This PDF is password-protected; text can't be read inline.]"
-        parts: list[str] = []
-        total = 0
-        for page in reader.pages:
-            try:
-                text = page.extract_text() or ""
-            except Exception:  # noqa: BLE001 — one bad page must not fail the file
-                text = ""
-            parts.append(text)
-            total += len(text)
-            if total > MAX_PDF_CHARS:
-                break
-        return "\n".join(parts)[:MAX_PDF_CHARS]
-    except Exception:  # noqa: BLE001 — a corrupt/locked PDF must not fail the turn
-        return "[This PDF could not be read inline (it may be corrupt or protected).]"
+    """Backwards-compatible synchronous wrapper over the pure op (never raises)."""
+    return sandbox_ops.extract_pdf_text(raw)
 
 
 async def _fetch(
@@ -156,7 +97,26 @@ async def _image_part(
         raise AttachmentError(f"unsupported image type: {mime}")
     raw = await _fetch(att, convex, settings, stream_id)
     long_edge = IMAGE_LONG_EDGE.get(model, 1568)
-    data, out_mime = await asyncio.to_thread(_normalise_image, raw, mime, long_edge)
+
+    async def _inproc() -> tuple[dict, bytes]:
+        try:
+            body, out_mime = await asyncio.to_thread(
+                sandbox_ops.normalise_image, raw, mime, long_edge
+            )
+        except sandbox_ops.DecodeError as e:
+            raise AttachmentError(str(e)) from e
+        return {"ok": True, "mime": out_mime}, body
+
+    meta, data = await run_sandboxed(
+        "image",
+        raw,
+        {"mime": mime, "long_edge": long_edge},
+        timeout_s=25.0,
+        fallback=_inproc,
+    )
+    if not meta.get("ok"):
+        raise AttachmentError(meta.get("error", "image could not be decoded"))
+    out_mime = meta.get("mime", "image/jpeg")
     b64 = base64.b64encode(data).decode()
     return {"type": "image_url", "image_url": {"url": f"data:{out_mime};base64,{b64}"}}
 
@@ -176,7 +136,19 @@ async def _document_text(
     raw = await _fetch(att, convex, settings, stream_id)
     mime = att.contentType.split(";")[0].strip().lower()
     if mime == "application/pdf":
-        return await asyncio.to_thread(_extract_pdf_text, raw)
+        async def _inproc() -> tuple[dict, bytes]:
+            text = await asyncio.to_thread(sandbox_ops.extract_pdf_text, raw)
+            return {"ok": True}, text.encode("utf-8")
+
+        meta, body = await run_sandboxed(
+            "pdf_text", raw, {}, timeout_s=25.0, fallback=_inproc
+        )
+        if not meta.get("ok"):
+            return (
+                "[This PDF could not be read inline "
+                "(it may be corrupt or protected).]"
+            )
+        return body.decode("utf-8", "replace")[:MAX_PDF_CHARS]
     # DOCX/XLSX are zip archives — UTF-8 decoding yields mojibake. Reuse the
     # ingestion parsers (structure-preserving) for the inline current turn too.
     # Lazy import: don't pay the docx/openpyxl import cost on every chat turn;
