@@ -325,8 +325,13 @@ export const profileIntegrityReport = internalQuery({
     // a sizing tool, and it must not become a way to read the user table.
     const byEmail = new Map<string, number>();
     for (const u of users) {
-      const key = u.emailNormalized ?? u.email;
-      if (!key) continue;
+      // NORMALISE BOTH SIDES OR THIS UNDERCOUNTS TO ZERO. The whole failure
+      // mode is one row holding "Foo@Gmail.com" and another "foo@gmail.com";
+      // keying on `emailNormalized ?? email` gives those two DIFFERENT keys,
+      // so the exact pair being hunted is the one pair that never registers.
+      const raw = u.email ?? u.emailNormalized;
+      if (!raw) continue;
+      const key = normalizeEmail(raw);
       byEmail.set(key, (byEmail.get(key) ?? 0) + 1);
     }
     const dupEmailGroups = [...byEmail.values()].filter((n) => n > 1);
