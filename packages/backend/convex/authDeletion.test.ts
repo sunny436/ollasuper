@@ -88,7 +88,7 @@ async function seedUserWithContent(t: TestT) {
       createdAt: Date.now(),
     });
     // A PUBLIC share of this conversation — the security-relevant survivor.
-    const shareToken = "tok_" + "a".repeat(40);
+    const shareToken = `tok_${"a".repeat(40)}`;
     await ctx.db.insert("chatShares", {
       token: shareToken,
       userId,
