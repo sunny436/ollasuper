@@ -89,6 +89,51 @@ export type DispatchSkill = {
 };
 
 /**
+ * LIFECYCLE CONTRACT (Phase 7) — read this before adding a version column.
+ *
+ * THE QUESTION: does a run need a pinned snapshot of the skills it started
+ * with? The answer is NO, and it is no for reasons in the code rather than by
+ * preference.
+ *
+ * 1. A RUN IS ALREADY IMMUTABLE. `dispatchPayload` reads these rows once and
+ *    ships them BY VALUE. `run_generation` reads `req.customSkills` exactly
+ *    once and never mutates `req`. So an edit during a running generation
+ *    cannot reach it — the GenerateRequest IS the snapshot, and a durable one
+ *    would be a second copy of something already fixed.
+ *
+ * 2. NOTHING HOLDS A REFERENCE. No table anywhere carries a `v.id("userSkills")`.
+ *    A deleted skill therefore cannot dangle: there is no pointer to break,
+ *    only content that stops being sent on the next dispatch.
+ *
+ * 3. ACROSS ATTEMPTS, LATEST WINS — deliberately, and consistently. A retry or
+ *    a resume re-runs `dispatchPayload`, so it sees current rows. That is
+ *    exactly how every other piece of user-owned configuration behaves on the
+ *    same turn: `projectInstructions` ("read fresh from the project row on
+ *    EVERY dispatch, deliberately NOT snapshotted"), `memories`,
+ *    `personalization`. Pinning skills alone would give one input a guarantee
+ *    its neighbours do not have, which is harder to explain than either rule
+ *    on its own and would still not make a resumed turn reproducible.
+ *
+ * WHAT SCHEDULED TASKS PIN, AND WHY SKILLS ARE NOT IT.
+ * `scheduledTaskRevisions` pins a task's MEANING — prompt, spec, and which
+ * Project — so "a task that later moves Project does not retroactively change
+ * what an already-scheduled run meant". It pins the BINDING, not the content
+ * behind it: the pinned `projectId` still resolves to that Project's current
+ * instructions at dispatch. Skills have no binding to pin. A task cannot name
+ * a skill; skills apply because the run belongs to their owner. So there is no
+ * reference to freeze, and the content question is the same one answered above.
+ *
+ * THE USER-VISIBLE RULE, which the Settings copy already states: a change
+ * applies from your next message. Edit, disable and delete all behave that way,
+ * and an in-flight turn finishes under what it started with.
+ *
+ * THE ONE PLACE THIS IS NOT ENOUGH is an approved-but-unrun tool, because
+ * consent was given for a specific call and an unrelated edit must not discard
+ * it. That is handled in the runner, where `approvedPending` tool ids are
+ * re-seeded into the reservation set — see the comment there.
+ */
+
+/**
  * Every ENABLED skill this user owns, for one turn.
  *
  * THE CAP IS THE PRODUCT CAP, on purpose. A smaller dispatch cap would be a

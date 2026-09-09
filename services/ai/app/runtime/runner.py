@@ -946,7 +946,37 @@ async def run_generation(
                     if user_sel.capabilities
                     else EMPTY_CAPABILITIES
                 )
-                _resolved = {*_bound.tool_ids, *_user_bound.tool_ids}
+                # Phase 7: an APPROVED tool stays bound on resume.
+                #
+                # `_run_one` resolves against `name_to_tool_id` — the strict
+                # allowlist of what was bound THIS turn — so a tool that is not
+                # re-bound takes the unknown-tool path. That is correct for a
+                # model naming something it was never offered, and wrong for a
+                # tool a human already approved.
+                #
+                # The race is real and Phase 6 widened it. A skill declares a
+                # capability, the tool binds only because of that declaration,
+                # the model calls it, it parks for approval. The user approves,
+                # then edits the skill, disables it, or removes the capability —
+                # an approval can sit for as long as the reaper allows, which is
+                # ample time. On resume the declaration is gone, discovery never
+                # surfaced the tool (that was the point of declaring it), and the
+                # action the user explicitly approved fails as "unknown tool".
+                #
+                # `approvedPending` is server-authored, reconstructed from the
+                # durable toolExecutions table, and carries a single-use token.
+                # Seeding it here only makes the tool BINDABLE — it goes through
+                # the same `_passes` gate as everything else, and
+                # `check_tool_policy` still decides at execution. So an approval
+                # cannot resurrect a tool that has since been disabled or that
+                # the caller may no longer run; it only stops an unrelated
+                # settings edit from silently discarding consent.
+                _approved_ids = {ap.toolId for ap in req.approvedPending}
+                _resolved = {
+                    *_bound.tool_ids,
+                    *_user_bound.tool_ids,
+                    *_approved_ids,
+                }
                 if _resolved:
                     candidates, _added = reserve_skill_tools(
                         candidates, _resolved, tool_registry, _filters
