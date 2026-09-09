@@ -101,6 +101,7 @@ from app.seo.mutations import (
     StubSeoWriteProvider,
     register_seo_mutation_provider,
 )
+from app.skills.capability_binding import EMPTY_CAPABILITIES, resolve_capabilities
 from app.skills.registry import pack_skills, render_skills_block
 from app.skills.user_skills import EMPTY_SELECTION, select_user_skills
 from app.tools.registry import ToolRegistry
@@ -735,6 +736,60 @@ async def run_generation(
             workspace_id=req.workspaceId,
             tenant_id=req.workspaceId,
         )
+        # Phase 4/6: the user's own skills. SELECTED here, but COMPOSED into the
+        # prompt much further down (see "Phase 4 (Custom Skills)").
+        #
+        # The split is deliberate and the ordering is the reason for it. What
+        # the user declared has to be known BEFORE tools are chosen, because a
+        # declaration is only meaningful if it can reach the candidate set. What
+        # they wrote has to be appended AFTER the built-in skill block, and
+        # unconditionally, for the reasons Phase 4 records. One selection,
+        # therefore, read at two points — rather than two selections that could
+        # disagree about which skills were active on the same turn.
+        #
+        # Placed immediately after `agent_scope` on purpose: the scope stamped
+        # with the authenticated caller is what every capability decision below
+        # is judged against, and nothing here may be evaluated before it exists.
+        user_sel = EMPTY_SELECTION
+        if settings.ai_user_skills_enabled and req.customSkills:
+            # Never fatal. Composing a user's guidance is an enhancement to the
+            # turn, not the turn itself, so a defect here must not be the reason
+            # someone cannot get an answer — the same call the built-in
+            # discovery below makes with its own `contextlib.suppress`. Logged at
+            # exception level rather than swallowed, so it is loud in the logs
+            # while the user still gets their reply.
+            try:
+                user_sel = select_user_skills(
+                    req.customSkills,
+                    latest.content,
+                    # The AUTHORITATIVE caller, from the authenticated request —
+                    # the same value that stamps `agent_scope`. Never from the
+                    # model, never from the snapshot itself.
+                    user_id=req.userId,
+                    stream_id=req.streamId,
+                    max_active=settings.ai_user_skill_max_active,
+                    min_score=settings.ai_user_skill_min_score,
+                    char_budget=settings.ai_user_skill_budget_chars,
+                )
+            except Exception:  # noqa: BLE001 — see above
+                log.exception(
+                    "agent.user_skills_failed",
+                    extra={"stream_id": req.streamId},
+                )
+            # Logged whenever the user HAS skills, including the no-match case:
+            # "my skill did not fire" is the question this feature will actually
+            # generate, and `considered` vs `included` is what answers it.
+            log.info(
+                "agent.user_skills",
+                extra={
+                    "stream_id": req.streamId,
+                    "considered": user_sel.considered,
+                    "skills": user_sel.included,
+                    "compacted": user_sel.compacted,
+                    "dropped": user_sel.dropped,
+                    "declared": user_sel.capabilities,
+                },
+            )
         # Phase 1 (v2): SKILL activation DECOUPLED from tool availability — a
         # knowledge-only skill activates even with Ollagraph off/empty. Run the ONE
         # shared prepare() here (before tools bind) and compose its guidance into the
@@ -846,16 +901,81 @@ async def run_generation(
                             min_score=settings.ai_skill_min_score,
                         ):
                             _declared |= set(_a.manifest.preferred_capabilities)
-                if _declared:
+                # Phase 6: RESOLVE the declarations before reserving them.
+                #
+                # This used to hand `_declared` straight to `reserve_skill_tools`,
+                # which resolves a name with `registry.get(name)` — a literal
+                # tool-id lookup. Skills do not declare tool ids. They declare
+                # INTENTS, which is the entire purpose of `orchestrator/intents.py`
+                # ("a thin, stable naming layer OVER the existing tool metadata,
+                # so a skill references `page.fetch` rather than an unstable
+                # provider tool_id"), and the real ids are provider operation ids:
+                #
+                #     intent  blog.serp_research
+                #     tool    search_endpoint_v1_search_post
+                #
+                # Measured against the shipped catalogue: of everything the blog
+                # and SEO skills declare, 100% are intents and 0% are registered
+                # tool ids. So every lookup returned None and `added` was always
+                # zero — the fix written because "the real blog turn bound NONE of
+                # them" bound none of them, and said so in its own telemetry.
+                #
+                # AUTHORIZATION IS UNCHANGED. Resolution only decides which tools
+                # a name refers to; `_filters` (the caller's scope, side-effect
+                # ceiling and granted permissions) still gates every one, and
+                # `check_tool_policy` still re-decides per call at execution.
+                #
+                # USER declarations join here under `intents_only`, so a user can
+                # name a stable platform capability but never a raw provider id.
+                _bound = resolve_capabilities(
+                    _declared,
+                    registry=tool_registry,
+                    selector=tool_selector,
+                    filters=_filters,
+                    scope=agent_scope,
+                )
+                _user_bound = (
+                    resolve_capabilities(
+                        user_sel.capabilities,
+                        registry=tool_registry,
+                        selector=tool_selector,
+                        filters=_filters,
+                        scope=agent_scope,
+                        intents_only=True,
+                    )
+                    if user_sel.capabilities
+                    else EMPTY_CAPABILITIES
+                )
+                _resolved = {*_bound.tool_ids, *_user_bound.tool_ids}
+                if _resolved:
                     candidates, _added = reserve_skill_tools(
-                        candidates, _declared, tool_registry, _filters
+                        candidates, _resolved, tool_registry, _filters
                     )
                     log.info(
                         "agent.skill_tools_reserved",
                         extra={
                             "stream_id": req.streamId,
                             "declared": len(_declared),
+                            "resolved": len(_resolved),
                             "added": _added,
+                        },
+                    )
+                if user_sel.capabilities:
+                    # Reported per outcome, because "my skill said it needs web
+                    # search and it did not get it" needs an answer, and the
+                    # three answers are different: the name is not a capability
+                    # here, this deployment has no tool for it, or you are not
+                    # allowed to use it.
+                    log.info(
+                        "agent.user_skill_capabilities",
+                        extra={
+                            "stream_id": req.streamId,
+                            "declared": user_sel.capabilities,
+                            "bound": _user_bound.tool_ids,
+                            "unknown": _user_bound.unknown,
+                            "unresolved": _user_bound.unresolved,
+                            "unauthorized": _user_bound.unauthorized,
+                            "unavailable": _user_bound.unavailable,
                         },
                     )
                 if candidates:
@@ -1233,47 +1353,11 @@ async def run_generation(
         #
         # Flag OFF => nothing runs and the prompt is byte-identical. Snapshot
         # empty (everyone who has written no skills) => same.
-        if settings.ai_user_skills_enabled and req.customSkills:
-            # Never fatal. Composing a user's guidance is an enhancement to the
-            # turn, not the turn itself, so a defect here must not be the reason
-            # someone cannot get an answer — the same call the built-in
-            # discovery above makes with its own `contextlib.suppress`. Logged at
-            # exception level rather than swallowed, so it is loud in the logs
-            # while the user still gets their reply.
-            sel = EMPTY_SELECTION
-            try:
-                sel = select_user_skills(
-                    req.customSkills,
-                    latest.content,
-                    # The AUTHORITATIVE caller, from the authenticated request —
-                    # the same value that stamps `agent_scope`. Never from the
-                    # model, never from the snapshot itself.
-                    user_id=req.userId,
-                    stream_id=req.streamId,
-                    max_active=settings.ai_user_skill_max_active,
-                    min_score=settings.ai_user_skill_min_score,
-                    char_budget=settings.ai_user_skill_budget_chars,
-                )
-            except Exception:  # noqa: BLE001 — see above
-                log.exception(
-                    "agent.user_skills_failed",
-                    extra={"stream_id": req.streamId},
-                )
-            if sel.block:
-                system = f"{system}\n\n{sel.block}"
-            # Logged whenever the user HAS skills, including the no-match case:
-            # "my skill did not fire" is the question this feature will actually
-            # generate, and `considered` vs `included` is what answers it.
-            log.info(
-                "agent.user_skills",
-                extra={
-                    "stream_id": req.streamId,
-                    "considered": sel.considered,
-                    "skills": sel.included,
-                    "compacted": sel.compacted,
-                    "dropped": sel.dropped,
-                },
-            )
+        # Selected far above, next to `agent_scope`, because the capabilities it
+        # declares had to be known before tools were chosen. Only the APPEND
+        # happens here, and it happens here for the reasons above.
+        if user_sel.block:
+            system = f"{system}\n\n{user_sel.block}"
 
         # Phase 6 (B1): measure the FIXED costs (system prompt + bound tool schemas
         # + latest turn) now that all are assembled, and trim PRIOR history against

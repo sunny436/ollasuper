@@ -37,7 +37,7 @@ from __future__ import annotations
 import re
 import secrets
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.logging import get_logger
 from app.models.chat import CustomSkill
@@ -442,10 +442,20 @@ class UserSkillSelection:
     compacted: list[str]
     dropped: list[str]
     considered: int
+    # Phase 6: capability names declared by the skills that ACTUALLY reached the
+    # prompt. Deliberately not every authorized skill — a skill dropped for
+    # budget contributed no guidance, so reserving tools on its behalf would put
+    # capabilities in front of the model with nothing explaining why they are
+    # there.
+    #
+    # These are NAMES, not tools. This module resolves nothing and authorizes
+    # nothing; that is capability_binding's job, and keeping the two apart is
+    # what stops a rendering change from quietly becoming a permissions change.
+    capabilities: list[str] = field(default_factory=list)
 
 
 EMPTY_SELECTION = UserSkillSelection(
-    block="", included=[], compacted=[], dropped=[], considered=0
+    block="", included=[], compacted=[], dropped=[], considered=0, capabilities=[]
 )
 
 
@@ -472,6 +482,7 @@ def select_user_skills(
         return EMPTY_SELECTION
 
     by_id = {f"{USER_SKILL_PREFIX}{s.id}": s for s in allowed}
+    by_client_id = {s.id: s for s in allowed}
     # A fresh registry per call. Never `register()` into the built-in one: that
     # would put user text in the same budget and the same trusted render path.
     registry = SkillRegistry([to_manifest(s) for s in allowed])
@@ -533,10 +544,15 @@ def select_user_skills(
             considered=len(allowed),
         )
     block = _frame("\n\n".join(bodies), _boundary())
+    # Declared names from the skills that reached the prompt, deduplicated and
+    # ordered. Already shape-checked and lowercased by `_clean_capabilities`;
+    # whether any of them MEANS anything is decided in `capability_binding`.
+    declared = sorted({c for sid in included for c in by_client_id[sid].capabilities})
     return UserSkillSelection(
         block=block,
         included=included,
         compacted=compacted,
         dropped=dropped,
         considered=len(allowed),
+        capabilities=declared,
     )
