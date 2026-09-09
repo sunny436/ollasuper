@@ -202,6 +202,21 @@ class Settings(BaseSettings):
     # second smaller one — enough to be useful, small enough that the combined
     # prompt stays measured against the real context window.
     ai_user_skill_budget_chars: int = 6000
+    # Phase 6 — resolve a skill's DECLARED capabilities through the intent map
+    # before reserving them. ON by default, because the alternative is the bug:
+    # `reserve_skill_tools` looked declarations up as literal tool ids, skills
+    # declare intents, and the two namespaces are disjoint, so every declaration
+    # was silently skipped.
+    #
+    # It has its own switch — separate from `ai_user_skills_enabled` — because
+    # it changes BUILT-IN skill behaviour for every user, on the hottest path,
+    # whether or not custom skills are on. seo-audit declares 8 intents and
+    # blog-assist 10, each resolving to up to `limit_per` tools, and declared
+    # tools sort to the FRONT of the schema-budget trim, so they can displace
+    # what discovery found. That is the intended behaviour and it is why the
+    # default is True — but a change of that size on a live deployment needs to
+    # be revertible by a flag flip rather than by a redeploy.
+    ai_skill_capability_resolution_enabled: bool = True
     # Phase 12b (Stage 1) — wire the orchestrated runtime's DYNAMIC CAPABILITY
     # DISCOVERY into the LIVE agent path. OFF by default → the runner is
     # byte-identical (top-K remains the initial inline set). When on (and the agent

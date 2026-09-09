@@ -74,6 +74,7 @@ import type * as scheduled_parse from "../scheduled/parse.js";
 import type * as scheduled_schedule from "../scheduled/schedule.js";
 import type * as scheduled_tasks from "../scheduled/tasks.js";
 import type * as seed from "../seed.js";
+import type * as skillCapabilities from "../skillCapabilities.js";
 import type * as skillPolicy from "../skillPolicy.js";
 import type * as seoMutations from "../seoMutations.js";
 import type * as subscriptions from "../subscriptions.js";
@@ -166,6 +167,7 @@ declare const fullApi: ApiFromModules<{
   "scheduled/tasks": typeof scheduled_tasks;
   seed: typeof seed;
   seoMutations: typeof seoMutations;
+  skillCapabilities: typeof skillCapabilities;
   skillPolicy: typeof skillPolicy;
   subscriptions: typeof subscriptions;
   urlGuard: typeof urlGuard;

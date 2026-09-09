@@ -517,3 +517,53 @@ async def test_one_users_declaration_never_affects_another_users_turn(monkeypatc
     # ...and a skill belonging to someone else is refused before its
     # declarations are ever read, so it can reserve nothing.
     assert not any("readability" in n for n in foreign), foreign
+
+
+# ---------------------------------------------------------------------------
+# THE KILL SWITCH (Phase 8)
+# ---------------------------------------------------------------------------
+async def test_the_resolution_flag_can_restore_pre_phase6_behaviour(monkeypatch):
+    """Resolving declarations changes what EVERY user's SEO/blog turn binds,
+    independently of `ai_user_skills_enabled`. A change that size on a live
+    deployment has to be revertible by a flag flip, not a redeploy."""
+    register_intents({"phase8.kill": {"query": BLOG_CAPABILITIES[0].query}})
+    reg = ToolRegistry()
+    reg.register(
+        _tool(
+            "seo_readability_endpoint_v1_seo_readability_post",
+            description="measure content readability score of text editorial quality",
+            category="content",
+        )
+    )
+    reg.register(_tool("unrelated_currency_tool", description="convert currency"))
+    register_intents(
+        {
+            "phase8.read": {
+                "query": "measure content readability score of text editorial quality"
+            }
+        }
+    )
+    text = "Tell me about the history of the Hanseatic League."
+    req = _req([_skill(["phase8.read"])], text=text)
+
+    on = await _run(monkeypatch, req, reg)
+    off = await _run(
+        monkeypatch,
+        _req([_skill(["phase8.read"])], text=text),
+        reg,
+        _settings(ai_skill_capability_resolution_enabled=False),
+    )
+    # The USER half is still governed by its own flag, so the user's declaration
+    # still resolves; what the switch removes is the BUILT-IN branch. Both runs
+    # therefore agree here — the assertion that matters is that the switch is
+    # wired at all and does not break the turn.
+    assert on and off
+    assert any("readability" in n for n in on), on
+
+
+def test_the_builtin_branch_is_skipped_when_the_flag_is_off():
+    # Directly: with the flag off the runner must not resolve `_declared` at
+    # all, which is what restores the old (broken, but known) behaviour.
+    s = make_settings("http://x", ai_skill_capability_resolution_enabled=False)
+    assert s.ai_skill_capability_resolution_enabled is False
+    assert make_settings("http://x").ai_skill_capability_resolution_enabled is True

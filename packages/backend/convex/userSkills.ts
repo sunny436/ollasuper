@@ -280,11 +280,20 @@ export const create = mutation({
       createdAt: now,
       updatedAt: now,
     });
-    // The NAME only — never the instructions. Audit rows are widely readable
-    // within a workspace, and a private skill's body is not workspace data.
+    // THE ID ONLY — not the name, and never the body.
+    //
+    // Audit rows are WORKSPACE-scoped and `audit.recent` serves them to any
+    // member of that workspace. The Settings page promises these skills are
+    // "Private to you", so a name here made a peer able to read what someone
+    // called their own private guidance — and a title like "Draft my
+    // resignation letter" is exactly the kind that must not travel.
+    //
+    // Phase 2 logged the name having reasoned that only the BODY was sensitive.
+    // That was the wrong half: it asked what the row contained and never asked
+    // who could read it. `skillId` says which skill changed, which is all an
+    // audit trail needs — the owner can resolve it and nobody else should.
     await audit(ctx, args.workspaceId, userId, "skill.create", {
       skillId,
-      name: clean.name,
     });
     return skillId;
   },
@@ -323,7 +332,6 @@ export const update = mutation({
     });
     await audit(ctx, skill.workspaceId, userId, "skill.update", {
       skillId: args.skillId,
-      name: clean.name,
     });
     return { ok: true };
   },
@@ -370,7 +378,6 @@ export const remove = mutation({
     await ctx.db.delete(skillId);
     await audit(ctx, skill.workspaceId, userId, "skill.delete", {
       skillId,
-      name: skill.name,
     });
     return { ok: true };
   },

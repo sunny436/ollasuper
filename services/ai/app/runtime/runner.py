@@ -771,10 +771,19 @@ async def run_generation(
                     min_score=settings.ai_user_skill_min_score,
                     char_budget=settings.ai_user_skill_budget_chars,
                 )
-            except Exception:  # noqa: BLE001 — see above
-                log.exception(
+            except Exception as exc:  # noqa: BLE001 — see above
+                # The TYPE, not the traceback. Everything this function touches
+                # is private user prose, and a traceback happily renders the
+                # argument that caused the failure — which would put a skill
+                # body into the logs on exactly the path where nobody is
+                # watching for it. The type plus the stream id is enough to find
+                # and reproduce the fault.
+                log.error(
                     "agent.user_skills_failed",
-                    extra={"stream_id": req.streamId},
+                    extra={
+                        "stream_id": req.streamId,
+                        "error_type": type(exc).__name__,
+                    },
                 )
             # Logged whenever the user HAS skills, including the no-match case:
             # "my skill did not fire" is the question this feature will actually
@@ -927,12 +936,21 @@ async def run_generation(
                 #
                 # USER declarations join here under `intents_only`, so a user can
                 # name a stable platform capability but never a raw provider id.
-                _bound = resolve_capabilities(
-                    _declared,
-                    registry=tool_registry,
-                    selector=tool_selector,
-                    filters=_filters,
-                    scope=agent_scope,
+                # Flagged SEPARATELY from user skills: this branch is BUILT-IN
+                # skill behaviour and changes what every user's SEO/blog turn
+                # binds, on by default, regardless of `ai_user_skills_enabled`.
+                # OFF restores the pre-Phase-6 behaviour exactly (declarations
+                # resolved as literal tool ids, which matched nothing).
+                _bound = (
+                    resolve_capabilities(
+                        _declared,
+                        registry=tool_registry,
+                        selector=tool_selector,
+                        filters=_filters,
+                        scope=agent_scope,
+                    )
+                    if settings.ai_skill_capability_resolution_enabled
+                    else EMPTY_CAPABILITIES
                 )
                 _user_bound = (
                     resolve_capabilities(

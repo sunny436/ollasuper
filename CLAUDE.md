@@ -246,6 +246,8 @@ Unbounded context is the default failure mode of a chat product. Four layers, al
 3. `ai_max_turn_chars` (48k) bounds the *newest* turn, shared across all its documents. The history budget does not cover it, and the newest turn is where all the user-controlled bulk is.
 4. `MAX_GENERATIONS_PER_HOUR` (120) per user. `MAX_CONCURRENT_STREAMS` bounds *parallel* generations only — `send → stop → retry` never runs more than one stream and is otherwise an unbounded billing loop.
 
+The **system prompt** is budgeted separately and is not covered by (2): built-in skill guidance is capped at `ai_skill_instructions_budget_chars` (20k) and user-authored skills at `ai_user_skill_budget_chars` (6k, a deliberately separate budget so a user's skill cannot evict a built-in's constraints). Both are measured into `system_tokens` before history is trimmed, so they shrink the history window rather than overrunning the model's — but they are ~6.5k tokens of input on every turn that activates them, and that is real money at Opus rates.
+
 ## Ports
 
 The AI service binds `127.0.0.1:8770`, **not 8000** — `deploy/47-glitchtip.sh` runs a cloudflared tunnel from a public `trycloudflare` URL to `localhost:8000`, and whichever process binds first wins.
@@ -253,6 +255,18 @@ The AI service binds `127.0.0.1:8770`, **not 8000** — `deploy/47-glitchtip.sh`
 ## Deployment
 
 `deploy/` is 62 numbered, idempotent shell scripts run in order on the VM; `deploy/54-ai-service.sh` is the AI service. `OPENROUTER_API_KEY` is never generated, never defaulted and never written by a script — an operator fills it into `services/ai/.env` (0600), and the script hard-fails until they do. It lives in **exactly one place**: the inference plane, which is the only thing that needs it to call a model. `convex/chat/models.ts` deliberately fetches the *unauthenticated* `/api/v1/models` (identical payload, no credentials) so the catalogue never becomes a second copy of the secret.
+
+### DEPLOY ORDER IS LOAD-BEARING: Python → Convex → frontend
+
+`GenerateRequest` (`services/ai/app/models/chat.py`) is `extra="forbid"`, and `dispatchPayload` sends every field it knows about **unconditionally**. So the moment Convex starts sending a field a running Python build does not declare, **every** `POST /v1/generate` fails validation — and `chat.stream.dispatch` treats any non-2xx as terminal. That is not degraded chat, it is **no chat, for every user, immediately**.
+
+Therefore, whenever a change adds a field to the dispatch payload:
+
+1. **Python first.** Deploy `services/ai`, restart it, confirm it is serving.
+2. **Then Convex.** `convex deploy` — only now does the new field start travelling.
+3. **Then the frontend.** `NEXT_PUBLIC_CONVEX_URL` is build-time, so a UI change needs `rm -rf .next` + a full rebuild; a restart alone does nothing.
+
+Rolling **back** runs the same order in reverse: revert Convex before Python, or the old Convex will be talking to a Python build that has already lost the field. Fields added this way so far: `personalization`, `customSkills`.
 
 `ROADMAP.md` is the house record of what is done and what is deferred; keep it current rather than adding new status docs.
 

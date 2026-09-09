@@ -210,3 +210,34 @@ def resolve_capabilities(
         unauthorized=unauthorized,
         unavailable=unavailable,
     )
+
+
+def user_capability_catalog(settings) -> list[dict]:
+    """What a user may put in their skill's `capabilities`, for the picker.
+
+    Deliberately NOT read from the global `INTENT_MAP`. That map is populated as
+    a side effect of `build_live_runtime`, which runs per generation, so a fresh
+    process would serve an empty catalogue until somebody happened to chat
+    first. `effective_intent_maps` composes the same set deterministically from
+    the flags, with no startup order to get wrong.
+
+    Ids only, grouped by their prefix. The id IS the label: intents are named
+    for humans (`page.fetch`, `blog.serp_research`) precisely so this layer can
+    be shown to one. No descriptions yet — they live on the per-domain
+    capability objects and the intent map drops them, and inventing a second
+    place to write them is how the two would drift.
+
+    Reflects THIS deployment: a capability whose flag is off is not offered,
+    because declaring it would resolve to nothing and the user would have no way
+    to find out why.
+    """
+    from app.orchestrator.intents import INTENT_MAP
+    from app.runtime.roster import effective_intent_maps
+
+    # Core intents are always present; flag-gated ones only when enabled.
+    names = sorted({*INTENT_MAP, *effective_intent_maps(settings)})
+    out: list[dict] = []
+    for name in names:
+        group = name.split(".", 1)[0] if "." in name else "general"
+        out.append({"id": name, "group": group})
+    return out

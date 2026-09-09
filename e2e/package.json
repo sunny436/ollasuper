@@ -10,7 +10,8 @@
     "dashboard": "node p-sidebar.js && node p-notif.js && node p-cmdk.js && node p-chat.js",
     "chat": "node p-chat.js",
     "chat:isolation": "node p-chat-isolation.js",
-    "scheduled": "node p-scheduled.js"
+    "scheduled": "node p-scheduled.js",
+    "skills": "node qa-skills.js"
   },
   "devDependencies": {
     "convex": "1.19.2",

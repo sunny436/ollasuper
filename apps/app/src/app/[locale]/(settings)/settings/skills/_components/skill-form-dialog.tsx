@@ -15,6 +15,7 @@ import { Textarea } from "@v1/ui/textarea";
 import { useMutation } from "convex/react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { CapabilityPicker } from "./capability-picker";
 
 /**
  * Create or edit ONE custom skill.
@@ -24,10 +25,16 @@ import { toast } from "sonner";
  * drift. `skill === null` means create.
  *
  * WHAT THIS FORM DELIBERATELY DOES NOT OFFER: code, packages, URLs, credentials,
- * tool registration, or a capability picker. The first five are not part of the
- * data model at all. The sixth exists in the schema but nothing reads it yet, so
- * a control for it would be a switch wired to nothing — worse than its absence,
- * because the user would reasonably believe it did something.
+ * or tool registration. None of them are part of the data model at all, and a
+ * skill is declarative guidance — never something that executes.
+ *
+ * It DOES offer a capability picker, and that is a Phase 8 correction. The
+ * control was withheld while the field was inert ("a switch wired to nothing is
+ * worse than its absence"). Phase 6 made the runtime read it and nobody closed
+ * the loop, so a shipped runtime path was reachable only by calling the API
+ * directly. The picker is a CLOSED list from the deployment's own catalogue —
+ * see `capability-picker.tsx` for why it is never free text, and why declaring
+ * a capability does not grant one.
  *
  * The limits below MIRROR the server; they do not replace it. `skillPolicy.ts`
  * is authoritative and re-validates every field, so a client that skipped this
@@ -41,15 +48,25 @@ const MAX = {
   constraints: 2000,
 } as const;
 
+// Mirrors MAX_SKILL_CAPABILITIES in skillPolicy.ts, which is authoritative.
+const MAX_CAPABILITIES = 16;
+
 export type EditableSkill = {
   _id: Id<"userSkills">;
   name: string;
   description: string;
   instructions: string;
   constraints: string;
+  capabilities: string[];
 };
 
-const EMPTY = { name: "", description: "", instructions: "", constraints: "" };
+const EMPTY = {
+  name: "",
+  description: "",
+  instructions: "",
+  constraints: "",
+  capabilities: [] as string[],
+};
 
 /** Convex wraps a thrown ConvexError with framing noise; show just the message. */
 function readableError(e: unknown, fallback: string): string {
@@ -90,13 +107,14 @@ export function SkillFormDialog({
             description: skill.description,
             instructions: skill.instructions,
             constraints: skill.constraints,
+            capabilities: skill.capabilities,
           }
         : EMPTY,
     );
     setError(null);
   }, [open, skill]);
 
-  const set = (k: keyof typeof EMPTY, v: string) =>
+  const set = (k: "name" | "description" | "instructions" | "constraints", v: string) =>
     setForm((p) => ({ ...p, [k]: v }));
 
   // Trimmed on both sides, so trailing whitespace never enables a save that
@@ -106,13 +124,17 @@ export function SkillFormDialog({
     description: form.description.trim(),
     instructions: form.instructions.trim(),
     constraints: form.constraints.trim(),
+    // Already a closed set from the catalogue; sorted so an unchanged pick in a
+    // different click order does not read as a pending edit.
+    capabilities: [...form.capabilities].sort(),
   };
   const complete = !!trimmed.name && !!trimmed.instructions;
   const dirty = skill
     ? trimmed.name !== skill.name.trim() ||
       trimmed.description !== skill.description.trim() ||
       trimmed.instructions !== skill.instructions.trim() ||
-      trimmed.constraints !== skill.constraints.trim()
+      trimmed.constraints !== skill.constraints.trim() ||
+      trimmed.capabilities.join() !== [...skill.capabilities].sort().join()
     : complete;
 
   const save = async () => {
@@ -223,6 +245,14 @@ export function SkillFormDialog({
               className="min-h-24 resize-y bg-transparent"
             />
           </Field>
+
+          <CapabilityPicker
+            value={form.capabilities}
+            max={MAX_CAPABILITIES}
+            onChange={(capabilities) =>
+              setForm((prev) => ({ ...prev, capabilities }))
+            }
+          />
 
           {error && (
             <p className="text-sm text-red-500" role="alert">

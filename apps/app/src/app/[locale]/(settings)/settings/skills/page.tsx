@@ -177,6 +177,7 @@ export default function SkillsSection() {
                           description: s.description,
                           instructions: s.instructions,
                           constraints: s.constraints,
+                          capabilities: s.capabilities,
                         })
                       }
                     >

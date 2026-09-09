@@ -146,9 +146,13 @@ def _break_frames(text: str) -> str:
 # a Python-level predicate called per character, and against the worst case a
 # user can actually build — 50 skills of ~6k chars each — it cost 309ms of
 # synchronous event-loop time per turn, which is worse than the 123ms problem
-# this phase set out to reduce. Scanning in C makes it unmeasurable. The
-# predicate below is kept because it is the readable statement of the same set,
-# and it is what the tests assert against.
+# this phase set out to reduce. Scanning in C makes it unmeasurable.
+#
+# The ranges are the readable statement of the rule and the regex is derived
+# from them, so there is one place to add a range and no second list to forget.
+# (A hand-written `_is_invisible` predicate lived here for exactly that reason,
+# with a comment claiming the tests asserted against it. They did not — nothing
+# referenced it at all. It was deleted in Phase 8.)
 _INVISIBLE_RANGES: tuple[tuple[int, int], ...] = (
     (0x0000, 0x0008),  # C0 controls, below tab
     (0x000B, 0x001F),  # C0 controls, above newline
@@ -170,11 +174,6 @@ _INVISIBLE_RANGES: tuple[tuple[int, int], ...] = (
 _INVISIBLE_RE = re.compile(
     "[" + "".join(f"\\U{a:08x}-\\U{b:08x}" for a, b in _INVISIBLE_RANGES) + "]"
 )
-
-
-def _is_invisible(cp: int) -> bool:
-    """The readable statement of the set above. Not on the hot path."""
-    return any(lo <= cp <= hi for lo, hi in _INVISIBLE_RANGES)
 
 
 def _strip_invisible(text: str) -> str:

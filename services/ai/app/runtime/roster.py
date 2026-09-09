@@ -16,6 +16,7 @@ read-only tools). Side-effecting work stays with the top agent, approval-gated.
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from app.agent.orchestration_tools import DELEGATE_TOOL_SPEC
@@ -244,6 +245,43 @@ def build_delegate_spec(settings: Settings | None = None) -> dict:
     return spec
 
 
+# (flag, intent-map builder) — ONE table, because there are now two readers.
+#
+# Every domain's intents live under a distinct prefix (`blog.*`, `seo.*`, …) and
+# `register_intents` never overwrites an existing key, so registration is
+# additive and idempotent whatever the order. That was already true; what is new
+# is that the PICKER needs the same list to tell a user which capabilities their
+# skill may name. Two hand-maintained copies of "which flag turns on which
+# intents" would drift the moment a capability is added, and the symptom would
+# be a capability that works at runtime but is missing from the menu.
+_INTENT_SOURCES: tuple[tuple[str, Callable[[], dict]], ...] = (
+    ("ai_seo_enabled", seo_intent_map),
+    ("ai_blog_enabled", blog_intent_map),
+    ("ai_research_enabled", research_intent_map),
+    ("ai_sales_enabled", sales_intent_map),
+    ("ai_hr_enabled", hr_intent_map),
+    ("ai_finance_enabled", finance_intent_map),
+    ("ai_marketing_enabled", marketing_intent_map),
+    ("ai_operations_enabled", operations_intent_map),
+    ("ai_documents_enabled", documents_intent_map),
+)
+
+
+def effective_intent_maps(settings: Settings | None) -> dict[str, dict]:
+    """Every intent this deployment has, WITHOUT touching the global map.
+
+    Pure on purpose: the catalogue is served from a GET route that may run
+    before any generation has, so reading the global `INTENT_MAP` would report
+    an empty deployment until the first chat happened to populate it. Composing
+    it here is deterministic and has no startup order to get wrong.
+    """
+    out: dict[str, dict] = {}
+    for flag, build in _INTENT_SOURCES:
+        if settings is not None and getattr(settings, flag, False):
+            out.update(build())
+    return out
+
+
 def build_live_runtime(
     settings: Settings, resolver: CapabilityResolver
 ) -> tuple[Orchestrator, SkillRegistry]:
@@ -251,42 +289,11 @@ def build_live_runtime(
     the production roster. The orchestrator is used ONLY for `_make_delegator` and
     skill discovery — the live runner keeps its own streaming graph; it never calls
     `orchestrator.run` (which is batch)."""
-    if getattr(settings, "ai_seo_enabled", False):
-        # Additively register the SEO capability intents (never clobbers a core
-        # intent like crawl.run). Idempotent, so repeated builds are safe.
-        register_intents(seo_intent_map())
-    if getattr(settings, "ai_blog_enabled", False):
-        # Additively register the blog capability intents (distinct `blog.*` keys —
-        # never clobbers SEO or core intents). Idempotent.
-        register_intents(blog_intent_map())
-    if getattr(settings, "ai_research_enabled", False):
-        # Additively register the deep-research capability intents (distinct
-        # `research.*` keys — never clobbers SEO/Blog or core intents). Idempotent.
-        register_intents(research_intent_map())
-    if getattr(settings, "ai_sales_enabled", False):
-        # Additively register the sales capability intents (distinct `sales.*` keys —
-        # never clobbers SEO/Blog/Research or core intents). Idempotent.
-        register_intents(sales_intent_map())
-    if getattr(settings, "ai_hr_enabled", False):
-        # Additively register the HR capability intents (distinct `hr.*` keys — never
-        # clobbers SEO/Blog/Research/Sales or core intents). Idempotent.
-        register_intents(hr_intent_map())
-    if getattr(settings, "ai_finance_enabled", False):
-        # Additively register the finance capability intents (distinct `finance.*`
-        # keys — never clobbers SEO/Blog/Research/Sales/HR or core intents). Idempotent.
-        register_intents(finance_intent_map())
-    if getattr(settings, "ai_marketing_enabled", False):
-        # Additively register the marketing capability intents (distinct `marketing.*`
-        # keys — never clobbers any sibling or core intents). Idempotent.
-        register_intents(marketing_intent_map())
-    if getattr(settings, "ai_operations_enabled", False):
-        # Additively register the operations capability intents (distinct `operations.*`
-        # keys — never clobbers any sibling or core intents). Idempotent.
-        register_intents(operations_intent_map())
-    if getattr(settings, "ai_documents_enabled", False):
-        # Additively register the documents capability intents (distinct `documents.*`
-        # keys — never clobbers any sibling or core intents). Idempotent.
-        register_intents(documents_intent_map())
+    # Additive and idempotent: distinct per-domain prefixes, and
+    # `register_intents` never clobbers an existing key (so a core intent like
+    # `crawl.run` cannot be redefined by a feature). Repeated builds are safe.
+    for name, spec in effective_intent_maps(settings).items():
+        register_intents({name: spec})
     agent_registry = AgentRegistry([DEFAULT_AGENT, *effective_agents(settings)])
     skill_registry = SkillRegistry(effective_skills(settings))
     orchestrator = Orchestrator(

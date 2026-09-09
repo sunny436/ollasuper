@@ -20,6 +20,7 @@ from app.runtime.capabilities import capability_catalog
 from app.runtime.registry import Conflict, TooMany
 from app.runtime.runner import run_generation
 from app.security import require_service_key
+from app.skills.capability_binding import user_capability_catalog
 
 log = get_logger(__name__)
 
@@ -153,3 +154,25 @@ async def capabilities(request: Request) -> dict:
     """
     settings = request.app.state.settings
     return {"enabled": capability_catalog(settings)}
+
+
+@router.get("/capabilities/skill")
+async def skill_capabilities(request: Request) -> dict:
+    """What a user may declare in a custom skill's `capabilities`.
+
+    A DIFFERENT list from `/v1/capabilities` above, and the two must not be
+    confused. That one is product surfaces ("seo", "blog") for the Explore menu.
+    This one is capability INTENTS (`page.fetch`, `blog.serp_research`) — the
+    stable naming layer over provider tool ids, and the only vocabulary a user
+    skill is allowed to name.
+
+    Without this the field was unreachable: the runtime consumed it from Phase 6
+    but nothing told a user which values exist, so it could only be set by
+    calling the API directly.
+
+    Pure and cheap — no model call, no I/O, no registry mutation — and it
+    reflects the live flags, so a capability this deployment does not have is
+    never offered.
+    """
+    settings = request.app.state.settings
+    return {"capabilities": user_capability_catalog(settings)}

@@ -1,13 +1,20 @@
-// My Skills — the management surface, end to end.
+// My Skills — management AND runtime use, end to end.
 //
-// WRITTEN IN PHASE 3, RUN IN PHASE 8. Nothing is deployed until then, and the
-// Convex functions this drives do not exist on production yet, so running it
-// now would fail for a reason that has nothing to do with the UI. It is
-// committed with the phase it tests so the two cannot drift.
+// WRITTEN IN PHASE 3, EXTENDED AND RUN IN PHASE 8. It sat unwired in
+// `package.json` until Phase 8, which meant the acceptance instrument for the
+// entire frontend was a file nobody ran. It is registered now: `bun run skills`.
 //
-// This covers MANAGEMENT only. Whether a saved skill reaches the model is a
-// runtime question and belongs to a later phase's test — a green run here means
-// the user can manage skills, not that the assistant uses them.
+// Two halves, and the second is the one that matters:
+//
+//   MANAGEMENT — sidebar, list, create, validation, edit, enable, disable,
+//   delete, and the signed-out redirect.
+//
+//   RUNTIME — a skill with a unique marker in its instructions actually changes
+//   what the live model says, and stops doing so once disabled. Every
+//   in-process test uses a fake LLM, so this is the ONLY place the feature's
+//   central claim is actually demonstrated.
+//
+// Asserts zero console errors throughout, like every suite here.
 //
 //   E2E_EMAIL=... E2E_PASSWORD=... node qa-skills.js
 const { chromium } = require("playwright");
@@ -20,6 +27,7 @@ const errs = [];
 const results = [];
 const notes = [];
 const TAG = `QA Skill ${Date.now().toString().slice(-6)}`;
+const RUNTIME_SKILL = `QA Runtime ${Date.now().toString().slice(-6)}`;
 
 const step = async (n, fn) => {
   try {
@@ -216,6 +224,90 @@ const card = (page, name) => page.locator("li").filter({ hasText: name }).first(
     if (!/login/.test(p2.url()))
       throw new Error("the skills page rendered for a signed-out visitor");
     await anon.close();
+  });
+
+  // ---------------------------------------------------------------------
+  // RUNTIME USE — the part no in-process test can establish.
+  //
+  // Everything above proves a user can MANAGE skills. This proves a saved skill
+  // actually reaches the live model and changes what it says, which is the
+  // whole point of the feature and the one thing a fake LLM cannot show.
+  // ---------------------------------------------------------------------
+  const MARK = `SKILLCHECK-${Date.now().toString(36).toUpperCase()}`;
+
+  await step("a saved skill actually changes the model's answer", async () => {
+    await openSkills(page);
+    await page.getByRole("button", { name: /^New skill$/ }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.waitFor({ timeout: 15000 });
+    await dialog.getByLabel("Name").fill(RUNTIME_SKILL);
+    await dialog
+      .getByLabel("Description")
+      .fill("Reviewing supplier contracts for ambiguity.");
+    await dialog
+      .getByLabel("Instructions")
+      .fill(
+        "When reviewing a contract, finish your reply with this exact line " +
+          `and nothing after it: ${MARK}`,
+      );
+    await page.waitForTimeout(300);
+    await dialog.getByRole("button", { name: /^Create skill$/ }).click();
+    await page.waitForTimeout(3000);
+
+    await page.goto(`${BASE}/en/chat`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#chat-composer", { timeout: 30000 });
+    await page.click("#chat-composer");
+    await page.keyboard.type(
+      "Review this supplier contract clause for ambiguity: the vendor shall " +
+        "deliver promptly.",
+    );
+    await page.keyboard.press("Enter");
+
+    // Generation is slow and variable; poll for the marker rather than betting
+    // on a fixed timeout.
+    const deadline = Date.now() + 120000;
+    let seen = false;
+    while (Date.now() < deadline && !seen) {
+      await page.waitForTimeout(2500);
+      const body = await page.evaluate(() => document.body.innerText || "");
+      seen = body.includes(MARK);
+    }
+    if (!seen) {
+      throw new Error(`the skill never reached the model — no ${MARK} in the reply`);
+    }
+    notes.push(`runtime: the skill changed the answer (${MARK})`);
+  });
+
+  await step("a DISABLED skill stops changing the answer", async () => {
+    // The other half of the same proof: if the marker appeared for a reason
+    // other than the skill, it would still appear here.
+    await openSkills(page);
+    await card(page, RUNTIME_SKILL).getByRole("switch").click();
+    await page.waitForTimeout(2500);
+    await page.goto(`${BASE}/en/chat`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#chat-composer", { timeout: 30000 });
+    await page.click("#chat-composer");
+    await page.keyboard.type(
+      "Review this supplier contract clause for ambiguity: payment is due soon.",
+    );
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(45000);
+    const body = await page.evaluate(() => document.body.innerText || "");
+    if (body.includes(MARK)) {
+      throw new Error("a disabled skill still influenced the reply");
+    }
+  });
+
+  await step("cleanup: the runtime skill is removed", async () => {
+    await openSkills(page);
+    if ((await card(page, RUNTIME_SKILL).count()) === 0) return;
+    await card(page, RUNTIME_SKILL)
+      .getByRole("button", { name: "Delete" })
+      .click();
+    const confirm = page.getByRole("dialog");
+    await confirm.waitFor({ timeout: 15000 });
+    await confirm.getByRole("button", { name: /^Delete$/ }).click();
+    await page.waitForTimeout(2500);
   });
 
   console.log("\n--- notes ---");
