@@ -62,10 +62,23 @@ function isStripped(cp: number): boolean {
   if (cp === 0x0a || cp === 0x09) return false; // newline, tab: legitimate
   if (cp <= 0x1f) return true; // C0 controls
   if (cp >= 0x7f && cp <= 0x9f) return true; // DEL + C1 controls
+  if (cp === 0x00ad) return true; // soft hyphen
+  if (cp === 0x061c) return true; // arabic letter mark
+  if (cp === 0x180e) return true; // mongolian vowel separator
   if (cp >= 0x200b && cp <= 0x200f) return true; // zero-width + LTR/RTL marks
   if (cp >= 0x202a && cp <= 0x202e) return true; // bidi embedding/override
+  if (cp >= 0x2060 && cp <= 0x2064) return true; // word joiner + invisible ops
   if (cp >= 0x2066 && cp <= 0x2069) return true; // bidi isolates
   if (cp === 0xfeff) return true; // BOM / zero-width no-break space
+  if (cp >= 0xfe00 && cp <= 0xfe0f) return true; // variation selectors
+  if (cp >= 0xfff9 && cp <= 0xfffb) return true; // interlinear annotation
+  if (cp >= 0x1d173 && cp <= 0x1d17a) return true; // musical formatting
+  // THE TAG BLOCK — the one that matters most. U+E0000-E007F mirror ASCII and
+  // render as nothing at all, so an author can hide a whole instruction that
+  // neither they, nor anyone reviewing the row, nor the settings form can see,
+  // and which still reaches the model. Phase 4 missed this entire range.
+  if (cp >= 0xe0000 && cp <= 0xe007f) return true;
+  if (cp >= 0xe0100 && cp <= 0xe01ef) return true; // variation selectors suppl.
   return false;
 }
 
