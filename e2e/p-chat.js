@@ -95,6 +95,16 @@ const step = async (n, f) => {
     );
   });
 
+  const settleTheme = async (want) => {
+    await page
+      .waitForFunction(
+        (w) => document.documentElement.dataset.ambience === w,
+        want,
+        { timeout: 10000, polling: "raf" },
+      )
+      .catch(() => {});
+  };
+
   await step("theme toggle themes the whole app", async () => {
     // The header theme toggle replaced the Ambience slider; it drives the SAME
     // engine, so the guarantees asserted here are unchanged — ~31 --amb-* vars
@@ -110,11 +120,11 @@ const step = async (n, f) => {
     if (before) {
       // Start from light so the assertions below describe a real transition.
       await toggle.first().click();
-      await page.waitForTimeout(500);
+      await settleTheme("0");
     }
 
     await toggle.first().click();
-    await page.waitForTimeout(600); // 260ms tween + repaint headroom
+    await settleTheme("100");
     const midnight = await page.evaluate(() => ({
       amb: getComputedStyle(document.documentElement)
         .getPropertyValue("--amb-background")
@@ -128,7 +138,7 @@ const step = async (n, f) => {
       throw new Error(`dataset.ambience expected 100, got ${midnight.ds}`);
 
     await toggle.first().click();
-    await page.waitForTimeout(600);
+    await settleTheme("0");
     const day = await page.evaluate(() => ({
       dark: document.documentElement.classList.contains("dark"),
       ds: document.documentElement.dataset.ambience,
