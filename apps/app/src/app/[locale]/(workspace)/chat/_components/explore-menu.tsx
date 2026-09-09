@@ -23,8 +23,10 @@ import {
   Settings,
   Sparkles,
   Users,
+  Wand2,
   Zap,
 } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
@@ -377,6 +379,27 @@ export function ExploreMenu({
               );
             })}
           </div>
+
+          {/*
+            TWO DIFFERENT THINGS ARE CALLED "SKILLS", and this is where a user
+            finds that out. Everything above is what this DEPLOYMENT can do:
+            picking one types a starter prompt into the composer — it activates
+            nothing and it is not owned by anyone. What the user WRITES lives in
+            Settings. Naming the difference here is cheaper than letting someone
+            hunt this menu for a skill they created.
+          */}
+          <DropdownMenuItem asChild>
+            <Link
+              href="/settings/skills"
+              className="flex cursor-pointer items-center gap-2 border-t border-border px-4 py-2.5 text-[12px] text-primary/55 transition hover:text-primary/85"
+            >
+              <Wand2 className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                Looking for skills you wrote? Manage them in{" "}
+                <span className="font-medium text-primary/75">My Skills</span>.
+              </span>
+            </Link>
+          </DropdownMenuItem>
 
           {/* ONE shared description line, not a card or tooltip per item. */}
           <div className="flex min-h-[2.75rem] items-center border-t border-border bg-primary/[0.03] px-4 py-2.5">

@@ -7,6 +7,7 @@ import {
   Link2,
   Sparkles,
   User,
+  Wand2,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -23,6 +24,7 @@ const NAV = [
   { href: "/settings", label: "Profile", icon: User },
   { href: "/settings/personalization", label: "Personalization", icon: Sparkles },
   { href: "/settings/memories", label: "Memories", icon: Brain },
+  { href: "/settings/skills", label: "My Skills", icon: Wand2 },
   { href: "/settings/shared", label: "Shared Links", icon: Link2 },
   { href: "/settings/archived", label: "Archived Chats", icon: Archive },
   { href: "/settings/files", label: "Files", icon: FolderClosed },

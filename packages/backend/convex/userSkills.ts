@@ -191,9 +191,16 @@ export const update = mutation({
       name: clean.name,
       description: clean.description,
       instructions: clean.instructions,
-      // Cleared explicitly when emptied, rather than left stale.
+      // Cleared explicitly when emptied, rather than left stale. The form
+      // always renders this field, so empty genuinely means "remove it".
       constraints: clean.constraints || undefined,
-      capabilities: caps.length ? caps : undefined,
+      // OMITTED MEANS UNCHANGED, not cleared — `patch` deletes a field whose
+      // value is undefined, so a caller that does not render capabilities
+      // (which is every caller today) would wipe them on an unrelated rename.
+      // Sending an empty array is still how you clear them, explicitly.
+      ...(args.capabilities === undefined
+        ? {}
+        : { capabilities: caps.length ? caps : undefined }),
       updatedAt: Date.now(),
     });
     await audit(ctx, skill.workspaceId, userId, "skill.update", {

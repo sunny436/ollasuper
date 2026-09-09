@@ -437,6 +437,28 @@ describe("capability references are hints, validated structurally", () => {
         ?.capabilities,
     ).toEqual([]);
   });
+
+  test("OMITTING the field leaves references alone — it does not wipe them", async () => {
+    // This is exactly what the Settings form does: it renders no capability
+    // control, so it sends no `capabilities` key. `patch` deletes a field set
+    // to undefined, so without the guard in `update` a plain rename would
+    // silently discard references the user never saw and never touched.
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const id = await t.withIdentity(as(owner)).mutation(api.userSkills.create, {
+      workspaceId: ws,
+      ...GOOD,
+      capabilities: ["metadata.audit"],
+    });
+    await t
+      .withIdentity(as(owner))
+      .mutation(api.userSkills.update, { skillId: id, ...GOOD, name: "Renamed" });
+    const after = await t
+      .withIdentity(as(owner))
+      .query(api.userSkills.get, { skillId: id });
+    expect(after?.name).toBe("Renamed");
+    expect(after?.capabilities).toEqual(["metadata.audit"]);
+  });
 });
 
 describe("identity and payload shape", () => {
