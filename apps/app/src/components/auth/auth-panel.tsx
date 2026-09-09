@@ -624,7 +624,19 @@ export function AuthPanel() {
                     )}
                   </signUpForm.Field>
 
-                  <Hint>Upper and lowercase letters plus a number.</Hint>
+                  {/* Must list every rule the user has to ACT on, because both
+                      validators reject a special-character-less password:
+                      signUpPassword (schemas.ts) and assertPasswordRequirements
+                      (convex/authPolicy.ts). This previously stopped at "plus a
+                      number", so "Password1" read as compliant and was then
+                      refused on submit. The 128-char cap and the common-password
+                      check are deliberately not listed — neither is something a
+                      user can act on up front, and both surface their own
+                      message if hit. */}
+                  <Hint>
+                    Upper and lowercase letters, a number, and a special
+                    character.
+                  </Hint>
                   <SubmitButton pending={pending} label="Create workspace" />
                 </PanelFrame>
               )}

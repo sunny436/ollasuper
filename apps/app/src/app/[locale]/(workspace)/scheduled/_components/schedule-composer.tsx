@@ -4,7 +4,7 @@ import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useAction, useMutation } from "convex/react";
-import { ArrowUp, Plus, X } from "lucide-react";
+import { ArrowUp, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useCachedUser } from "../../chat/_hooks/use-cached-user";
@@ -423,7 +423,6 @@ export function ScheduleComposer({
   return (
     <div className="space-y-3">
       <div className="flex items-end gap-2 rounded-2xl border border-border bg-card px-3 py-2.5 focus-within:border-brand/40">
-        <Plus className="mb-1.5 h-4 w-4 shrink-0 text-primary/40" />
         <textarea
           ref={inputRef}
           value={text}
