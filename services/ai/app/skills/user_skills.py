@@ -249,7 +249,25 @@ def to_manifest(skill: CustomSkill) -> SkillManifest:
         version=str(skill.revision),
         purpose=skill.description,
         when_to_use=skill.description,
-        tags=frozenset({skill.name}),
+        # NAME **AND** DESCRIPTION, and the description is the part that makes
+        # the feature work at all.
+        #
+        # Tags carry 0.7 of the score. When they came from the name alone, a
+        # prompt that did not repeat the name scored at most 0.3 — under the
+        # 0.25 floor for anything but a near-exact text match. Measured on
+        # production: a skill named "QA Runtime 123456" described as "Reviewing
+        # supplier contracts for ambiguity" scored 0.1286 against "Review this
+        # supplier contract clause for ambiguity", and the telemetry read
+        # `considered: 1, skills: []`. The whole chain worked and the skill still
+        # never fired, which is indistinguishable from the feature being broken.
+        #
+        # A built-in gets curated `tags` plus a `when_to_use` written by us. The
+        # user's equivalent of both is their DESCRIPTION — it is literally the
+        # field the form labels "when it applies" — so scoring it as a tag is
+        # using the field for what it is, not widening the net to force matches.
+        # Precision still holds: an unrelated request shares no tokens with
+        # either, so it stays below the floor.
+        tags=frozenset({skill.name, skill.description}) - {""},
         instructions=skill.instructions,
         constraints=skill.constraints,
         preferred_capabilities=frozenset(),

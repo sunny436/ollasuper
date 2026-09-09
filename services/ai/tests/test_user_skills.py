@@ -710,3 +710,43 @@ def test_a_newline_in_a_name_cannot_split_the_attribute():
     assert len(opens) == 1, opens
     assert opens[0].endswith('">'), opens[0]
     assert 'name="x' not in sel.block.replace(opens[0], "")
+
+
+# --- discovery reach (found by production QA, Phase 8) --------------------
+def test_a_skill_fires_on_its_DESCRIPTION_not_only_its_name():
+    """The defect real production QA caught and no in-process test had.
+
+    Tags carry 0.7 of the score. Derived from the NAME alone, a prompt that did
+    not repeat the name could not exceed 0.3 — under the 0.25 floor for anything
+    but a near-exact match. Live telemetry read `considered: 1, skills: []`: the
+    whole chain worked and the skill still never fired, which a user cannot tell
+    apart from the feature being broken.
+    """
+    s = _skill(
+        name="QA Runtime 123456",  # a name the prompt has no reason to contain
+        description="Reviewing supplier contracts for ambiguity.",
+        instructions="Flag every ambiguous clause.",
+    )
+    sel = _select(
+        [s],
+        "Review this supplier contract clause for ambiguity: the vendor shall "
+        "deliver promptly.",
+        min_score=0.25,  # the production default, not a relaxed one
+    )
+    assert sel.included == ["sk1"], "a well-described skill still did not fire"
+
+
+def test_widening_the_tags_did_not_make_discovery_promiscuous():
+    # The other half: precision must survive. If this ever fails, the fix has
+    # turned into "activate on everything", which is worse than not firing.
+    s = _skill(
+        name="QA Runtime 123456",
+        description="Reviewing supplier contracts for ambiguity.",
+        instructions="Flag every ambiguous clause.",
+    )
+    for unrelated in (
+        "What is the capital of France?",
+        "Write me a python script to sort a list.",
+        "Summarise this quarter's revenue numbers and plot them.",
+    ):
+        assert _select([s], unrelated, min_score=0.25).included == [], unrelated

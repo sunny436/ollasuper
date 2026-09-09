@@ -54,8 +54,24 @@ const card = (page, name) => page.locator("li").filter({ hasText: name }).first(
   const page = await (
     await b.newContext({ viewport: { width: 1440, height: 1000 } })
   ).newPage();
+  // One console error is ASSERTED by this suite rather than tolerated by it.
+  //
+  // The secret-refusal step deliberately submits a skill containing an API key
+  // and requires the server to reject it AND the dialog to show why. Convex
+  // logs every rejected mutation through console.error, so that single expected
+  // rejection was being scored twice: once as the pass it is, and again as a
+  // failure of the zero-console-errors gate. The event is the test succeeding.
+  //
+  // Narrow by design, in the same spirit as p-scheduled's BROWSER_NOTICE: it
+  // matches only the exact secret-scanner message from userSkills, so any other
+  // ConvexError — including a different validation failure from the same
+  // mutation — still counts and still fails the run.
+  const EXPECTED_SECRET_REFUSAL =
+    /ConvexError:[^\n]*looks like it contains a secret/;
   page.on("console", (m) => {
-    if (m.type() === "error") errs.push("console: " + m.text().slice(0, 200));
+    if (m.type() === "error" && !EXPECTED_SECRET_REFUSAL.test(m.text())) {
+      errs.push("console: " + m.text().slice(0, 200));
+    }
   });
   page.on("response", (r) => {
     if (r.status() >= 400 && !r.url().includes("favicon"))
