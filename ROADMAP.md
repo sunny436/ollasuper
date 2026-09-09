@@ -474,6 +474,21 @@ Billing**.
   Severity is derived from `type`, not stored. Prod-verified 15/15 headed Chrome.
   **Known limitation:** the table has no retention cron; `markAllRead` is bounded per call instead.
 - **Pagination / load-more** on files / audit / events (closes audit **BUG-8**; queries currently `take(50)` / unbounded `.collect()`).
+- **Unified Files — shipped, with two deliberate limits.** Both Files pages (`/files`,
+  `/settings/files`) now route an upload by FILE TYPE: anything the ingest pipeline can read
+  takes the same `userFiles` path the chat paperclip uses, everything else stays a plain
+  `files` row, and both pages list both collections. So searchability no longer depends on
+  which page uploaded a file. Two things were left undone on purpose:
+  (a) **existing `files` rows are not migrated** — a legacy upload stays non-searchable until
+  it is re-uploaded, because sharing one `storageId` across both tables would let
+  `files.remove` delete the blob out from under `userFiles`, and copying blobs server-side
+  is neither minimal nor safe;
+  (b) **an ingestible upload on `/files` is now owner-private, not workspace-shared** —
+  `userFiles` is per-user by design (chat's trust model), so this is strictly less sharing
+  than before, but it IS a behaviour change for anyone who used `/files` to hand a document
+  to a colleague. Pre-existing `files` rows are untouched and stay workspace-visible.
+  If workspace-shared searchable files are ever wanted, that is a new capability
+  (a workspace-scoped ingest + retrieval scope), not a tweak to this routing.
 - **Polish** — loading skeletons, consistent empty states, 404 page + error boundary, footer/version, help/docs link, keyboard shortcuts.
 
 ## 2. Production-readiness
