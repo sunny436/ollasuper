@@ -10,7 +10,7 @@ import { useComposer } from "../_hooks/use-composer";
 import { PROJECT_DRAFT_KEY } from "../_lib/project-draft";
 import { MessageList } from "./message-list";
 import { useChatSidebar } from "./chat-shell";
-import { AmbienceSlider } from "./ambience-slider";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { ShareDialog } from "./share-dialog";
 import { NotificationsBell } from "../../../(dashboard)/_components/notifications-bell";
 
@@ -178,7 +178,9 @@ export function ChatPane({
             </button>
           )}
           <NotificationsBell />
-          <AmbienceSlider />
+          {/* Reference divider: bell, hairline, theme control. */}
+          <div className="mx-0.5 h-4 w-px bg-slate-200 dark:bg-slate-700/80" />
+          <ThemeToggle />
         </div>
       </header>
 

@@ -234,3 +234,21 @@
     background-image: none;
   }
 }
+
+/* The theme toggle's Sun/Moon morph. Two properties, two different curves: the
+   transform springs (the overshoot is the whole feel of the control) while the
+   opacity crossfades plainly, so the outgoing icon is gone before the incoming
+   one finishes settling. Scoped to the icons — this is deliberately NOT a global
+   transition, because the ambience tween rewrites every colour var each frame
+   and a blanket rule would restart on every element on every frame. */
+.theme-icon-spring {
+  transition:
+    transform 350ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 250ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-icon-spring {
+    transition: none;
+  }
+}

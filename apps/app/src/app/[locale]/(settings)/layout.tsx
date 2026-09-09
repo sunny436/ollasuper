@@ -9,7 +9,7 @@ import { use, useState } from "react";
 import { Toaster } from "sonner";
 import { AmbientBackdrop } from "./_components/ambient-backdrop";
 import { SettingsSidebar } from "./_components/settings-sidebar";
-import { ThemeSlider } from "./_components/theme-slider";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 /**
  * Dedicated full-screen Settings shell — a sibling route group so it escapes
@@ -82,7 +82,7 @@ export default function SettingsLayout({
               </button>
               {/* Theme slider — always top-right. */}
               <div className="ml-auto">
-                <ThemeSlider />
+                <ThemeToggle />
               </div>
             </header>
 

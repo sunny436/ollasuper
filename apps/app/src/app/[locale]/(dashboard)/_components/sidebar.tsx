@@ -19,7 +19,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { ThemeSwitcher } from "@/components/theme-switcher";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 const NAV = [
   // prefix: /chat/<id> must keep this row highlighted. Opt-in per entry so
@@ -101,7 +101,7 @@ export function Sidebar() {
           </div>
         </div>
         <div className="flex items-center justify-between">
-          <ThemeSwitcher />
+          <ThemeToggle />
           <button
             type="button"
             onClick={() => {

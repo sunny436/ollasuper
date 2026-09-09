@@ -95,16 +95,26 @@ const step = async (n, f) => {
     );
   });
 
-  await step("ambience slider themes the whole app", async () => {
-    // The header Ambience slider (native range) drives ~31 --amb-* vars on
-    // <html> and toggles .dark by the interpolated background luminance. Drive
-    // it to Midnight via the keyboard (native range → End=max → React onChange),
-    // then back to Daylight so later steps render light.
-    const slider = page.locator('input[aria-label="Ambience"]');
-    if ((await slider.count()) === 0) throw new Error("no ambience slider");
-    await slider.focus();
-    await page.keyboard.press("End");
-    await page.waitForTimeout(400);
+  await step("theme toggle themes the whole app", async () => {
+    // The header theme toggle replaced the Ambience slider; it drives the SAME
+    // engine, so the guarantees asserted here are unchanged — ~31 --amb-* vars
+    // on <html>, `.dark` toggled by the interpolated background luminance, and
+    // the dataset kept in step. Only the input changed: one click instead of
+    // keyboarding a native range. Click back to light so later steps render light.
+    const toggle = page.locator('button[aria-label="Toggle dark and light theme"]');
+    if ((await toggle.count()) === 0) throw new Error("no theme toggle");
+
+    const before = await page.evaluate(() =>
+      document.documentElement.classList.contains("dark"),
+    );
+    if (before) {
+      // Start from light so the assertions below describe a real transition.
+      await toggle.first().click();
+      await page.waitForTimeout(500);
+    }
+
+    await toggle.first().click();
+    await page.waitForTimeout(600); // 260ms tween + repaint headroom
     const midnight = await page.evaluate(() => ({
       amb: getComputedStyle(document.documentElement)
         .getPropertyValue("--amb-background")
@@ -113,12 +123,19 @@ const step = async (n, f) => {
       ds: document.documentElement.dataset.ambience,
     }));
     if (!midnight.amb) throw new Error("no --amb-background applied");
-    if (!midnight.dark) throw new Error("intensity 100 did not toggle .dark");
+    if (!midnight.dark) throw new Error("the toggle did not turn .dark on");
     if (midnight.ds !== "100")
       throw new Error(`dataset.ambience expected 100, got ${midnight.ds}`);
-    await slider.focus();
-    await page.keyboard.press("Home");
-    await page.waitForTimeout(300);
+
+    await toggle.first().click();
+    await page.waitForTimeout(600);
+    const day = await page.evaluate(() => ({
+      dark: document.documentElement.classList.contains("dark"),
+      ds: document.documentElement.dataset.ambience,
+    }));
+    if (day.dark) throw new Error("the toggle did not turn .dark back off");
+    if (day.ds !== "0")
+      throw new Error(`dataset.ambience expected 0, got ${day.ds}`);
   });
 
   await step("send a message and receive a streamed reply", async () => {
