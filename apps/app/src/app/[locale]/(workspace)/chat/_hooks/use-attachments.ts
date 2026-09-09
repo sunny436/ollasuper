@@ -2,6 +2,7 @@
 
 import { storageContentType } from "@/lib/upload-content-type";
 
+import { accepted, sha256Hex } from "@/lib/knowledge-file";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
@@ -26,48 +27,6 @@ export interface PendingAttachment {
 
 const MAX_FILES = 6;
 const MAX_BYTES = 20 * 1024 * 1024;
-
-// Mirrors the allowlist enforced server-side in chat/attachments.ts. The server
-// is the authority; this only gives immediate feedback.
-const ACCEPTED = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-  "application/pdf",
-  "text/plain",
-  "text/markdown",
-  "text/csv",
-  "application/json",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-]);
-
-// Code/text files often arrive with an empty or application/octet-stream MIME
-// (e.g. .py). They ingest as plain text, so accept them by EXTENSION too.
-const CODE_EXT = new Set([
-  "py", "js", "ts", "tsx", "jsx", "go", "java", "rb", "rs", "c", "cc", "cpp",
-  "h", "hpp", "cs", "php", "swift", "kt", "scala", "sh", "bash", "sql", "yaml",
-  "yml", "toml", "ini", "cfg", "conf", "xml", "css", "scss", "less", "log",
-  "txt", "md", "markdown", "json", "csv", "tsv", "html", "htm",
-]);
-
-function accepted(file: File): boolean {
-  const t = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (ACCEPTED.has(t) || t.startsWith("text/")) return true;
-  const dot = file.name.lastIndexOf(".");
-  const ext = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : "";
-  return CODE_EXT.has(ext);
-}
-
-/** SHA-256 hex for per-user dedup of the persistent knowledge file. */
-async function sha256Hex(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  return Array.from(new Uint8Array(digest), (b) =>
-    b.toString(16).padStart(2, "0"),
-  ).join("");
-}
 
 export function useAttachments(threadId: string | null) {
   const { current } = useWorkspace();

@@ -1,5 +1,6 @@
 "use client";
 
+import { accepted, sha256Hex } from "@/lib/knowledge-file";
 import { storageContentType } from "@/lib/upload-content-type";
 
 import { ConfirmButton } from "@/components/confirm-button";
@@ -67,14 +68,16 @@ export default function FilesSection() {
     current ? { workspaceId: current } : "skip",
     { initialNumItems: 20 },
   );
-  // THE SECOND FILE SYSTEM. The chat rail's "Files" is a DIFFERENT table:
+  // THE SEARCHABLE HALF. The chat rail's "Files" is a DIFFERENT table:
   // `userFiles` is the per-user knowledge base (ingested + embedded, pinned to
   // the caller's own userId), while `files` above is workspace-scoped storage
   // any member can see. Both were labelled "Files", so the rail could say
   // "1 file - Ready" while this page said "No files yet" and neither was wrong.
   // Listing both here, clearly separated, is what makes the two consistent.
   // The queries stay untouched, so each keeps its own scope and nothing becomes
-  // visible to anyone who could not already see it.
+  // visible to anyone who could not already see it. Uploads on this page now
+  // route by FILE TYPE into whichever of the two the file belongs in, so which
+  // page you upload from no longer decides whether the model can read it.
   const {
     results: knowledge,
     status: knowledgeStatus,
@@ -87,7 +90,11 @@ export default function FilesSection() {
   const removeKnowledge = useMutation(api.userFiles.remove);
   const retryKnowledge = useMutation(api.userFiles.retry);
   const generateUploadUrl = useMutation(api.files.generateUploadUrl);
+  const generateKnowledgeUploadUrl = useMutation(
+    api.userFiles.generateUploadUrl,
+  );
   const saveFile = useMutation(api.files.saveFile);
+  const saveKnowledgeFile = useMutation(api.userFiles.saveFile);
   const removeFile = useMutation(api.files.remove);
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -107,20 +114,41 @@ export default function FilesSection() {
     }
     setBusy(true);
     try {
-      const url = await generateUploadUrl({ workspaceId: current });
+      // WHICH FILE decides, never which page. A file the ingest pipeline can
+      // read becomes a searchable knowledge file exactly as it would from the
+      // chat paperclip; anything else is stored as a plain workspace file --
+      // which is what this page did for everything. See lib/knowledge-file.ts.
+      const searchable = accepted(file);
+      const contentType = file.type || "application/octet-stream";
+      const url = await (searchable
+        ? generateKnowledgeUploadUrl({ workspaceId: current })
+        : generateUploadUrl({ workspaceId: current }));
       const res = await fetch(url, {
         method: "POST",
+        // Load-bearing: neuters text/html & svg so the blob is stored as a type
+        // no browser will execute. Both saveFile guards judge the STORED type.
         headers: { "content-type": storageContentType(file.type) },
         body: file,
       });
       const { storageId } = await res.json();
-      await saveFile({
-        workspaceId: current,
-        storageId,
-        name: file.name,
-        size: file.size,
-        contentType: file.type || "application/octet-stream",
-      });
+      if (searchable) {
+        await saveKnowledgeFile({
+          workspaceId: current,
+          storageId,
+          name: file.name,
+          size: file.size,
+          contentType,
+          contentHash: await sha256Hex(file),
+        });
+      } else {
+        await saveFile({
+          workspaceId: current,
+          storageId,
+          name: file.name,
+          size: file.size,
+          contentType,
+        });
+      }
       if (inputRef.current) inputRef.current.value = "";
       toast.success(`Uploaded ${file.name}`);
     } catch {
@@ -148,7 +176,8 @@ export default function FilesSection() {
             Files
           </h1>
           <p className="mt-1 text-sm text-primary/55">
-            Workspace uploads, plus the chat files only you can see.
+            Anything the assistant can read becomes searchable in chat.
+            Everything else is stored as-is.
           </p>
         </div>
         <label className="cursor-pointer">
@@ -177,7 +206,8 @@ export default function FilesSection() {
 
       {status !== "LoadingFirstPage" && files.length === 0 && (
         <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/50 backdrop-blur-xl">
-          No files yet — click “Upload file” to add one.
+          Nothing stored here — files the assistant can read are listed under
+          Searchable below.
         </p>
       )}
 
@@ -250,16 +280,17 @@ export default function FilesSection() {
 
       {/* Deliberately its own section, NOT folded into the type grouping above:
           these rows have a different owner and a different visibility rule, and
-          merging them would misrepresent who can see what. */}
+          merging them would misrepresent who can see what. They are also the
+          only rows the model can actually read. */}
       <div className="overflow-hidden rounded-2xl border border-border bg-card/60 backdrop-blur-xl">
         <div className="flex items-center gap-2 border-b border-border px-5 py-3">
           <FileText className="h-4 w-4 text-primary/50" />
-          <h2 className="text-sm font-medium text-primary/85">Chat files</h2>
+          <h2 className="text-sm font-medium text-primary/85">Searchable</h2>
           <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/50">
             {knowledge.length}
           </span>
           <span className="ml-auto text-[11px] text-primary/45">
-            Uploaded in chat · only you can see these
+            Used to answer your questions in chat · only you can see these
           </span>
         </div>
         {knowledgeStatus === "LoadingFirstPage" ? (
@@ -268,7 +299,8 @@ export default function FilesSection() {
           </p>
         ) : knowledge.length === 0 ? (
           <p className="px-5 py-6 text-center text-sm text-primary/50">
-            No chat files yet — attach one in a conversation.
+            Nothing searchable yet — upload a document, spreadsheet, image or
+            code file above.
           </p>
         ) : (
           <div className="divide-y divide-border/60">

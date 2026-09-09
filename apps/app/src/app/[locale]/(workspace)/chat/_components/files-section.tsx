@@ -35,9 +35,11 @@ type FileRow = {
 
 /**
  * Account-level Files: the per-user knowledge base surfaced in the chat rail.
- * List + status + delete ONLY — uploads happen exclusively through the chat
- * composer paperclip (see use-attachments.ts), never here. Reactive via
- * usePaginatedQuery: status flips Processing -> Ready with no reload.
+ * List + status + delete ONLY — no upload control lives here. Files reach this
+ * list from the chat composer paperclip (use-attachments.ts) AND from the two
+ * Files pages, which route any ingestible upload to the same `userFiles` table,
+ * so what the model can read never depends on which page uploaded it. Reactive
+ * via usePaginatedQuery: status flips Processing -> Ready with no reload.
  * Sub-components are module-scope (never nested) per the focus/IME rule.
  */
 export function FilesSection() {
