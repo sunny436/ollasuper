@@ -5,7 +5,11 @@ import { type QueryCtx, mutation, query } from "./_generated/server";
 import { audit } from "./auditLog";
 import { getUserIdOrNull, requireUserId } from "./chat/authz";
 import { requireMember } from "./orgs";
-import { MAX_SKILLS_PER_USER, validateSkill } from "./skillPolicy";
+import {
+  MAX_SKILLS_PER_USER,
+  validateCapabilities,
+  validateSkill,
+} from "./skillPolicy";
 
 /**
  * Phase 1 — persistence + authorization for USER-AUTHORED CUSTOM SKILLS.
@@ -42,6 +46,7 @@ function toClient(s: Doc<"userSkills">) {
     description: s.description,
     instructions: s.instructions,
     constraints: s.constraints ?? "",
+    capabilities: s.capabilities ?? [],
     enabled: s.enabled,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
@@ -118,6 +123,7 @@ export const create = mutation({
     description: v.string(),
     instructions: v.string(),
     constraints: v.optional(v.string()),
+    capabilities: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
@@ -136,6 +142,7 @@ export const create = mutation({
     }
 
     const clean = validateSkill(args);
+    const caps = validateCapabilities(args.capabilities);
     const now = Date.now();
     const skillId = await ctx.db.insert("userSkills", {
       // Ownership is ALWAYS the authenticated caller. There is no owner
@@ -146,6 +153,9 @@ export const create = mutation({
       description: clean.description,
       instructions: clean.instructions,
       ...(clean.constraints ? { constraints: clean.constraints } : {}),
+      // Hints only. Nothing consumes them yet; the runtime resolves meaning and
+      // enforces authorization per call when it does.
+      ...(caps.length ? { capabilities: caps } : {}),
       // A new skill starts ON: the user just wrote it deliberately. Never
       // client-supplied, so `enabled` cannot be forged past validation.
       enabled: true,
@@ -169,18 +179,21 @@ export const update = mutation({
     description: v.string(),
     instructions: v.string(),
     constraints: v.optional(v.string()),
+    capabilities: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const skill = await ownedSkill(ctx, userId, args.skillId);
     await requireMember(ctx, userId, skill.workspaceId);
     const clean = validateSkill(args);
+    const caps = validateCapabilities(args.capabilities);
     await ctx.db.patch(args.skillId, {
       name: clean.name,
       description: clean.description,
       instructions: clean.instructions,
       // Cleared explicitly when emptied, rather than left stale.
       constraints: clean.constraints || undefined,
+      capabilities: caps.length ? caps : undefined,
       updatedAt: Date.now(),
     });
     await audit(ctx, skill.workspaceId, userId, "skill.update", {

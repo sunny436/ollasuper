@@ -1005,6 +1005,25 @@ export default defineSchema({
     // secret-scanned, because this text ends up in a model prompt.
     instructions: v.string(),
     constraints: v.optional(v.string()),
+    /**
+     * Capability REFERENCES the author declared — opaque hint strings, never
+     * grants.
+     *
+     * These name existing capability intents (`metadata.audit`,
+     * `research.web_search`) that live in the PYTHON plane, are flag-gated
+     * there, and are resolved by `CapabilityResolver`. Convex cannot check them
+     * on write: the catalogue is reachable only through an action, and a
+     * mutation cannot call one. So validation is split where each half can
+     * actually work — STRUCTURE here (count, length, charset), MEANING at
+     * runtime, where `by_ids` skips unknown ids, `by_intents` reports gaps, and
+     * authorization is enforced per call regardless. A stale or misspelled
+     * entry is therefore inert, not dangerous.
+     *
+     * Nothing reads this yet: the live runner consumes only `require_approval`.
+     * It is stored now so the write path is validated from the start rather
+     * than retrofitted onto rows that were never checked.
+     */
+    capabilities: v.optional(v.array(v.string())),
     // Off means "do not consider this skill", never "delete it". Deletion is a
     // separate, explicit act.
     enabled: v.boolean(),

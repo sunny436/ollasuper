@@ -99,6 +99,42 @@ function field(
   return clean;
 }
 
+/**
+ * Capability references: bounded, lowercase, dotted/dashed identifiers.
+ *
+ * DELIBERATELY STRUCTURAL. The real catalogue lives in the Python plane behind
+ * an action, and a mutation cannot reach it, so pretending to verify meaning
+ * here would be theatre. What this DOES guarantee is that whatever reaches the
+ * runtime is small, opaque and shaped like an identifier — never prose, never
+ * unbounded, never something that could be mistaken for an instruction.
+ */
+export const MAX_SKILL_CAPABILITIES = 16;
+const MAX_CAPABILITY_LEN = 64;
+const CAPABILITY_SHAPE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
+
+export function validateCapabilities(raw: string[] | undefined): string[] {
+  if (!raw || raw.length === 0) return [];
+  if (raw.length > MAX_SKILL_CAPABILITIES) {
+    throw new ConvexError(
+      `A skill can reference at most ${MAX_SKILL_CAPABILITIES} capabilities.`,
+    );
+  }
+  const out = new Set<string>();
+  for (const entry of raw) {
+    const id = entry.trim().toLowerCase();
+    if (!id) continue; // a blank row from a form is an omission, not an error
+    if (id.length > MAX_CAPABILITY_LEN || !CAPABILITY_SHAPE.test(id)) {
+      throw new ConvexError(
+        `"${entry.slice(0, 40)}" is not a valid capability reference.`,
+      );
+    }
+    out.add(id);
+  }
+  // Sorted so the stored value is stable: two saves of the same set produce the
+  // same row, which keeps diffs and any future change-detection honest.
+  return [...out].sort();
+}
+
 export type SkillInput = {
   name: string;
   description: string;
