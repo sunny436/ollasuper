@@ -96,7 +96,7 @@ export function Sidebar() {
             <span className="h-8 w-8 shrink-0 rounded-full bg-gradient-to-br from-lime-400 via-cyan-300 to-blue-500" />
           )}
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-primary/80">{user?.name || "—"}</p>
+            <p className="truncate text-sm font-medium text-primary/80">{user?.displayName || user?.name || "—"}</p>
             <p className="truncate text-xs text-primary/50">{user?.email}</p>
           </div>
         </div>

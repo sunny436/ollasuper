@@ -10,6 +10,10 @@ const KEY = CACHE_KEYS.user;
 /** The slice of api.users.getUser the greeting + account footer actually read. */
 type CachedUser = {
   name?: string;
+  // The profile's Display name. `getUser` returns `name` as `username || name`,
+  // so anything rendering `name` shows the USERNAME for anyone who has set one.
+  // Cached alongside it so a cold start does not flash the username first.
+  displayName?: string | null;
   // getUser returns an explicit projection now, and its optional columns come
   // back as null rather than undefined — accept both.
   email?: string | null;
@@ -48,6 +52,7 @@ export function useCachedUser(): CachedUser | null | undefined {
     try {
       const slice: CachedUser = {
         name: live.name ?? undefined,
+        displayName: live.displayName ?? undefined,
         email: live.email ?? undefined,
         avatarUrl: live.avatarUrl ?? undefined,
       };

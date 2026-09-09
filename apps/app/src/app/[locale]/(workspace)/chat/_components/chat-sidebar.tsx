@@ -189,12 +189,18 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
           />
         ) : (
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand text-xs font-semibold text-brand-foreground shadow-sm">
-            {(user?.name || user?.email || "?").charAt(0).toUpperCase()}
+            {(user?.displayName || user?.name || user?.email || "?")
+              .charAt(0)
+              .toUpperCase()}
           </span>
         )}
+        {/* displayName FIRST: getUser returns `name` as `username || name`, so
+            binding `name` here showed the username to anyone who had set one.
+            Falling through to `name` keeps the existing display for accounts
+            with no Display name set. */}
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-semibold text-primary">
-            {user?.name || "Account"}
+            {user?.displayName || user?.name || "Account"}
           </span>
           <span className="block truncate text-[11px] text-muted-foreground">
             {user?.email}
