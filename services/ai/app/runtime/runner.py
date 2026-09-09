@@ -102,6 +102,7 @@ from app.seo.mutations import (
     register_seo_mutation_provider,
 )
 from app.skills.registry import pack_skills, render_skills_block
+from app.skills.user_skills import EMPTY_SELECTION, select_user_skills
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector, _passes
 
@@ -1209,6 +1210,70 @@ async def run_generation(
                                 capabilities=resolver,
                             )
                         )
+
+        # Phase 4 (Custom Skills): the user's OWN guidance, composed LAST.
+        #
+        # WHY HERE AND NOWHERE ELSE. This is the first point after `if specs:`
+        # closes, and that placement is the whole design:
+        #
+        #   * UNCONDITIONAL. The built-in skill block above lives four levels
+        #     deep — inside `if specs:`, inside its `try:`, inside
+        #     `ai_orchestrated_runtime_enabled and tool_registry and
+        #     tool_selector`. Built-in skills are all tool-adjacent so that has
+        #     never mattered to them, but a user skill is usually pure prose
+        #     ("read the contract end to end before commenting"), and gating it
+        #     on tools would mean it silently stops applying on exactly the
+        #     plain conversational turns it was written for. A user cannot debug
+        #     that, and would reasonably conclude the feature is broken.
+        #   * AFTER the built-in block, so trusted guidance is established before
+        #     user preference qualifies it.
+        #   * BEFORE `tokens(system)` below, so the block is measured into the
+        #     window like every other part of the prompt instead of quietly
+        #     pushing the turn over it.
+        #
+        # Flag OFF => nothing runs and the prompt is byte-identical. Snapshot
+        # empty (everyone who has written no skills) => same.
+        if settings.ai_user_skills_enabled and req.customSkills:
+            # Never fatal. Composing a user's guidance is an enhancement to the
+            # turn, not the turn itself, so a defect here must not be the reason
+            # someone cannot get an answer — the same call the built-in
+            # discovery above makes with its own `contextlib.suppress`. Logged at
+            # exception level rather than swallowed, so it is loud in the logs
+            # while the user still gets their reply.
+            sel = EMPTY_SELECTION
+            try:
+                sel = select_user_skills(
+                    req.customSkills,
+                    latest.content,
+                    # The AUTHORITATIVE caller, from the authenticated request —
+                    # the same value that stamps `agent_scope`. Never from the
+                    # model, never from the snapshot itself.
+                    user_id=req.userId,
+                    stream_id=req.streamId,
+                    max_active=settings.ai_user_skill_max_active,
+                    min_score=settings.ai_user_skill_min_score,
+                    char_budget=settings.ai_user_skill_budget_chars,
+                )
+            except Exception:  # noqa: BLE001 — see above
+                log.exception(
+                    "agent.user_skills_failed",
+                    extra={"stream_id": req.streamId},
+                )
+            if sel.block:
+                system = f"{system}\n\n{sel.block}"
+            # Logged whenever the user HAS skills, including the no-match case:
+            # "my skill did not fire" is the question this feature will actually
+            # generate, and `considered` vs `included` is what answers it.
+            log.info(
+                "agent.user_skills",
+                extra={
+                    "stream_id": req.streamId,
+                    "considered": sel.considered,
+                    "skills": sel.included,
+                    "compacted": sel.compacted,
+                    "dropped": sel.dropped,
+                },
+            )
 
         # Phase 6 (B1): measure the FIXED costs (system prompt + bound tool schemas
         # + latest turn) now that all are assembled, and trim PRIOR history against

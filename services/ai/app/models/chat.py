@@ -265,6 +265,49 @@ class Dataset(BaseModel):
     mime: str = Field(default="", max_length=200)
 
 
+class CustomSkill(BaseModel):
+    """One USER-AUTHORED skill, snapshotted by Convex dispatchPayload for this turn.
+
+    This is the only user-authored *free prose* that reaches the prompt as
+    guidance rather than as conversation, so two things about it are deliberate.
+
+    `extra="forbid"`, not `"ignore"`. The optional-context models above
+    (ActiveResearchRun, Dataset) ignore unknown keys so a schema addition never
+    400s Python. This one forbids them, because an unknown key here would be
+    unreviewed user-derived data arriving in the prompt-composition path — the
+    one place a silently-accepted field is worse than a loud rejection.
+
+    `ownerId` and `enabled` are re-checked in `app.skills.user_skills` rather
+    than trusted. Convex already filters on both; carrying them makes a widened
+    query upstream fail as a logged, dropped skill instead of a silent
+    cross-user leak.
+
+    Lengths mirror `packages/backend/convex/skillPolicy.ts`, which is
+    authoritative. They are a backstop against a payload that did not come
+    through it, and they bound what any one skill can spend of the prompt.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(max_length=200)
+    ownerId: str = Field(max_length=200)
+    # The row's last-write time. Not a semantic version — it is what telemetry
+    # needs to say WHICH text influenced a turn.
+    revision: int = 0
+    name: str = Field(default="", max_length=80)
+    description: str = Field(default="", max_length=200)
+    instructions: str = Field(default="", max_length=4000)
+    constraints: str = Field(default="", max_length=2000)
+    # Declared references, carried but INERT. Nothing in the live path consumes
+    # them: the field they would feed (`SkillManifest.preferred_capabilities`)
+    # is read only by `Orchestrator.prepare`, which is the v2 path and is off in
+    # production. `user_skills.to_manifest` sets that field EMPTY on purpose, so
+    # enabling v2 cannot turn user-declared strings into capability seeding
+    # behind an authorization design that has not been written yet.
+    capabilities: list[str] = Field(default_factory=list, max_length=16)
+    enabled: bool = True
+
+
 class GenerateRequest(BaseModel):
     """Everything needed for one turn.
 
@@ -393,6 +436,15 @@ class GenerateRequest(BaseModel):
     # every turn) so a follow-up analyses the same dataset without re-uploading.
     # Empty on non-data threads and pre-field callers (default => extra="forbid" safe).
     datasets: list[Dataset] = Field(default_factory=list, max_length=32)
+    # Custom Skills (Phase 4): the caller's OWN enabled skills, pre-authorized by
+    # Convex from the authenticated stream's userId. Empty for every user who has
+    # written none and for callers that predate this field (default =>
+    # extra="forbid" safe, so Python deploys before Convex).
+    #
+    # max_length matches MAX_SKILLS_PER_USER in skillPolicy.ts. A payload
+    # carrying more did not come from dispatchPayload, and 422 is the right
+    # answer to that.
+    customSkills: list[CustomSkill] = Field(default_factory=list, max_length=50)
 
 
 class GenerateAccepted(BaseModel):

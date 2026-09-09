@@ -54,6 +54,79 @@ function toClient(s: Doc<"userSkills">) {
 }
 
 /**
+ * Phase 4 — the RUNTIME snapshot of one skill, as the inference plane sees it.
+ *
+ * Deliberately NOT `toClient`. This crosses a service boundary into a process
+ * that composes model prompts, so it carries only what that job needs plus the
+ * two fields the receiver re-checks:
+ *
+ *   `ownerId`  so Python can assert the row belongs to the request's caller.
+ *              Redundant with the query below — which is the point. If a future
+ *              edit to this file ever widens the read, the assertion downstream
+ *              turns a silent cross-user leak into a logged, dropped skill.
+ *   `enabled`  same reasoning: the query already filters, and the receiver
+ *              re-checks rather than trusting the sender.
+ *
+ * `revision` is `updatedAt`. There is no separate version column and inventing
+ * one would be a second thing to keep in sync — the row's last write time IS
+ * its revision, it is already monotonic, and it is what telemetry needs to say
+ * WHICH text influenced a turn.
+ *
+ * Not sent: `workspaceId` (skills are user-scoped; shipping it would invite
+ * someone to scope on it and quietly reintroduce a boundary the data does not
+ * have), `createdAt`, `_creationTime`.
+ */
+export type DispatchSkill = {
+  id: Id<"userSkills">;
+  ownerId: Id<"users">;
+  revision: number;
+  name: string;
+  description: string;
+  instructions: string;
+  constraints: string;
+  capabilities: string[];
+  enabled: boolean;
+};
+
+/**
+ * Every ENABLED skill this user owns, for one turn.
+ *
+ * THE CAP IS THE PRODUCT CAP, on purpose. A smaller dispatch cap would be a
+ * silent cliff: a user with more skills than the cap would have some that never
+ * apply and no way to find out which. `MAX_SKILLS_PER_USER` is already the hard
+ * ceiling on what anyone can own, so bounding by it means the payload is bounded
+ * AND every enabled skill is always a candidate. What reaches the model is
+ * bounded separately, in Python, by relevance and a character budget.
+ *
+ * Ordered by `updatedAt` desc so the set is deterministic — dispatch must not
+ * depend on index insertion order.
+ */
+export async function loadSkillsForDispatch(
+  ctx: QueryCtx,
+  userId: Id<"users">,
+): Promise<DispatchSkill[]> {
+  const rows = await ctx.db
+    .query("userSkills")
+    .withIndex("by_user_enabled", (q) =>
+      q.eq("userId", userId).eq("enabled", true),
+    )
+    .take(MAX_SKILLS_PER_USER);
+  return [...rows]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((s) => ({
+      id: s._id,
+      ownerId: s.userId,
+      revision: s.updatedAt,
+      name: s.name,
+      description: s.description,
+      instructions: s.instructions,
+      constraints: s.constraints ?? "",
+      capabilities: s.capabilities ?? [],
+      enabled: s.enabled,
+    }));
+}
+
+/**
  * Resolve a skill that belongs to THIS caller, or refuse.
  *
  * The identical message for "does not exist" and "is not yours" is the point:

@@ -12,6 +12,7 @@ import {
 } from "../_generated/server";
 import { loadMemoriesForDispatch } from "../memories";
 import { loadActiveResearchRun } from "../researchRuns";
+import { loadSkillsForDispatch } from "../userSkills";
 import { projectFileIngestIds } from "../projects";
 import { userHasReadyFiles } from "../userFiles";
 import { resolvedApprovalsForStream } from "./approvals";
@@ -583,6 +584,22 @@ export const dispatchPayload = internalQuery({
     // threads => the Python field defaults to empty and the turn is byte-identical.
     const datasets = await loadThreadDatasets(ctx, stream.threadId, stream.userId);
 
+    // Custom Skills (Phase 4): the user's own enabled skills, snapshotted for
+    // THIS turn.
+    //
+    // THIS LINE IS THE AUTHORIZATION BOUNDARY for the whole feature. `stream.userId`
+    // is read off the stream row — written by `startAssistantTurn` from
+    // `getAuthUserId`, never from anything the browser sends — so "which skills
+    // are authorized" is answered here, once, from authenticated identity. The
+    // inference plane receives a finished, pre-authorized set and has no way to
+    // ask for a different one: it holds no database credential and no user
+    // token, only a service key that reaches no per-user data.
+    //
+    // Bounded by MAX_SKILLS_PER_USER at the source. Empty for every user who has
+    // written none, which is everyone today, so the payload is byte-identical
+    // for them.
+    const customSkills = await loadSkillsForDispatch(ctx, stream.userId);
+
     // Reconstruct completed tool steps on a crash-resume (attempts > 0) OR an
     // approval-resume (attempts stays 0, but events survived). Decoupled from
     // `attempt` and mirrored in the Python runner (`if req.completedTools`) so
@@ -712,6 +729,14 @@ export const dispatchPayload = internalQuery({
       activeResearchRun,
       // Data Analysis: the thread's tabular datasets ([] when none).
       datasets,
+      // Custom Skills: the caller's own enabled skills ([] for everyone who has
+      // written none). The Python `ai_user_skills_enabled` flag gates whether
+      // they are USED; this plane always reports them truthfully.
+      //
+      // DEPLOY ORDER IS LOAD-BEARING, exactly as it is for `personalization`:
+      // GenerateRequest is `extra="forbid"`, so a Python build without this
+      // field 400s every turn once Convex starts sending it. Python first.
+      customSkills,
     };
   },
 });

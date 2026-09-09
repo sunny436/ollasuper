@@ -175,6 +175,33 @@ class Settings(BaseSettings):
     # the prompt. This is a CAP, not a floor — small skills don't grow to fill it; only
     # the large SEO skill uses the headroom, and only on SEO-activated requests.
     ai_skill_instructions_budget_chars: int = 20000
+    # Phase 4 (Custom Skills) — USER-AUTHORED guidance, and a completely separate
+    # set of knobs from the three above. Sharing them would defeat the point:
+    #
+    #   * a SEPARATE budget is what stops a user's skill from evicting a built-in
+    #     skill's constraints. `_pack` is score-ordered, and a user controls the
+    #     text their own score is computed from, so one shared budget would make
+    #     "write a skill that outranks the SEO skill" a way to drop its safety
+    #     rules from the prompt. Two budgets means a user skill can only ever
+    #     spend its own.
+    #   * a SEPARATE min_score, because user skills are scored against a name the
+    #     user chose rather than curated tags. Tuning their threshold must not
+    #     move the built-in catalogue's precision, which was measured.
+    #   * max_active 2, not 3: these compose ON TOP of whatever built-in skill
+    #     activated, so the ceiling is what the two blocks cost together.
+    #
+    # OFF by default. Convex always sends the snapshot; this decides whether the
+    # runtime reads it, so the whole feature can be enabled and disabled from one
+    # place without a redeploy of the data plane.
+    ai_user_skills_enabled: bool = False
+    ai_user_skill_max_active: int = 2
+    ai_user_skill_min_score: float = 0.25
+    # 6000 = the built-in DEFAULT_SKILL_BUDGET_CHARS, not the 20000 the SEO skill
+    # needed. A user skill's fields are capped at ~6.3k chars total by
+    # skillPolicy.ts, so this carries roughly one whole maximal skill plus a
+    # second smaller one — enough to be useful, small enough that the combined
+    # prompt stays measured against the real context window.
+    ai_user_skill_budget_chars: int = 6000
     # Phase 12b (Stage 1) — wire the orchestrated runtime's DYNAMIC CAPABILITY
     # DISCOVERY into the LIVE agent path. OFF by default → the runner is
     # byte-identical (top-K remains the initial inline set). When on (and the agent
