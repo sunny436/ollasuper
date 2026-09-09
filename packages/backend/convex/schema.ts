@@ -972,6 +972,52 @@ export default defineSchema({
   // (validated server-side). NO vector index here — retrieval is a plain-index
   // pre-load + in-Python ranking. Every index is pinned to userId first, so no
   // query can enumerate a tenant's memories without an owner.
+  /**
+   * USER-AUTHORED CUSTOM SKILLS — private declarative guidance.
+   *
+   * A skill is TEXT the user wrote. It is not code, not a tool, and it carries
+   * no credentials; nothing here is executable and nothing here is trusted
+   * system configuration. The runtime phase must render it in its own UNTRUSTED
+   * frame, never inside the built-in `<skill_guidance>` block, whose header
+   * asserts the content is "authored by the system, not by any user".
+   *
+   * OWNERSHIP IS THE USER, NOT THE WORKSPACE. Every index pins `userId` first,
+   * so no query shape here can enumerate a tenant's skills — the same property
+   * `userMemories` relies on.
+   */
+  userSkills: defineTable({
+    // The owner. Always the authenticated caller; never a client argument.
+    userId: v.id("users"),
+    // CREATION CONTEXT ONLY — deliberately NOT a scoping field.
+    //
+    // Skills are user-scoped: they follow the person across workspaces, exactly
+    // as `userMemories` with scope "user" already do, and `memories.list`
+    // already reads that way ("the user's OWN memories across workspaces").
+    // This column exists because `audit()` requires a workspace and because
+    // writes check `requireMember` — it records WHERE the skill was authored.
+    // No read filters on it. If workspace-scoped skills are ever wanted, add a
+    // `scope` union then; widening one is additive, and inventing a
+    // single-valued union now would only look like a boundary that is not one.
+    workspaceId: v.id("workspaces"),
+    name: v.string(),
+    description: v.string(),
+    // The guidance itself. Prose only — validated on write, bounded, and
+    // secret-scanned, because this text ends up in a model prompt.
+    instructions: v.string(),
+    constraints: v.optional(v.string()),
+    // Off means "do not consider this skill", never "delete it". Deletion is a
+    // separate, explicit act.
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    // Management list: the owner's skills, newest first.
+    .index("by_user_updated", ["userId", "updatedAt"])
+    // Runtime discovery (a later phase): only this user's ENABLED skills. The
+    // enabled flag is in the INDEX rather than a post-filter so a disabled skill
+    // cannot reach discovery by someone forgetting a `.filter`.
+    .index("by_user_enabled", ["userId", "enabled"]),
+
   userMemories: defineTable({
     userId: v.id("users"),
     workspaceId: v.id("workspaces"),

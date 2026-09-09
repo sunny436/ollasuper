@@ -467,6 +467,19 @@ export const deleteUserAccount = internalMutation({
       for (const m of batch) await ctx.db.delete(m._id);
       if (batch.length < 500) break;
     }
+    // The user's custom skills. Same shape as the memory purge above and for
+    // the same reason: these are owner-scoped rows in a table keyed on userId,
+    // with no cascade elsewhere that would reach them. A user-owned table that
+    // is not swept here survives the account that authored it.
+    for (;;) {
+      const batch = await ctx.db
+        .query("userSkills")
+        .withIndex("by_user_updated", (q) => q.eq("userId", args.userId))
+        .take(500);
+      if (batch.length === 0) break;
+      for (const s of batch) await ctx.db.delete(s._id);
+      if (batch.length < 500) break;
+    }
     // Phase 7: purge the user's SEO mutation ledger (user-trust owner-scoped rows).
     await deleteMutationsForUser(ctx, args.userId);
     // Deep Research: purge the user's durable research runs (user-trust owner-scoped).
