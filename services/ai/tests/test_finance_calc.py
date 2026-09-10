@@ -417,3 +417,165 @@ def test_no_nan_or_inf_leaks_to_json():
     for row in d["sensitivity"]["price_per_share"]:
         for c in row:
             assert c is None or math.isfinite(c)
+
+
+# --------------------------------------------------------------------------- #
+# QA-report remediation: statements the MODEL actually emits must resolve, and a
+# field we cannot find must SAY SO rather than vanish or read as zero.
+#
+# Reproduced before the fix with a payload carrying split debt, a direct EPS, EBIT
+# + D&A instead of EBITDA, and a market cap with no share count: debt_to_equity
+# came back 0.0 ("no leverage"), and pe_ratio / pb_ratio / ev_ebitda came back
+# null — exactly the four the QA pass reported as "not produced".
+# --------------------------------------------------------------------------- #
+def _flat(res: dict) -> dict:
+    return {
+        k: rec["value"]
+        for entries in res["categories"].values()
+        for k, rec in entries.items()
+    }
+
+
+# The way a model summarising a filing actually writes it.
+_MODEL_SHAPED = {
+    "income_statement": {
+        "revenue": 500_000_000,
+        "cost_of_goods_sold": 300_000_000,
+        "operating_income": 80_000_000,
+        "net_income": 50_000_000,
+        "interest_expense": 5_000_000,
+        "depreciation_amortization": 20_000_000,
+        "eps": 2.50,
+    },
+    "balance_sheet": {
+        "total_assets": 400_000_000,
+        "total_equity": 200_000_000,
+        "current_assets": 150_000_000,
+        "current_liabilities": 75_000_000,
+        "inventory": 40_000_000,
+        "cash_and_equivalents": 30_000_000,
+        "long_term_debt": 90_000_000,
+        "short_term_debt": 20_000_000,
+        "accounts_receivable": 60_000_000,
+        "book_value_per_share": 10.00,
+    },
+    "cash_flow": {"operating_cash_flow": 70_000_000},
+    "market_data": {
+        "market_cap": 600_000_000,
+        "share_price": 30.00,
+        "earnings_growth_rate": 0.12,
+    },
+}
+
+# The same company spelled exactly the way the alias list expects.
+_CANONICAL = {
+    "income_statement": {
+        "revenue": 500_000_000,
+        "cost_of_goods_sold": 300_000_000,
+        "operating_income": 80_000_000,
+        "net_income": 50_000_000,
+        "interest_expense": 5_000_000,
+        "ebitda": 100_000_000,
+    },
+    "balance_sheet": {
+        "total_assets": 400_000_000,
+        "total_equity": 200_000_000,
+        "current_assets": 150_000_000,
+        "current_liabilities": 75_000_000,
+        "inventory": 40_000_000,
+        "cash_and_equivalents": 30_000_000,
+        "total_debt": 110_000_000,
+        "accounts_receivable": 60_000_000,
+    },
+    "cash_flow": {"operating_cash_flow": 70_000_000},
+    "market_data": {
+        "market_cap": 600_000_000,
+        "share_price": 30.00,
+        "shares_outstanding": 20_000_000,
+        "earnings_growth_rate": 0.12,
+    },
+}
+
+
+def test_model_shaped_statements_match_the_canonical_spelling():
+    """The four the QA pass lost. Same company, two spellings, same answers."""
+    got, want = _flat(C.ratios(_MODEL_SHAPED)), _flat(C.ratios(_CANONICAL))
+    for k in ("debt_to_equity", "pe_ratio", "pb_ratio", "ev_ebitda", "ps_ratio"):
+        assert got[k] is not None, f"{k} unresolved on model-shaped input"
+        assert got[k] == want[k], f"{k}: {got[k]} != canonical {want[k]}"
+
+
+def test_split_debt_is_summed():
+    assert _flat(C.ratios(_MODEL_SHAPED))["debt_to_equity"] == 0.55  # 110/200
+
+
+def test_ebitda_derived_from_ebit_plus_da():
+    assert _flat(C.ratios(_MODEL_SHAPED))["ev_ebitda"] == 6.8  # (600+110-30)/100
+
+
+def test_direct_eps_and_bvps_are_used_without_a_share_count():
+    got = _flat(C.ratios(_MODEL_SHAPED))
+    assert got["pe_ratio"] == 12.0 and got["pb_ratio"] == 3.0
+
+
+def test_missing_numerator_is_null_not_a_confident_zero():
+    """The real hazard: unmapped debt used to report 0.0 — "no leverage"."""
+    res = C.ratios(
+        {
+            "income_statement": {"revenue": 500, "net_income": 50},
+            "balance_sheet": {"total_equity": 200, "total_assets": 400},
+        }
+    )
+    assert _flat(res)["debt_to_equity"] is None
+    assert "debt" in res["unresolved_inputs"]["debt_to_equity"]
+
+
+def test_unresolved_inputs_names_the_field_it_wanted():
+    res = C.ratios(
+        {
+            "income_statement": {"revenue": 500, "net_income": 50},
+            "balance_sheet": {"total_equity": 200, "total_assets": 400},
+            "market_data": {},
+        }
+    )
+    u = res["unresolved_inputs"]
+    assert "ebitda" in u["ev_ebitda"]
+    assert "market_cap" in u["ps_ratio"]
+    assert "share_price" in u["pe_ratio"]
+
+
+def test_absent_inventory_is_flagged_not_silently_equal_to_current_ratio():
+    res = C.ratios(
+        {
+            "income_statement": {"revenue": 500},
+            "balance_sheet": {"current_assets": 150, "current_liabilities": 75},
+        }
+    )
+    vals = _flat(res)
+    assert vals["quick_ratio"] == vals["current_ratio"] == 2.0
+    assert "quick_ratio" in res.get("assumptions", {})
+
+
+def test_a_complete_statement_set_reports_nothing_unresolved():
+    """Control: the fix must not invent gaps where every input was supplied."""
+    assert "unresolved_inputs" not in C.ratios(_CANONICAL)
+    assert "assumptions" not in C.ratios(_CANONICAL)
+
+
+def test_rule_of_40_prefers_a_measured_annual_rate_and_labels_its_basis():
+    m = C.saas_metrics(mrr=105_000, mrr_prev=100_000, profit_margin=10)
+    # 5% MoM COMPOUNDS to 79.59%/yr, not the 60% a x12 run-rate implies.
+    assert m["rule_of_40"]["value"] == 89.59
+    assert m["rule_of_40"]["growth_basis"] == "annualised_from_one_month"
+
+    real = C.saas_metrics(
+        mrr=105_000, mrr_prev=100_000, profit_margin=10, annual_growth_pct=45
+    )
+    assert real["rule_of_40"]["value"] == 55
+    assert real["rule_of_40"]["growth_basis"] == "measured_annual_growth"
+
+
+def test_rule_of_40_names_profit_margin_when_it_is_the_blocker():
+    m = C.saas_metrics(mrr=105_000, mrr_prev=100_000)
+    assert m["rule_of_40"]["value"] is None
+    assert "profit_margin" in m["_missing"]

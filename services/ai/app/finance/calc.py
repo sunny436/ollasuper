@@ -118,6 +118,24 @@ _RATIO_FORMULA: dict[str, str] = {
     "peg_ratio": "P/E / (Earnings Growth Rate %)",
 }
 
+# The tracked INPUT each ratio needs, for the `unresolved_inputs` report.
+#
+# Only ratios whose absence is worth explaining are listed — a null here becomes
+# "I need `total_debt` (or long_term_debt + short_term_debt)" instead of a ratio
+# that quietly disappears from the table. Names match the `name=` labels passed to
+# `g()`; alternatives are listed together because either one satisfies the ratio,
+# and the reporting step drops the entry once ANY of them was found.
+_RATIO_INPUTS: dict[str, tuple[str, ...]] = {
+    "debt_to_equity": ("debt",),
+    "pe_ratio": ("eps", "share_price"),
+    "pb_ratio": ("bvps", "share_price"),
+    "ps_ratio": ("market_cap",),
+    "ev_ebitda": ("ebitda",),
+    # PEG is almost always blocked by the GROWTH rate, not by the P/E behind it —
+    # listing eps here made the report name a field that was available all along.
+    "peg_ratio": ("earnings_growth_rate",),
+}
+
 
 def interpret_ratio(key: str, value: float | None) -> str:
     """Interpret a ratio against its benchmark (verbatim thresholds/wording)."""
@@ -176,16 +194,31 @@ def ratios(data: dict, category: str | None = None) -> dict:
         if not isinstance(_v, dict):
             merged.setdefault(str(_k).lower(), _v)
 
-    def g(section: dict, *keys: str) -> float:
+    # Which tracked inputs were actually FOUND. An absent field and a genuine zero
+    # are different facts, and `g` erases that difference by defaulting to 0.0 —
+    # which is how a missing `total_debt` reported debt_to_equity as 0.0 ("no
+    # leverage"), a confident wrong answer rather than an obvious gap. Reproduced
+    # before this fix: a statement set with debt split into long/short term
+    # produced D/E 0.0, P/E null, P/B null, EV/EBITDA null.
+    found: dict[str, bool] = {}
+
+    def g(section: dict, *keys: str, name: str | None = None) -> float:
         """First present ALIAS (section first, then the merged all-fields view),
         CASE-INSENSITIVE + tolerant-parsed; 0.0 if none. Case/alias/placement tolerance
         is load-bearing: the model maps user free-text ('COGS', 'Cash') to varied JSON
-        keys and casings, and an unmatched field must not silently poison a ratio."""
+        keys and casings, and an unmatched field must not silently poison a ratio.
+
+        `name` records whether the field was found, so a ratio built on it can be
+        reported as UNRESOLVED instead of silently taking the 0.0 default."""
         for src in (section, merged):
             for k in keys:
                 v = _f(src.get(k))
                 if v is not None:
+                    if name:
+                        found[name] = True
                     return v
+        if name:
+            found.setdefault(name, False)
         return 0.0
 
     revenue = g(
@@ -239,7 +272,23 @@ def ratios(data: dict, category: str | None = None) -> dict:
         "interest_expenses",
         "interest_cost",
     )
-    ebitda = g(inc, "ebitda") or g(mkt, "ebitda")
+    ebitda = g(inc, "ebitda", name="ebitda") or g(mkt, "ebitda")
+    # EBITDA is far more often DERIVED than quoted: a statement set gives EBIT (or
+    # operating income) and D&A separately. Reproduced: with ebit + D&A and no
+    # `ebitda` line, ev_ebitda came back null.
+    dep_amort = g(
+        inc,
+        "depreciation_amortization",
+        "depreciation_and_amortization",
+        "d_and_a",
+        "depreciation",
+        "da",
+    )
+    if ebitda == 0 and dep_amort:
+        _ebit = g(inc, "ebit", "operating_income", "operating_profit")
+        if _ebit:
+            ebitda = _ebit + dep_amort
+            found["ebitda"] = True
     equity = g(
         bal,
         "total_equity",
@@ -252,7 +301,9 @@ def ratios(data: dict, category: str | None = None) -> dict:
     assets = g(bal, "total_assets", "assets")
     cur_assets = g(bal, "current_assets", "total_current_assets")
     cur_liab = g(bal, "current_liabilities", "total_current_liabilities")
-    inventory = g(bal, "inventory", "inventories", "stock", "stock_in_trade")
+    inventory = g(
+        bal, "inventory", "inventories", "stock", "stock_in_trade", name="inventory"
+    )
     cash = g(
         bal,
         "cash_and_equivalents",
@@ -261,7 +312,22 @@ def ratios(data: dict, category: str | None = None) -> dict:
         "cash_equivalents",
         "cash_and_bank",
     )
-    debt = g(bal, "total_debt", "debt", "total_borrowings", "borrowings")
+    debt = g(bal, "total_debt", "debt", "total_borrowings", "borrowings", name="debt")
+    # A balance sheet normally SPLITS debt into long- and short-term; `total_debt` is
+    # the exception, not the rule. Reproduced: with only long_term_debt +
+    # short_term_debt, `debt` stayed 0 and D/E reported 0.0 — no leverage.
+    if not found.get("debt"):
+        _lt = g(bal, "long_term_debt", "long_term_borrowings", "non_current_borrowings")
+        _st = g(
+            bal,
+            "short_term_debt",
+            "short_term_borrowings",
+            "current_borrowings",
+            "current_portion_of_long_term_debt",
+        )
+        if _lt or _st:
+            debt = _lt + _st
+            found["debt"] = True
     ar = g(
         bal,
         "accounts_receivable",
@@ -288,8 +354,11 @@ def ratios(data: dict, category: str | None = None) -> dict:
         "mktcap",
         "marketcap",
         "market_value",
+        name="market_cap",
     )
-    price = g(mkt, "share_price", "price", "current_price", "stock_price")
+    price = g(
+        mkt, "share_price", "price", "current_price", "stock_price", name="share_price"
+    )
     shares = g(
         mkt,
         "shares_outstanding",
@@ -297,15 +366,43 @@ def ratios(data: dict, category: str | None = None) -> dict:
         "diluted_shares",
         "number_of_shares",
         "total_shares",
+        name="shares_outstanding",
     )
     growth = g(
-        mkt, "earnings_growth_rate", "growth_rate", "eps_growth", "earnings_growth"
+        mkt,
+        "earnings_growth_rate",
+        "growth_rate",
+        "eps_growth",
+        "earnings_growth",
+        name="earnings_growth_rate",
     )
 
     if mkt_cap == 0 and price > 0 and shares > 0:
         mkt_cap = price * shares
-    eps = _div(net_income, shares)
-    bvps = _div(equity, shares)
+        found["market_cap"] = True
+    # The reverse derivation, which was missing: a model that quotes a market cap and
+    # a share price rarely also quotes the share count, and without it EVERY
+    # per-share ratio died. Reproduced: P/E and P/B both null on exactly that input.
+    if shares == 0 and mkt_cap > 0 and price > 0:
+        shares = mkt_cap / price
+        found["shares_outstanding"] = True
+
+    # EPS and BVPS accepted DIRECTLY, before falling back to a derivation. EPS is a
+    # headline number a model will quote verbatim; ignoring it and insisting on
+    # net_income/shares is why P/E vanished when the share count was absent.
+    eps = g(inc, "eps", "earnings_per_share", "diluted_eps", "basic_eps", name="eps")
+    if not found.get("eps"):
+        eps = _div(net_income, shares)
+        # A DERIVED eps is still an eps. Leaving this False made `unresolved_inputs`
+        # blame the wrong field — it reported peg_ratio as needing "eps" when eps was
+        # available all along and the real gap was the growth rate.
+        found["eps"] = eps is not None
+    bvps = g(
+        bal, "book_value_per_share", "bvps", "net_asset_value_per_share", name="bvps"
+    )
+    if not found.get("bvps"):
+        bvps = _div(equity, shares)
+        found["bvps"] = bvps is not None
     ev = mkt_cap + debt - cash
     rec_turn = _div(revenue, ar)
 
@@ -318,7 +415,11 @@ def ratios(data: dict, category: str | None = None) -> dict:
         "current_ratio": _div(cur_assets, cur_liab),
         "quick_ratio": _div(cur_assets - inventory, cur_liab),
         "cash_ratio": _div(cash, cur_liab),
-        "debt_to_equity": _div(debt, equity),
+        # A missing NUMERATOR must not read as a real answer. `_div` only guards the
+        # denominator, so an unmapped debt line reported "0.0 — no leverage" rather
+        # than "I could not find your debt". Same failure shape as the COGS bug that
+        # once reported a 100% gross margin.
+        "debt_to_equity": _div(debt, equity) if found.get("debt") else None,
         "interest_coverage": _div(op_income, interest),
         "dscr": _div(ocf, debt_service),
         "asset_turnover": _div(revenue, assets),
@@ -327,7 +428,7 @@ def ratios(data: dict, category: str | None = None) -> dict:
         "dso": _div(365.0, rec_turn),
         "pe_ratio": _div(price, eps),
         "pb_ratio": _div(price, bvps),
-        "ps_ratio": _div(mkt_cap, revenue),
+        "ps_ratio": _div(mkt_cap, revenue) if found.get("market_cap") else None,
         "ev_ebitda": _div(ev, ebitda),
         "peg_ratio": _div(_div(price, eps), growth * 100) if growth > 0 else None,
     }
@@ -360,7 +461,33 @@ def ratios(data: dict, category: str | None = None) -> dict:
             }
             for k in cats[cat]
         }
-    return {"categories": out}
+
+    # WHY a ratio is null, named. Mirrors the `_missing` list saas_metrics() already
+    # returns. This is the durable half of the fix: alias-chasing is unbounded — a
+    # field name we failed to guess will always exist — but a null that NAMES the
+    # field it wanted lets the model ask for it instead of silently dropping the
+    # ratio, which is what "not produced" meant in the QA report.
+    unresolved: dict[str, list[str]] = {}
+    for ratio, fields in _RATIO_INPUTS.items():
+        if ratio not in {k for c in keep for k in cats[c]}:
+            continue
+        if vals.get(ratio) is None:
+            miss = [f for f in fields if not found.get(f, False)]
+            if miss:
+                unresolved[ratio] = miss
+
+    res: dict[str, Any] = {"categories": out}
+    if unresolved:
+        res["unresolved_inputs"] = unresolved
+    # An ASSUMPTION, not a gap: a services business genuinely has no inventory, so
+    # quick_ratio is correct at zero — but it then equals current_ratio, and a reader
+    # must be told which of those two it is looking at.
+    if found.get("inventory") is False and vals.get("quick_ratio") is not None:
+        res["assumptions"] = {
+            "quick_ratio": "no inventory line was supplied; treated as 0, so this "
+            "equals the current ratio"
+        }
+    return res
 
 
 # --------------------------------------------------------------------------- #
@@ -858,6 +985,7 @@ def saas_metrics(
     churned_mrr: float = 0.0,
     contraction_mrr: float = 0.0,
     profit_margin: float | None = None,
+    annual_growth_pct: float | None = None,
     *,
     segment: str = "smb",
     stage: str = "growth",
@@ -892,9 +1020,27 @@ def saas_metrics(
         )
     elif churn is not None:
         nrr = _r((1 - churn / 100) * 100)
+    # Rule of 40 = ANNUAL revenue growth % + profit margin %.
+    #
+    # This used to annualise as `mom * 12`, which is a run-rate, not a growth rate:
+    # a monthly rate compounds, so 5% MoM is 79.6%/yr, not 60%. But BOTH are
+    # extrapolations of a single month-over-month pair — the only growth signal this
+    # function receives — and compounding also amplifies one noisy month. So an
+    # explicitly measured annual figure always wins, and when there is none the
+    # number is compounded AND labelled, so an extrapolation is never mistaken for
+    # measured year-over-year growth.
     rule40 = None
-    if mom is not None and profit_margin is not None:
-        rule40 = _r(mom * 12 + profit_margin)
+    rule40_basis: str | None = None
+    if profit_margin is not None:
+        if annual_growth_pct is not None:
+            rule40 = _r(annual_growth_pct + profit_margin)
+            rule40_basis = "measured_annual_growth"
+        elif mom is not None:
+            annualised = ((1 + mom / 100) ** 12 - 1) * 100
+            rule40 = _r(annualised + profit_margin)
+            rule40_basis = "annualised_from_one_month"
+    elif mom is not None:
+        missing.append("profit_margin")
 
     def add(key: str, val: float | None, band_metric: str | None = None) -> None:
         rec: dict[str, Any] = {"value": val}
@@ -914,6 +1060,10 @@ def saas_metrics(
     add("cac_payback_months", _r(cac_payback), "cac_payback")
     add("nrr_pct", nrr, "nrr")
     add("rule_of_40", rule40, "rule_of_40")
+    if rule40_basis:
+        # Which growth figure the score rests on. A reader must be able to tell a
+        # measured annual rate from a one-month extrapolation.
+        out["rule_of_40"]["growth_basis"] = rule40_basis
     out["_missing"] = missing
     out["gross_margin_used"] = gross_margin
     return out

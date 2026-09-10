@@ -104,7 +104,26 @@ _SAAS_ALIASES: dict[str, tuple[str, ...]] = {
     "expansion_mrr": ("expansion_mrr", "expansion", "upsell_mrr", "expansion_revenue"),
     "churned_mrr": ("churned_mrr", "churn_mrr", "lost_mrr", "churned_revenue"),
     "contraction_mrr": ("contraction_mrr", "contraction", "downgrade_mrr"),
-    "profit_margin": ("profit_margin", "profit_margin_pct", "net_profit_margin"),
+    "profit_margin": (
+        "profit_margin",
+        "profit_margin_pct",
+        "net_profit_margin",
+        "operating_margin",
+        "ebitda_margin",
+        "fcf_margin",
+    ),
+    # A MEASURED annual growth rate, when the caller has one. Rule of 40 wants
+    # year-over-year growth; without this the only signal is a single MoM pair,
+    # which has to be extrapolated. See saas_metrics() in calc.py.
+    "annual_growth_pct": (
+        "annual_growth_pct",
+        "annual_growth",
+        "yoy_growth",
+        "yoy_growth_pct",
+        "arr_growth",
+        "arr_growth_pct",
+        "revenue_growth_pct",
+    ),
 }
 
 
@@ -165,9 +184,30 @@ FINANCE_CALC_TOOL_SPEC: dict = {
                 },
                 "statements": {
                     "type": "object",
-                    "description": "ratios: {income_statement, balance_sheet, "
-                    "cash_flow, market_data} — each a flat object of named line "
-                    "items.",
+                    "description": (
+                        # Every OTHER kind below enumerates its fields; this one said
+                        # only "named line items", so the model had to guess, and a
+                        # guess that missed produced a null ratio with no explanation.
+                        # Aliases and casing are still tolerated — these are the names
+                        # that are certain to resolve.
+                        "ratios: {income_statement, balance_sheet, cash_flow, "
+                        "market_data}, each a flat object. Use these names where you "
+                        "have the figure — "
+                        "income_statement: revenue, cost_of_goods_sold, gross_profit, "
+                        "operating_income, net_income, interest_expense, ebitda "
+                        "(or ebit + depreciation_amortization), eps; "
+                        "balance_sheet: total_assets, total_equity, current_assets, "
+                        "current_liabilities, inventory, cash_and_equivalents, "
+                        "total_debt (or long_term_debt + short_term_debt), "
+                        "accounts_receivable, book_value_per_share; "
+                        "cash_flow: operating_cash_flow, total_debt_service; "
+                        "market_data: market_cap, share_price, shares_outstanding, "
+                        "earnings_growth_rate. "
+                        "Leverage needs debt; valuation needs market_data. Any ratio "
+                        "you cannot get comes back null and names the field it wanted "
+                        "in `unresolved_inputs` — ask the user for that field rather "
+                        "than dropping the ratio or estimating it."
+                    ),
                 },
                 "dcf": {
                     "type": "object",
@@ -212,9 +252,16 @@ FINANCE_CALC_TOOL_SPEC: dict = {
                     "description": "saas_metrics: {mrr, mrr_prev, customers, "
                     "churned_customers, sm_spend, new_customers, gross_margin, "
                     "expansion_mrr, churned_mrr, contraction_mrr, profit_margin, "
+                    "annual_growth_pct, "
                     "segment (enterprise|mid_market|smb|consumer), stage "
-                    "(early|growth|scale)}. quick_ratio: {new_mrr, expansion_mrr, "
-                    "churned_mrr, "
+                    "(early|growth|scale)}. "
+                    # rule_of_40 was the one metric the QA pass could not get: the
+                    # field was listed but nothing said which metric needed it.
+                    "rule_of_40 REQUIRES profit_margin — supply it, or ask the user "
+                    "for it, whenever the Rule of 40 is wanted. Supply "
+                    "annual_growth_pct too when a real year-over-year rate is known; "
+                    "otherwise the score is extrapolated from one month and labelled "
+                    "as such. quick_ratio: {new_mrr, expansion_mrr, churned_mrr, "
                     "contraction_mrr}.",
                 },
                 "variance": {
