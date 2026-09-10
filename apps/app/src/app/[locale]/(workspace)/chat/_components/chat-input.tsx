@@ -186,6 +186,26 @@ export function ChatInput({
 
   const doSend = useCallback(async () => {
     const text = value;
+    // Attachment state is checked BEFORE the empty-content return. With the
+    // order reversed, an attachment-only send while the upload is still
+    // running matched `no text and no ready ids` and returned in silence, so
+    // the "wait" message below was unreachable in the one case it exists for.
+    if (attachments.uploading) {
+      toast.error("Wait for the upload to finish");
+      return;
+    }
+    // A failed attachment must never be dropped quietly. readyIds simply
+    // omits it, so without this the message goes without the file and the
+    // user is told nothing.
+    if (attachments.failed.length > 0) {
+      toast.error(
+        attachments.failed.length === 1
+          ? `${attachments.failed[0]} didn't upload — retry or remove it`
+          : `${attachments.failed.length} attachments didn't upload — retry or remove them`,
+      );
+      return;
+    }
+    // Read AFTER the guards, so the ids reflect settled state.
     const ids = attachments.readyIds;
     if (!text.trim() && ids.length === 0) return;
     // Warm the markdown chunk the moment the user commits to a send (incl.
@@ -199,10 +219,6 @@ export function ChatInput({
     // console and the user's just-typed message is silently dropped. Keep the
     // text in the box so the user can send it once the reply finishes.
     if (streamingId) return;
-    if (attachments.uploading) {
-      toast.error("Wait for the upload to finish");
-      return;
-    }
     // Optimistic clear before the await; restored on failure.
     setValue("");
     setDraft("");
@@ -238,7 +254,15 @@ export function ChatInput({
   };
 
   const isStreaming = Boolean(streamingId);
-  const hasContent = value.trim().length > 0 || attachments.readyIds.length > 0;
+  // Any attachment counts, not just the ready ones. Keyed on readyIds this
+  // was false for the whole upload, and the composer swapped Send for the
+  // DICTATION button — so clicking where Send had been started recording,
+  // while Enter silently did nothing. The guards in doSend decide the
+  // outcome; this only decides which control the user is looking at.
+  const hasContent = value.trim().length > 0 || attachments.items.length > 0;
+  // Present but not usable yet. Disabled beats hidden: the control keeps its
+  // place and its meaning while the upload finishes.
+  const sendBlocked = attachments.uploading || attachments.failed.length > 0;
 
   const onStop = async () => {
     if (!streamingId) return;
@@ -337,6 +361,7 @@ export function ChatInput({
                   key={item.localId}
                   item={item}
                   onRemove={(id) => void attachments.remove(id)}
+                  onRetry={attachments.retry}
                 />
               ))}
             </div>
@@ -455,11 +480,19 @@ export function ChatInput({
               <button
                 type="button"
                 onClick={() => void doSend()}
-                disabled={sending || !canSend}
-                aria-label={sending ? "Sending" : "Send message"}
+                disabled={sending || !canSend || sendBlocked}
+                aria-label={
+                  sending
+                    ? "Sending"
+                    : attachments.uploading
+                      ? "Waiting for upload"
+                      : attachments.failed.length > 0
+                        ? "Attachment failed to upload"
+                        : "Send message"
+                }
                 // Brand accent — warms with the ambience theme (bronze at amber).
                 className={`${btnBox} shadow-md transition ${
-                  sending || !canSend
+                  sending || !canSend || sendBlocked
                     ? "bg-primary/10 text-primary/30"
                     : "bg-brand text-brand-foreground hover:brightness-110 active:brightness-95"
                 }`}

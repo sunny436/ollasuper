@@ -1,15 +1,17 @@
 "use client";
 
-import { FileText, Loader2, X } from "lucide-react";
+import { FileText, Loader2, RotateCcw, X } from "lucide-react";
 import type { PendingAttachment } from "../_hooks/use-attachments";
 import { fmtSize } from "../_lib/format";
 
 export function AttachmentChip({
   item,
   onRemove,
+  onRetry,
 }: {
   item: PendingAttachment;
   onRemove: (localId: string) => void;
+  onRetry: (localId: string) => void;
 }) {
   return (
     <div
@@ -28,7 +30,25 @@ export function AttachmentChip({
       )}
 
       <span className="max-w-[10rem] truncate text-primary/80">{item.name}</span>
-      <span className="shrink-0 text-primary/35">{fmtSize(item.size)}</span>
+      {item.status === "error" ? (
+        <span className="shrink-0 font-medium text-destructive">
+          Upload failed
+        </span>
+      ) : (
+        <span className="shrink-0 text-primary/35">{fmtSize(item.size)}</span>
+      )}
+
+      {item.status === "error" && (
+        <button
+          type="button"
+          onClick={() => onRetry(item.localId)}
+          aria-label={`Retry ${item.name}`}
+          title="Retry upload"
+          className="shrink-0 rounded p-0.5 text-destructive transition hover:bg-destructive/10"
+        >
+          <RotateCcw className="h-3 w-3" />
+        </button>
+      )}
 
       {item.status === "uploading" && (
         <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary/40" />

@@ -18,11 +18,32 @@ export interface PendingAttachment {
   isImage: boolean;
   previewUrl: string | null;
   progress: number;
+  /**
+   * The CLIENT's view of the upload, and the only thing that gates Send.
+   *
+   * `ready` means `register()` returned an id — NOT that any server-side
+   * processing finished, because a chat attachment has none: register writes
+   * `status: "uploaded"` and nothing ever advances it, and the text/image
+   * extraction happens at generation time in the Python plane. The
+   * processing/ingesting lifecycle belongs to the separate `userFiles` record
+   * the Option-B copy below creates, which is what the sidebar badge shows.
+   * Those two are deliberately independent; do not gate sending on the latter.
+   */
   status: "uploading" | "ready" | "error";
   attachmentId: Id<"chatAttachments"> | null;
   // The persistent account-knowledge file this attachment also became (Option B:
   // a separate upload). Lets chip removal drop the knowledge file too.
   userFileId: Id<"userFiles"> | null;
+  /**
+   * Kept so a failed upload can be RETRIED in place.
+   *
+   * Without it there is nothing to re-send: the File used to exist only as a
+   * closure argument to upload(), so a failure was a dead end — the chip could
+   * only be removed and the file picked again. A File is a lazy handle to disk,
+   * not a copy in memory, and an image already pins one through
+   * URL.createObjectURL, so holding it costs effectively nothing.
+   */
+  file: File;
 }
 
 const MAX_FILES = 6;
@@ -38,6 +59,35 @@ export function useAttachments(threadId: string | null) {
   const removeKnowledgeFile = useMutation(api.userFiles.remove);
   const [items, setItems] = useState<PendingAttachment[]>([]);
   const counter = useRef(0);
+  /**
+   * Chips removed while their upload was still in flight.
+   *
+   * Nothing cancels an XHR that is already running, so removing a chip mid-
+   * upload used to leave the request to finish unattended: `register()` still
+   * created a chatAttachments row and a blob, and the Option-B copy still
+   * created a userFiles row that then appeared in the sidebar for a file the
+   * user had just cancelled. `remove()` could not clean either up because the
+   * ids did not exist yet when it ran.
+   *
+   * Nothing collects those afterwards either — no cron touches chatAttachments,
+   * and the only sweep is thread deletion, which cannot reach a row whose
+   * threadId is undefined (every attachment started from the empty state).
+   *
+   * So cancellation is recorded here instead, and whoever learns an id first is
+   * responsible for deleting it. A ref, not state: the upload path must see the
+   * CURRENT value when its await resolves, not the value captured at render.
+   */
+  const cancelled = useRef<Set<string>>(new Set());
+  /**
+   * Retries already running, keyed by localId.
+   *
+   * `retry` gates on `status === "error"`, but two clicks landing before
+   * React commits the re-render would both read the stale `error` and start
+   * two uploads for one chip — two registrations, and the first row orphaned
+   * the moment the second overwrote its id. A ref settles it synchronously;
+   * state cannot, because that is the very thing that has not updated yet.
+   */
+  const retrying = useRef<Set<string>>(new Set());
 
   const patch = useCallback(
     (localId: string, next: Partial<PendingAttachment>) => {
@@ -94,6 +144,15 @@ export function useAttachments(threadId: string | null) {
           ...(threadId ? { threadId: threadId as Id<"chatThreads"> } : {}),
         });
 
+        // The chip may have been removed while this upload was in flight. The
+        // row and blob exist now, and nothing else will ever collect them, so
+        // undo the registration here and stop before the knowledge copy.
+        if (cancelled.current.has(localId)) {
+          cancelled.current.delete(localId);
+          await removeAttachment({ attachmentId }).catch(() => {});
+          return;
+        }
+
         patch(localId, { status: "ready", progress: 100, attachmentId });
 
         // Option B: ALSO persist this file as account-level knowledge via a
@@ -119,17 +178,40 @@ export function useAttachments(threadId: string | null) {
               contentType,
               contentHash,
             });
+            // Cancelled while this copy was uploading. Without this the file
+            // reappears in the sidebar knowledge base moments after the user
+            // removed it from the composer — the most visible symptom of the
+            // whole race.
+            if (cancelled.current.has(localId)) {
+              await removeKnowledgeFile({ fileId: userFileId }).catch(() => {});
+              return;
+            }
             patch(localId, { userFileId });
           } catch {
             // Best-effort — the chat attachment already works without this.
           }
         })();
       } catch {
+        // A cancelled upload that then fails needs no chip update and no toast:
+        // the user already removed it and does not care that it failed.
+        if (cancelled.current.has(localId)) {
+          cancelled.current.delete(localId);
+          return;
+        }
         patch(localId, { status: "error" });
         toast.error(`Couldn't upload ${file.name}`);
       }
     },
-    [current, generateUploadUrl, register, saveKnowledgeFile, threadId, patch],
+    [
+      current,
+      generateUploadUrl,
+      register,
+      removeAttachment,
+      removeKnowledgeFile,
+      saveKnowledgeFile,
+      threadId,
+      patch,
+    ],
   );
 
   const add = useCallback(
@@ -165,6 +247,7 @@ export function useAttachments(threadId: string | null) {
             status: "uploading",
             attachmentId: null,
             userFileId: null,
+            file,
           },
         ]);
         void upload(file, localId);
@@ -178,6 +261,11 @@ export function useAttachments(threadId: string | null) {
       const item = items.find((i) => i.localId === localId);
       setItems((prev) => prev.filter((i) => i.localId !== localId));
       if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      // Still uploading: there is no id to delete yet, and the request will
+      // not stop. Record it so whichever await resolves first cleans up.
+      if (item && item.status === "uploading") {
+        cancelled.current.add(localId);
+      }
       if (item?.attachmentId) {
         try {
           await removeAttachment({ attachmentId: item.attachmentId });
@@ -199,6 +287,24 @@ export function useAttachments(threadId: string | null) {
     [items, removeAttachment, removeKnowledgeFile],
   );
 
+  /** Re-upload a failed attachment in place, reusing the retained File. */
+  const retry = useCallback(
+    (localId: string) => {
+      const item = items.find((i) => i.localId === localId);
+      if (!item || item.status !== "error") return;
+      if (retrying.current.has(localId)) return;
+      retrying.current.add(localId);
+      // A retry that lands after the chip was removed must not resurrect it,
+      // and a stale cancellation must not kill this fresh attempt.
+      cancelled.current.delete(localId);
+      patch(localId, { status: "uploading", progress: 0 });
+      void upload(item.file, localId).finally(() => {
+        retrying.current.delete(localId);
+      });
+    },
+    [items, patch, upload],
+  );
+
   const clear = useCallback(() => {
     for (const i of items) {
       if (i.previewUrl) URL.revokeObjectURL(i.previewUrl);
@@ -214,8 +320,12 @@ export function useAttachments(threadId: string | null) {
     items,
     add,
     remove,
+    retry,
     clear,
     readyIds,
     uploading: items.some((i) => i.status === "uploading"),
+    // Names, not a count: the composer refuses a send that would quietly drop
+    // an attachment, and it has to be able to say WHICH one.
+    failed: items.filter((i) => i.status === "error").map((i) => i.name),
   };
 }
