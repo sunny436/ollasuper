@@ -157,6 +157,11 @@ Router-level `dependencies=[Depends(require_service_key)]` on **all five** appli
 
 ### D.1 — HIGH · Stored XSS via client-controlled `Content-Type` on `GET /share/file`
 
+> **STATUS: REMEDIATED** — fixed in `f324d3a`, deployed to production 2026-09-10.
+> The new code is confirmed present in the deployed Convex module bundle on the
+> VM. End-to-end behavioural verification against production is **PENDING** —
+> see the note at the end of this finding.
+
 **WSTG:** WSTG-CLNT-01 (4.2), WSTG-BUSL-09 (4.2), 5.0 §12.3
 **Layer:** cross-layer (backend route + deployment topology)
 **Confidence:** High — every link verified in source; origin and header absence verified at runtime.
@@ -206,13 +211,29 @@ The route is reachable **on the app's own origin**, and the Convex site origin a
 
 **Impact.** Script execution in `app.ollasuper.com`'s origin — the same origin as the application. The document is served with **no CSP of its own** (the Next.js CSP applies only to `:3000` responses), so the script is unrestricted: it can read the Convex auth token from browser storage and call any Convex function as the victim. Full account takeover of any logged-in user who opens the link. The share token bounds *who can be sent a working link*, but the attacker creates the share, so the attacker holds the token.
 
+**Escalation found while remediating (worse than first written).** The original write-up assumed the attacker must send the victim a direct `/share/file` URL. That understates it. `share-attachment.tsx` renders an attachment as an inline `<img>` **only when `att.kind === "image"`**; every other attachment is rendered as:
+
+```tsx
+<a href={url} target="_blank" rel="noopener noreferrer"> … {att.name} …
+```
+
+— a **navigation**. So the victim does not need a crafted link at all: opening an ordinary-looking file chip inside a normally-shared conversation is the trigger. `kind` is itself derived from the same unvalidated `args.contentType`, so the attacker controls which branch renders. This raises likelihood substantially and is the reason the fix forces a download rather than merely relabelling the type.
+
 **The codebase's own supporting measurement.** `blobSafety.ts` records: *"Measured on this deployment — a blob uploaded as `application/json` and registered as `text/plain` is served as `application/json`."* That confirms step 2 (the client chooses the blob's stored type) directly from in-repo measurement.
 
-**Remaining runtime evidence to make this end-to-end proven:** upload a `text/plain` blob containing `<script>`, register it as `text/html`, share, and fetch `/share/file` — confirm the response header is `text/html` and the browser executes. **I did not perform this**, because it requires writing data to production and this audit is read-only. Every *code* link is verified; the origin and missing headers are verified at runtime.
+**Remediation shipped (`f324d3a`).** `/share/file` now always sets `x-content-type-options: nosniff`; serves an **allowlisted** image type inline (so the `<img>` path is unchanged); and serves everything else as `application/octet-stream` with `Content-Disposition: attachment` — the posture `/artifact/file` already took. `nosniff` was added to `/artifact/file` too, since neither route receives headers from `next.config.mjs`.
 
-**Remediation (smallest safe):** in `/share/file`, add `x-content-type-options: nosniff`, and either serve a neutralised type or force `Content-Disposition: attachment` for anything not on a strict image allowlist — mirroring `/artifact/file`, which already does the latter. Validating `args.contentType` at `register` is the deeper fix and should follow.
+An **allowlist, not the existing denylist**, deliberately: against a caller-chosen value a denylist must be exhaustive to be correct, and `EXECUTABLE_TYPES` was not — `text/xml` carrying `<?xml-stylesheet type="text/xsl" href="…">` is transformed by the browser into same-origin HTML and no entry covered it. That case is now in the regression test.
 
-**Regression test:** a Convex HTTP test asserting `/share/file` never returns an executable content-type for a row whose declared type is `text/html`, and always sets `nosniff`.
+**Regression test:** `packages/backend/convex/share.file.security.test.ts` — 16 cases asserting **response headers**, which no existing blob-safety test did (they all assert stored/returned *types*, which is precisely why this survived). Verified to be a real regression test rather than a tautology: **12 of the 16 fail against the pre-fix code**, including `expected 'image/svg+xml' to be 'application/octet-stream'`.
+
+**Not fixed here (deliberate, and still open):** `register` still accepts an arbitrary `args.contentType`. The serving fix closes the vulnerability completely, and validating at `register` is a separate, larger change that risks rejecting legitimate existing flows. It remains P1.
+
+**Verification status — stated precisely.**
+- ✅ Unit/regression: 16/16 pass; 12/16 fail against the vulnerable code; full backend suite 888 passed / 56 files; typecheck and lint clean.
+- ✅ Deployed: VM at `f324d3a`, `convex deploy` succeeded, and the new code is confirmed **inside the deployed module bundle** (`x-content-type-options`, `isInlineSafeImageType`, `image/avif` all present in the blob written at deploy time).
+- ✅ Production smoke: app serves 200, both routes still 404 correctly on a bad token.
+- ⏳ **PENDING — end-to-end behavioural proof on production.** `e2e/p-share-file-xss.js` runs the real attack (upload `text/plain`, register as `text/html`, share, fetch) and asserts it is neutralised, that a real PNG still renders inline, and that navigating to the payload in a real browser executes no script. It needs `ADMIN_PASSWORD`, which was not present in the audit environment. **Until that script passes, D.1 is fixed-and-deployed but not production-verified, and is not claimed as such.**
 
 ---
 
