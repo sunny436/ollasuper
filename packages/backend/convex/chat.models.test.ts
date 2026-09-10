@@ -200,6 +200,26 @@ describe("the model catalogue is a curated shortlist", () => {
     expect(cands.some((c) => c.id.startsWith("glm"))).toBe(false);
   });
 
+  // REGRESSION. The candidate set was first added to chat/stream.ts:active by
+  // mistake — the browser's hot subscription, and the ONLY query that re-fires
+  // during a generation. That shipped the whole catalogue to the client on
+  // every token batch AND put model identity back into client state, which is
+  // exactly what removing the picker was meant to end. It belongs on the
+  // internal dispatch payload and nowhere else.
+  test("the client stream query leaks neither model nor candidates", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("./chat/stream.ts", import.meta.url), "utf8");
+    const active = src.slice(
+      src.indexOf("export const active"),
+      src.indexOf("export const stop"),
+    );
+    expect(active).not.toMatch(/modelCandidates/);
+    expect(active).not.toMatch(/^s+model: message.model/m);
+    // ...and the dispatch payload DOES carry them.
+    const dispatch = src.slice(src.indexOf("export const dispatchPayload"));
+    expect(dispatch).toContain("modelCandidates: await routableCandidates(ctx)");
+  });
+
   test("the list query exposes the description the picker renders", async () => {
     const t = convexTest(schema, modules);
     serve(ALL_CURATED);

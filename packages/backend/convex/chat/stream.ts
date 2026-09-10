@@ -174,18 +174,17 @@ export const active = query({
       seq: message.seq,
       status: stream.status,
       cancelRequested: stream.cancelRequested,
-      model: message.model ?? thread.model,
+      // Model identity is deliberately NOT returned here. Nothing in the UI
+      // renders it any more (the Master Model Router picks per turn and the
+      // user sees one assistant), and a field the client never reads is a leak
+      // surface kept alive for no reason. It stays on chatMessages for
+      // observability, which is server-side.
       events,
       // Sent so the Python plane can size its context budget and clamp
       // max_tokens for small-context models -- 4095-token models exist, and a
       // fixed 8192-token output request is an immediate provider 400. 0 means
       // "unknown", and Python keeps its own conservative default.
       contextWindow: await contextWindowFor(ctx, message.model ?? thread.model),
-      // MASTER MODEL ROUTER candidate set. `model` above stays the FALLBACK,
-      // so an older Python build that does not know this field is unaffected
-      // and a router that is off, misconfigured or throwing lands exactly where
-      // chat landed before it existed.
-      modelCandidates: await routableCandidates(ctx),
       // Client renders committedText + chunks joined in seq order.
       committedText: stream.committedText,
       chunks: chunks.map((c) => ({ seq: c.seq, text: c.text })),
@@ -658,6 +657,11 @@ export const dispatchPayload = internalQuery({
       userId: stream.userId,
       workspaceId: stream.workspaceId,
       model: message.model ?? thread.model,
+      // MASTER MODEL ROUTER candidate set. `model` above stays the FALLBACK, so
+      // an older Python build that does not know this field is unaffected, and a
+      // router that is off, misconfigured or throwing lands exactly where chat
+      // landed before it existed.
+      modelCandidates: await routableCandidates(ctx),
       // A scheduled run is read as a REPORT — in an email and in the run
       // modal, with nobody watching it happen. Left alone the model narrates
       // the way it does in a live chat, and that prose lands in
