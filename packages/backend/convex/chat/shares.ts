@@ -456,6 +456,8 @@ export const resolveAttachment = internalQuery({
     if (!att?.storageId) return null;
     const sid = ctx.db.system.normalizeId("_storage", att.storageId);
     if (!sid) return null;
-    return { storageId: sid, contentType: att.contentType };
+    // `name` rides along so a forced download keeps a real filename. It is
+    // already public for this share via getByToken, so this exposes nothing new.
+    return { storageId: sid, contentType: att.contentType, name: att.name };
   },
 });

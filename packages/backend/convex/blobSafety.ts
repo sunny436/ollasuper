@@ -41,6 +41,39 @@ export function isExecutableContentType(ct: string | null | undefined): boolean 
 }
 
 /**
+ * Types safe to render INLINE from a public route that serves bytes directly.
+ *
+ * AN ALLOWLIST, NOT THE DENYLIST ABOVE, and the difference is the whole point.
+ * `EXECUTABLE_TYPES` guards the BLOB's stored type, which this deployment
+ * controls at upload. `/share/file` is different: it streams the blob but takes
+ * its content-type from the chatAttachments ROW, and that field is
+ * `args.contentType` — supplied by the client at register() and never
+ * validated. Against a caller-chosen value a denylist has to be exhaustive to
+ * be correct, and this one is not: `text/xml` carrying
+ * `<?xml-stylesheet type="text/xsl" href="...">` is transformed by the browser
+ * into same-origin HTML, and no entry above covers it. An allowlist fails
+ * closed on the type nobody thought of.
+ *
+ * SVG IS EXCLUDED DELIBERATELY. It is an image everywhere else in this
+ * codebase, but /share/file renders non-images as a NAVIGATED link
+ * (share-attachment.tsx), and a navigated svg executes its own <script>.
+ */
+const INLINE_SAFE_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/bmp",
+  "image/x-icon",
+]);
+
+export function isInlineSafeImageType(ct: string | null | undefined): boolean {
+  const t = (ct ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  return INLINE_SAFE_IMAGE_TYPES.has(t);
+}
+
+/**
  * The content-type to STORE a blob under, given the type it was declared as.
  *
  * Refusing is right where the executable type is never legitimate (an avatar, a

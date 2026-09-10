@@ -6,7 +6,7 @@ import { auth } from "./auth";
 import { EVENT_TYPES } from "./chat/events";
 import { env } from "./env";
 import { polar } from "./subscriptions";
-import { neutralizedBlobType } from "./blobSafety";
+import { isInlineSafeImageType, neutralizedBlobType } from "./blobSafety";
 
 const http = httpRouter();
 
@@ -1005,6 +1005,10 @@ http.route({
     return new Response(blob, {
       headers: {
         "content-type": allowed.mime,
+        // Defence in depth beside the disposition above: this origin gets no
+        // nosniff from next.config.mjs (those headers only cover :3000, never
+        // /__cvx*), and `mime` is the artifact row's declared value.
+        "x-content-type-options": "nosniff",
         "content-disposition": `attachment; filename="${safe}"`,
         "cache-control": "private, max-age=60",
       },
@@ -1065,9 +1069,31 @@ http.route({
     if (!allowed) return new Response("not found", { status: 404 });
     const blob = await ctx.storage.get(allowed.storageId);
     if (!blob) return new Response("not found", { status: 404 });
+    // NEVER echo the row's declared content-type back as a response header.
+    //
+    // chatAttachments.contentType is `args.contentType` from register() — chosen
+    // by the client and never validated. blobSafety guards the BLOB's stored
+    // type, which is what ctx.storage.getUrl() serves, so every OTHER surface is
+    // covered by that; this route is the one that streams the bytes itself and
+    // re-attaches the row's value on top, which put the guard back where it
+    // started. The route is reachable at app.ollasuper.com/__cvx-site/share/file
+    // — the APP'S OWN ORIGIN — and Convex adds no nosniff/CSP of its own, so a
+    // declared `text/html` was same-origin script execution against any viewer.
+    // share-attachment.tsx renders a non-image as a NAVIGATED link, so opening
+    // the chip in a shared conversation was enough to trigger it.
+    //
+    // Allowlisted images keep their real type (the <img> path must still work);
+    // everything else is downloaded, never rendered — the same posture
+    // /artifact/file already takes.
+    const inline = isInlineSafeImageType(allowed.contentType);
+    const filename = (allowed.name || "file").replace(/["\\\r\n]/g, "_");
     return new Response(blob, {
       headers: {
-        "content-type": allowed.contentType,
+        "content-type": inline ? allowed.contentType : "application/octet-stream",
+        "x-content-type-options": "nosniff",
+        ...(inline
+          ? {}
+          : { "content-disposition": `attachment; filename="${filename}"` }),
         "cache-control": "private, max-age=300",
       },
     });
