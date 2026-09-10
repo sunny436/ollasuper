@@ -24,9 +24,17 @@ SQL_TOOL = "sql_query"
 STATS_TOOL = "statistics"
 OUTLIERS_TOOL = "detect_outliers"
 TIMESERIES_TOOL = "time_series"
+FORECAST_TOOL = "forecast"
 
 DATA_TOOL_NAMES = frozenset(
-    {PROFILE_TOOL, SQL_TOOL, STATS_TOOL, OUTLIERS_TOOL, TIMESERIES_TOOL}
+    {
+        PROFILE_TOOL,
+        SQL_TOOL,
+        STATS_TOOL,
+        OUTLIERS_TOOL,
+        TIMESERIES_TOOL,
+        FORECAST_TOOL,
+    }
 )
 
 _DATASET_PROP = {
@@ -136,6 +144,40 @@ DATA_TOOL_SPECS: list[dict] = [
                     "dataset": _DATASET_PROP,
                     "date_col": {"type": "string"},
                     "value_col": {"type": "string"},
+                    "freq": {"type": "string"},
+                    "agg": {"type": "string"},
+                    "sheet": _SHEET_PROP,
+                },
+                "required": ["dataset", "date_col", "value_col"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": FORECAST_TOOL,
+            "description": (
+                "Project a value forward from its own history. ALWAYS use this rather "
+                "than extrapolating figures yourself: it returns a PREDICTION "
+                "INTERVAL and a `decision_grade` verdict, neither of which can be "
+                "obtained by reading rows. Ordinary-least-squares trend, so it does "
+                "NOT model seasonality. It REFUSES outright when there is too little "
+                "history, and sets decision_grade=false with `blockers` when the "
+                "history is too noisy to support a point estimate. Report "
+                "decision_grade and any blockers to the user verbatim — do not "
+                "present a non-decision-grade forecast as a firm number, and do not "
+                "substitute your own estimate when it refuses."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset": _DATASET_PROP,
+                    "date_col": {"type": "string"},
+                    "value_col": {"type": "string"},
+                    "periods": {
+                        "type": "integer",
+                        "description": "How many periods ahead (1-24, default 3).",
+                    },
                     "freq": {"type": "string"},
                     "agg": {"type": "string"},
                     "sheet": _SHEET_PROP,
@@ -277,6 +319,24 @@ async def run_tool(ctx: DataContext, tool_name: str, args: dict) -> dict:
                         df,
                         date_col=str(args.get("date_col", "")),
                         value_col=str(args.get("value_col", "")),
+                        freq=str(args.get("freq", "MS")),
+                        agg=str(args.get("agg", "sum")),
+                    ),
+                    timeout,
+                )
+                return _cap_result(settings, out)
+            if tool_name == FORECAST_TOOL:
+                try:
+                    periods = int(args.get("periods", 3))
+                except (TypeError, ValueError):
+                    raise A.DataError("`periods` must be a whole number.") from None
+                out = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        A.forecast,
+                        df,
+                        date_col=str(args.get("date_col", "")),
+                        value_col=str(args.get("value_col", "")),
+                        periods=periods,
                         freq=str(args.get("freq", "MS")),
                         agg=str(args.get("agg", "sum")),
                     ),

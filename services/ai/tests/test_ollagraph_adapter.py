@@ -202,3 +202,48 @@ async def test_admin_token_tool_not_callable():
         assert ei.value.kind == ToolErrorKind.AUTH_FAILED
     finally:
         await client.aclose()
+
+
+# --------------------------------------------------------------------------- #
+# Crawl tools get a longer DEFAULT timeout. A site-wide broken-link audit cannot
+# finish inside the 30s default — it timed out in QA and only completed once the
+# scan was narrowed by hand — but the ceiling stays well under the 300s turn
+# deadline so one call cannot consume an agentic turn's whole budget.
+# --------------------------------------------------------------------------- #
+def _timeout_for(tool: ToolDefinition, **over) -> float:
+    s = _settings(**over)
+    default = s.ollagraph_default_tool_timeout_s
+    ident = f"{tool.tool_id} {tool.name}".lower()
+    if any(m in ident for m in s.ollagraph_crawl_tool_markers):
+        default = max(default, s.ollagraph_crawl_tool_timeout_s)
+    return tool.timeout or default
+
+
+def test_a_crawl_tool_gets_the_longer_default():
+    broken = ToolDefinition(
+        tool_id="seo_broken_links_endpoint_v1_seo_broken_links_audit_post",
+        name="Broken links",
+        path="/v1/seo/broken-links/audit",
+        method="post",
+    )
+    assert _timeout_for(broken) == 90.0
+    assert _timeout_for(broken) > _settings().ollagraph_default_tool_timeout_s
+
+
+def test_an_ordinary_tool_keeps_the_short_default():
+    assert _timeout_for(SCRAPE) == _settings().ollagraph_default_tool_timeout_s
+
+
+def test_a_spec_declared_timeout_still_wins():
+    """The override replaces the DEFAULT only — never a value the spec asked for."""
+    crawl = ToolDefinition(
+        tool_id="crawl_run", name="Crawl", path="/v1/crawl", method="post", timeout=12.0
+    )
+    assert _timeout_for(crawl) == 12.0
+
+
+def test_the_crawl_ceiling_stays_inside_the_turn_deadline():
+    """300s is the whole turn (ai_agent_total_deadline_s, and Convex sends the same
+    300_000ms). One crawl must leave room for the rest of an agentic turn."""
+    s = _settings()
+    assert s.ollagraph_crawl_tool_timeout_s < s.ai_agent_total_deadline_s / 2

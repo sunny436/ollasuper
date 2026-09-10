@@ -125,3 +125,33 @@ def test_skill_renders_within_reason():
     text = SEO_SKILL.render()
     assert "SEO Audit" in text
     assert 500 < len(text)  # substantive guidance
+
+
+# --------------------------------------------------------------------------- #
+# QA remediation — the two failure modes the audit hit in practice were a crawl
+# that timed out and a robots.txt verdict that was simply wrong. Neither is a
+# maths bug; both are guidance the skill has to carry.
+# --------------------------------------------------------------------------- #
+def test_skill_tells_the_model_to_bound_an_expensive_scan():
+    """A broken-link audit timed out in QA and only completed once narrowed."""
+    t = SEO_SKILL.render().lower()
+    assert "start bounded" in t
+    assert "times out" in t or "timed out" in t or "timeout" in t
+    # A partial, scoped answer must be presented as legitimate — otherwise the
+    # model widens the scan until it dies rather than reporting what it has.
+    assert "partial result" in t
+
+
+def test_skill_requires_a_surprising_robots_block_to_be_verified():
+    """The provider's parser returned a false `is_allowed: false` in testing, and
+    a wrong 'Googlebot is blocked' is a P0-shaped claim."""
+    t = SEO_SKILL.render().lower()
+    assert "robots.txt" in t
+    assert "raw robots.txt" in t
+    assert "disagree" in t
+
+
+def test_limitations_name_the_provider_and_rendering_gaps():
+    t = SEO_SKILL.render().lower()
+    assert "provider" in t and "wrong" in t
+    assert "js-rendered" in t or "javascript" in t

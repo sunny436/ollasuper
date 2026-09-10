@@ -381,7 +381,17 @@ class OllagraphAdapter:
         # method from the trusted discovered spec, NEVER from model args. No tool
         # argument can redirect the outbound call (no SSRF from this plane).
         url = f"{self._s.ollagraph_base_url.rstrip('/')}{tool.path}"
-        timeout = tool.timeout or self._s.ollagraph_default_tool_timeout_s
+        # A spec-declared timeout still wins; the crawl override only replaces the
+        # DEFAULT, for the tools that fetch many pages in one call and cannot
+        # finish in 30s. Bounded well under the 300s turn deadline on purpose.
+        _default = self._s.ollagraph_default_tool_timeout_s
+        # Match on BOTH ids: `tool_id` carries the provider's operation id
+        # (seo_broken_links_endpoint_v1_...), `name` the shorter registry name, and
+        # which one carries the marker depends on the discovered spec.
+        _ident = f"{tool.tool_id} {tool.name}".lower()
+        if any(m in _ident for m in self._s.ollagraph_crawl_tool_markers):
+            _default = max(_default, self._s.ollagraph_crawl_tool_timeout_s)
+        timeout = tool.timeout or _default
         gate = tool_gate(self._s)
         try:
             # An explicit Timeout, NOT a bare float: httpx applies a bare float to

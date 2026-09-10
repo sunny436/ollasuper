@@ -431,16 +431,15 @@ def detect_outliers(
 
 
 # --- 5) time_series -------------------------------------------------------
-def time_series(
-    df: pd.DataFrame,
-    *,
-    date_col: str,
-    value_col: str,
-    freq: str = "M",
-    agg: str = "sum",
-    max_points: int = 200,
-) -> dict:
-    """Resample a value over time and report the trend + period-over-period change."""
+def _resample(
+    df: pd.DataFrame, date_col: str, value_col: str, freq: str, agg: str
+) -> pd.Series:
+    """Parse dates, coerce values, and aggregate onto a regular frequency.
+
+    Shared by `time_series` and `forecast` so a forecast is fitted on EXACTLY the
+    series the user was shown — two copies of this would eventually disagree about
+    which periods exist, and the forecast would silently describe a different series.
+    """
     _require_nonempty(df)
     _require_columns(df, [date_col, value_col])
     if agg not in {"sum", "mean", "count", "min", "max", "median"}:
@@ -451,8 +450,20 @@ def time_series(
     work = work.dropna(subset=[date_col])
     if work.empty:
         raise DataError(f"'{date_col}' has no parseable dates.")
-    series = work.set_index(date_col)[value_col].resample(freq)
-    resampled = getattr(series, agg)()
+    return getattr(work.set_index(date_col)[value_col].resample(freq), agg)()
+
+
+def time_series(
+    df: pd.DataFrame,
+    *,
+    date_col: str,
+    value_col: str,
+    freq: str = "M",
+    agg: str = "sum",
+    max_points: int = 200,
+) -> dict:
+    """Resample a value over time and report the trend + period-over-period change."""
+    resampled = _resample(df, date_col, value_col, freq, agg)
     if len(resampled) > max_points:
         resampled = resampled.tail(max_points)
     pct = resampled.pct_change().replace([np.inf, -np.inf], np.nan)
@@ -487,4 +498,137 @@ def time_series(
         "overall_pct_change": overall,
         "largest_move": biggest,
         "series": points,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# forecasting
+# --------------------------------------------------------------------------- #
+# Below this many periods a trend line is fitting noise, not signal: with 4 points
+# an OLS slope has 2 residual degrees of freedom and an interval so wide it carries
+# no information. Refusing is the honest answer, and it is the judgement the QA pass
+# had to make by hand ("worked technically but was not decision-grade").
+_FORECAST_MIN_PERIODS = 6
+_FORECAST_MAX_HORIZON = 24
+# Fitted, but say so: a trend explaining under this much variance is not something
+# to plan against.
+_FORECAST_WEAK_R2 = 0.30
+
+
+def forecast(
+    df: pd.DataFrame,
+    *,
+    date_col: str,
+    value_col: str,
+    periods: int = 3,
+    # "MS" (month START), not "M": pandas deprecated "M" and will remove it, and the
+    # tool layer already passes "MS" — matching it here keeps a direct call and a
+    # tool call on the same periods.
+    freq: str = "MS",
+    agg: str = "sum",
+    confidence: float = 0.95,
+) -> dict:
+    """Least-squares trend forecast with a PREDICTION interval, or an explicit refusal.
+
+    Deliberately a narrow tool: an ordinary-least-squares line through the resampled
+    series, its interval, and an honest verdict on whether the result is worth acting
+    on. It does NOT model seasonality — with a linear trend a seasonal series will
+    forecast its average path, so seasonality is reported as a caveat rather than
+    silently absorbed.
+
+    The point is not that this beats the model at arithmetic; it is that the model
+    cannot produce a prediction interval or a refusal by reasoning over rows, and
+    without those a forecast reads far more certain than it is.
+    """
+    from scipy import stats as _st
+
+    if periods < 1 or periods > _FORECAST_MAX_HORIZON:
+        raise DataError(
+            f"`periods` must be 1..{_FORECAST_MAX_HORIZON} (got {periods})."
+        )
+
+    resampled = _resample(df, date_col, value_col, freq, agg).dropna()
+    n = len(resampled)
+    if n < _FORECAST_MIN_PERIODS:
+        raise DataError(
+            f"not enough history to forecast: {n} complete {freq}-periods, "
+            f"{_FORECAST_MIN_PERIODS} needed. Widen the date range, or use a coarser "
+            f"`freq`. A trend fitted to {n} points would be fitting noise."
+        )
+
+    y = resampled.to_numpy(dtype=float)
+    x = np.arange(n, dtype=float)
+    slope, intercept = np.polyfit(x, y, 1)
+    fitted = slope * x + intercept
+    resid = y - fitted
+    sse = float(np.sum(resid**2))
+    sst = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - sse / sst if sst > 0 else 0.0
+    # Residual standard error; n-2 because the line spent two degrees of freedom.
+    s = math.sqrt(sse / (n - 2)) if n > 2 else 0.0
+    sxx = float(np.sum((x - x.mean()) ** 2))
+    tcrit = float(_st.t.ppf(1 - (1 - confidence) / 2, n - 2)) if n > 2 else 0.0
+
+    step = resampled.index.freq or (resampled.index[-1] - resampled.index[-2])
+    points: list[dict] = []
+    for h in range(1, periods + 1):
+        xf = float(n - 1 + h)
+        yhat = slope * xf + intercept
+        # PREDICTION interval (not a confidence interval on the mean): it must cover
+        # a single future observation, hence the leading 1 under the root.
+        se = s * math.sqrt(1 + 1 / n + ((xf - x.mean()) ** 2) / sxx) if sxx > 0 else 0.0
+        points.append(
+            {
+                "period": (resampled.index[-1] + step * h).isoformat(),
+                # float() explicitly: numpy scalars are float SUBCLASSES, so
+                # `_jsonable` passes them straight through and they surface as
+                # np.float64 in the tool result rather than plain numbers.
+                "forecast": _jsonable(round(float(yhat), 4)),
+                "lower": _jsonable(round(float(yhat - tcrit * se), 4)),
+                "upper": _jsonable(round(float(yhat + tcrit * se), 4)),
+            }
+        )
+
+    # BLOCKERS disqualify the forecast; NOTES are context that does not.
+    #
+    # Keeping these apart matters: a first version folded the seasonality note into
+    # the verdict, which marked a perfect r²=1.0 trend "not decision grade" and would
+    # have flagged almost every real series — a warning that fires always is a
+    # warning nobody reads.
+    blockers: list[str] = []
+    notes: list[str] = []
+    if r2 < _FORECAST_WEAK_R2:
+        blockers.append(
+            f"the trend explains only {r2:.0%} of the variation — the history is "
+            f"dominated by noise, so treat this as a direction, not a number"
+        )
+    last = points[-1]
+    if last["forecast"] and abs(last["upper"] - last["lower"]) > abs(last["forecast"]):
+        blockers.append(
+            "the interval is wider than the forecast itself — the data does not "
+            "support a point estimate at this horizon"
+        )
+    if n < 24 and freq.upper().startswith("M"):
+        notes.append(
+            "under two years of monthly history, so seasonality cannot be separated "
+            "from trend; this is a trend-only projection"
+        )
+
+    return {
+        "method": "ordinary least squares trend",
+        "date_col": date_col,
+        "value_col": value_col,
+        "freq": freq,
+        "agg": agg,
+        "n_periods_used": n,
+        "confidence": confidence,
+        "slope_per_period": _jsonable(round(float(slope), 6)),
+        "r_squared": _jsonable(round(float(r2), 4)),
+        # The verdict the model must REPEAT rather than re-decide. The QA pass had to
+        # reach this judgement by hand; a forecast that cannot state its own
+        # reliability will always be reported as more certain than it is.
+        "decision_grade": not blockers,
+        "blockers": blockers,
+        "caveats": notes,
+        "forecast": points,
     }

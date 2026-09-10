@@ -202,3 +202,102 @@ def test_sql_still_joins_registered_tables():
     )
     assert r["row_count"] == 2
     assert r["rows"][0] == {"k": 2, "a": "y", "b": 20}
+
+
+# --------------------------------------------------------------------------- #
+# forecast — the QA pass could get a forecast out, but had to judge for itself
+# that it was not decision-grade. That judgement belongs in the tool.
+# --------------------------------------------------------------------------- #
+def _months(values: list[float]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=len(values), freq="MS"),
+            "sales": values,
+        }
+    )
+
+
+def test_forecast_refuses_when_history_is_too_short():
+    """A trend through 4 points is fitting noise. Refusing is the honest answer."""
+    with pytest.raises(A.DataError, match="not enough history"):
+        A.forecast(_months([1, 2, 3, 4]), date_col="date", value_col="sales")
+
+
+def test_forecast_projects_a_clean_trend_and_calls_it_decision_grade():
+    r = A.forecast(
+        _months([100 + 8 * i for i in range(18)]),
+        date_col="date",
+        value_col="sales",
+        periods=3,
+    )
+    assert r["decision_grade"] is True
+    assert r["blockers"] == []
+    assert r["r_squared"] == 1.0
+    assert len(r["forecast"]) == 3
+    # 18 points 0..17 rising by 8 from 100 -> next period is 100 + 8*18.
+    assert r["forecast"][0]["forecast"] == 244.0
+
+
+def test_forecast_flags_noise_instead_of_pretending():
+    rng = __import__("numpy").random.default_rng(0)
+    r = A.forecast(
+        _months(list(rng.normal(100, 30, 12))),
+        date_col="date",
+        value_col="sales",
+        periods=3,
+    )
+    assert r["decision_grade"] is False
+    assert any("noise" in b for b in r["blockers"])
+
+
+def test_forecast_returns_a_prediction_interval_that_widens_with_horizon():
+    r = A.forecast(
+        _months([100 + 8 * i + (3 if i % 2 else -3) for i in range(18)]),
+        date_col="date",
+        value_col="sales",
+        periods=4,
+    )
+    widths = [p["upper"] - p["lower"] for p in r["forecast"]]
+    assert all(w > 0 for w in widths)
+    # Uncertainty must GROW with distance — a flat band would be the giveaway that
+    # this is a confidence interval on the fitted line rather than a prediction
+    # interval for a future observation.
+    assert widths == sorted(widths) and widths[-1] > widths[0]
+
+
+def test_forecast_output_is_plain_json():
+    """numpy scalars are float subclasses, so they slip past _jsonable untouched."""
+    import json
+
+    r = A.forecast(
+        _months([100 + 8 * i for i in range(18)]), date_col="date", value_col="sales"
+    )
+    round_tripped = json.loads(json.dumps(r))
+    assert type(round_tripped["forecast"][0]["forecast"]) is float
+
+
+def test_forecast_rejects_an_absurd_horizon():
+    with pytest.raises(A.DataError, match="periods"):
+        A.forecast(
+            _months([100 + i for i in range(18)]),
+            date_col="date",
+            value_col="sales",
+            periods=99,
+        )
+
+
+def test_seasonality_is_a_note_not_a_blocker():
+    """A perfect trend must stay decision-grade; a warning that always fires is
+    a warning nobody reads."""
+    r = A.forecast(
+        _months([100 + 8 * i for i in range(18)]), date_col="date", value_col="sales"
+    )
+    assert r["decision_grade"] is True
+    assert any("seasonality" in c for c in r["caveats"])
+
+
+def test_time_series_still_works_after_the_resample_extraction():
+    r = A.time_series(
+        _months([10, 20, 30, 40, 50, 60]), date_col="date", value_col="sales"
+    )
+    assert r["n_periods"] == 6 and r["overall_direction"] == "up"

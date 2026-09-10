@@ -72,6 +72,22 @@ class Settings(BaseSettings):
     ollagraph_discovery_timeout_s: float = 15.0
     # Default per-tool timeout when a tool's request schema declares none.
     ollagraph_default_tool_timeout_s: float = 30.0
+    # Timeout for CRAWLING tools, which fetch many pages per call and cannot
+    # finish inside the 30s default — a site-wide broken-link audit timed out in QA
+    # and only completed once the scan was manually narrowed.
+    #
+    # 90s, not more, and that ceiling is the point: the whole turn gets 300s
+    # (ai_agent_total_deadline_s, and Convex sends the same 300_000ms), so one call
+    # may take a large slice but must not consume the budget an agentic turn needs
+    # for its remaining steps. Bounding the SCAN is the real fix — see the sizing
+    # rule in app/seo/skill.py; this only stops a reasonable scan dying at 30s.
+    ollagraph_crawl_tool_timeout_s: float = 90.0
+    # Substrings identifying those tools in the discovered spec's operation ids.
+    ollagraph_crawl_tool_markers: tuple[str, ...] = (
+        "broken_links",
+        "crawl",
+        "sitemap",
+    )
     # The PROCESS-WIDE outbound tool-connection pool (app.state.ollagraph_http is a
     # singleton, so this is shared by every concurrent stream, not a per-turn
     # budget). This is the ONE genuine infrastructure limit on Ollagraph
