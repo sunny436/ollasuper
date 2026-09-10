@@ -1927,7 +1927,13 @@ async def run_generation(
                 "stream_id": req.streamId,
                 "thread_id": req.threadId,
                 "user_id": req.userId,
-                "model": req.model,
+                # The model that ACTUALLY ran, not the pre-dispatch fallback.
+                # This line is the per-turn telemetry every latency question is
+                # answered from, so reporting req.model here made per-model
+                # analysis quietly wrong once the router could move off it.
+                "model": model_id,
+                "requested_model": req.model,
+                "routed_reason": route.reason,
                 "status": status,
                 "attempt": req.attempt,
                 "chars_out": writer.stats.chars,
