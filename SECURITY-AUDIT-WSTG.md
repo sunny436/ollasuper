@@ -23,6 +23,24 @@ Every finding below has now been addressed in code. Status here is the source of
 | D.7 | Shared throttle map + spoofable key | **Fixed** — separate maps, trusted key everywhere, LRU instead of `.clear()` | `middleware.ts` |
 | D.8 | Reset had no rate limit | **Fixed** — 5/hour per account, in the same transaction as the lookup | `authSessions.ts` |
 
+**Production verification of the remediation (2026-09-10, after deploy):**
+
+| Check | Result |
+|---|---|
+| `strict-transport-security` on the app | `max-age=63072000` ✅ |
+| CSP / nosniff / XFO / Referrer-Policy still present | ✅ all four |
+| `chat/capabilities:list` anonymous | `{"status":"success","value":null}` ✅ |
+| `skillCapabilities:list` anonymous | `{"status":"success","value":null}` ✅ |
+| `backend:callBackend` anonymous | `Not authenticated` ✅ |
+| `authPassword:changePassword` anonymous | `Not signed in.` ✅ |
+| `web:subscribe` malformed / empty address | `{ok:false}`, no provider body ✅ |
+| `/login`, `/share/<bad token>` still serve | 200 / 200 ✅ |
+| Backend suite | 902 pass, 57 files, 0 unhandled errors ✅ |
+
+**One bug was introduced and caught on production, not by tests.** The first D.3 attempt gated both proxies with `ctx.runQuery(internal.accountState.activeCallerId)`. Both modules are `"use node"`, and a Node-runtime action calling `runQuery` fails on this self-hosted Convex 1.19 backend with *"Transient error while running query"* — **no other `"use node"` module in this repo calls `runQuery`, so the path had never been exercised.** Worse, the call sat *outside* the existing `try/catch`, so the failure escaped as an error instead of the documented `null`. Fixed in `5ca8753` by using `ctx.auth.getUserIdentity()` directly, which needs no database and no second runtime. Recorded because it is the kind of failure a green test suite actively hides.
+
+**E.1 is now RESOLVED, and it downgrades D.4.** `convex env get LOOPS_FORM_ID` → *not found*. The endpoint could never actually reach Loops (the URL would have been `…/newsletter-form/undefined`), so the mail-abuse impact was **never live**. The finding was real — unvalidated input and a provider-response oracle, both now fixed — but its severity is **Low, not Medium**, and the report's original rating was conservative rather than correct.
+
 **Still open, and honestly so:**
 - **The G.2 root cause is NOT fixed.** `consumeWindow` is keyed on `userId`, so unauthenticated paths still cannot be rate-limited in the application. D.8 was closeable only because the *expensive* branch has a userId; `web.subscribe` genuinely has none. That needs a Cloudflare rule spanning `/__cvx` and `/api/auth`, which is infrastructure, not code.
 - **HSTS is app-layer only.** It covers the `app.ollasuper.com` host (and therefore `/__cvx*` on it, since HSTS is per-host), but the zone-wide edge setting was deliberately avoided: the apex, `www` and `tokens.` belong to other properties and the zone carries live mail records.
