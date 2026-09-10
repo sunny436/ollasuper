@@ -267,10 +267,6 @@ export function MessageList({ threadId }: { threadId: string | null }) {
               }
               isStreaming
               liveText={revealed}
-              // The orb is a live WebGL context and browsers cap those (~16
-              // before the oldest get dropped), so exactly one exists: on the
-              // turn being generated. Settled turns keep the flat glyph.
-              showOrb
               pendingApproval={live.pendingApproval}
               onResolveApproval={(approvalId, decision) => {
                 resolveApproval({

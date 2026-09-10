@@ -3,16 +3,14 @@
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
-import { Check, Copy, Pencil, RefreshCw, RotateCcw, Share2, Sparkles } from "lucide-react";
+import { Check, Copy, Pencil, RefreshCw, RotateCcw, Share2 } from "lucide-react";
 import { memo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { TypedEvent } from "../_lib/agent-events";
 import { AgentActivity } from "./agent-activity";
 import { AgentSources } from "./agent-sources";
 import { ErrorNotice } from "./error-notice";
-import { IntelligenceCore } from "./intelligence-core";
 import { StreamingText } from "./streaming-text";
-import { TypingIndicator } from "./typing-indicator";
 
 export interface ChatMessageDoc {
   _id: Id<"chatMessages">;
@@ -44,7 +42,8 @@ export interface ChatMessageDoc {
 
 
 /**
- * The `You - 10:14 AM` / `Model - 10:14 AM` line above each turn.
+ * The `You - 10:14 AM` line above a user turn, and the bare time above an
+ * assistant one.
  *
  * toLocaleTimeString is locale- and timezone-dependent, which is normally a
  * hydration hazard: the server formats in the server's zone and the client in
@@ -61,18 +60,13 @@ function MessageMeta({
   who,
   at,
   assistant,
-  orb,
-  thinking,
 }: {
-  who: string;
+  /** Rendered for the USER only. An assistant turn carries no visible name:
+   *  OllaSuper is one assistant and the model behind it is an implementation
+   *  detail, so a label there is either branding or a leak. */
+  who?: string;
   at: number;
   assistant?: boolean;
-  /** Generating, with nothing streamed yet: show the dots in place of the
-   *  name. Replaces what used to be the model label, so the row keeps its
-   *  height and the transition into the first token is a swap, not a jump. */
-  thinking?: boolean;
-  /** Swap the flat glyph for the live WebGL orb. One instance per page. */
-  orb?: boolean;
 }) {
   return (
     <div
@@ -80,32 +74,24 @@ function MessageMeta({
         assistant ? "" : "justify-end"
       }`}
     >
-      {assistant &&
-        (orb ? (
-          <IntelligenceCore className="h-6 w-6" />
-        ) : (
-          <Sparkles className="h-3 w-3 text-brand-ink" aria-hidden="true" />
-        ))}
-      {thinking ? (
-        <TypingIndicator />
+      {assistant ? (
+        // Invisible, but in the accessibility tree. Without it the user's turn
+        // announces "You" while the assistant's announces a bare time, so a
+        // screen-reader listener cannot tell whose turn is whose — worse than
+        // before the name was removed. Same pattern as agent-activity.tsx.
+        <span className="sr-only">Assistant</span>
       ) : (
         <>
-          <span
-            className={
-              assistant ? "font-medium text-brand-ink" : "text-primary/50"
-            }
-          >
-            {who}
-          </span>
+          <span className="text-primary/50">{who}</span>
           <span aria-hidden="true">·</span>
-          <time dateTime={new Date(at).toISOString()}>
-            {new Date(at).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </time>
         </>
       )}
+      <time dateTime={new Date(at).toISOString()}>
+        {new Date(at).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        })}
+      </time>
     </div>
   );
 }
@@ -113,7 +99,6 @@ function ChatMessageImpl({
   message,
   isStreaming,
   liveText,
-  showOrb,
   onEdit,
   onShare,
   pendingApproval,
@@ -124,7 +109,6 @@ function ChatMessageImpl({
   message: ChatMessageDoc;
   isStreaming: boolean;
   liveText?: string;
-  showOrb?: boolean;
   onEdit?: (m: ChatMessageDoc) => void;
   onShare?: (id: Id<"chatMessages">) => void;
   // Phase 8: the live turn's durable pending approval + resolver (live row only).
@@ -151,7 +135,7 @@ function ChatMessageImpl({
    * every chat call site is byte-identical.
    *
    * Set by the Scheduled Tasks result modal. It suppresses exactly two things:
-   * MessageMeta (the model name and time) and AgentActivity (step count, tool
+   * MessageMeta (the timestamp row) and AgentActivity (step count, tool
    * calls, the agent trace). Those are execution data, and a scheduled report
    * is supposed to read as the finished report the user asked for.
    *
@@ -247,18 +231,15 @@ function ChatMessageImpl({
   return (
     <div className="group my-5">
       {!hideExecutionMeta && (
-        <MessageMeta
-          assistant
-          orb={showOrb}
-          // ONE assistant. The underlying model is an implementation
-          // detail chosen per turn by the Master Model Router; surfacing it
-          // made the product read as several different bots and asked the
-          // user to understand a roster to use it. `message.model` is still
-          // persisted for observability — it is just never rendered.
-          who="OllaSuper"
-          thinking={isStreaming && !text}
-          at={message.createdAt}
-        />
+        // Timestamp only. No name, no glyph, no orb: the model is chosen per
+        // turn by the Master Model Router and is an implementation detail, and
+        // a substitute label is just branding in its place. `message.model`
+        // stays on the row for observability — it is simply never rendered.
+        //
+        // The thinking dots are NOT here. StreamingText already renders one for
+        // `isStreaming && !text`; a second copy in this row is what put two
+        // indicators on screen at once.
+        <MessageMeta assistant at={message.createdAt} />
       )}
       {!hideExecutionMeta && (
         <AgentActivity
@@ -368,7 +349,6 @@ export const ChatMessage = memo(
     a.message.status === b.message.status &&
     a.isStreaming === b.isStreaming &&
     a.liveText === b.liveText &&
-    a.showOrb === b.showOrb &&
     // Typed events change independently of text — without this, streamed
     // structured events would not repaint (Convex hands back fresh identities).
     (a.message.events?.length ?? 0) === (b.message.events?.length ?? 0) &&
