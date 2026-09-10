@@ -198,8 +198,20 @@ def test_a_question_opener_does_not_hide_a_real_question(cfg):
 def test_grounding_is_detected_without_any_lexical_cue(cfg):
     """Structural facts survive any paraphrase."""
     assert classify(Signals(text="fix it", has_document=True)).grounded is True
-    assert classify(Signals(text="fix it", rag_files=3)).grounded is True
     assert classify(Signals(text="fix it")).grounded is False
+
+
+def test_a_standing_corpus_does_not_ground_every_turn(cfg):
+    """Caught on PROD, not here: this assertion originally demanded the
+    opposite. Any account with uploaded files has rag_files > 0 on EVERY turn,
+    so counting it as grounding marked all of them grounded — and "hi" left the
+    fast path onto a reasoner. Availability is not need."""
+    assert classify(Signals(text="fix it", rag_files=3)).grounded is False
+
+
+@pytest.mark.parametrize("q", ["hi", "thanks!", "what's 15% of 240"])
+def test_trivial_stays_fast_even_with_a_corpus_attached(cfg, q):
+    assert _tier(cfg, q, rag_files=5) == 0, f"left the fast path with a corpus: {q!r}"
 
 
 def test_a_url_marks_the_turn_grounded(cfg):
