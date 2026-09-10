@@ -77,6 +77,7 @@ from app.research.run_state import build_research_context, render_research_seed
 from app.research.tool import RECORD_RESEARCH_TOOL_NAME, RECORD_RESEARCH_TOOL_SPEC
 from app.routing import Candidate as RouteCandidate
 from app.routing import Decision, RouterConfig
+from app.routing import Signals as RouteSignals
 from app.routing import select as route_select
 from app.runtime import compaction, suggestions
 from app.runtime.capabilities import render_capability_overview
@@ -308,14 +309,17 @@ async def run_generation(
         # A pure in-process function (app/routing.py) — no I/O, no lock, no model
         # call — so it adds no measurable pre-first-token latency.
         #
-        # It runs BEFORE skill selection and tool binding, which is why it does
-        # not reason about tools: that information does not exist yet, and a
-        # tool-broken model is already handled downstream by
-        # health.streams_tool_calls_cleanly.
+        # It runs BEFORE skill selection and tool binding, so it cannot know WHICH
+        # tools will run — but it does not need to. It answers a different and
+        # answerable question: does this turn need data it does not already hold?
+        # That matters because time-to-first-token is paid once PER STEP
+        # (measured on prod: 0 steps -> 1.6s, 5 steps -> 46.4s), so grounding is
+        # a cost axis of its own, not a flavour of difficulty.
         #
         # Any failure returns req.model, so routing can change WHICH model
         # answers but can never stop one from answering.
         route = Decision(req.model, "disabled")
+        ctx_state = req.conversationContext
         try:
             router_cfg = RouterConfig.from_settings(
                 settings.ai_router_enabled, settings.ai_router_profiles
@@ -336,8 +340,31 @@ async def run_generation(
                     # at assembly); `history` is everything before it. Using the
                     # locals rather than req.history avoids double-counting the
                     # current turn and reflects any truncation already applied.
-                    prompt_chars=len(latest.content or "") if latest else 0,
-                    history_chars=sum(len(h.content or "") for h in history),
+                    #
+                    # The STRUCTURAL fields matter as much as the text: they are
+                    # facts about the request rather than guesses about its
+                    # wording, so they survive any paraphrase.
+                    signals=RouteSignals(
+                        text=(latest.content or "") if latest else "",
+                        history_chars=sum(len(h.content or "") for h in history),
+                        history_turns=len(history),
+                        has_document=any(
+                            a.kind in ("document", "text")
+                            for a in (latest.attachments if latest else [])
+                        ),
+                        has_image=any(
+                            a.kind == "image"
+                            for a in (latest.attachments if latest else [])
+                        ),
+                        rag_files=req.ragFileCount,
+                        open_loops=len(ctx_state.openLoops) if ctx_state else 0,
+                        artifacts=len(ctx_state.artifacts) if ctx_state else 0,
+                        response_speed=(
+                            req.personalization.responseSpeed
+                            if req.personalization
+                            else "balanced"
+                        ),
+                    ),
                 )
                 select_us = (time.perf_counter() - t_route) * 1e6
                 log.info(
