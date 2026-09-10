@@ -1,4 +1,4 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
+import { activeUserId } from "./accountState";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
@@ -79,7 +79,7 @@ export const myNotifications = query({
     before: v.optional(v.number()),
   },
   handler: async (ctx, { before }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return { page: [], nextCursor: null };
     // The cursor is applied INSIDE the query, not to the result: filtering a
     // fixed newest-N slice afterwards would make every page after the first
@@ -108,7 +108,7 @@ export const myNotifications = query({
 export const unreadCount = query({
   args: {},
   handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return 0;
     // Indexed + capped: the bell only distinguishes 0..9 and "9+", so reading at
     // most 10 unread rows is enough — O(10) instead of O(all notifications).
@@ -132,7 +132,7 @@ export const unreadCount = query({
 export const markRead = mutation({
   args: { notificationId: v.id("notifications") },
   handler: async (ctx, { notificationId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return;
     const row = await ctx.db.get(notificationId);
     if (!row || row.userId !== userId || row.read) return;
@@ -143,7 +143,7 @@ export const markRead = mutation({
 export const markAllRead = mutation({
   args: {},
   handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return { remaining: false };
     // by_user_read, not by_user + filter: the index is exact, so this reads only
     // unread rows instead of scanning the user's whole history.

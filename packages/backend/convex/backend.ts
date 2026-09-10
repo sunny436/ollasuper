@@ -1,4 +1,6 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
+import type { Id } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import {
   action,
@@ -52,8 +54,18 @@ export const callBackend = action({
     method: v.optional(v.string()),
     body: v.optional(v.any()),
   },
-  handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
+  // Annotated to break the circular inference Convex hits when an action
+  // runQuery's through `internal` (TS7022/7023) — the same fix blobSafety.ts and
+  // dispatchPayload needed. Without it `callBackend` degrades to `any` and the
+  // failure cascades into unrelated files' type errors.
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ status: number; ok: boolean; body: unknown }> => {
+    const userId: Id<"users"> | null = await ctx.runQuery(
+      internal.accountState.activeCallerId,
+      {},
+    );
     if (!userId) throw new Error("Not authenticated");
     return doCall(userId, args.path, args.method ?? "POST", args.body);
   },

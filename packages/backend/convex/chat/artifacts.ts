@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { getAuthUserId } from "@convex-dev/auth/server";
+import { activeUserId } from "../accountState";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import {
@@ -114,7 +114,7 @@ export const mintDownload = mutation({
   // never an ArgumentValidationError → console.error (which fails every e2e script).
   args: { artifactId: v.string() },
   handler: async (ctx, { artifactId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new ConvexError("Not authenticated");
     const id = ctx.db.normalizeId("chatArtifacts", artifactId);
     const art = id ? await ctx.db.get(id) : null;
@@ -141,7 +141,7 @@ export const previewUrls = query({
   // empty result, never an ArgumentValidationError → console.error (fails every e2e).
   args: { artifactId: v.string() },
   handler: async (ctx, { artifactId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return { pages: [] as { page: number; url: string }[] };
     const id = ctx.db.normalizeId("chatArtifacts", artifactId);
     const parent = id ? await ctx.db.get(id) : null;

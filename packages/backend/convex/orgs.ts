@@ -1,4 +1,3 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -7,7 +6,8 @@ import { audit } from "./auditLog";
 import { bump } from "./counters";
 import { requireDevSeed } from "./devGuard";
 import { notify } from "./notifications";
-import { isActiveUser } from "./accountState";
+import { getAuthUserId } from "@convex-dev/auth/server";
+import { activeUserId, isActiveUser } from "./accountState";
 
 type Role = "owner" | "admin" | "member";
 
@@ -91,7 +91,7 @@ async function createWorkspaceImpl(
 export const createWorkspace = mutation({
   args: { name: v.string() },
   handler: async (ctx, { name }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     return createWorkspaceImpl(ctx, userId, name);
   },
@@ -108,7 +108,7 @@ export const createWorkspaceForUser = internalMutation({
 export const ensureWorkspace = mutation({
   args: {},
   handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     const existing = await ctx.db
       .query("members")
@@ -122,7 +122,7 @@ export const ensureWorkspace = mutation({
 export const myWorkspaces = query({
   args: {},
   handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return [];
     const mems = await ctx.db
       .query("members")
@@ -244,7 +244,7 @@ export const pendingInvites = query({
 export const myInvites = query({
   args: {},
   handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return [];
     const u = await ctx.db.get(userId);
     if (!u?.email) return [];
@@ -297,7 +297,7 @@ async function acceptInviteImpl(
 export const acceptInvite = mutation({
   args: { inviteId: v.id("invites") },
   handler: async (ctx, { inviteId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     const inv = await ctx.db.get(inviteId);
     const u = await ctx.db.get(userId);

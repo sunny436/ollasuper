@@ -295,6 +295,75 @@ describe("password reset", () => {
     const unknown = await call("nobody@gmail.com");
     // Whatever the outcome, the two must be indistinguishable to a caller.
     expect(unknown).toBe(known);
+
+    // The send is now SCHEDULED rather than awaited, which is what makes the two
+    // branches take the same time as well as return the same body. Drain it here
+    // or the job outlives the test and convex-test's fake database throws
+    // "Write outside of transaction" as an unhandled rejection.
+    await new Promise((r) => setTimeout(r, 25));
+    await t.finishInProgressScheduledFunctions();
+  });
+
+  test("the reset send is deferred, so the two branches do the same work inline", async () => {
+    const t = convexTest(schema, modules);
+    await createVerifiedUser(t, "known@gmail.com");
+
+    const scheduledAfter = async (email: string) => {
+      await t.action(api.authSessions.requestPasswordReset, { email });
+      return t.run(async (ctx) =>
+        (await ctx.db.system.query("_scheduled_functions").collect()).length,
+      );
+    };
+
+    // A KNOWN address queues the delivery instead of performing it inline —
+    // that is the timing oracle's closure, not a cosmetic change.
+    expect(await scheduledAfter("known@gmail.com")).toBeGreaterThan(0);
+    await new Promise((r) => setTimeout(r, 25));
+    await t.finishInProgressScheduledFunctions();
+
+    // An UNKNOWN address queues nothing, and did no extra work either way.
+    const before = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).length,
+    );
+    await t.action(api.authSessions.requestPasswordReset, {
+      email: "nobody@gmail.com",
+    });
+    const after = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).length,
+    );
+    expect(after).toBe(before);
+  });
+
+  test("reset emails for one account are bounded per hour", async () => {
+    const t = convexTest(schema, modules);
+    await createVerifiedUser(t, "known@gmail.com");
+
+    // Six requests, a limit of five: the sixth must queue no delivery. Without
+    // this an unauthenticated caller could drain a metered mail quota that the
+    // SAME transport uses for OTP and verification codes — a denial of service
+    // against sign-in, not merely nuisance mail.
+    let queued = 0;
+    for (let i = 0; i < 6; i++) {
+      const before = await t.run(async (ctx) =>
+        (await ctx.db.system.query("_scheduled_functions").collect()).length,
+      );
+      await t.action(api.authSessions.requestPasswordReset, {
+        email: "known@gmail.com",
+      });
+      const after = await t.run(async (ctx) =>
+        (await ctx.db.system.query("_scheduled_functions").collect()).length,
+      );
+      if (after > before) queued += 1;
+      await new Promise((r) => setTimeout(r, 25));
+    await t.finishInProgressScheduledFunctions();
+    }
+    expect(queued).toBe(5);
+
+    // And the caller still cannot tell — the body is identical once throttled.
+    const r = await t.action(api.authSessions.requestPasswordReset, {
+      email: "known@gmail.com",
+    });
+    expect(r).toEqual({ ok: true });
   });
 });
 

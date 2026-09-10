@@ -7,6 +7,29 @@
 
 ---
 
+## Remediation log (2026-09-10)
+
+Every finding below has now been addressed in code. Status here is the source of truth; the finding sections keep their original analysis.
+
+| # | Finding | Status | Where |
+|---|---|---|---|
+| D.1 | Stored XSS via `/share/file` | **Fixed** — serving side *and* root cause (`register` now rejects an executable declared type) | `f324d3a` + this change |
+| D.2a | No security headers on the Convex origin | **Fixed** for the routes that stream user-influenced bytes (`nosniff` on `/share/file`, `/artifact/file`) | `http.ts` |
+| D.2b | No HSTS | **Fixed** at the app layer, deliberately **not** at the Cloudflare edge | `next.config.mjs` |
+| D.3 | Anonymous service-key proxies | **Fixed** — both now require an active signed-in caller | `chat/capabilities.ts`, `skillCapabilities.ts` |
+| D.4 | `web.subscribe` unvalidated + oracle | **Fixed** — email validated, `userGroup` allowlisted, provider body no longer echoed. Rate limit still **open** (see below) | `web.ts` |
+| D.5 | Reset timing oracle | **Fixed** — the send is enqueued, so the action no longer branches on the request path | `authSessions.ts` |
+| D.6 | 24 callables skipped account status | **Fixed** — new leaf helper `activeUserId` / `activeCallerId` | `accountState.ts` + 10 files |
+| D.7 | Shared throttle map + spoofable key | **Fixed** — separate maps, trusted key everywhere, LRU instead of `.clear()` | `middleware.ts` |
+| D.8 | Reset had no rate limit | **Fixed** — 5/hour per account, in the same transaction as the lookup | `authSessions.ts` |
+
+**Still open, and honestly so:**
+- **The G.2 root cause is NOT fixed.** `consumeWindow` is keyed on `userId`, so unauthenticated paths still cannot be rate-limited in the application. D.8 was closeable only because the *expensive* branch has a userId; `web.subscribe` genuinely has none. That needs a Cloudflare rule spanning `/__cvx` and `/api/auth`, which is infrastructure, not code.
+- **HSTS is app-layer only.** It covers the `app.ollasuper.com` host (and therefore `/__cvx*` on it, since HSTS is per-host), but the zone-wide edge setting was deliberately avoided: the apex, `www` and `tokens.` belong to other properties and the zone carries live mail records.
+- **Account deletion was deliberately left ungated** (`users.deletionFactor`, `requestAccountDeletionCode`, `deleteCurrentUserAccount`). Blocking a suspended user from erasing their own account is a product/legal call, not a security one — flagged rather than decided.
+
+---
+
 ## A. Executive summary
 
 OllaSuper is **substantially more hardened than a typical application of its size**, and this audit says so plainly because the evidence says so. A prior four-tranche remediation programme closed the enumeration oracles, the blob-execution surface, the SSRF surface, the DuckDB sandbox escape, the webhook comparison weaknesses and the auth-lifecycle gaps — and this audit re-verified each of those and found them **still closed**. Twelve such regression confirmations are listed in §D.0 and are not counted as findings.

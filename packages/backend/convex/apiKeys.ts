@@ -1,4 +1,5 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
+import type { Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import {
@@ -55,7 +56,10 @@ export const store = internalMutation({
 export const create = action({
   args: { workspaceId: v.id("workspaces"), name: v.string() },
   handler: async (ctx, { workspaceId, name }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId: Id<"users"> | null = await ctx.runQuery(
+      internal.accountState.activeCallerId,
+      {},
+    );
     if (!userId) throw new ConvexError("Not authenticated");
     // Membership is enforced one hop down in `store` (internalMutation), which
     // every mint path funnels through — including createForUser. Not repeated

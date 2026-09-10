@@ -1,5 +1,5 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { isActiveUser } from "./accountState";
+import { activeUserId, isActiveUser } from "./accountState";
 import { consumeWindow } from "./quotas";
 import { normalizeEmail } from "./authPolicy";
 import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
@@ -62,7 +62,7 @@ export const nameByEmail = internalQuery({
 
 export const getUser = query({
   handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) {
       return;
     }
@@ -356,7 +356,7 @@ export const profileIntegrityReport = internalQuery({
 export const generateUploadUrl = mutation({
   args: {},
   handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) {
       throw new Error("User not found");
     }
@@ -369,7 +369,7 @@ export const updateUserImage = mutation({
     imageId: v.id("_storage"),
   },
   handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) {
       return;
     }
@@ -388,7 +388,7 @@ export const updateUserImage = mutation({
 export const removeUserImage = mutation({
   args: {},
   handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) {
       return;
     }

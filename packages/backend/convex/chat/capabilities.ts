@@ -1,5 +1,6 @@
 "use node";
 
+import { internal } from "../_generated/api";
 import { action } from "../_generated/server";
 
 /**
@@ -24,7 +25,19 @@ import { action } from "../_generated/server";
  */
 export const list = action({
   args: {},
-  handler: async (): Promise<string[] | null> => {
+  handler: async (ctx): Promise<string[] | null> => {
+    // SIGNED-IN CALLERS ONLY. This spends AI_SERVICE_KEY against the internal
+    // plane on behalf of whoever calls it, which anonymously is a confused
+    // deputy: an unauthenticated caller made this deployment present its own
+    // credential and hand back which capabilities are enabled here, on an
+    // unmetered "use node" action with no limit. The Python side is correctly
+    // guarded — but by OUR key, which is the problem.
+    //
+    // Null, not a throw, so the contract below is unchanged: a signed-out
+    // render shows the full static menu rather than an empty one, and logs no
+    // console.error.
+    const userId = await ctx.runQuery(internal.accountState.activeCallerId, {});
+    if (!userId) return null;
     const base = process.env.AI_BASE_URL;
     const key = process.env.AI_SERVICE_KEY;
     if (!base || !key) return null;

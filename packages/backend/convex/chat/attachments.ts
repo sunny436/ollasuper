@@ -193,6 +193,23 @@ export const register = mutation({
     if (realSize > MAX_BYTES) {
       throw new ConvexError("File too large (max 20MB)");
     }
+    // The ROW's declared type, not just the blob's.
+    //
+    // The guard above covers what ctx.storage.getUrl() serves. It does NOT cover
+    // what a route that streams the bytes itself might put in a header, and
+    // /share/file did exactly that — so a blob stored text/plain and REGISTERED
+    // text/html came back executable on the app's own origin. That route now
+    // neutralises on the way out, and this closes the same gap on the way in, so
+    // the bad value never reaches the database at all.
+    //
+    // Rejected rather than rewritten: silently storing a different type than the
+    // caller asked for is the kind of surprise that surfaces much later as "the
+    // download has the wrong extension".
+    if (isExecutableContentType(args.contentType)) {
+      throw new ConvexError(
+        `Unsupported file type: ${args.contentType}. Upload it declared as text/plain instead.`,
+      );
+    }
     const kind = classify(args.contentType, args.name);
 
     const clash = await ctx.db

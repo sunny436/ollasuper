@@ -17,23 +17,52 @@ const isSignInPage = createRouteMatcher(["/login"]);
 // Public shared-conversation pages — read-only, token-gated, no auth.
 const isPublicShare = createRouteMatcher(["/share", "/share/(.*)"]);
 
+/**
+ * One fixed-window counter, and the two properties that matter.
+ *
+ * SEPARATE MAPS PER THROTTLE. There used to be a single `authHits` shared by the
+ * /login-page throttle and the /api/auth throttle, and the two are keyed on
+ * DIFFERENT levels of trust — one on client-supplied x-forwarded-for, the other
+ * on Cloudflare's cf-connecting-ip. Sharing one map meant a caller who could
+ * forge the first key could evict entries belonging to the second: 5001 requests
+ * with rotating X-Forwarded-For values tripped the `.clear()` below and wiped
+ * the TRUSTED counters for every IP, the attacker's own included. The per-IP
+ * limit on the auth API then reset on demand.
+ *
+ * LRU EVICTION, NOT `.clear()`. Even correctly keyed, emptying the whole map on
+ * overflow hands every caller a fresh budget at once. Dropping the oldest entry
+ * bounds memory just as well and costs only the one entry it drops — and a Map
+ * iterates in insertion order, so the first key is the oldest.
+ */
+const MAX_TRACKED = 5000;
+type Hit = { start: number; count: number };
+
+function limited(
+  hits: Map<string, Hit>,
+  key: string,
+  windowMs: number,
+  max: number,
+): boolean {
+  const now = Date.now();
+  const e = hits.get(key);
+  if (!e || now - e.start >= windowMs) {
+    if (hits.size >= MAX_TRACKED) {
+      const oldest = hits.keys().next();
+      if (!oldest.done) hits.delete(oldest.value);
+    }
+    hits.set(key, { start: now, count: 1 });
+    return false;
+  }
+  e.count += 1;
+  return e.count > max;
+}
+
 // Best-effort per-IP throttle for public share access. Defense-in-depth only —
 // the 192-bit unguessable token is the real guard. Module-level state is
 // per-server-instance and resets on redeploy, which is fine for anti-hammering.
 const SHARE_WINDOW_MS = 60_000;
 const SHARE_MAX = 120;
-const shareHits = new Map<string, { start: number; count: number }>();
-function shareRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const e = shareHits.get(ip);
-  if (!e || now - e.start >= SHARE_WINDOW_MS) {
-    if (shareHits.size > 5000) shareHits.clear();
-    shareHits.set(ip, { start: now, count: 1 });
-    return false;
-  }
-  e.count += 1;
-  return e.count > SHARE_MAX;
-}
+const shareHits = new Map<string, Hit>();
 
 // Per-IP throttle for the auth surface.
 //
@@ -63,27 +92,22 @@ const AUTH_MAX = 40;
  * and the Cloudflare rule above is the control that can afford to be strict.
  */
 const AUTH_API_MAX = 60;
-const authHits = new Map<string, { start: number; count: number }>();
-function authRateLimited(ip: string, max: number = AUTH_MAX): boolean {
-  const now = Date.now();
-  const e = authHits.get(ip);
-  if (!e || now - e.start >= AUTH_WINDOW_MS) {
-    if (authHits.size > 5000) authHits.clear();
-    authHits.set(ip, { start: now, count: 1 });
-    return false;
-  }
-  e.count += 1;
-  return e.count > max;
-}
+/** Page loads and API posts get their OWN maps — see the note on `limited`. */
+const loginPageHits = new Map<string, Hit>();
+const authApiHits = new Map<string, Hit>();
 
 /**
  * The client IP, from the one header that cannot be forged here.
  *
  * This deployment sits behind a Cloudflare Tunnel, which sets cf-connecting-ip
- * itself and strips any client-supplied copy. x-forwarded-for — which the share
- * and login throttles read — is client-supplied and spoofable, so an attacker
- * rotates the header value and the limit does nothing. It is kept for those two
- * best-effort cases and deliberately not used here.
+ * itself and strips any client-supplied copy.
+ *
+ * NOW USED BY ALL THREE THROTTLES. The share and login throttles used to read
+ * x-forwarded-for, which is client-supplied: an attacker rotated the header and
+ * the limit did nothing, and — because the login throttle shared a map with the
+ * auth-API throttle — those forged keys could also evict the trusted entries.
+ * There is no reason to key anything here on a header the caller controls when
+ * the trustworthy one is right there.
  *
  * IPv6 is bucketed to a /64 because a single subscriber is routinely handed a
  * whole /64; limiting one address alone would be evaded by using the next.
@@ -149,9 +173,9 @@ const authMiddleware = convexAuthNextjsMiddleware(
     // Public share pages bypass the auth gate entirely (still get the locale
     // rewrite). Access is authorized server-side by the token + expiry/revocation.
     if (isPublicShare(request)) {
-      const ip =
-        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anon";
-      if (shareRateLimited(ip)) {
+      if (
+        limited(shareHits, trustedIp(request), SHARE_WINDOW_MS, SHARE_MAX)
+      ) {
         return new Response("Too many requests", { status: 429 });
       }
       return I18nMiddleware(request);
@@ -159,9 +183,9 @@ const authMiddleware = convexAuthNextjsMiddleware(
 
     const isSignIn = isSignInPage(request);
     if (isSignIn) {
-      const ip =
-        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anon";
-      if (authRateLimited(ip)) {
+      if (
+        limited(loginPageHits, trustedIp(request), AUTH_WINDOW_MS, AUTH_MAX)
+      ) {
         return new Response("Too many requests", { status: 429 });
       }
     }
@@ -202,7 +226,9 @@ export default async function middleware(
 ) {
   const [request] = args;
   if (isAuthApi(request)) {
-    if (authRateLimited(trustedIp(request), AUTH_API_MAX)) {
+    if (
+      limited(authApiHits, trustedIp(request), AUTH_WINDOW_MS, AUTH_API_MAX)
+    ) {
       return new Response("Too many requests", { status: 429 });
     }
   }

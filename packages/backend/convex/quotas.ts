@@ -36,7 +36,15 @@ export type QuotaKind =
   // Account-deletion re-auth attempts. The emailed-code path already caps at 5;
   // the PASSWORD path had no bound at all, so a stolen session could brute-force
   // the password through an endpoint nobody thinks of as a login.
-  | "accountDelete";
+  | "accountDelete"
+  // Password-reset EMAILS SENT for one account. Unauthenticated callers cannot
+  // be limited by this helper at all — it is keyed on a userId — but the branch
+  // that actually costs anything is the one where the address resolves to a
+  // user, and there a userId exists. So the expensive half is bounded even
+  // though the probe half cannot be. Outbound mail is metered (~1500/month) and
+  // the SAME transport carries OTP, verification and reset codes, so draining it
+  // is a denial of service against authentication itself, not just spam.
+  | "passwordReset";
 
 export type WindowResult =
   | { ok: true }

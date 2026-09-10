@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { getAuthUserId } from "@convex-dev/auth/server";
+import { activeUserId } from "./accountState";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, query } from "./_generated/server";
@@ -159,7 +159,7 @@ function publicRow(r: Doc<"seoMutations">) {
 export const listMyMutations = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return [];
     const rows = await ctx.db
       .query("seoMutations")
@@ -174,7 +174,7 @@ export const listMyMutations = query({
 export const getMutation = query({
   args: { mutationId: v.id("seoMutations") },
   handler: async (ctx, { mutationId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not found");
     const row = await ctx.db.get(mutationId);
     if (!row || row.userId !== userId) throw new Error("Not found");

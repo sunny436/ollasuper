@@ -29,7 +29,6 @@
 
 import {
   getAuthSessionId,
-  getAuthUserId,
   modifyAccountCredentials,
   retrieveAccount,
 } from "@convex-dev/auth/server";
@@ -98,7 +97,10 @@ export const finishPasswordChange = internalMutation({
 export const changePassword = action({
   args: { currentPassword: v.string(), newPassword: v.string() },
   handler: async (ctx, { currentPassword, newPassword }): Promise<{ ok: true }> => {
-    const userId = await getAuthUserId(ctx);
+    const userId: Id<"users"> | null = await ctx.runQuery(
+      internal.accountState.activeCallerId,
+      {},
+    );
     if (!userId) throw new ConvexError("Not signed in.");
 
     // Bound the oracle BEFORE the scrypt comparison: the comparison is the

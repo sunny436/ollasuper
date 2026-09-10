@@ -46,6 +46,29 @@ const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "X-Frame-Options", value: "SAMEORIGIN" },
+  /**
+   * HSTS. Production served none at all — verified with `curl -I` against
+   * app.ollasuper.com — and Cloudflare was not supplying one either, so a first
+   * visit or a hostile network could still be downgraded to http and the session
+   * cookie read off the wire.
+   *
+   * SET HERE, NOT AT THE CLOUDFLARE EDGE, and that is deliberate. The edge
+   * setting is ZONE-WIDE, and this zone is not ours alone: the apex, `www` and
+   * `tokens.` serve other properties, and the zone carries live mail records.
+   * Turning on zone-wide HSTS would impose it on hosts this project does not
+   * own. A response header set by our own app binds the browser to
+   * app.ollasuper.com only — and HSTS is a PER-HOST policy, so one header on any
+   * response from this host also covers /__cvx* on it, which is the part
+   * next.config.mjs otherwise cannot reach.
+   *
+   * NO `includeSubDomains` and NO `preload`: both widen the blast radius beyond
+   * this host, which is exactly what the zone-sharing above rules out. Two years
+   * is the usual max-age once the host is HTTPS-only, and it is.
+   */
+  {
+    key: "Strict-Transport-Security",
+    value: "max-age=63072000",
+  },
 ];
 
 /** @type {import('next').NextConfig} */
