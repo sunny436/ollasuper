@@ -130,7 +130,36 @@ export const listPaged = query({
       .order("desc")
       .paginate(args.paginationOpts);
 
-    const settled = res.page.filter((m) => !isInFlight(m));
+    // Only the ACTIVE variant of a regenerated reply belongs in the transcript.
+    //
+    // This is the same rule buildHistory and shares.ts already apply, and this
+    // query was the ONE read path missing it: `regenerate` correctly appends a
+    // new row and moves the parent's activeVariantIndex, so without this filter
+    // every regeneration stayed on screen and the user saw two answers to one
+    // question. The model and the public share view were already correct — only
+    // the chat was wrong.
+    //
+    // Parents are cached per page because variants SHARE one: a reply
+    // regenerated five times costs one `get`, not five. buildHistory does an
+    // uncached get per message for up to 60 messages on every dispatch, so this
+    // is cheaper than an existing hot path.
+    const parents = new Map<string, Doc<"chatMessages"> | null>();
+    const active = async (m: Doc<"chatMessages">) => {
+      // No parentId means a row that predates variants: it can never have
+      // siblings, so it is always shown. `regenerate` backfills the link before
+      // creating a new variant, so it cannot produce unlinked pairs either.
+      if (m.role !== "assistant" || !m.parentId) return true;
+      const key = m.parentId as string;
+      if (!parents.has(key)) parents.set(key, await ctx.db.get(m.parentId));
+      // A missing parent falls back to 0, matching buildHistory.
+      return (m.variantIndex ?? 0) === (parents.get(key)?.activeVariantIndex ?? 0);
+    };
+
+    const settled: Doc<"chatMessages">[] = [];
+    for (const m of res.page) {
+      if (isInFlight(m)) continue;
+      if (await active(m)) settled.push(m);
+    }
     return {
       ...res,
       page: await Promise.all(settled.map((m) => toPublic(ctx, m))),
@@ -488,7 +517,35 @@ export const regenerate = mutation({
       // pick (args.model !== thread.model) stays strict.
       explicit: args.model !== undefined && args.model !== thread.model,
     });
-    const parentId = message.parentId;
+    // BACKFILL the parent link before branching.
+    //
+    // `parentId` is optional, and a reply written before variants existed has
+    // none. Without this the block below is skipped entirely, the new row is
+    // created unlinked with variantIndex 0, and listPaged has no way to tell the
+    // two apart — so the old duplicate-answer bug would survive on exactly the
+    // oldest threads. The parent of an assistant reply is the user message it
+    // answered, which is the newest user row before it.
+    let parentId = message.parentId;
+    if (!parentId) {
+      const prior = await ctx.db
+        .query("chatMessages")
+        .withIndex("by_thread_seq", (q) =>
+          q.eq("threadId", thread._id).lt("seq", message.seq),
+        )
+        .order("desc")
+        .take(20);
+      const user = prior.find((m) => m.role === "user");
+      if (user) {
+        parentId = user._id;
+        // Seed the pair so the existing reply is variant 0 of this parent.
+        await ctx.db.patch(message._id, { variantIndex: 0, parentId });
+        await ctx.db.patch(user._id, {
+          variantCount: user.variantCount ?? 1,
+          activeVariantIndex: user.activeVariantIndex ?? 0,
+        });
+      }
+    }
+
     let variantIndex = 0;
     if (parentId) {
       const parent = await ctx.db.get(parentId);

@@ -147,6 +147,11 @@ function ChatMessageImpl({
   hideExecutionMeta?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  // Regenerate is idempotent server-side — assertCanGenerate refuses a second
+  // turn while thread.streamingMessageId is set, and Convex mutations are
+  // serializable — so a double-click cannot duplicate a reply. It only produces
+  // an error toast, which this suppresses.
+  const [regenerating, setRegenerating] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const regenerate = useMutation(api.chat.messages.regenerate);
   const retry = useMutation(api.chat.messages.retry);
@@ -288,12 +293,16 @@ function ChatMessageImpl({
           {!readOnly && (
             <IconButton
               label="Regenerate"
-              onClick={() =>
-                guard(
+              disabled={regenerating}
+              onClick={async () => {
+                if (regenerating) return;
+                setRegenerating(true);
+                await guard(
                   () => regenerate({ messageId: message._id }),
                   "Couldn't regenerate",
-                )
-              }
+                );
+                setRegenerating(false);
+              }}
             >
               <RefreshCw className="h-3.5 w-3.5" />
             </IconButton>
@@ -316,18 +325,21 @@ function IconButton({
   label,
   onClick,
   children,
+  disabled,
 }: {
   label: string;
   onClick: () => void;
   children: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       aria-label={label}
       title={label}
-      className="rounded p-1 text-primary/40 transition hover:bg-primary/5 hover:text-primary/70"
+      className="rounded p-1 text-primary/40 transition hover:bg-primary/5 hover:text-primary/70 disabled:pointer-events-none disabled:opacity-50"
     >
       {children}
     </button>
