@@ -551,6 +551,11 @@ export default defineSchema({
     activeVariantIndex: v.optional(v.number()),
     // Generation metadata.
     model: v.optional(v.string()),
+    // Which model ACTUALLY produced this turn once the Master Model Router
+    // has run, plus the structured reason it was chosen. Additive and
+    // optional: every pre-router row reads back undefined and renders the
+    // same. Internal observability only — never projected to the client.
+    routedReason: v.optional(v.string()),
     provider: v.optional(v.string()),
     reasoning: v.optional(v.string()),
     finishReason: v.optional(v.string()),

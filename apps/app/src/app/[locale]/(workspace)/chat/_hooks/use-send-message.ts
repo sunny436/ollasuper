@@ -28,7 +28,7 @@ export function useSendMessage(threadId: string | null) {
   const send = useCallback(
     async (
       text: string,
-      opts?: { attachmentIds?: Id<"chatAttachments">[]; model?: string },
+      opts?: { attachmentIds?: Id<"chatAttachments">[] },
     ): Promise<boolean> => {
       const content = text.trim();
       const attachmentIds = opts?.attachmentIds ?? [];
@@ -79,7 +79,6 @@ export function useSendMessage(threadId: string | null) {
           content,
           clientId,
           ...(attachmentIds.length ? { attachmentIds } : {}),
-          ...(opts?.model ? { model: opts.model } : {}),
         });
         return true;
       } catch (e) {

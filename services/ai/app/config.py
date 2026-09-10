@@ -462,6 +462,25 @@ class Settings(BaseSettings):
     # Short enough that a recovered model returns without a restart; long enough
     # that a turn does not re-learn the same refusal on every step.
     ai_model_health_ttl_s: float = 600.0
+    # --- Master Model Router ------------------------------------------
+    # OFF ships the whole mechanism with byte-identical behaviour: the runner
+    # keeps using the model Convex chose. The flag is Python-side only, so it
+    # CANNOT gate the frontend — which is why DEFAULT_MODEL in Convex was moved
+    # to the fastest healthy model in the same release: with the picker gone,
+    # router-OFF is the experience every user gets on rollback.
+    ai_router_enabled: bool = False
+    # JSON: {"<model-id>": {"ttft_s": 0.7, "tok_per_s": 122, "reasoning_tier": 0}}
+    # Config, not a constant, because the seeding benchmark was n=1 per model —
+    # re-measuring must never require a deploy. Empty or malformed disables the
+    # router rather than failing turns.
+    ai_router_profiles: str = ""
+    # Estimated prompt+history tokens at or above which a turn routes to the
+    # deepest reasoner instead of the fastest model.
+    ai_router_heavy_tokens: int = 1200
+    # A hard (non-capacity) provider failure is believed for longer than a quota
+    # refusal: a model returning 502 because its upstream credential expired is
+    # not going to recover in the 600s a weekly-quota reset might.
+    ai_model_health_hard_ttl_s: float = 3600.0
     # The scheduling-intent parser's model, pinned SEPARATELY from the chat
     # default so a future change to chat cannot silently degrade parsing into
     # the fabricating manual-form fallback. Empty = follow ai_default_model.

@@ -7,12 +7,12 @@ import { Check, Copy, Pencil, RefreshCw, RotateCcw, Share2, Sparkles } from "luc
 import { memo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { TypedEvent } from "../_lib/agent-events";
-import { modelLabel } from "../_lib/models";
 import { AgentActivity } from "./agent-activity";
 import { AgentSources } from "./agent-sources";
 import { ErrorNotice } from "./error-notice";
 import { IntelligenceCore } from "./intelligence-core";
 import { StreamingText } from "./streaming-text";
+import { TypingIndicator } from "./typing-indicator";
 
 export interface ChatMessageDoc {
   _id: Id<"chatMessages">;
@@ -62,10 +62,15 @@ function MessageMeta({
   at,
   assistant,
   orb,
+  thinking,
 }: {
   who: string;
   at: number;
   assistant?: boolean;
+  /** Generating, with nothing streamed yet: show the dots in place of the
+   *  name. Replaces what used to be the model label, so the row keeps its
+   *  height and the transition into the first token is a swap, not a jump. */
+  thinking?: boolean;
   /** Swap the flat glyph for the live WebGL orb. One instance per page. */
   orb?: boolean;
 }) {
@@ -81,18 +86,26 @@ function MessageMeta({
         ) : (
           <Sparkles className="h-3 w-3 text-brand-ink" aria-hidden="true" />
         ))}
-      <span
-        className={assistant ? "font-medium text-brand-ink" : "text-primary/50"}
-      >
-        {who}
-      </span>
-      <span aria-hidden="true">·</span>
-      <time dateTime={new Date(at).toISOString()}>
-        {new Date(at).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })}
-      </time>
+      {thinking ? (
+        <TypingIndicator />
+      ) : (
+        <>
+          <span
+            className={
+              assistant ? "font-medium text-brand-ink" : "text-primary/50"
+            }
+          >
+            {who}
+          </span>
+          <span aria-hidden="true">·</span>
+          <time dateTime={new Date(at).toISOString()}>
+            {new Date(at).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </time>
+        </>
+      )}
     </div>
   );
 }
@@ -237,7 +250,13 @@ function ChatMessageImpl({
         <MessageMeta
           assistant
           orb={showOrb}
-          who={modelLabel(message.model)}
+          // ONE assistant. The underlying model is an implementation
+          // detail chosen per turn by the Master Model Router; surfacing it
+          // made the product read as several different bots and asked the
+          // user to understand a roster to use it. `message.model` is still
+          // persisted for observability — it is just never rendered.
+          who="OllaSuper"
+          thinking={isStreaming && !text}
           at={message.createdAt}
         />
       )}

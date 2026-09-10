@@ -75,6 +75,9 @@ from app.orchestrator.capabilities import CapabilityResolver
 from app.orchestrator.prepare import ProviderReadiness
 from app.research.run_state import build_research_context, render_research_seed
 from app.research.tool import RECORD_RESEARCH_TOOL_NAME, RECORD_RESEARCH_TOOL_SPEC
+from app.routing import Candidate as RouteCandidate
+from app.routing import Decision, RouterConfig
+from app.routing import select as route_select
 from app.runtime import compaction, suggestions
 from app.runtime.capabilities import render_capability_overview
 from app.runtime.context_manager import (
@@ -296,12 +299,84 @@ async def run_generation(
         if latest is None:
             raise ValueError("no user message to respond to")
 
+        # MASTER MODEL ROUTER. Runs HERE — immediately after `latest`, before the
+        # per-turn ContextBudget and before user content is built — because both
+        # of those are MODEL-DEPENDENT: budgeting against req.contextWindow and
+        # then routing to a different model would size the whole turn for a model
+        # that never runs. This is the earliest point at which every input the
+        # router needs exists, and the last at which its answer is still free.
+        # A pure in-process function (app/routing.py) — no I/O, no lock, no model
+        # call — so it adds no measurable pre-first-token latency.
+        #
+        # It runs BEFORE skill selection and tool binding, which is why it does
+        # not reason about tools: that information does not exist yet, and a
+        # tool-broken model is already handled downstream by
+        # health.streams_tool_calls_cleanly.
+        #
+        # Any failure returns req.model, so routing can change WHICH model
+        # answers but can never stop one from answering.
+        route = Decision(req.model, "disabled")
+        try:
+            router_cfg = RouterConfig.from_settings(
+                settings.ai_router_enabled, settings.ai_router_profiles
+            )
+            if router_cfg.enabled:
+                router_cfg = replace(
+                    router_cfg, heavy_token_threshold=settings.ai_router_heavy_tokens
+                )
+                t_route = time.perf_counter()
+                route = route_select(
+                    cfg=router_cfg,
+                    candidates=[
+                        RouteCandidate(id=c.id, context_window=c.contextWindow)
+                        for c in req.modelCandidates
+                    ],
+                    fallback=req.model,
+                    # `latest` is this turn's user message (popped from history
+                    # at assembly); `history` is everything before it. Using the
+                    # locals rather than req.history avoids double-counting the
+                    # current turn and reflects any truncation already applied.
+                    prompt_chars=len(latest.content or "") if latest else 0,
+                    history_chars=sum(len(h.content or "") for h in history),
+                )
+                select_us = (time.perf_counter() - t_route) * 1e6
+                log.info(
+                    "router.selected",
+                    extra={
+                        "model": route.model,
+                        "requested": req.model,
+                        "reason": route.reason,
+                        "select_us": round(select_us, 1),
+                        "candidates": len(req.modelCandidates),
+                    },
+                )
+        except Exception as e:  # never let routing fail a turn
+            log.warning("router.failed", extra={"error": str(e)[:200]})
+            route = Decision(req.model, "error")
+
+        model_id = route.model
+        # Report it on the terminal write so `chatMessages.model` records what
+        # actually ran rather than the pre-dispatch fallback.
+        try:
+            writer.set_routed_model(model_id, route.reason)
+        except AttributeError:  # older writer in a partial rollback
+            pass
+        # The chosen model's OWN window. Falls back to the payload's value only
+        # when the router did not move off the model Convex costed it for.
+        model_window = req.contextWindow
+        if model_id != req.model:
+            model_window = next(
+                (c.contextWindow for c in req.modelCandidates if c.id == model_id),
+                0,
+            )
+
+
         # Phase 6: the central per-turn window accounting. Every component below
         # is measured against this so the assembled input never exceeds the model's
         # REAL window (req.contextWindow from Convex).
         cb = ContextBudget(
-            model=req.model,
-            context_window=req.contextWindow,
+            model=model_id,
+            context_window=model_window,
             max_output=settings.ai_max_output_tokens,
             safety_factor=settings.ai_token_safety_factor,
             base_history_budget=settings.ai_context_budget_tokens,
@@ -413,7 +488,7 @@ async def run_generation(
                 latest,
                 convex,
                 settings,
-                model=req.model,
+                model=model_id,
                 stream_id=req.streamId,
                 # Phase 6: window-aware — on a small window the shared document
                 # budget shrinks so the whole latest turn fits (48k on a large one).
@@ -681,8 +756,8 @@ async def run_generation(
         # User chat -> Ollima (title-gen + OCR keep build_llm's OpenRouter default).
         llm = build_llm(
             settings,
-            model=req.model,
-            context_window=req.contextWindow,
+            model=model_id,
+            context_window=model_window,
             # The one model PARAMETER personalization may touch. None leaves the
             # caller default; a value is still clamped by _clamp_output against
             # this model's measured window, so a small-window model is never
@@ -699,8 +774,8 @@ async def run_generation(
         # answer. Built lazily below only if tools are actually bound.
         llm_for_tools = build_llm(
             settings,
-            model=req.model,
-            context_window=req.contextWindow,
+            model=model_id,
+            context_window=model_window,
             max_tokens=personal.max_output_tokens,
             streaming=False,
             base_url=settings.ollima_base_url,
@@ -1435,11 +1510,19 @@ async def run_generation(
         quota_fb = None
         quota_fb_tools = None
         fb_model = settings.ai_quota_fallback_model
-        if fb_model and fb_model != req.model:
+        if fb_model and fb_model != model_id:
+            # The FALLBACK's own window, not the primary's. This used to pass
+            # req.contextWindow — the window of the model being replaced — so a
+            # failover onto a smaller model was budgeted as if it were the
+            # larger one. 0 means unknown and build_llm applies its conservative
+            # default, which is the safe direction to be wrong in.
+            fb_window = next(
+                (c.contextWindow for c in req.modelCandidates if c.id == fb_model), 0
+            )
             quota_fb = build_llm(
                 settings,
                 model=fb_model,
-                context_window=req.contextWindow,
+                context_window=fb_window,
                 base_url=settings.ollima_base_url,
                 api_key=settings.ollima_api_key,
             )
@@ -1811,6 +1894,19 @@ async def run_generation(
         # Never surface raw exception text: it can carry prompt fragments,
         # provider internals, or a key in a URL.
         log.exception("generation_failed", extra={"stream_id": req.streamId})
+        # Feed the failure back into health so the ROUTER stops choosing this
+        # model. Without this the router learns nothing from a hard provider
+        # failure and re-picks the same dead model for the next user. Guarded:
+        # health bookkeeping must never mask the original error.
+        try:
+            if is_quota_error(e):
+                model_health.mark_exhausted(model_id, settings.ai_model_health_ttl_s)
+            elif _is_provider_error(e):
+                model_health.mark_hard_failure(
+                    model_id, settings.ai_model_health_hard_ttl_s
+                )
+        except Exception as he:  # bookkeeping must never shadow the real failure
+            log.warning("router.health_feedback_failed", extra={"error": str(he)[:120]})
         error = error or {
             "code": (
                 ERR_QUOTA

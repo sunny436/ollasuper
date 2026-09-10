@@ -43,6 +43,18 @@ def mark_exhausted(model: str, ttl_s: float) -> None:
         log.warning("model.marked_exhausted", extra={"model": model, "ttl_s": ttl_s})
 
 
+def mark_hard_failure(model: str, ttl_s: float) -> None:
+    """Record a NON-capacity provider failure (5xx, expired upstream credential).
+
+    Separate from mark_exhausted only in how long it is believed. A weekly quota
+    resets; an upstream whose credential expired does not, and two catalogue
+    models were answering 502 that way during the routing benchmark. Believing a
+    hard failure for the same short window as a quota refusal means a real user
+    pays for re-learning it every TTL.
+    """
+    mark_exhausted(model, ttl_s)
+
+
 def is_exhausted(model: str) -> bool:
     """True while this model is believed to be refusing for capacity."""
     until = _exhausted.get(model)

@@ -183,7 +183,24 @@ export function timingSafeEqualStr(
 // durable fix is the runtime failover in the Python plane, which re-routes a
 // quota-exhausted turn instead of failing it — a constant in this file can only
 // ever be right until the provider's state changes again.
-export const DEFAULT_MODEL = "deepseek-v4-flash";
+//
+// THIRD REVISION, 2026-09-09 — and the provider's state did change again. The
+// weekly limit that made deepseek-v4-flash the only answering model has reset:
+// measured today, 6 of 8 catalogue models answer and only glm-5.1 and grok-4.5
+// still 502. So the stopgap above had outlived its reason.
+//
+// It is now qwen3.5, chosen on MEASURED time-to-first-token rather than on mere
+// availability. deepseek-v4-flash is the SLOWEST model in the catalogue to
+// start answering a real question (4.88s to first visible token, because ~80%
+// of its output is hidden reasoning) even though it is the fastest raw
+// generator. That made the product's default the worst possible default for how
+// fast it FEELS. qwen3.5 measured 0.72s on the same prompt.
+//
+// This constant now matters MORE than before: with the model picker removed, it
+// is what every new thread gets whenever the Master Model Router is off —
+// including on rollback. The router (services/ai/app/routing.py) is the durable
+// fix the paragraph above anticipated; this is the floor beneath it.
+export const DEFAULT_MODEL = "qwen3.5";
 
 /**
  * Validate a model against the cached OpenRouter catalogue.

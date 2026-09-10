@@ -408,6 +408,17 @@ export const finishStream = internalMutation({
     costUsd: v.optional(v.number()),
     firstTokenMs: v.optional(v.number()),
     latencyMs: v.optional(v.number()),
+    // THE MODEL THAT ACTUALLY RAN, reported by the Python plane.
+    //
+    // Before the Master Model Router the model was decided in Convex before
+    // dispatch, so `chatMessages.model` was true by construction. It is now a
+    // pre-dispatch FALLBACK that routing may move off, so without this the
+    // stored value would be a plausible lie — the worst kind for debugging,
+    // because nothing would look wrong. Optional, so an older Python build
+    // simply leaves the pre-dispatch value in place.
+    model: v.optional(v.string()),
+    // Structured, e.g. "simple:412t" / "heavy:9100t" / "all_filtered".
+    routedReason: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const stream = await loadStream(ctx, args.streamId);
@@ -452,6 +463,11 @@ export const finishStream = internalMutation({
       costUsd: args.costUsd,
       firstTokenMs: args.firstTokenMs,
       latencyMs: args.latencyMs,
+      // Spread, never a bare assignment: Convex `patch` DELETES a field set to
+      // undefined, so an older Python build reporting no model would WIPE the
+      // pre-dispatch value instead of leaving it alone.
+      ...(args.model ? { model: args.model } : {}),
+      ...(args.routedReason ? { routedReason: args.routedReason } : {}),
       ...(events ? { events } : {}),
       updatedAt: now,
     });
@@ -579,7 +595,15 @@ async function notifyTurn(
 export async function finalizeError(
   ctx: MutationCtx,
   stream: Doc<"chatStreams">,
-  args: { error: string; errorCode?: string; text?: string },
+  args: {
+    error: string;
+    errorCode?: string;
+    text?: string;
+    // Which model failed. Load-bearing for the router: health is learned from
+    // failures, so a failure that does not name its model teaches nothing.
+    model?: string;
+    routedReason?: string;
+  },
 ): Promise<void> {
   const partial =
     args.text ??
@@ -619,6 +643,10 @@ export async function finalizeError(
   await ctx.db.patch(stream.messageId, {
     content: partial.slice(0, MAX_MESSAGE_CHARS),
     status: "error",
+    // Record the model even on failure: the router learns health from
+    // failures, and a failure that does not name its model teaches nothing.
+    ...(args.model ? { model: args.model } : {}),
+    ...(args.routedReason ? { routedReason: args.routedReason } : {}),
     error: args.error.slice(0, 500),
     errorCode: args.errorCode?.slice(0, 64),
     ...(events ? { events } : {}),
@@ -673,6 +701,8 @@ export const failStream = internalMutation({
     error: v.string(),
     errorCode: v.optional(v.string()),
     text: v.optional(v.string()),
+    model: v.optional(v.string()),
+    routedReason: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const stream = await loadStream(ctx, args.streamId);

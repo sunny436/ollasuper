@@ -849,6 +849,56 @@ describe("Phase 4 approval + cancellation controls", () => {
     expect((await loadStream(t, streamId))?.status).toBe("error");
   });
 
+  // The Master Model Router decides the model AFTER dispatch, so the model on
+  // the message is only true if the Python plane reports back what it ran.
+  test("finishStream records the model that ACTUALLY ran", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seedStream(t, { status: "running" });
+    await t.mutation(internal.chat.ingest.finishStream, {
+      streamId: seeded.streamId,
+      text: "done",
+      model: "glm-5.2",
+      routedReason: "heavy:9100t",
+    });
+    const msg = await t.run(async (ctx) => ctx.db.get(seeded.messageId));
+    expect(msg?.model).toBe("glm-5.2");
+    expect(msg?.routedReason).toBe("heavy:9100t");
+  });
+
+  // Convex `patch` DELETES a field written as undefined. If finishStream
+  // assigned model unconditionally, an older Python build (or a rollback)
+  // reporting no model would ERASE the pre-dispatch value instead of leaving
+  // it — turning a partial deploy into silent data loss on every turn.
+  test("a finalize with no model leaves the pre-dispatch model intact", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seedStream(t, { status: "running" });
+    await t.run(async (ctx) =>
+      ctx.db.patch(seeded.messageId, { model: "qwen3.5" }),
+    );
+    await t.mutation(internal.chat.ingest.finishStream, {
+      streamId: seeded.streamId,
+      text: "done",
+    });
+    const msg = await t.run(async (ctx) => ctx.db.get(seeded.messageId));
+    expect(msg?.model).toBe("qwen3.5");
+  });
+
+  // A failure that does not name its model teaches the router nothing, and
+  // health is learned from failures.
+  test("failStream records the model that failed", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seedStream(t, { status: "running" });
+    await t.mutation(internal.chat.ingest.failStream, {
+      streamId: seeded.streamId,
+      error: "boom",
+      model: "glm-5.1",
+      routedReason: "simple:12t",
+    });
+    const msg = await t.run(async (ctx) => ctx.db.get(seeded.messageId));
+    expect(msg?.model).toBe("glm-5.1");
+    expect(msg?.routedReason).toBe("simple:12t");
+  });
+
   // A6: a leftover pending approval (e.g. a deferred all-or-pause sibling the
   // model didn't re-emit) is retired at the success terminal, leaving no orphan.
   test("A6 finishStream retires a leftover pending approval", async () => {

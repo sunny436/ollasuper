@@ -5,7 +5,6 @@ import { useParams } from "next/navigation";
 import { WorkspaceRail, useWorkspaceRail } from "../../_components/workspace-rail";
 import { ChatSessionProvider } from "../_hooks/use-chat-session";
 import { ComposerProvider } from "../_hooks/use-composer";
-import { DEFAULT_MODEL } from "../_lib/models";
 import { ChatLayout } from "./chat-layout";
 
 /**
@@ -38,7 +37,7 @@ export function ChatShell({ children }: { children: ReactNode }) {
   return (
     <WorkspaceRail>
       <ComposerProvider>
-        <ChatSessionProvider threadId={threadId} defaultModel={DEFAULT_MODEL}>
+        <ChatSessionProvider threadId={threadId}>
           <ChatLayout>{children}</ChatLayout>
         </ChatSessionProvider>
       </ComposerProvider>

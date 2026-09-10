@@ -23,7 +23,7 @@ export function ChatPane({
   pendingProjectId?: string | null;
 }) {
   const { openSidebar, collapsed, toggleCollapsed } = useChatSidebar();
-  const { setThreadStatus, setModel, setPendingProjectId } = useChatSession();
+  const { setThreadStatus, setPendingProjectId } = useChatSession();
   const { setDraft, focus } = useComposer();
   const [shareOpen, setShareOpen] = useState(false);
 
@@ -33,10 +33,6 @@ export function ChatPane({
     api.chat.threads.get,
     threadId ? { threadId } : "skip",
   );
-
-  useEffect(() => {
-    if (thread?.model) setModel(thread.model);
-  }, [thread?.model, setModel]);
 
   /**
    * Publish the pending Project to the session, and clear it again whenever

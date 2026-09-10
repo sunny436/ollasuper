@@ -232,6 +232,24 @@ export function MessageList({ threadId }: { threadId: string | null }) {
             />
           ))}
 
+          {pendingToShow.length > 0 && !live && (
+            <ChatMessage
+              key="pending-assistant"
+              message={
+                {
+                  _id: "pending-assistant" as Id<"chatMessages">,
+                  role: "assistant",
+                  seq: Number.MAX_SAFE_INTEGER,
+                  content: "",
+                  status: "streaming",
+                  createdAt: Date.now(),
+                } as ChatMessageDoc
+              }
+              isStreaming
+              liveText=""
+            />
+          )}
+
           {live && streamingId && (
             <ChatMessage
               key={streamingId}
@@ -242,7 +260,6 @@ export function MessageList({ threadId }: { threadId: string | null }) {
                   seq: live.seq,
                   content: revealed,
                   status: "streaming",
-                  model: live.model,
                   // Live typed events (Phase 3) — empty for normal text turns.
                   events: live.events,
                   createdAt: live.startedAt,

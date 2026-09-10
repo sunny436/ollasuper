@@ -662,8 +662,11 @@ export const ERROR_COPY: Record<string, { message: string; retryable: boolean }>
     // Folding this into provider_error is what made a provider-side weekly-quota
     // outage read as an application bug.
     provider_quota: {
+      // Names neither the model nor a picker: the user does not choose one
+      // (the Master Model Router does) and the picker no longer exists, so the
+      // old copy both leaked the routing concept and gave dead advice.
       message:
-        "This model is out of capacity right now. Pick another model from the picker, or try again later.",
+        "OllaSuper is at capacity right now. Please try again in a few minutes.",
       retryable: false,
     },
     attachment_failed: {

@@ -308,6 +308,20 @@ class CustomSkill(BaseModel):
     enabled: bool = True
 
 
+class ModelCandidate(BaseModel):
+    """One model the router may choose, supplied by Convex from the catalogue.
+
+    `contextWindow` is 0 when the window has never been MEASURED — which is the
+    case for 7 of 8 catalogue entries. 0 means UNKNOWN, never "small": the router
+    must not exclude a model on a number nobody measured.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=200)
+    contextWindow: int = 0
+
+
 class GenerateRequest(BaseModel):
     """Everything needed for one turn.
 
@@ -332,11 +346,21 @@ class GenerateRequest(BaseModel):
     # A plain str, not ModelId: the model list is fetched live from
     # OpenRouter, so an enum here would 422 every model but three. ModelId
     # survives below as the key for the curated per-model tuning tables.
-    model: str = Field(default=ModelId.OPUS, min_length=1, max_length=200)
+    # Was ModelId.OPUS — an OpenRouter id this deployment no longer serves since
+    # chat moved to Ollima. A default nothing can answer is worse than no
+    # default, so it names the model Convex actually falls back to.
+    model: str = Field(default="qwen3.5", min_length=1, max_length=200)
     # Context window for `model`, supplied by Convex from the cached
     # catalogue. 0/absent means unknown and the caller falls back to the
     # conservative default in CONTEXT_WINDOW.
     contextWindow: int = 0
+    # The models the router may choose from, newest-Convex only. Defaults to []
+    # so `extra="forbid"` never 400s an older Convex deploy — and an empty list
+    # means "use `model`", i.e. byte-identical pre-router behaviour.
+    #
+    # Named modelCandidates, not candidates: runner.py already binds
+    # `candidates` to the web-tool list in the same scope.
+    modelCandidates: list[ModelCandidate] = Field(default_factory=list, max_length=50)
     systemPrompt: str | None = Field(default=None, max_length=8000)
     # CANONICAL personalization. Optional so an older Convex deploy — or a
     # rollback — simply omits it and the legacy `customInstructionsStyle` string

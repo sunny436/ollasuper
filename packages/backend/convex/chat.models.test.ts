@@ -83,14 +83,26 @@ describe("the model catalogue is a curated shortlist", () => {
   // guards is not the id but the INVARIANT: the default must be a real curated
   // entry and must lead the picker, because a default that is not in the list
   // is what broke chat both times.
-  test("the default is DeepSeek V4 Flash and it leads the list", async () => {
+  test("the default is Qwen 3.5 and it leads the list", async () => {
+    // Was deepseek-v4-flash, which had been chosen for AVAILABILITY during a
+    // weekly-quota outage when it was the only model answering. Once that
+    // cleared it was the wrong default on the axis users actually feel: it is
+    // the SLOWEST catalogue model to start answering a real question (4.88s to
+    // first token, ~80% of its output being hidden reasoning) despite being the
+    // fastest raw generator. qwen3.5 measured 0.72s on the same prompt.
+    //
+    // This matters more now than it did: with the model picker removed, this
+    // constant is what every new thread gets whenever the Master Model Router
+    // is off, including on rollback.
     const t = convexTest(schema, modules);
-    expect(DEFAULT_MODEL).toBe("deepseek-v4-flash");
+    expect(DEFAULT_MODEL).toBe("qwen3.5");
     serve(ALL_CURATED);
     await t.action(internal.chat.models.refresh, {});
     const listed = await t.query(api.chat.models.list, {});
+    // The invariant that actually broke chat twice: the default must be IN the
+    // catalogue, and it leads the list.
     expect(listed[0].modelId).toBe(DEFAULT_MODEL);
-    expect(listed[0].name).toBe("DeepSeek V4 Flash");
+    expect(listed[0].name).toBe("Qwen 3.5");
   });
 
   test("the curated list does not depend on what /v1/models advertises", async () => {
@@ -124,29 +136,68 @@ describe("the model catalogue is a curated shortlist", () => {
     expect((await rowsIn(t)).map((m) => m.modelId)).not.toContain("qwen3.5");
   });
 
-  test("the app's copy of DEFAULT_MODEL has not drifted from this one", async () => {
-    // These are two constants for one value, and they drifted: the backend
-    // moved to deepseek-v4-pro when the gpt-5* family stopped serving, the
-    // app's mirror stayed on gpt-5.6-luna, and the picker seeded every session
-    // with a model that had left the catalogue — so a new thread sent an id
-    // that no longer matched thread.model and threw "Unsupported model".
-    // Nothing in the database held the value, which is why it survived two
-    // rounds of data cleanup.
-    const { readFileSync } = await import("node:fs");
-    const src = readFileSync(
-      new URL(
-        "../../../apps/app/src/app/[locale]/(workspace)/chat/_lib/models.ts",
-        import.meta.url,
-      ),
-      "utf8",
+  test("the app keeps NO copy of the model default to drift from", async () => {
+    // This used to assert that two constants for one value still agreed,
+    // because they had already drifted once: the backend moved to
+    // deepseek-v4-pro when the gpt-5* family stopped serving, the app's mirror
+    // stayed on gpt-5.6-luna, and the picker seeded every session with a model
+    // that had left the catalogue — a new thread sent an id that no longer
+    // matched thread.model and threw "Unsupported model".
+    //
+    // The Master Model Router removed the client's side of that pair outright:
+    // the browser no longer names a model, so there is nothing left to drift.
+    // Asserting the ABSENCE is strictly stronger than asserting agreement —
+    // agreement can break, absence cannot — so the test guards that instead of
+    // being deleted along with the file it used to read.
+    const { existsSync, readdirSync, readFileSync } = await import("node:fs");
+    const chatDir = new URL(
+      "../../../apps/app/src/app/[locale]/(workspace)/chat/_lib/",
+      import.meta.url,
     );
-    const found = src.match(/export const DEFAULT_MODEL = "([^"]+)"/)?.[1];
-    expect(found).toBe(DEFAULT_MODEL);
+    expect(existsSync(new URL("models.ts", chatDir))).toBe(false);
+    // And no sibling has quietly reintroduced one.
+    for (const f of readdirSync(chatDir)) {
+      if (!f.endsWith(".ts")) continue;
+      const src = readFileSync(new URL(f, chatDir), "utf8");
+      expect(src).not.toMatch(/export const DEFAULT_MODEL/);
+    }
   });
 
   test("the default model is one the picker actually offers", async () => {
     // A default outside the catalogue is the same failure by another route.
     expect(ALL_CURATED).toContain(DEFAULT_MODEL);
+  });
+
+  // --- Master Model Router candidate set ------------------------------
+  //
+  // The router is a PURE function in the Python plane, so it cannot read this
+  // table itself; Convex ships the candidates inside the dispatch payload.
+  test("routableCandidates returns every catalogue model with its window", async () => {
+    const t = convexTest(schema, modules);
+    serve(ALL_CURATED);
+    await t.action(internal.chat.models.refresh, {});
+    const cands = await t.run(async (ctx) =>
+      (await import("./chat/models")).routableCandidates(ctx),
+    );
+    expect(cands.length).toBeGreaterThan(0);
+    expect(cands.map((c) => c.id)).toContain(DEFAULT_MODEL);
+    // Every candidate carries a window, even when it is 0 = NOT MEASURED.
+    // 0 and a real number are different facts and routing.py must be able to
+    // tell them apart, so the field is always present.
+    expect(cands.every((c) => typeof c.contextWindow === "number")).toBe(true);
+  });
+
+  test("routableCandidates never offers a denylisted model", async () => {
+    // Offering a model that cannot serve is the failure that took chat down
+    // twice; the router must not be handed one as a candidate either.
+    const t = convexTest(schema, modules);
+    process.env.MODEL_DENY_PREFIXES = "glm";
+    serve(ALL_CURATED);
+    await t.action(internal.chat.models.refresh, {});
+    const cands = await t.run(async (ctx) =>
+      (await import("./chat/models")).routableCandidates(ctx),
+    );
+    expect(cands.some((c) => c.id.startsWith("glm"))).toBe(false);
   });
 
   test("the list query exposes the description the picker renders", async () => {

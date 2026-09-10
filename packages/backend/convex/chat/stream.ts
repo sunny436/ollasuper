@@ -21,7 +21,7 @@ import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
 import { deleteExecutions } from "./executions";
 import { loadContext } from "./context";
 import { buildHistory } from "./messages";
-import { contextWindowFor } from "./models";
+import { contextWindowFor, routableCandidates } from "./models";
 
 /**
  * A stream is considered dead if the Python service has not sent a delta or a
@@ -181,6 +181,11 @@ export const active = query({
       // fixed 8192-token output request is an immediate provider 400. 0 means
       // "unknown", and Python keeps its own conservative default.
       contextWindow: await contextWindowFor(ctx, message.model ?? thread.model),
+      // MASTER MODEL ROUTER candidate set. `model` above stays the FALLBACK,
+      // so an older Python build that does not know this field is unaffected
+      // and a router that is off, misconfigured or throwing lands exactly where
+      // chat landed before it existed.
+      modelCandidates: await routableCandidates(ctx),
       // Client renders committedText + chunks joined in seq order.
       committedText: stream.committedText,
       chunks: chunks.map((c) => ({ seq: c.seq, text: c.text })),

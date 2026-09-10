@@ -66,9 +66,18 @@ const CURATED_SPECS: readonly {
   contextLength?: number;
 }[] = [
   {
+    modelId: "qwen3.5",
+    name: "Qwen 3.5",
+    description: "Multilingual generalist. The default for everyday work.",
+    // FIRST deliberately: this array is BOTH the display order and where the
+    // default sits, and it now leads on the axis a chat product is judged on —
+    // fastest measured time-to-first-token in the catalogue (0.72s on a real
+    // question). See DEFAULT_MODEL in chat/authz.ts.
+  },
+  {
     modelId: "deepseek-v4-flash",
     name: "DeepSeek V4 Flash",
-    description: "Lighter and quicker. The default for everyday work.",
+    description: "Fastest raw generator, but slow to start (heavy reasoning).",
     // Verified 2026-09-03 by needle-in-haystack: 133,371 prompt tokens accepted
     // and the needle placed at the very START returned verbatim, so the context
     // is genuinely used rather than silently truncated. The others are left
@@ -90,11 +99,6 @@ const CURATED_SPECS: readonly {
     modelId: "glm-5.1",
     name: "GLM 5.1",
     description: "The previous GLM generation.",
-  },
-  {
-    modelId: "qwen3.5",
-    name: "Qwen 3.5",
-    description: "Multilingual generalist.",
   },
   {
     modelId: "gpt-oss-120b",
@@ -335,6 +339,29 @@ export const list = query({
       );
   },
 });
+
+/**
+ * The models the Master Model Router may choose from for one turn.
+ *
+ * The router lives in the Python plane and is a PURE function, so it cannot
+ * read this table itself — Convex ships the candidate set inside the dispatch
+ * payload it already sends. That costs nothing extra on the request path: the
+ * payload already reads this table once for `contextWindowFor`, and the curated
+ * catalogue is a handful of rows.
+ *
+ * `contextLength` rides along per candidate because 0 (never MEASURED) and a
+ * real window are different facts, and the router must not treat the first as
+ * the second — see routing.py.
+ */
+export async function routableCandidates(
+  ctx: QueryCtx,
+): Promise<{ id: string; contextWindow: number }[]> {
+  const denied = deniedPrefixes();
+  const rows = await ctx.db.query("chatModels").collect();
+  return rows
+    .filter((r) => isServable(r.modelId, denied))
+    .map((r) => ({ id: r.modelId, contextWindow: r.contextLength ?? 0 }));
+}
 
 /** Context window for the dispatch payload; 0 when unknown. */
 export async function contextWindowFor(

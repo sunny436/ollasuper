@@ -307,6 +307,17 @@ class DeltaWriter:
         if resp.get("cancel"):
             self._cancel_requested = True
 
+    def set_routed_model(self, model: str, reason: str) -> None:
+        """Record which model the Master Model Router chose for this turn.
+
+        Set on the writer rather than passed to finalize() because the routing
+        decision is made once, early, while finalize is called from several
+        terminal paths (success, error, cancel) — threading it through each of
+        them is how one of them ends up forgetting.
+        """
+        self._routed_model = model
+        self._routed_reason = reason
+
     async def finalize(
         self,
         status: str,
@@ -339,6 +350,13 @@ class DeltaWriter:
             body["finishReason"] = finish_reason
         if error:
             body["error"] = error
+        # The model that ACTUALLY ran. Sent on EVERY terminal status, including
+        # failures: the router learns health from failures, so a failure that
+        # does not name its model teaches it nothing.
+        routed = getattr(self, "_routed_model", "")
+        if routed:
+            body["model"] = routed
+            body["routedReason"] = getattr(self, "_routed_reason", "")
         if self.stats.first_flush_ms is not None:
             body["firstTokenMs"] = round(self.stats.first_flush_ms)
         body["latencyMs"] = round((time.monotonic() - self.stats.started_at) * 1000)

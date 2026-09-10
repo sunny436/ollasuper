@@ -22,7 +22,6 @@ import { useSendMessage } from "../_hooks/use-send-message";
 import { preloadMarkdown } from "./lazy-markdown";
 import { AttachmentChip } from "./attachment-chip";
 import { ExploreMenu } from "./explore-menu";
-import { ModelPicker } from "./model-picker";
 
 /**
  * MODULE SCOPE, and it must stay that way.
@@ -108,7 +107,7 @@ export function ChatInput({
   // spring survives router.replace on the first send. The transcript that
   // knows about streaming, and the pane that resolves the thread, are no
   // longer its ancestors.
-  const { threadId, streamingId, model, setModel } = useChatSession();
+  const { threadId, streamingId } = useChatSession();
   const { draft, setDraft } = useComposer();
   const [value, setValue] = useState("");
   const taRef = useRef<HTMLTextAreaElement | null>(null);
@@ -208,14 +207,14 @@ export function ChatInput({
     setValue("");
     setDraft("");
     requestAnimationFrame(autosize);
-    const ok = await send(text, { model, attachmentIds: ids });
+    const ok = await send(text, { attachmentIds: ids });
     if (ok) {
       attachments.clear();
     } else {
       setValue(text);
       requestAnimationFrame(autosize);
     }
-  }, [value, send, model, setDraft, autosize, attachments, streamingId]);
+  }, [value, send, setDraft, autosize, attachments, streamingId]);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key !== "Enter") return;
@@ -343,7 +342,7 @@ export function ChatInput({
             </div>
           )}
 
-          {/* LEFT controls: attach + model picker */}
+          {/* LEFT controls: attach */}
           <div
             className={`flex items-center gap-0.5 ${centred ? "order-1 gap-1.5 [&_button]:text-sm" : "order-2"}`}
           >
@@ -367,7 +366,6 @@ export function ChatInput({
             >
               <Paperclip className={centred ? "h-6 w-6" : "h-[18px] w-[18px]"} />
             </button>
-            <ModelPicker value={model} onChange={setModel} disabled={isStreaming} />
             {/*
               Landing screen only. The docked composer is a working surface,
               not a discovery one, and `centred` is already the empty-new-chat

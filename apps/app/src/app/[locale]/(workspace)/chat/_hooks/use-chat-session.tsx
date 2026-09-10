@@ -81,8 +81,6 @@ interface ChatSessionApi {
   setThreadStatus: (s: ThreadStatus) => void;
   streamingId: Id<"chatMessages"> | null;
   setStreamingId: (id: Id<"chatMessages"> | null) => void;
-  model: string;
-  setModel: (m: string) => void;
   pendingUsers: PendingUser[];
   setPendingUsers: Dispatch<SetStateAction<PendingUser[]>>;
 }
@@ -91,11 +89,9 @@ const ChatSessionCtx = createContext<ChatSessionApi | null>(null);
 
 export function ChatSessionProvider({
   threadId,
-  defaultModel,
   children,
 }: {
   threadId: string | null;
-  defaultModel: string;
   children: ReactNode;
 }) {
   const [threadStatus, setThreadStatus] = useState<ThreadStatus>(
@@ -103,7 +99,6 @@ export function ChatSessionProvider({
   );
   const [streamingId, setStreamingIdState] =
     useState<Id<"chatMessages"> | null>(null);
-  const [model, setModel] = useState(defaultModel);
   const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
   const [pendingProjectId, setPendingProjectId] = useState<string | null>(null);
 
@@ -121,8 +116,6 @@ export function ChatSessionProvider({
       setThreadStatus,
       streamingId,
       setStreamingId,
-      model,
-      setModel,
       pendingUsers,
       setPendingUsers,
     }),
@@ -132,7 +125,6 @@ export function ChatSessionProvider({
       threadStatus,
       streamingId,
       setStreamingId,
-      model,
       pendingUsers,
     ],
   );

@@ -145,6 +145,15 @@ http.route({
           body.status === "error" || body.status === "cancelled"
             ? "error"
             : "done";
+        // Which model the Master Model Router actually ran, and why. Both
+        // branches persist it: a failed turn names its model or the router
+        // learns nothing from the failure.
+        const routedModel =
+          typeof body.model === "string" && body.model ? body.model : undefined;
+        const routedReason =
+          typeof body.routedReason === "string" && body.routedReason
+            ? body.routedReason
+            : undefined;
         const text = typeof body.text === "string" ? body.text : "";
         if (status === "error") {
           const err = (body.error ?? {}) as Record<string, unknown>;
@@ -162,6 +171,8 @@ http.route({
                 ? err.code
                 : undefined,
             text,
+            model: routedModel,
+            routedReason,
           });
           if ("unknown" in r && r.unknown)
             return aiJson({ error: "unknown stream" }, 404);
@@ -172,6 +183,8 @@ http.route({
         const r = await ctx.runMutation(internal.chat.ingest.finishStream, {
           streamId,
           text,
+          model: routedModel,
+          routedReason,
           finishReason:
             typeof body.finishReason === "string"
               ? body.finishReason
