@@ -339,78 +339,52 @@ const step = async (n, f) => {
   });
 
 
-  await step("model picker lists the Ollima catalogue and selects", async () => {
-    // The rename step above leaves a Radix menu open, and Radix aria-hides the
-    // rest of the page while one is open -- so getByRole cannot see the
-    // composer at all until it is dismissed.
+  await step("the composer offers no model choice and never names one", async () => {
+    // REPLACES "model picker lists the Ollima catalogue and selects". The
+    // picker was removed deliberately: the Master Model Router chooses per turn
+    // and the model is an implementation detail, so there is no control to
+    // drive and no name to assert. Asserting its ABSENCE is the invariant that
+    // now matters — a reintroduced picker, or a model name leaking back into
+    // the transcript, is the regression.
+    //
+    // The send at the end is kept from the original: it proved the choice
+    // reached the data plane, and it still proves a fresh thread generates.
     await page.keyboard.press("Escape");
     await page.waitForTimeout(400);
-
-    // Start a fresh conversation. Earlier steps can leave a generation in
-    // flight, and messages.send rejects a second turn on the same thread with
-    // "already generating" -- which would silently make the persistence check
-    // below a no-op rather than a failure.
     await page.getByRole("button", { name: "New chat" }).click();
     await page.waitForTimeout(1500);
 
-    const trigger = page.getByRole("button", { name: "Choose model" });
-    const before = (await trigger.innerText()).trim();
-    await trigger.click();
-
-    // The picker filters rather than listing everything. Target a verified-working
-    // NON-default model (the default is deepseek-v4-pro; deepseek-v4-flash IS
-    // served, so the send below actually generates).
-    //
-    // Search still accepts the raw id — the filter matches modelId OR name — but
-    // the ROW no longer renders that id. The catalogue is a curated shortlist of
-    // eight, each rendered as a display name plus one line of description; the
-    // id used to sit under the name and read as the same thing twice.
-    const search = page.getByLabel("Search models");
-    await search.waitFor({ timeout: 8000 });
-    await search.fill("deepseek-v4-flash");
-    await page.waitForTimeout(600);
-
-    const option = page
-      .locator('[role="menu"] button')
-      .filter({ hasText: /DeepSeek V4 Flash/i })
-      .first();
-    if (!(await option.count())) {
-      throw new Error("searching the id 'deepseek-v4-flash' matched no catalogue row");
+    if (await page.getByRole("button", { name: "Choose model" }).count()) {
+      throw new Error("the model picker is back in the composer");
     }
-    const rowText = await option.innerText();
-    // Regression guard for the shortlist: a row shows a name and a description,
-    // never the raw slug.
-    if (/deepseek-v4-flash/.test(rowText)) {
-      throw new Error(`the picker row still renders the raw model id: ${JSON.stringify(rowText)}`);
+    if (await page.getByLabel("Search models").count()) {
+      throw new Error("the model search is back");
     }
-    const picked = rowText.split("\n")[0].trim();
-    await option.click();
+
+    await page.locator("#chat-composer").fill("router-probe: name a primary colour");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(1000);
+    for (let i = 0; i < 300; i++) {
+      if ((await page.getByRole("button", { name: "Stop generating" }).count()) === 0 && i > 8)
+        break;
+      await page.waitForTimeout(300);
+    }
     await page.waitForTimeout(800);
 
-    // Selecting closes the menu, but press Escape defensively: an overlay
-    // left open here blocks every subsequent step.
-    await page.keyboard.press("Escape");
-    await page.waitForTimeout(300);
-
-    const after = (await trigger.innerText()).trim();
-    if (after === before) {
-      throw new Error(`model did not change (still "${after}")`);
-    }
-    if (!picked.toLowerCase().includes(after.toLowerCase().slice(0, 6))) {
-      // Loose check: the trigger shows the catalogue's display name.
-      console.log(`    note: trigger "${after}" vs picked "${picked}"`);
-    }
-
-    // Selecting only sets React state — chatThreads.model is patched by
-    // messages.send. Send once so the choice actually reaches the data plane,
-    // and print the thread id so the run can be checked against the database.
-    await page.locator("#chat-composer").fill("model-persistence-probe");
-    await page.keyboard.press("Enter");
-    await page.waitForTimeout(3000);
-    const u = page.url();
-    console.log(
-      `    selected="${after}" thread=${u.slice(u.lastIndexOf("/") + 1)}`,
+    const body = await page.evaluate(() => document.body.innerText || "");
+    if (body.length < 200) throw new Error("the fresh thread produced no answer");
+    // No underlying model may be named anywhere the user can read.
+    const leaked = ["qwen", "deepseek", "glm-5", "gpt-oss", "grok", "gemini"].filter(
+      (m) => body.toLowerCase().includes(m),
     );
+    if (leaked.length) {
+      throw new Error("a model name leaked into the chat UI: " + leaked.join(", "));
+    }
+    if (/OllaSupers*[·|-]/.test(body)) {
+      throw new Error("the assistant turn is labelled again");
+    }
+    const u = page.url();
+    console.log("    fresh thread generated, no model exposed: " + u.slice(u.lastIndexOf("/") + 1));
   });
 
   await step("mobile: sidebar becomes a drawer and nothing overflows", async () => {
