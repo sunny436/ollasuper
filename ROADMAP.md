@@ -283,7 +283,7 @@ the live value sits in the **Convex deployment env** — a store the Python serv
   belongs on the replica, which has never been brought up (no Docker on the dev machine). The
   scheduler restart drill (9/9, a real service restart) is the closest non-destructive analogue.
 
-## Remote MCP program (Phases 2–7) — built, NOT deployed
+## Remote MCP program (Phases 2–8) — DEPLOYED DARK (every flag off)
 
 Connecting OllaSuper to third-party MCP servers. **Nothing in it is on the VM**, and by standing
 instruction nothing is committed either: deployment is Phase 8, so `main`'s live behaviour is
@@ -471,6 +471,76 @@ unchanged by everything below. Every flag defaults OFF.
     oversight. A poisoned result comes back inside `<tool_output>` framing as a `ToolMessage`, and
     re-evaluating policy after it returns the same decision as before, so nothing a server says can
     widen what it may do next.
+- **Phase 8 — production hardening, and the DARK LAUNCH (deployed).** The standing "nothing on
+  prod" rule lifted here. Everything from Phases 2–8 is now committed (`76c10c6`) and deployed to
+  `app.ollasuper.com` with **every MCP flag still off** and `mcp_curated_servers` empty, so the
+  user-visible change is one Settings entry that says the feature is unavailable.
+  - **IT CAUSED A PRODUCTION OUTAGE, AND THAT IS THE MOST IMPORTANT LINE IN THIS ENTRY.** Minutes
+    after the deploy, `myos-scheduler` started, ran for **2.2 seconds and exited 0**. systemd
+    reported `status=0/SUCCESS` — a clean shutdown — nothing logged an error, and **twenty-five
+    scheduled tasks silently stopped running for about three minutes**. The cause: Phase 6 had
+    inserted `mcp_registry_sync` *into the middle of* `_serve()`, between
+    `_EXECUTOR = build_executor(...)` and `_assert_dbos_version()`. Python took the decorators at
+    face value — `_serve` ended early with an implicit return, and the entire DBOS bootstrap
+    (launch, queue registration, `apply_schedules_async`, the health server, and the
+    `await stop.wait()` that keeps the process alive) became the body of the sync workflow instead.
+    **Nothing in 2588 tests could have caught it**: no test calls `_serve`, because it blocks
+    forever by design, and the sync workflow's own unit tests passed since the function existed and
+    its first lines were right. The guard is now `test_scheduler_entrypoint.py`, which reads the
+    AST — no decorated function nested in another, every bootstrap step still reachable from
+    `_serve`, and `_serve` still awaiting something that blocks. Re-nesting the function turns
+    three of them red. Rolling back was NOT an option: Convex was already sending `mcpConnections`
+    and the previous Python build is `extra="forbid"`, so a rollback would have 400'd every turn
+    for every user. Fixed forward in `57044fe`.
+  - **The audit trail MCP never had.** `grep "audit(" convex/mcp/` returned nothing before this
+    phase: connecting a third-party server, authorizing it with somebody's provider account and
+    revoking that authorization all left no record. `convex/mcp/audit.ts` adds ten events through
+    the existing `auditLogs` table, with **the tenant derived from the row and never from the
+    caller** — an internalMutation is reachable by any action in the deployment, so a
+    caller-supplied `userId` would make the trail forgeable by the code most likely to be wrong
+    about identity. `meta` is an ALLOWLIST of four fields, so a hostile plane response stuffed with
+    tokens has no path in; asserted by searching the serialized rows for each secret.
+  - **Rate limits on every third-party-facing surface, which had none.** Three `QuotaKind` values
+    reusing `quotas.ts::consumeWindow` — `mcpConnect` 60/hr, `mcpAuth` 20/hr (tightest: a loop
+    there is visible to the PROVIDER as abuse of our client, and their remedy blocks it for every
+    user), `mcpCapability` 120/hr. `userQuotas.kind` is `v.string()` with a TS union, so this is a
+    type change with **no migration**. **`disconnect` is deliberately unlimited** — rate-limiting
+    the off switch is the wrong failure direction. Numbers are scaled from
+    `MAX_GENERATIONS_PER_HOUR` and stated as **reasoned, not load-tested**.
+  - **The global kill switch reached only half the system.** `mcp_connections_enabled=false` was
+    structural for execution — no pool, no vault, no flow, every connection route 503 — but
+    `/v1/mcp/curated` ignored it, so a deployment with MCP off still handed the browser a full
+    catalogue of servers whose Connect could only 503. It now answers `{enabled:false, servers:[]}`,
+    which is also what keeps the dark launch dark once curation lands.
+  - **MCP in `/readyz`, reporting rather than gating.** A remote server being down must never make
+    OllaSuper unhealthy — that would pull the deployment from a load balancer because a third party
+    had an outage. The one exception is a CONFIGURATION error: the flag on and the pool not started.
+  - **What the deploy actually carried, measured rather than assumed.** The Convex side is 100%
+    MCP. The Python side carried two non-MCP changes to every user: `app/tools/validate.py`, a pure
+    extraction from the live Ollagraph adapter whose existing tests pass unmodified, and a log
+    redactor that now scrubs credential-shaped KEY NAMES as well as shapes — grepping every
+    `extra={...}` in `app/` for those keys returned nothing, so no existing diagnostic lost
+    information.
+  - **Production verification.** `alembic upgrade head` applied `0002`→`0004`; all five MCP tables
+    exist and `mcp_curated_servers` is empty. `/readyz` returns `mcp: {enabled:false, pool:false,
+    vault:false, local:false}`. The public OAuth callback
+    (`app.ollasuper.com/__cvx-site/mcp/oauth/callback`) is live and correctly refuses a stateless
+    GET with a 400. And against the DEPLOYED build: `GenerateRequest` accepts `mcpConnections=[]`,
+    accepts a populated list, **accepts its absence** (so a Convex-only rollback works), and still
+    enforces the bound at 30.
+  - **Verification (local).** `services/ai` **2594 passed / 52 skipped**, `ruff` clean; Convex
+    **1021 passed / 3 skipped**; `apps/app` **98 passed**; `bun run typecheck` 7/7; `bun run lint`
+    + `sherif` clean; build clean. Guards proven real by disabling them: the readyz gate, the
+    catalogue kill switch, the create rate limit (3 red), the audit allowlist, and the scheduler
+    entry point (3 red).
+  - **NOT done, and not claimed.** **No headed-Chrome user verification yet** — that is the
+    standing acceptance gate and it still owes a real message sent through the deployed app.
+    **No curation**: the registry has not been synced and no server is connectable. No metrics, no
+    alerting, no scheduled backups; `AI_SENTRY_DSN` is still unset, so Python errors go to the
+    journal only. Phase 6's container claims remain unproven, though the VM has Docker 29.6.0 and
+    could now prove them. And this deploy adds an hourly no-op DBOS row to a system database
+    already at **217 MB / 35,114 rows** with no retention policy.
+
 - **Phase 7 — the user-facing surface (built + tested, NOT deployed).** Phases 2–6 built the whole
   MCP backend and gave it no interface: `grep -ril mcp apps/app/src` returned **0 files**, so a user
   had no way to create the `ready` connection a turn silently picks up. Phase 7 is
