@@ -409,48 +409,6 @@ async def _serve() -> None:
     _EXECUTOR = build_executor(settings, _CLIENT)
 
 
-@DBOS.scheduled(_mcp_sync_cron())
-@DBOS.workflow()
-async def mcp_registry_sync(scheduled: datetime, actual: datetime) -> None:
-    """Refresh the MCP server CATALOGUE from the official registry.
-
-    DISCOVERY ONLY. This records what servers exist; it connects to nothing,
-    installs nothing and grants no trust.
-
-    Cron is the right shape HERE even though this module deliberately avoids it
-    for user tasks: that objection is that cron cannot express product
-    recurrence ("0 9 31 * *" silently skips February), and a registry refresh has
-    no such semantics. `scheduled` is DBOS's replay-stable time, which is exactly
-    what an idempotent sync wants — a recovered workflow re-runs with the same
-    watermark rather than a drifted one.
-    """
-    settings = _SETTINGS or get_settings()
-    if not settings.mcp_sync_enabled:
-        return
-    global _CATALOGUE_DB
-    if _CATALOGUE_DB is None:
-        from app.db.engine import create_knowledge_engine
-
-        _CATALOGUE_DB = create_knowledge_engine(settings)
-
-    from app.mcp.registry.client import RegistryClient
-    from app.mcp.registry.store import PostgresSyncPort
-    from app.mcp.registry.sync import sync_registry
-
-    http = RegistryClient.build_http_client(settings.mcp_sync_timeout_s)
-    try:
-        client = RegistryClient(
-            http,
-            base_url=settings.mcp_registry_base_url,
-            page_size=settings.mcp_sync_page_size,
-            max_retries=settings.mcp_sync_max_retries,
-        )
-        # Never raises for an upstream failure: a registry outage must leave the
-        # catalogue stale and searchable, not take the scheduler down with it.
-        await sync_registry(PostgresSyncPort(_CATALOGUE_DB), client, now=scheduled)
-    finally:
-        await http.aclose()
-
     _assert_dbos_version()
     DBOS(config=build_dbos_config(settings))
     # launch() from INSIDE this running loop, so DBOS adopts it as the main
@@ -530,6 +488,68 @@ async def mcp_registry_sync(scheduled: datetime, actual: datetime) -> None:
         DBOS.destroy()
         await _CLIENT._c.aclose()  # noqa: SLF001 — the client owns this socket
         log.info("sched.stopped")
+
+
+
+
+# DEFINED AFTER `_serve`, and that placement is load-bearing.
+#
+# This function was originally inserted INTO the middle of `_serve`, between
+# `_EXECUTOR = build_executor(...)` and `_assert_dbos_version()`. Python took
+# the decorators at face value: `_serve` ended early with an implicit return,
+# and the entire DBOS bootstrap — launch, queue registration, apply_schedules,
+# the health server and `await stop.wait()` — became the body of THIS
+# function instead.
+#
+# The service then started, configured logging, built the executor, returned,
+# and exited 0. systemd reported a clean shutdown, nothing logged an error,
+# and every scheduled task silently stopped running. Measured on production:
+# `Active: inactive (dead)`, `status=0/SUCCESS`, duration 2.2s.
+#
+# No test caught it because no test calls `_serve` — it blocks forever by
+# design. The guard is now `test_scheduler_entrypoint.py`, which asserts the
+# bootstrap is reachable from `_serve` and from nowhere else.
+@DBOS.scheduled(_mcp_sync_cron())
+@DBOS.workflow()
+async def mcp_registry_sync(scheduled: datetime, actual: datetime) -> None:
+    """Refresh the MCP server CATALOGUE from the official registry.
+
+    DISCOVERY ONLY. This records what servers exist; it connects to nothing,
+    installs nothing and grants no trust.
+
+    Cron is the right shape HERE even though this module deliberately avoids it
+    for user tasks: that objection is that cron cannot express product
+    recurrence ("0 9 31 * *" silently skips February), and a registry refresh has
+    no such semantics. `scheduled` is DBOS's replay-stable time, which is exactly
+    what an idempotent sync wants — a recovered workflow re-runs with the same
+    watermark rather than a drifted one.
+    """
+    settings = _SETTINGS or get_settings()
+    if not settings.mcp_sync_enabled:
+        return
+    global _CATALOGUE_DB
+    if _CATALOGUE_DB is None:
+        from app.db.engine import create_knowledge_engine
+
+        _CATALOGUE_DB = create_knowledge_engine(settings)
+
+    from app.mcp.registry.client import RegistryClient
+    from app.mcp.registry.store import PostgresSyncPort
+    from app.mcp.registry.sync import sync_registry
+
+    http = RegistryClient.build_http_client(settings.mcp_sync_timeout_s)
+    try:
+        client = RegistryClient(
+            http,
+            base_url=settings.mcp_registry_base_url,
+            page_size=settings.mcp_sync_page_size,
+            max_retries=settings.mcp_sync_max_retries,
+        )
+        # Never raises for an upstream failure: a registry outage must leave the
+        # catalogue stale and searchable, not take the scheduler down with it.
+        await sync_registry(PostgresSyncPort(_CATALOGUE_DB), client, now=scheduled)
+    finally:
+        await http.aclose()
 
 
 def main() -> None:
