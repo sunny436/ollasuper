@@ -18,6 +18,12 @@ dependencies = [
     # and cache, which is exactly where JWKS bugs live. PyJWKClient is the direct
     # analogue of the jose createRemoteJWKSet used in backend-echo/server.mjs.
     "pyjwt[crypto]>=2.10,<3",
+    # PROMOTED FROM TRANSITIVE, not newly added: `pyjwt[crypto]` already pulls
+    # this exact distribution (PyCA, Apache-2.0/BSD, already pinned in uv.lock).
+    # Phase 4 encrypts credentials at rest with AES-256-GCM + HKDF, so we now
+    # depend on it DIRECTLY — and a transitive pin is not a contract: a future
+    # pyjwt release could drop the extra and silently take our AEAD with it.
+    "cryptography>=45,<51",
     "pillow>=12.3,<13",
     "pypdf>=6.16.1,<7",
     # --- File Knowledge System (RAG) ---
@@ -96,6 +102,7 @@ dependencies = [
     # transitively via pandas today; a transitive pin is not a guarantee.
     # NOTE: this pins DST RULES — a real-world timezone change needs a bump.
     "tzdata>=2025.1",
+    "mcp==2.2.0",
 ]
 
 # Deliberately NOT langchain-anthropic: it speaks the native Anthropic Messages
@@ -138,6 +145,11 @@ ignore = ["S101"]  # assert is fine in tests
 # trusted int from config that is the SQL vector TYPE size (vector(N)/halfvec(N))
 # — a type parameter, which cannot be a bind. Every value is a bind parameter.
 "app/db/store.py" = ["S608"]
+# Same reasoning, different query: search_servers COMPOSES its WHERE clause from
+# a fixed set of literal fragments chosen by internal booleans (filter present or
+# not). No caller value is ever concatenated — every one is a bind parameter —
+# so the only thing built by string is the clause SHAPE, not its data.
+"app/mcp/registry/store.py" = ["S608"]
 
 [build-system]
 requires = ["hatchling"]

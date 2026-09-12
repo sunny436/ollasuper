@@ -188,3 +188,209 @@ async def test_the_tool_ledger_redacts_configured_secrets(emitted):
     wire = json.dumps(convex.calls)
     assert convex.calls, "nothing reached the wire — the assertion below is vacuous"
     assert SECRET not in wire
+
+
+# ===========================================================================
+# Phase 4: OAuth secrets are SHAPELESS, so shape matching alone cannot see them
+# ===========================================================================
+#
+# The layer above catches `bearer <tok>`, `sk-…`, `ya29.…`, `1//…` and any
+# CONFIGURED secret. An OAuth access token is none of those: it is an opaque
+# string issued at runtime, so it is never in `secrets`, and it carries no
+# prefix. Measured before this was fixed, every one of these passed through
+# untouched — including into the Sentry hook, which scrubs stack-frame locals
+# and therefore carried them to an external service.
+#
+# The counter-risk is over-redaction. `code` is a JSON-RPC error code, an HTTP
+# status and a country code far more often than it is an authorization code, so
+# the diagnostics tests below are as load-bearing as the secret ones: a
+# redactor that eats `code=-32603` will be turned off by the next person who
+# needs to debug a protocol error.
+
+OAUTH_SECRET = "ATza-opaque-runtime-issued-1a2b3c4d"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "client_secret",
+        "client_assertion",
+        "code_verifier",
+        "authorization_code",
+        "authorization",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "private_key",
+        "secret",
+        "password",
+        "token",
+        "session_token",
+    ],
+)
+def test_a_shapeless_credential_is_redacted_by_field_name(field):
+    from app.logging import redact_obj
+
+    got = redact_obj({field: OAUTH_SECRET}, ())
+    assert got[field] == "***", f"{field} leaked a shapeless credential"
+
+
+def test_field_name_matching_ignores_case_and_dashes():
+    from app.logging import redact_obj
+
+    for spelling in ("Access-Token", "ACCESS_TOKEN", "  refresh-token  "):
+        assert redact_obj({spelling: OAUTH_SECRET}, ())[spelling] == "***"
+
+
+def test_an_authorization_code_is_redacted_but_an_error_code_is_not():
+    """`code` is length-gated AND must contain a letter.
+
+    Redacting every `code` destroys `MCPError(code=-32603)`, which is the single
+    most useful field when an MCP call fails. Keeping both properties is the
+    whole point of the gate.
+    """
+    from app.logging import redact_obj
+
+    assert redact_obj({"code": "AUTHCODEabc123xyz"}, ())["code"] == "***"
+    assert redact_obj({"code": -32603}, ())["code"] == -32603
+    assert redact_obj({"code": "404"}, ())["code"] == "404"
+    assert redact_obj({"status_code": 401}, ())["status_code"] == 401
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("error", "invalid_grant"),
+        ("tool_id", "mcp:fake:echo"),
+        ("country", "US"),
+        ("state", "ok"),
+        ("server", "acme.test/server"),
+        ("resource", "https://api.example.test/mcp"),
+    ],
+)
+def test_ordinary_diagnostics_survive_redaction(key, value):
+    """A redactor that eats diagnostics gets disabled by the next person who
+    needs to debug something."""
+    from app.logging import redact_obj
+
+    assert redact_obj({key: value}, ())[key] == value
+
+
+def test_nested_and_listed_credentials_are_reached():
+    from app.logging import redact_obj
+
+    got = redact_obj(
+        {"outer": {"tokens": [{"access_token": OAUTH_SECRET}]}, "keep": "fine"}, ()
+    )
+    assert got["outer"]["tokens"][0]["access_token"] == "***"
+    assert got["keep"] == "fine"
+
+
+@pytest.mark.parametrize(
+    ("text", "leaked"),
+    [
+        ('{"access_token": "%s", "token_type": "Bearer"}', True),
+        ("grant_type=authorization_code&code_verifier=%s", True),
+        ("POST /token client_secret=%s", True),
+        ("GET /mcp/oauth/callback?code=%s&state=xyz", True),
+    ],
+)
+def test_a_credential_serialised_into_a_string_is_still_redacted(text, leaked):
+    """`redact_obj` sees dict values; this sees what an f-string already flattened.
+
+    The SDK does exactly this: `_handle_token_response` raises
+    `OAuthTokenError(f"Token exchange failed …: {body_text}")` with the raw token
+    endpoint body, and `_auth_flow` logs it with `logger.exception`.
+    """
+    from app.logging import redact_text
+
+    out = redact_text(text % OAUTH_SECRET, ())
+    assert OAUTH_SECRET not in out
+    assert "***" in out
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "MCPError(code=-32603)",
+        "HTTP 401 code=404",
+        "tool mcp:fake:echo returned 5",
+        "GET https://api.example.test/mcp",
+    ],
+)
+def test_strings_without_credentials_are_left_alone(text):
+    from app.logging import redact_text
+
+    assert redact_text(text, ()) == text
+
+
+def test_an_sdk_traceback_carrying_a_token_is_redacted(emitted):
+    """The SDK logs OAuth failures with `logger.exception`, on ITS logger.
+
+    `configure()` installs the handler on the ROOT logger, so a third-party
+    logger propagates into the same redaction — but only if the formatter
+    scrubs the rendered traceback too, which is the part that is easy to miss.
+    """
+    _log, read = emitted
+    sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+    sdk_logger.propagate = True
+    try:
+        body = f'{{"access_token": "{OAUTH_SECRET}"}}'
+        raise RuntimeError(f"Token exchange failed (400): {body}")
+    except RuntimeError:
+        sdk_logger.exception("OAuth flow error")
+    out = read()
+    assert out.strip(), "nothing emitted — the assertion below would be vacuous"
+    assert OAUTH_SECRET not in out
+    assert "***" in out
+
+
+def test_the_sentry_hook_redacts_shapeless_credentials_in_stack_locals():
+    """The Sentry event is the worst carrier: the SDK sends frame locals, so a
+    token held in a local variable anywhere in the traceback rides out to an
+    external service. It is the same `redact_obj`, so the field-name rule has to
+    cover it."""
+    from app.observability import redact_sentry_event
+
+    event = {
+        "exception": {
+            "values": [
+                {
+                    "stacktrace": {
+                        "frames": [
+                            {
+                                "function": "_handle_token_response",
+                                "vars": {
+                                    "access_token": OAUTH_SECRET,
+                                    "code_verifier": "vvvvvvvvvvvvvvvvvvvv",
+                                    "status": 200,
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+    blob = json.dumps(redact_sentry_event(event))
+    assert OAUTH_SECRET not in blob
+    assert "vvvvvvvvvvvvvvvvvvvv" not in blob
+    assert '"status": 200' in blob, "redaction ate a diagnostic"
+
+
+def test_httpx2_is_silenced_exactly_as_httpx_is(emitted):
+    """`httpx2` is the MCP SDK's HTTP stack and has its own logger.
+
+    Silencing only `httpx` left every MCP endpoint URL at INFO — visible in
+    Phase 3's own test output — and would have put OAuth discovery,
+    registration and token-endpoint URLs there too.
+    """
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        assert logging.getLogger(name).level == logging.WARNING, name
+
+    _log, read = emitted
+    logging.getLogger("httpx2").info("HTTP Request: POST https://as.test/token")
+    assert "as.test/token" not in read()

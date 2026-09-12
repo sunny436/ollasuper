@@ -1427,4 +1427,171 @@ export default defineSchema({
     // Provider webhook: resolve an event back to its row.
     .index("by_provider_message", ["providerMessageId"])
     .index("by_user_created", ["userId", "createdAt"]),
+
+  // MCP connections — who may use which curated MCP server, per tenant.
+  //
+  // ADDITIVE, so the live deployment's pre-migration rows are unaffected and
+  // every field here is safe to require.
+  //
+  // THE TRUST MODEL IS CHAT'S, NOT THE WORKSPACE'S. Everywhere else in this
+  // codebase a workspace is the boundary and any member reads any row. An MCP
+  // connection is a PERSONAL ACCOUNT — someone's GitHub, their mailbox, their
+  // Notion — so a same-workspace peer must be refused, exactly as chat threads
+  // refuse one. `workspaceId` is carried for tenancy and for the requireMember
+  // check, never as the read boundary. Hence every index leads with userId, and
+  // there is deliberately NO workspace-only index that could enumerate a
+  // tenant's connections without pinning a user first.
+  //
+  // NO CREDENTIAL FIELD, and there never will be one. Phase 4 owns credentials,
+  // in a vault; a token on this row would be readable by every code path that
+  // can read a connection.
+  //
+  // NO LIVE SESSION STATE EITHER. `status` is the lifecycle verdict, not a
+  // socket: the MCP client, its transport and its session id live only in the
+  // Python plane's in-memory pool and are never serialized here.
+  mcpConnections: defineTable({
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    // The registry's reverse-DNS identity (e.g. "ac.inference.sh/mcp"), which
+    // the curated table and the catalogue are both keyed on.
+    serverName: v.string(),
+    // Denormalized for display, and because every tool_id is namespaced with it.
+    slug: v.string(),
+    // EXPLICIT, and never rewritten by a catalogue sync. A server publishing a
+    // new latest_version must not silently re-point a live connection at a
+    // different build.
+    version: v.string(),
+    versionMode: v.union(v.literal("pinned"), v.literal("latest_at_connect")),
+    transport: v.union(v.literal("streamable-http"), v.literal("sse")),
+    authKind: v.string(),
+    // Lifecycle verdict. `disconnected` is what suppresses automatic
+    // reconnection: a connection the user explicitly closed must stay closed.
+    status: v.union(
+      v.literal("configured"),
+      v.literal("ready"),
+      v.literal("degraded"),
+      v.literal("failed"),
+      v.literal("disconnected"),
+      v.literal("unsupported"),
+    ),
+    lastConnectedAt: v.optional(v.number()),
+    lastFailureAt: v.optional(v.number()),
+    // Classified, bounded and sanitized in the Python plane before it arrives:
+    // a kind plus a short detail, never a header value, a payload, or a
+    // resolved IP address.
+    lastError: v.optional(v.string()),
+    lastErrorKind: v.optional(v.string()),
+    // Whether a human has to act (reconnect an account) rather than this being
+    // transient. The difference between "retrying..." and "your token expired".
+    userActionRequired: v.optional(v.boolean()),
+    // Bounded JSON SUMMARY of the capability snapshot — counts and flags, not
+    // the tool list. Same convention as seoMutations.before/after and
+    // chatShares: a string, never v.any(), so a hostile server cannot push
+    // schema shape into Convex.
+    capabilities: v.optional(v.string()),
+    capabilitiesAt: v.optional(v.number()),
+    toolCount: v.optional(v.number()),
+    // The tool NAMES, for the detail page's "what can this do?" list. Already
+    // computed by the Python plane on every connect and previously discarded.
+    //
+    // BOUNDED, AND DELIBERATELY NOT ON `listWithAuth`. A server may advertise up
+    // to `mcp_max_tools_per_server` (256) tools, and this table is read by a
+    // LIST query whose whole result is re-sent to every subscriber on any write.
+    // So the array is capped when written, and `listWithAuth` projects it away —
+    // only `connections.get`, which returns one row for one open detail page,
+    // carries it. `toolCount` remains the authority on how many there are, so a
+    // truncated list can say so instead of quietly under-reporting.
+    toolNames: v.optional(v.array(v.string())),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_server", ["userId", "serverName"])
+    .index("by_user_workspace", ["userId", "workspaceId"]),
+
+  // MCP credentials — CIPHERTEXT ONLY.
+  //
+  // TENANT-SCOPED, same trust model as mcpConnections: a credential is a
+  // personal account, so a same-workspace peer is refused and every index leads
+  // with userId. There is deliberately NO workspace-only index.
+  //
+  // `envelope` is the ONLY secret-bearing field, and it is AES-256-GCM
+  // ciphertext produced in the Python plane. Its AAD binds
+  // user|workspace|connection|server|resource, so a row copied into another
+  // user's record fails to decrypt EVEN WITH THE KEY. Encryption is
+  // defence-in-depth behind the owner checks below, never a replacement for
+  // them — this table is secret storage, not ordinary application data.
+  //
+  // EVERYTHING ELSE IS PLAINTEXT ON PURPOSE. `expiresAt` and `scope` are not
+  // secrets, and the refresh path asks "is this expired?" on every call;
+  // requiring a decryption for that would be a needless use of the key.
+  mcpCredentials: defineTable({
+    // Opaque, PYTHON-MINTED, and not the Convex _id: the AAD must exist before
+    // the first insert, so the id cannot be one Convex assigns afterwards.
+    credentialId: v.string(),
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    connectionId: v.id("mcpConnections"),
+    serverName: v.string(),
+    // The canonical MCP resource URI. THE audience key: a token issued for one
+    // MCP server must never be found by a lookup for another (RFC 8707).
+    resource: v.string(),
+    kind: v.union(
+      v.literal("oauth_token"),
+      v.literal("api_key"),
+      v.literal("bearer"),
+    ),
+    envelope: v.string(),
+    keyVersion: v.number(),
+    // ABSOLUTE. The SDK's OAuthToken carries a RELATIVE expires_in and does not
+    // recompute expiry on load, so storing the relative value would make a
+    // token issued an hour ago look fresh forever.
+    expiresAt: v.optional(v.number()),
+    scope: v.optional(v.string()),
+    status: v.union(
+      v.literal("active"),
+      v.literal("expired"),
+      v.literal("refresh_failed"),
+      v.literal("revoked"),
+      // Decryption failed. The row is KEPT: deleting would destroy the evidence
+      // that something was tampered with, or that a key version was retired
+      // while rows still used it.
+      v.literal("unreadable"),
+    ),
+    // Compare-and-set guard. Refresh-token rotation invalidates the old token
+    // as it issues the new one, so a stale writer overwriting a newer row costs
+    // the user a re-authorization. This makes the stale writer lose.
+    rev: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    lastUsedAt: v.optional(v.number()),
+    revokedAt: v.optional(v.number()),
+  })
+    .index("by_user", ["userId"])
+    .index("by_credential_id", ["credentialId"])
+    .index("by_connection_resource", ["connectionId", "resource", "kind"]),
+
+  // OAuth client registrations — DEPLOYMENT-scoped, not tenant-scoped.
+  //
+  // A dynamically-registered client is registered once per (server, issuer) and
+  // reused by EVERY user of that server, so it has no owner. That is exactly
+  // why it lives here rather than as a `kind` on mcpCredentials: a nullable
+  // userId would make that table's owner check incoherent.
+  //
+  // The client_secret inside `envelope` is encrypted identically to a token. It
+  // is a credential, and "configuration" is not a safe place to keep one.
+  mcpOAuthClients: defineTable({
+    clientRecordId: v.string(),
+    serverName: v.string(),
+    issuer: v.string(),
+    envelope: v.string(),
+    keyVersion: v.number(),
+    registrationMode: v.union(
+      v.literal("dcr"),
+      v.literal("cimd"),
+      v.literal("preregistered"),
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_server_issuer", ["serverName", "issuer"]),
 });

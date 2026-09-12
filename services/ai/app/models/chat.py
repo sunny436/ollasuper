@@ -322,6 +322,25 @@ class ModelCandidate(BaseModel):
     contextWindow: int = 0
 
 
+class McpConnectionRef(BaseModel):
+    """One connected MCP server, as Convex resolved it.
+
+    CARRIES NO CREDENTIAL, and cannot: the Python plane looks the credential up
+    from its own vault using `(user, workspace, connection)`. A credential on
+    this model would put one in the dispatch payload, in Convex's logs, and in
+    every retry of the turn.
+
+    `extra="forbid"` for the same version-skew reason as the parent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    connectionId: str = Field(min_length=1, max_length=64)
+    serverName: str = Field(min_length=1, max_length=400)
+    slug: str = Field(min_length=1, max_length=120)
+    version: str | None = Field(default=None, max_length=100)
+
+
 class GenerateRequest(BaseModel):
     """Everything needed for one turn.
 
@@ -469,6 +488,20 @@ class GenerateRequest(BaseModel):
     # carrying more did not come from dispatchPayload, and 422 is the right
     # answer to that.
     customSkills: list[CustomSkill] = Field(default_factory=list, max_length=50)
+    # Phase 5: the user's CONNECTED MCP servers, resolved and ownership-checked by
+    # Convex. Optional with an empty default so an older Convex deploy — or a
+    # rollback to one — simply sends no MCP tools rather than 400ing every turn.
+    #
+    # DEPLOY ORDER IS LOAD-BEARING, and this is the field that re-engages it:
+    # `GenerateRequest` is `extra="forbid"`, so a Python build without this field
+    # rejects EVERY turn the moment Convex starts sending it. Python first.
+    #
+    # Bounded at 30 because that is the curated set's size; a user cannot connect
+    # to more than the deployment curated, and a larger list would mean a bug or
+    # an attempt to make the turn open dozens of sessions.
+    mcpConnections: list[McpConnectionRef] = Field(
+        default_factory=list, max_length=30
+    )
 
 
 class GenerateAccepted(BaseModel):

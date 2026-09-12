@@ -283,6 +283,450 @@ the live value sits in the **Convex deployment env** — a store the Python serv
   belongs on the replica, which has never been brought up (no Docker on the dev machine). The
   scheduler restart drill (9/9, a real service restart) is the closest non-destructive analogue.
 
+## Remote MCP program (Phases 2–7) — built, NOT deployed
+
+Connecting OllaSuper to third-party MCP servers. **Nothing in it is on the VM**, and by standing
+instruction nothing is committed either: deployment is Phase 8, so `main`'s live behaviour is
+unchanged by everything below. Every flag defaults OFF.
+
+- **Phase 2 — the catalogue (built + tested).** A Postgres mirror of the public MCP registry
+  (`mcp_servers`, synced through `app/mcp/registry/`), plus a curated allowlist table
+  (`mcp_curated_servers`) that is the actual gate: the registry lists 30,871 servers and this
+  deployment will dial only the rows an operator enabled. **`parse.py` deliberately refuses to infer
+  OAuth** — the registry publishes no auth-scheme field, only `headers[].isSecret`, and the measured
+  distribution has no `oauth` bucket at all (none 37,950 · api_key 30,835 · unknown 30,071 · bearer
+  1,342). Every captured real fixture declares `headers=[]`. That refusal is why Phase 4 needs a
+  runtime probe.
+- **Phase 3 — remote connectivity + server lifecycle (built + tested).** Streamable HTTP against real
+  servers via the official MCP Python SDK 2.2.0, one pooled session per `(user, workspace,
+  connection)`, `mcpConnections` in Convex carrying tenancy under the **chat** trust model (owner-only,
+  `"Not found"` for everyone else, no workspace-only index). Five facts found by running the SDK
+  rather than reading it, each of which invalidated part of the plan:
+  **(1)** the SDK depends on **`httpx2`**, not `httpx`;
+  **(2)** anyio refuses to exit a cancel scope from a different task than entered it, so a naive pool
+  is impossible — every session is an ACTOR that opens, parks and closes in one task;
+  **(3)** `anyio.fail_after` around the client's `__aenter__` hits the same rule, so connect timeouts
+  come from the SDK's own `read_timeout_seconds`;
+  **(4)** the SDK ERASES the HTTP status — a 401, 403, 429, 500 and 503 all arrive as the identical
+  `MCPError(-32603, 'Server returned an error response')` inside a doubly-nested `ExceptionGroup`, so
+  classification reads a per-session httpx2 `response` event hook (`app/mcp/status.py`) BEFORE the
+  leaf type, or a rejected credential would be retried against a third party;
+  **(5)** `$defs` in a tool schema resolved to `{}`, leaving nested arguments unvalidated — fixed by
+  `resolve_local_refs()` and proven by disabling it (five tests went red).
+- **Phase 4 — OAuth 2.1 + encrypted credential vault (built + tested).** The protocol is the SDK's and
+  is not reimplemented: PKCE S256, `state` with `compare_digest`, RFC 9728 PRM discovery with the
+  SEP-985 fallback, RFC 9207 `iss` validation, RFC 8707 resource indicators, DCR, refresh with
+  rotation carry-forward and the SEP-2350 step-up. What is ours is everything the SDK has no opinion
+  about: encrypted persistence, tenant isolation, a web-shaped callback, absolute expiry and
+  revocation.
+  - **Encryption.** AES-256-GCM with HKDF-SHA256 per-version subkeys; versioned dotted envelope
+    `v1.<key_version>.<b64url(nonce)>.<b64url(ct‖tag)>`. The AAD binds
+    `kind|credential_id|user|workspace|connection|server|resource`, so a wrong user, workspace,
+    connection, server, **resource** or record kind fails `InvalidTag` **even with the correct key**.
+    Key rotation is lazy on read and never leaves the process. Fail closed: enabled-but-unkeyed
+    refuses to boot, and there is no generated default — a boot-time key would encrypt credentials no
+    restart could read.
+  - **The plaintext boundary.** Plaintext exists in exactly three places, all in-process: the SDK's
+    `OAuthContext.current_tokens`, the `Authorization` header on an in-flight request, and the gap
+    between `set_tokens` and `AESGCM.encrypt`. Convex stores ciphertext only; no public query returns
+    an `envelope`.
+  - **The callback lives on a Convex HTTP route** (`/mcp/oauth/callback`), not in the Next app, because
+    the app is locale-prefixed and an OAuth `redirect_uri` must be an exact registered string. It is
+    unauthenticated by necessity — a browser arriving from a provider carries no session — and the
+    binding is `state`: the credential is written for the tenant who STARTED the flow, never for
+    whoever delivered the callback.
+- **Four plan-invalidating facts, and two live security gaps in already-shipped Phase 3 code,** all
+  found by measurement:
+  **(1)** `max(0, expires_at − now)` — written in the plan — was WRONG. `calculate_token_expiry` is
+  `time.time() + int(expires_in)`, so a clamp to zero reads as "expires exactly now", which
+  `is_token_valid()` accepts. The reconstruction must be unclamped and allow negatives.
+  **(2)** Fixing storage alone was not enough: `OAuthClientProvider._initialize()` loads tokens and
+  never calls `update_token_expiry`, and a missing expiry reads as VALID — so after a restart the
+  provider attaches an expired token, earns a 401 and takes the full re-authorization branch where a
+  silent refresh would have done. A four-line override calling `super()` fixes it; six tests go red
+  when it is removed.
+  **(3)** Scope is SERVER-DICTATED. The SDK assigns `client_metadata.scope` from
+  `WWW-Authenticate` → PRM → AS metadata, overwriting whatever we configured — measured: asked for
+  `mcp:read`, the SDK requested `mcp:read mcp:write`. Least privilege is therefore **not** achievable
+  by configuration, and the plan's claim that it was has been corrected rather than quietly dropped.
+  What Phase 4 actually does is informed consent, a recorded grant, a non-silent step-up, and an
+  optional default-off downward rewrite of the authorization URL.
+  **(4)** **LIVE GAP — `httpx2` was never silenced.** `app/logging.py` silenced `httpx` under the
+  comment *"logs full URLs at INFO — the classic secret-in-logs vector"*; the MCP SDK's stack is
+  `httpx2`, a separate distribution with its own logger. True in shipped Phase 3; Phase 4 would have
+  added OAuth discovery, registration and token-endpoint URLs to that stream.
+  **(5)** **LIVE GAP — redaction was value-shaped only, never key-name-aware.** Measured against
+  `redact_obj`: `access_token`, `refresh_token`, `client_secret` and `code_verifier` all passed
+  through untouched, including into Sentry stack-frame locals. OAuth tokens are opaque strings with
+  no `sk-`/`ya29.` shape, so only key-name matching can catch them.
+- **Six defects found in Phase 4's own code — three by its tests, three by a completion audit run
+  afterwards. The audit ones matter most, because the phase was already reported green when they
+  were found:**
+  **(1)** the auth probe POSTed `{}`, which every compliant Streamable HTTP server rejects with **400**
+  before it can say it needs nothing — so the `shape == "none"` branch was unreachable in practice and
+  a no-auth server reported `unknown`. It now sends a real `initialize` with the required `Accept`
+  header and terminates the session it opens.
+  **(2)** every decrypt failure marked the row UNREADABLE, but AES-GCM cannot tell "wrong AAD" from
+  "tampered ciphertext" — so a caller asking for someone else's connection flipped the **victim's**
+  credential to unreadable and cost them a re-authorization. The vault now compares the five
+  plaintext identifiers before decrypting, turning a defence back into a defence.
+  **(3)** `oauth/start|status|disconnect` queried the catalogue BEFORE checking whether OAuth or the
+  vault was configured — work done to answer 503. Reordered to fail closed cheaply.
+  **(4) THE SERIOUS ONE — Phase 4 was silently inert at the route layer.** `credentials_available`
+  had TWO definitions: `lifecycle._can_supply`, which knew about `can_authorize`, and an inline
+  `resolver.supplies(slug) or resolver.can_supply` in `routers/mcp.py`, which did not. The router
+  also built its own per-request `EnvCredentialResolver` while the POOL held the
+  `VaultCredentialResolver` that actually attaches the credential — so the gate was computed from a
+  different object than the one that acts. **Measured with the vault live and keyed: the route
+  answered `credentials_available=False`, `compat.assess` refused every OAuth server with "no
+  credential is available for this connection", and the 401 that STARTS discovery never fired.**
+  Every OAuth server was permanently unreachable — which is the exact failure `_can_supply`'s own
+  docstring says must not happen. Invisible because a refusal renders identically to "this server
+  needs authorization". Fixed by making `can_supply_credentials` public and the single answer, and by
+  having `_resolver` return the pool's resolver when it can authorize. An AST guard now fails if any
+  module outside `lifecycle.py`/`credentials.py` reads `can_supply`/`can_authorize`/`supplies` off a
+  resolver to re-derive the answer.
+  **(5)** `ConvexCredentialStore` — the ONLY store implementation that runs in production — had zero
+  tests; every vault test used `MemoryStore`. Its wire contract is written twice, camelCase in Python
+  and read by hand in `convex/http.ts`, with no shared schema and no compiler spanning the two, and
+  the failure mode is not a crash: rename `expiresAt` on one side and every write still returns 200
+  while the field stops arriving. Now covered behaviourally AND by a mechanical contract test that
+  parses `http.ts` and asserts the key sets match in both directions (proven by renaming one key).
+  **(6)** an UNREACHABLE provider was reported as `revoked_remotely: "unsupported"` — a false
+  statement about a third party, and exactly the conflation those three outcomes exist to prevent.
+  Discovery failure now reports `False` ("we could not"), distinct from "the provider offers no
+  revocation endpoint". Found by adding the positive-revocation test the suite never had.
+- **One dead abstraction removed rather than left to mislead.** `CredentialVault.lock_for()` was
+  described as serialising refresh and was never acquired anywhere. What actually serialises refresh
+  is the SDK's per-provider `OAuthContext.lock` (measured: twenty concurrent tool calls on an expired
+  token → exactly one refresh); what protects the cross-provider case is the `rev` compare-and-set.
+  It could not have been wired at that seam anyway: `get_tokens` and `set_tokens` are separate SDK
+  callbacks with the refresh request between them, so a lock held across both would deadlock whenever
+  a refresh failed.
+- **Phase 5 — MCP becomes part of the tool system (built + tested).** The first four phases built a
+  complete remote-MCP stack that **nothing called**: measured at the start of this phase, no module
+  in `app/agent/` or `app/runtime/` imported anything from `app/mcp/`. Phase 5 is the wiring, plus
+  two capability kinds that are deliberately NOT tools.
+  - **Tools cost almost no new code, because Phase 3 built to the existing seams.** `runner.py`
+    acquires one pooled session per connected server, calls the existing `compose_tools`, and
+    rebinds `tool_registry` to the per-request result — so the selector, `build_tool_specs`, the
+    policy ladder, the approval round trip and the executor all see MCP tools with **no change of
+    their own**. The adapter map is keyed by `tool.provider`, which is exactly what
+    `ctx.adapters.get(tool.provider)` already read. There is no second executor and no second agent
+    loop; the LangGraph end-to-end test asserts that.
+  - **Resources and Prompts are first-class and separate.** `McpResource` /
+    `McpResourceTemplate` / `McpPrompt` live in their own modules with their own per-request
+    `McpCapabilityIndex` — never in `ToolRegistry`. A resource reaches the model through exactly ONE
+    generic reserved tool (`mcp_read_resource`), bound only when a connected server advertises
+    resources; a prompt is user-invoked and its messages become **user/assistant content, never
+    system or developer**. There is no branch in `normalize_prompt_messages` that can emit a system
+    role, which is what makes prompt injection structurally inert rather than filtered.
+  - **Four things the second deep pass measured and corrected before implementation:**
+    **(1)** "resource content is never cached" was true only by the server's grace — `read_resource`
+    defaults to `cache_mode="use"` and the SDK honours a server-declared `ttl_ms`, so every read now
+    passes **`cache_mode="bypass"`**; whether a third party's data sits in our memory is our
+    decision.
+    **(2)** the SDK capability cache is **inert** against a server declaring `ttl_ms=0` (measured: 3
+    identical reads, 3 server hits), so capability freshness is per-request rediscovery — not that
+    cache, and not a second one.
+    **(3)** resource templates need **no separate protocol step**: `read_resource` on a concrete URI
+    matching an advertised `uri_template` returns the templated content, so a template is metadata
+    plus a client-side fill.
+    **(4)** a server's own prompt-argument errors are **unusable** — both a missing required argument
+    and an unknown one return `MCPError: Internal server error` with no field name — so client-side
+    validation is mandatory, not defensive.
+  - **Two properties written down rather than left to be discovered.** An MCP *write* tool runs
+    **without approval in an elevated turn** (measured: `external_side_effect` → ALLOW under
+    `WRITE_SCOPE`); that is existing OllaSuper semantics and giving MCP its own approval behaviour is
+    forbidden. And MCP tools carry **no `required_permissions`**, so `side_effect` plus
+    `approval_required` are the only gates.
+  - **Two bugs found by the tests, in Phase 5's own code.** The anyio cancel-scope rule bit the test
+    helpers exactly as it bit Phase 3's pool — an async *generator* yielding inside `pool.acquire()`
+    is finalized in a different task, so every capability helper is an `@asynccontextmanager`. And
+    `cache_mode="bypass"` had **no test protecting it**: removing it broke nothing, because every
+    fixture declares `ttl_ms=0`. Proven by deleting it and watching 29 tests still pass; the
+    property is now asserted where it lives — in what we ask for, every time.
+  - **Scale, measured not estimated.** 30 servers x 12 tools = **360 tools**: normalize + register
+    **27 ms**, selection over the whole catalogue **16.6 ms** returning 5 candidates, and the bound
+    subset is **2,760 bytes against 198,060** for the full catalogue — a **72x** reduction, which is
+    what the selection step exists to produce. Per-tool cost is flat at ~65 us from 1 to 30 servers,
+    so the cost is linear rather than quadratic in the number of connected servers.
+  - **`dispatchPayload` gains `mcpConnections`, and that re-engages the deploy order.**
+    `GenerateRequest` is `extra="forbid"`, so a Python build that does not declare the field 400s
+    **every turn** the moment Convex starts sending it: **Python first, then Convex, then the
+    frontend**. Only `ready` connections travel, owned by the stream's own user through the `by_user`
+    index, capped at 30, carrying no credential.
+  - **No new tables, no migration, no new dependencies.** Resources and prompts are runtime-only per
+    request; the credential still lives in the Phase 4 vault and is resolved per session from
+    `(user, workspace, connection)`.
+  - **All four poisoning surfaces are covered**, and the last two were a gap found by a completion
+    audit AFTER the phase was first reported done: resources and prompts had tests, tool
+    DESCRIPTIONS (§92) and tool RESULTS (§109) did not — the hostile fixture existed and nothing
+    pointed at it. `tests/test_mcp_injection.py` now drives an in-process server whose tool names,
+    descriptions, annotations and results are all attacks, through the REAL `check_tool_policy`,
+    `build_tool_specs` and `execute_tool_calls`. Measured: `delete_everything` advertising
+    `readOnlyHint=true` classifies **external_side_effect → NEEDS_APPROVAL on an untrusted
+    connection**, and only downgrades to read-only where an operator marked the server `trusted` —
+    which is what that column means, and is the phase's stated residual risk rather than an
+    oversight. A poisoned result comes back inside `<tool_output>` framing as a `ToolMessage`, and
+    re-evaluating policy after it returns the same decision as before, so nothing a server says can
+    widen what it may do next.
+- **Phase 7 — the user-facing surface (built + tested, NOT deployed).** Phases 2–6 built the whole
+  MCP backend and gave it no interface: `grep -ril mcp apps/app/src` returned **0 files**, so a user
+  had no way to create the `ready` connection a turn silently picks up. Phase 7 is
+  **Settings › Connectors** — a catalogue, a detail page, and the connect/reconnect/disconnect flow —
+  plus the one backend contract that was missing underneath it.
+  - **IT OPENED BY FINDING PHASE 6 STILL INERT, in a way Phase 6's own closing audit missed.**
+    `lifecycle.connect` accepted `settings` and used it in exactly two places — the parameter
+    declaration and `**_timeouts(settings)` — and **never forwarded it to `preflight`**. So
+    `_local_report`, the function added in Phase 6 specifically to make local reachable, never fired
+    on `/v1/mcp/connections/{id}/connect`: a local server answered `unsupported`, `connect` returned
+    at its `is not CONFIGURED` guard, the row could never reach `ready`, and `dispatchPayload` never
+    carried it. Phase 6 fixed `/connections/preflight` — a diagnostic route — and left the one that
+    actually makes a connection usable. **Its regression test called `lifecycle.preflight` directly,
+    with `settings=`**, which is precisely the "test drives the unit, not the seam" failure Phase 6's
+    own entry below describes, repeated one function later. Two layers were needed: forward
+    `settings`, AND give `connect` the local branch, because a passing preflight still leaves
+    `curated.resolve` answering None for a server with no curated row. The same bug class appeared
+    once more in `_capability_index`, which 404'd every `local/<slug>` — so a local server could
+    connect and still show no resources and no prompts. **Every new test posts to the ROUTE.**
+  - **One definition of "is this local?", not three.** `turn.py`, `lifecycle.py` and `routers/mcp.py`
+    all needed it, so it lives once in `local/gateway.py::resolve_local_spec`, with `local_slug`
+    beside it. Phase 4's inert credential gate was caused by exactly this shape — a second inline
+    copy of `can_supply_credentials` that did not know about `can_authorize` — and a second copy of
+    this question would have been the same bug with a different name.
+  - **The state machine is the core of the UI, and the audit found two traps in it.** A connection's
+    state is three fields that can disagree: `status`, `lastErrorKind`/`userActionRequired`, and the
+    credential's `authState`. `ready` + `TOKEN_EXPIRED` is reachable **by the clock alone**, because
+    nothing rewrites `status` when a token expires. So one pure reducer owns the answer, and it
+    encodes two things that were measured rather than assumed:
+    **(1)** `AUTHORIZATION_REQUIRED` is also what "no credential row" means — it comes from
+    `credentialStatusFor`'s `if (!row)` branch — so a healthy `authKind: "none"` server reports it
+    while working perfectly, and reading auth unconditionally renders "Authentication required" over
+    a server that needs none. The discriminator is `auth.updatedAt !== null`.
+    **(2)** Nothing branches on `authKind`. The catalogue **cannot know** whether a server speaks
+    OAuth — the registry publishes no auth-scheme field, `parse.py` refuses to infer one, and the
+    curated column defaults to `unknown`; OAuth is discovered at runtime from a 401 and its
+    `WWW-Authenticate` challenge. So the flow is **connect-first**, with the runtime answer as the
+    authority. The reducer is tested over the **full cross product** — 7 × 6 × 2 × 7 × 3 inputs —
+    because both traps live in combinations nobody writes down by hand.
+  - **The missing backend contract, and only it.** `routers/mcp.py`'s own docstring already said
+    *"Phase 7's UI reaches this through a Convex action, the pattern `convex/chat/capabilities.ts`
+    already uses"* — and that action did not exist, so the browser could not list a single server.
+    `convex/mcp/catalogue.ts` adds it, carrying `chat/capabilities.ts`'s confused-deputy lesson
+    verbatim (**signed-in callers only**, because it spends `AI_SERVICE_KEY` on the caller's behalf)
+    and **not** `"use node"`, matching `mcp/connections.ts`'s measured 1.19 constraint. `list_curated`
+    gained a `safe=True` projection that drops `endpoint_url`, operator `notes` and `trusted` **in
+    Python**, so none of the three crosses the process boundary at all.
+  - **Two brief requirements the backend deliberately refuses, and the UI does not fake.**
+    Multiple accounts per server: `connections.create` is idempotent per `(user, serverName)` and
+    says why — a second row would give the pool two keys for one account and make disconnect
+    ambiguous. "Connected as name@example.com": **no account-identity field exists anywhere** — not
+    on the connection, the credential, or the lifecycle report — and the brief's own rule is to show
+    only what the backend exposes. So the surface is the workspace plus the granted `scope`, and no
+    account label is invented.
+  - **Two defects found in this phase's own code, by review rather than by a test.** Local rows were
+    being matched onto curated rows **by slug** — which `validate_local_server` guarantees can never
+    match, since it refuses a slug already used by a curated remote server; the local layer silently
+    did nothing and local servers were invisible. They are a separate table and a separate decision,
+    so they are now separate cards keyed `local/<slug>`. And `disconnect` chose the OAuth path on
+    `scope !== null`, but a provider issuing a token with no scope is ordinary — that credential
+    would have been left in the vault. The discriminator is now `hasCredential`, the same
+    `updatedAt` test the state machine uses.
+  - **Tool names now survive.** `ConnectionReport.tools` was computed on every connect and discarded
+    by `recordOutcome`, leaving the UI a number with no way to say what it was made of. They are
+    persisted, bounded on both axes (64 names, 80 chars, control characters stripped), and
+    **projected off `listWithAuth`** — that query re-sends its whole result to every subscriber on
+    any write, so carrying them there would re-transmit ~100KB on every status change. `toolCount`
+    stays the authority, so a truncated list says "and N more" instead of under-reporting.
+  - **No remote logos, decided by measurement.** `next.config.mjs` ships
+    `img-src 'self' data: blob: <convex origin>`, added to close a prompt-injection exfiltration
+    channel, so a provider logo is **blocked by the browser** — and the brief forbids widening CSP
+    for one. Category icons come from `lucide-react`, already a dependency. **Zero new
+    dependencies** overall; the two routes weigh 5.19 kB and 11.9 kB.
+  - **The i18n requirement inverted by the audit.** Locale-prefixed routing is real, but adoption is
+    **2 files of 107**: `en.ts` is 829 bytes covering the avatar and delete-account, and every other
+    surface — including the settings sidebar's own NAV labels — hardcodes English. An `mcp` namespace
+    would be the only translated feature in the product. Strings match the surrounding code and are
+    collected in one `copy.ts`, which is the part a future i18n pass actually needs.
+  - **A mechanical XSS invariant, not a claim.** `rendering.test.ts` walks the feature's own source
+    and asserts zero `dangerouslySetInnerHTML`, no markdown renderer over connector metadata, no
+    `innerHTML`, no token-shaped identifier, no `localStorage`, and no gateway address or Docker
+    vocabulary. CLAUDE.md records that invariant in prose; this is the version that goes red.
+  - **Eight guards proven real by disabling them.** Un-forwarding `settings=` turns 6 red; removing
+    `connect`'s local branch 2; reverting `_capability_index` 2; undoing the `/curated` safe
+    projection 1; ignoring the no-credential discriminator 2; dropping terminal-state precedence 2;
+    adding one `dangerouslySetInnerHTML` 1; reverting local-by-slug 4.
+  - **Verification (local only).** `services/ai` **2577 passed / 52 skipped**, `ruff` clean; Convex
+    **1009 passed / 3 skipped**; `apps/app` `bun test` **98 passed**; `bun run typecheck` 7/7;
+    `bun run lint` + `sherif` clean; `@v1/app` builds. Nothing committed.
+  - **NOT claimed, and none of it is hidden.** **No component, accessibility, screen-reader or
+    visual-regression testing exists** — `apps/app` has no DOM test runner and none was added, so
+    rendered output and the accessibility tree are designed for and unproven. **No real catalogue
+    render**: `mcp_curated_servers` has zero rows and this machine has no Postgres and no `.env`, so
+    `deploy/76-mcp-curate.sh` seeds four development fixtures behind an explicit opt-in and real
+    curation of the ~30 is Phase 8. **No real OAuth round trip** (needs a provider and a public
+    callback origin), **no container flow** (no Docker), and **no production verification of any
+    kind** — `e2e/p-mcp.js` is written to be run against a local stack and has never been executed.
+  - **Limits.** `api_key`/`bearer` servers have no UI path to supply a key — a key-entry form is a
+    credential surface deserving its own review — so they render "Not available here" rather than a
+    Connect button that cannot work. "Disable without disconnecting" has no backend representation
+    and none was invented. Capability lists are actions, not queries, so they refresh explicitly
+    rather than reactively. Requested OAuth scopes are not visible before consent, because nothing
+    exposes them and fabricating them is forbidden. And `mcp_oauth_redirect_uri` still defaults to
+    `http://127.0.0.1:3211/mcp/oauth/callback` — dev-correct; the public HTTPS value and provider
+    pre-registration are Phase 8.
+
+- **Phase 6 — local execution via the Docker MCP Gateway (control plane built + tested; container
+  path gated OFF).** The phase's shape was forced by one measured fact: **there is no Docker on this
+  machine** (`docker --version` → command not found). So the work was split — everything that is pure
+  OllaSuper logic is built and fully tested, and everything that needs a container is designed,
+  gated behind `mcp_local_enabled=False`, and written down as a deferred acceptance checklist rather
+  than claimed.
+  - **The gateway is just another MCP server over HTTP, and that is measured.** A real
+    `McpSessionPool` → session actor → `normalize_tools` → `discover_capabilities` →
+    `McpCapabilityIndex` → `read_resource` works against a gateway-shaped endpoint with **only the
+    endpoint guard swapped**. Phase 5's normalization, index and policy apply with zero
+    modification. That single decision is what makes "no stdio spawning", "no Docker privileges for
+    the Python process" and "no second gateway" structural rather than enforced — the AST guard
+    forbidding `subprocess`/`Popen`/`stdio_client` under `app/mcp` **stays green through Phase 6**.
+  - **Five pre-existing guards, none weakened.** The curated table's
+    `CHECK (transport IN ('streamable-http','sse'))` and `CHECK (endpoint_url LIKE 'https://%')`,
+    `compat.assess()`'s refusal of `packages`, the AST guard, and `assert_dialable` all survive
+    untouched. Local gets its **own table**, so "remote-allowed" and "local-blocked" stay independent
+    decisions.
+  - **The one real conflict, and its resolution.** The gateway lives on loopback, and
+    `assert_dialable` exists to reject exactly that — measured, it refuses on **three** independent
+    grounds: scheme (`must be https`), non-standard port (`8811 not allowed`), and loopback. The
+    answer is that a gateway URL is INFRASTRUCTURE, not a server endpoint: `assert_dialable` is not
+    modified, not parameterised and not bypassed, and a new `assert_gateway_url` applies the
+    **inverse** rule (loopback REQUIRED, because a remote gateway would put the auth token on a
+    network). `McpConnectionSpec.endpoint_trust` defaults to `"catalogue"`, so a spec that forgets to
+    declare itself gets the STRICT guard — and an AST test asserts only `local/gateway.py` ever sets
+    `"gateway"`.
+  - **The gateway's two most important defaults are unsafe**, measured from its CLI reference:
+    `--verify-signatures` **off**, `--block-network` **off**, `--log-calls` **true** (it logs tool
+    arguments). `--block-secrets` is the one that is safe by default. `deploy/75-mcp-gateway.sh`
+    ships the corrected invocation.
+  - **One gateway instance per local server.** Docker's gateway aggregates many servers behind one
+    endpoint, and the convention it uses to namespace their tool names is **NOT STATED** in its docs
+    or README. Rather than parse an undocumented string, each server gets its own gateway on its own
+    port — so one endpoint ≡ one server ≡ one slug, per-server trust and credentials stay structural,
+    and Phase 5's identity model needs nothing added.
+  - **The validator is where the security actually lives**, and it is 100% testable with no Docker:
+    pinned `sha256` digests only (a tag is refused), trust levels, hostname-only network allowlists,
+    a secret-ref allowlist, an environment **allowlist plus denylist**, and resource ceilings. Every
+    refusal reports **all** its reasons, because an operator fixing one per attempt eventually turns
+    the validator off. Container infrastructure — `privileged`, `network_mode`, `bind_mounts`,
+    `capabilities`, `user` — is not a column on the table, so a row **cannot ask for it**.
+  - **A bug the tests caught in this phase's own code.** The "network allowlist entries must be
+    hostnames, not addresses" rule did not fire for IPv4: a dotted quad matches the hostname regex,
+    because digits are legal in a label. `169.254.169.254` sailed straight through until an explicit
+    address check was put in front of it.
+  - **THE PHASE WAS INERT WHEN IT WAS FIRST CALLED DONE, and the audit that followed is the most
+    important thing in this entry.** Nine local tests were green while the feature could not run at
+    all in a real deployment. `lifecycle.preflight` resolved only the **curated** table, so a local
+    server answered `state=unsupported · kind=unsupported_transport`, could therefore never reach
+    `ready`, and `dispatchPayload` — which sends only `ready` connections — never carried it. The
+    turn-side routing was correct and unreachable. The tests passed because every one of them drove
+    `mcp_for_turn` **directly**, which is the same failure Phase 4's inert credential gate had: the
+    unit is right, the seam in front of it was never wired. Fixed with `_local_report()` in
+    `lifecycle.py` and a `settings` parameter threaded from `routers/mcp.py`; measured after —
+    `local ON -> configured`, `local OFF -> unsupported`, `BLOCKED -> unsupported · the server is
+    blocked`. A refused row now fails closed at the FRONT of the flow, so a user cannot create a
+    connection that could only ever fail.
+  - **A second inert bug found in the same audit.** In the discovery block the local branch sets
+    `target = None`, and the call still read `server_slug=target.slug` — an `AttributeError` caught
+    by the surrounding `except`, which only logs `mcp.turn_capabilities_unavailable`. So every local
+    server contributed **zero resources and zero prompts** in a real turn. Nothing went red because
+    tools come from the handshake rather than from a list call, and because the resources/prompts
+    test called `discover_capabilities` directly instead of through `mcp_for_turn`. Now read from
+    `spec.identity.slug`, which both branches always have, with the regression driven through
+    `mcp_for_turn`.
+  - **A finding, not a bug: a read-only turn does not even OFFER a local tool.** Approval is the
+    control everyone names, and it is the second one here. `ToolFilters(max_side_effect=READ_ONLY)`
+    drops `external_side_effect` tools **before ranking**, and a local server is `trusted=False`, so
+    all of its tools are exactly that whatever their `readOnlyHint` claims. Three-way coexistence
+    (§139) therefore has to be proven on an elevated turn — and the complement is asserted beside
+    it, same fixture, one flag flipped: native and remote still bind, only local is withheld.
+  - **Six guards proven real by disabling them.** Removing the loopback rule turns 5 tests red;
+    flipping `endpoint_trust`'s default to `"gateway"` turns **21** red — including Phase 3's own
+    pool suite, because it routes every catalogue endpoint past the SSRF guard; removing the env
+    denylist turns 2 red (most names survive via the secret-shape rule — the enumeration uniquely
+    catches names like `MCP_CREDENTIAL_ACTIVE_KEY_VERSION` that have no secret-shaped ending, and the
+    test records that both layers are real); removing the preflight local branch turns 5 red;
+    restoring `target.slug` turns 1 red; and flattening the pool key's tenant half turns **10** red,
+    two of them the new local cross-tenant tests. The `target.slug` proof failed on its first
+    attempt — reverting the fix left all 22 local tests green, which is how it was established that
+    the fix was unproven and the `mcp_for_turn` regression was needed.
+  - **Verification (local only).** `services/ai` **2563 passed / 52 skipped**, `ruff` clean; Convex
+    **993 passed / 3 skipped**; `bun run typecheck` 7/7; `bun run lint` + `sherif` clean. Nothing
+    committed — the whole MCP program stays uncommitted until Phase 8.
+  - **DEFERRED — needs a Docker host, and is NOT claimed.** Container escape · Docker socket absence ·
+    host and private-network egress · `--verify-signatures` actually rejecting an unsigned image ·
+    CPU/memory/PID/disk exhaustion · orphan cleanup after a crash · gateway restart recovery · every
+    performance and resource-overhead number. The flag ships **OFF** and zero real servers are
+    enabled, because no image signature can be verified on a machine with no Docker.
+  - **Limits.** OllaSuper **cannot verify the gateway's launch flags** — no MCP method reports them,
+    so `/v1/mcp/local` returns `flags_verified: false` rather than implying otherwise. **What
+    `--verify-signatures` and `--block-network` actually do is undocumented**, so no security claim
+    rests on them. Container isolation is a layer, not a boundary, and Docker Desktop on
+    Windows/macOS is a VM with different semantics — untested here either way. Isolation does not
+    prevent **semantic** credential abuse. And an audit finding outside MCP's scope:
+    `app/sandbox/harness.py` reports `tier 4 · in-process` with `secret_free: False` on Windows, so
+    on a Windows dev box untrusted attachment decoding runs in-process with secrets inherited —
+    pre-existing, flagged rather than silently fixed or ignored.
+
+  - **Verification (local only).** `services/ai` **2466 passed / 52 skipped**, `ruff` clean; Convex
+    **993 passed / 3 skipped**; `bun run typecheck` 7/7; `bun run lint` + `sherif` clean. Five
+    regression tests proven real by disabling their fix and watching them go red (cache bypass,
+    template segment-exactness, prompt role mapping, the `readOnlyHint` trust gate, and the
+    description cap — the last only fails when BOTH independent caps are removed, which is defence
+    in depth working and is recorded in the test rather than left to be rediscovered).
+  - **Limits, stated.** A **generically-named MCP tool may never be offered**: `DEFAULT_MIN_SCORE` is
+    0.2 and measured scores are 0.27-0.46, so a server whose tools are `get`/`list`/`search` with
+    thin descriptions can fall below the floor — the context budget working as designed, and it bit
+    this phase's own test, which had to be rewritten around a query that surfaces both tools.
+    **Subscriptions and tool-progress are deferred** (`listen()` needs protocol 2026-07-28, which
+    essentially nothing deployed speaks). **Server `instructions` stay un-ingested** — the flag
+    exists, using the text is Phase 6. **Binary resource content is refused, not decoded.** The
+    **compatibility matrix is by capability SHAPE, not vendor** — six in-process fixtures, because no
+    production MCP account exists and the service may not be exposed.
+
+- **Verification (local only).** `services/ai` **2364 passed / 52 skipped**, `ruff` clean (Phase 3
+  baseline was 2043/52); Convex **976 passed / 3 skipped** (Phase 3 baseline 922/3); `bun run
+  typecheck` 7/7; `bun run lint` clean + `sherif` clean. The OAuth work runs against a real in-process
+  authorization server (`tests/fakes/oauth_server.py`: PRM, AS metadata, DCR, PKCE verification,
+  token exchange, refresh with rotation, step-up, RFC 7009 revocation) — nothing is mocked, so a
+  passing test means the handshake really happened in that order with those bindings. An end-to-end
+  leakage test authorizes for real and then searches the stored record, every payload the store was
+  handed, `ToolDefinition`, the tool result, the **actual emitted log stream** and a Sentry event
+  including stack-frame locals.
+- **Limits stated rather than argued away.**
+  - **Scope cannot be narrowed by configuration** (finding 3). The controls are consent, recorded
+    grants, non-silent step-up, and an optional default-off URL rewrite.
+  - **A bare token in free log prose cannot be redacted** — no key name, no shape, and a per-user
+    runtime token is not in `configured_secrets()`. The control is that our own code never writes one,
+    which is checked against the real output of a real authorization rather than a synthetic event.
+  - **CAS does not fully solve refresh-token rotation** across a pool-eviction window:
+    `TokenStorage.set_tokens` returns None, so a CAS loser cannot hand the newer token back to the
+    SDK. Worst case is one re-authorization.
+  - **There is no registration lock.** Five concurrent first-time authorizations produced one DCR
+    registration in three measured runs, but that is in-process scheduling, not a guarantee. The
+    surplus is waste, not incorrectness.
+  - **A restart mid-authorization loses pending attempts** (in-process, justified by `--workers 1`
+    being a documented requirement). Nothing is left inconsistent; the user re-authorizes.
+  - **Master-key compromise decrypts everything stored.** Defence in depth against a database leak,
+    not against key loss.
+  - **Python cannot zeroize an immutable `str`.** No secure-wipe claim is made anywhere.
+  - **CIMD is wired but untestable locally** — it needs a publicly reachable HTTPS document, and this
+    phase does not expose the service. No placeholder URL was invented.
+  - **The auth capability matrix covers four auth SHAPES, not four vendors.** No production OAuth
+    application may be created in this phase, so each row is a real authorization server answering
+    real discovery with only the vendor's name absent. Remaining vendors are operator curation — a row
+    in `mcp_curated_servers`, no code change — and the probe is the tool for deciding what it says.
+  - **DB-gated tests cannot run here** (no Docker/Postgres on this machine), as in earlier phases.
+
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
 

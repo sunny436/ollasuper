@@ -36,7 +36,30 @@ async def readyz(request: Request, response: Response) -> dict:
         convex_ok = await state.convex.healthy()
         _last_check = (now, convex_ok)
 
-    ready = configured and convex_ok
+    # PHASE 8: MCP is REPORTED, and gates readiness in exactly one case.
+    #
+    # A remote MCP server being down must never make OllaSuper report unhealthy
+    # — that would take the whole deployment out of a load balancer because a
+    # third party had an outage, which is the failure §166 exists to prevent. So
+    # none of this consults a network.
+    #
+    # THE ONE EXCEPTION is a CONFIGURATION error: the flag is on and the pool
+    # did not start. That is not a third party's problem, it is this
+    # deployment's, and a process serving MCP routes that can only 503 is not
+    # ready in any useful sense.
+    mcp_enabled = bool(getattr(state.settings, "mcp_connections_enabled", False))
+    mcp_pool_live = getattr(state, "mcp_pool", None) is not None
+    mcp = {
+        "enabled": mcp_enabled,
+        "pool": mcp_pool_live,
+        # Presence, never the key. `mcp_vault` is None unless OAuth is enabled
+        # AND `KeyProvider` accepted a key at boot.
+        "vault": getattr(state, "mcp_vault", None) is not None,
+        "local": bool(getattr(state.settings, "mcp_local_enabled", False)),
+    }
+    mcp_ok = (not mcp_enabled) or mcp_pool_live
+
+    ready = configured and convex_ok and mcp_ok
     if not ready:
         response.status_code = 503
     return {
@@ -44,4 +67,5 @@ async def readyz(request: Request, response: Response) -> dict:
         "configured": configured,
         "convex": convex_ok,
         "active": state.registry.active,
+        "mcp": mcp,
     }

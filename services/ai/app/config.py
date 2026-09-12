@@ -816,6 +816,130 @@ class Settings(BaseSettings):
     # garbage collection, global-timeout and deactivate with no auth.
     scheduler_health_port: int = 8771
 
+    # --- MCP server catalogue (Phase 2: DISCOVERY ONLY) ----------------------
+    # A catalogue of what MCP servers EXIST. Nothing here connects to a server,
+    # installs a package, or grants trust — those are Phases 3, 6 and 6.
+    #
+    # `/v0.1` (not `/v0`): both answer today, but v0.1 is the version the
+    # registry's OpenAPI document describes and its README declares frozen.
+    mcp_registry_base_url: str = "https://registry.modelcontextprotocol.io"
+    # OFF by default. The catalogue is inert until an operator turns sync on, so
+    # merely deploying this code contacts nobody.
+    mcp_sync_enabled: bool = False
+    # Hourly, and the INCREMENTAL path is what makes that defensible. A real
+    # full sync measured 30,871 servers / 100,198 version records / 1,002 pages
+    # in 360s -- six minutes of continuous sequential requests against someone
+    # else's service, which hourly would be abusive. An earlier version of this
+    # comment said "~2,600 records over 27 pages"; that number came from a shell
+    # loop that mangled the cursor encoding and stopped early, and the design
+    # consequence is the opposite of what it implied: incremental sync is
+    # NECESSARY, not an optimisation.
+    mcp_sync_cron: str = "0 * * * *"
+    # The registry caps page size at 100.
+    mcp_sync_page_size: int = 100
+    mcp_sync_timeout_s: float = 30.0
+    mcp_sync_max_retries: int = 4
+
+    # --- Phase 3: remote MCP connections -------------------------------------
+    # OFF by default. With this false the lifespan builds no pool, no route can
+    # open a connection, and the deployment is byte-identical to Phase 2.
+    mcp_connections_enabled: bool = False
+    # TCP/TLS connect bound on the session's own httpx client.
+    mcp_connect_timeout_s: float = 10.0
+    # Bounds EVERY protocol request on a session -- initialize, tools/list and
+    # each tool call. One knob rather than three because that is the only shape
+    # the SDK offers: wrapping `enter_async_context(Client(...))` in an
+    # `anyio.fail_after` raises "Attempted to exit a cancel scope that isn't the
+    # current task's current cancel scope", since the timeout scope closes while
+    # the Client's own task group is still open. Measured, not assumed.
+    mcp_request_timeout_s: float = 30.0
+    # The executor's per-tool `asyncio.wait_for` bound. Independent of the
+    # above: it lives outside the SDK entirely.
+    mcp_tool_timeout_s: float = 30.0
+    # Session pool. Keyed on (user, workspace, connection) -- never on the
+    # server alone, which is what makes cross-tenant reuse unreachable.
+    mcp_session_idle_ttl_s: float = 300.0
+    mcp_session_sweep_interval_s: float = 30.0
+    mcp_max_sessions: int = 64
+    mcp_max_sessions_per_user: int = 8
+    # How long shutdown waits for sessions to close before cancelling. A parked
+    # session never returns on its own, so without this a wedged remote server
+    # could hold up systemd shutdown indefinitely.
+    mcp_pool_close_timeout_s: float = 10.0
+    # Bounds on what ONE remote server may push at us. A server decides how many
+    # tools it advertises and how large their schemas are; the schema is walked
+    # on every call AND sent to the model on every turn.
+    mcp_max_tools_per_server: int = 256
+    mcp_max_tool_schema_bytes: int = 64 * 1024
+    mcp_result_max_bytes: int = 256 * 1024
+    # Phase 5: the same reasoning, for the two capability kinds that are not
+    # tools. A resource body and a rendered prompt both land in the context
+    # window, so each needs its own ceiling; the executor's `result_max_chars`
+    # then bounds what actually reaches the model.
+    mcp_resource_max_bytes: int = 128 * 1024
+    mcp_prompt_max_chars: int = 32 * 1024
+    mcp_max_resources_per_server: int = 256
+    mcp_max_resource_templates_per_server: int = 64
+    mcp_max_prompts_per_server: int = 128
+
+    # --- Phase 6: local execution via the Docker MCP Gateway -----------------
+    # OFF. With this false the turn is byte-identical to Phase 5: no local row is
+    # read, no gateway is dialled, and `endpoint_trust` never leaves its default.
+    mcp_local_enabled: bool = False
+    # The gateway is operator-run infrastructure, addressed like
+    # `convex_internal_url` rather than like a catalogued server. It MUST be
+    # loopback — `assert_gateway_url` refuses anything else, because a remote
+    # gateway would put the auth token below on a network.
+    mcp_gateway_url: str = "http://127.0.0.1:8811"
+    # `docker mcp gateway run --transport streaming` authenticates localhost
+    # callers with this. Registered in `secrets()` so the log redactor scrubs it.
+    mcp_gateway_auth_token: str = ""
+    # Ceilings a curated row may ask UNDER, never over.
+    mcp_local_max_cpus: float = 2.0
+    mcp_local_max_memory_mb: int = 2048
+    # THE UNSAFE DEVELOPMENT FLAG (§52). It permits a `test`-trust row to start
+    # and NOTHING else: a blocked row, an unpinned image or a denied environment
+    # variable is still refused. Never true in a deployment; `main.py` refuses to
+    # start if it is set alongside a non-loopback gateway.
+    mcp_local_allow_untrusted: bool = False
+    # DEVELOPMENT/TEST ONLY. `{"slug": "token"}` or `slug=token,slug2=token2`.
+    # Registered in `secrets()` below so the log-redaction filter scrubs it.
+    # Phase 4's vault replaces this; it is not a credential store.
+    mcp_test_credentials: str = ""
+
+    # --- Phase 4: OAuth + the encrypted credential vault ---------------------
+    # OFF by default. With this false no credential is read or written, no
+    # OAuth route can start a flow, and the deployment is byte-identical to
+    # Phase 3.
+    mcp_oauth_enabled: bool = False
+    # Master key material: {"1": "<base64 32+ bytes>", "2": "..."}.
+    # NEVER generated and NEVER defaulted — a boot-time key would encrypt
+    # credentials no later process could read, and a hardcoded one would be no
+    # encryption at all. The service refuses credential operations when this is
+    # unset while the flag above is on. Operator-written into services/ai/.env
+    # (0600), exactly like OPENROUTER_API_KEY.
+    mcp_credential_keys: str = ""
+    mcp_credential_active_key_version: int = 1
+    # The ONE registered OAuth redirect. Exact match, no wildcards, never
+    # user-supplied. A Convex HTTP route because it has no locale prefix — the
+    # Next.js app is `[locale]`-segmented, so an app path would bake in "en".
+    mcp_oauth_redirect_uri: str = "http://127.0.0.1:3211/mcp/oauth/callback"
+    # Client ID Metadata Document URL. WIRED BUT UNSET: CIMD needs a publicly
+    # reachable HTTPS document and this phase does not expose the service, so
+    # leaving it empty falls through to dynamic client registration. A
+    # placeholder here would be a lie told to every authorization server.
+    mcp_oauth_client_metadata_url: str = ""
+    # How long a pending authorization stays claimable. A human clicking through
+    # a consent screen; long enough for that, short enough that a leaked state
+    # is worth little.
+    mcp_oauth_attempt_ttl_s: float = 120.0
+    # Per-server scope allowlist, e.g. {"github": ["repo:read"]}. EMPTY BY
+    # DEFAULT, which means "request what the server's metadata asks for" — the
+    # specification's behaviour. Narrowing is applied to the authorization URL
+    # because the SDK overwrites `client_metadata.scope` from server metadata,
+    # so configuring a narrower scope does nothing. See oauth/flow.py.
+    mcp_oauth_scope_allowlist: str = ""
+
     @property
     def knowledge_engine_url(self) -> str:
         """SQLAlchemy async URL. psycopg3 takes libpq params (incl. sslmode)
@@ -848,6 +972,17 @@ class Settings(BaseSettings):
                 # Ollagraph Bearer key (osk_...). Discovery is key-less, but the
                 # key must never reach logs if a future execution path uses it.
                 self.ollagraph_api_key,
+                # Development MCP tokens. They are attached as Authorization
+                # headers to a third party, so they are exactly the kind of
+                # value a stack trace or a debug log would otherwise carry.
+                self.mcp_test_credentials,
+                # THE master key for every stored credential. If this ever
+                # reached a log line, the encryption would be decorative.
+                self.mcp_credential_keys,
+                # Phase 6: the gateway's localhost auth token. A bearer header
+                # on every gateway request, so it must be scrubbed like any
+                # other credential.
+                self.mcp_gateway_auth_token,
             )
             if s
         )

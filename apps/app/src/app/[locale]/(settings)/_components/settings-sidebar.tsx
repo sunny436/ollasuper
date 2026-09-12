@@ -5,6 +5,7 @@ import {
   Brain,
   FolderClosed,
   Link2,
+  Plug,
   Sparkles,
   User,
   Wand2,
@@ -25,6 +26,11 @@ const NAV = [
   { href: "/settings/personalization", label: "Personalization", icon: Sparkles },
   { href: "/settings/memories", label: "Memories", icon: Brain },
   { href: "/settings/skills", label: "My Skills", icon: Wand2 },
+  // Connectors sits with Skills and Memories rather than in the workspace rail:
+  // a connection is owner-scoped (`mcpConnections` is indexed by_user) and
+  // follows the person across workspaces, which is the same reason skills live
+  // here. The rail holds what you operate INSIDE one workspace.
+  { href: "/settings/connectors", label: "Connectors", icon: Plug },
   { href: "/settings/shared", label: "Shared Links", icon: Link2 },
   { href: "/settings/archived", label: "Archived Chats", icon: Archive },
   { href: "/settings/files", label: "Files", icon: FolderClosed },

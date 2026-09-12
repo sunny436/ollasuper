@@ -78,11 +78,27 @@ def _assert_dbos_version() -> None:
         "SCHEDULER_ALLOW_DBOS_VERSION_DRIFT=1 overrides."
     )
 
+
 # Set once, before DBOS.launch(). DBOS registers workflows by name at import
 # time, so the collaborators they need cannot be constructor arguments.
 _SETTINGS: Settings | None = None
 _CLIENT: ConvexClient | None = None
 _EXECUTOR: OccurrenceExecutor | None = None
+# Lazily built on the first catalogue sync. The scheduler is a SEPARATE
+# process from the API (myos-scheduler.service), so it owns its own pooled
+# engine — it cannot borrow app.state.db, which lives in the API process.
+_CATALOGUE_DB: Any = None
+
+
+def _mcp_sync_cron() -> str:
+    """Cron for the catalogue sync. Read at IMPORT time because DBOS
+    registers a schedule at decoration; the workflow itself still re-checks
+    `mcp_sync_enabled` at run time, so the feature can be turned off without
+    a redeploy."""
+    try:
+        return get_settings().mcp_sync_cron
+    except Exception:  # noqa: BLE001 — a bad env must not stop the scheduler
+        return "0 * * * *"
 
 
 def _settings() -> Settings:
@@ -198,9 +214,7 @@ class DurableOps:
             schedule_ended,
         )
 
-    async def sched_claim(
-        self, *, limit: int, max_per_user: int
-    ) -> dict[str, Any]:
+    async def sched_claim(self, *, limit: int, max_per_user: int) -> dict[str, Any]:
         return await step_claim(limit, max_per_user)
 
     async def sched_verify(
@@ -393,6 +407,49 @@ async def _serve() -> None:
     _CLIENT = ConvexClient(settings, ConvexClient.build_http_client())
     # The chat executor drives Convex through the same shared client.
     _EXECUTOR = build_executor(settings, _CLIENT)
+
+
+@DBOS.scheduled(_mcp_sync_cron())
+@DBOS.workflow()
+async def mcp_registry_sync(scheduled: datetime, actual: datetime) -> None:
+    """Refresh the MCP server CATALOGUE from the official registry.
+
+    DISCOVERY ONLY. This records what servers exist; it connects to nothing,
+    installs nothing and grants no trust.
+
+    Cron is the right shape HERE even though this module deliberately avoids it
+    for user tasks: that objection is that cron cannot express product
+    recurrence ("0 9 31 * *" silently skips February), and a registry refresh has
+    no such semantics. `scheduled` is DBOS's replay-stable time, which is exactly
+    what an idempotent sync wants — a recovered workflow re-runs with the same
+    watermark rather than a drifted one.
+    """
+    settings = _SETTINGS or get_settings()
+    if not settings.mcp_sync_enabled:
+        return
+    global _CATALOGUE_DB
+    if _CATALOGUE_DB is None:
+        from app.db.engine import create_knowledge_engine
+
+        _CATALOGUE_DB = create_knowledge_engine(settings)
+
+    from app.mcp.registry.client import RegistryClient
+    from app.mcp.registry.store import PostgresSyncPort
+    from app.mcp.registry.sync import sync_registry
+
+    http = RegistryClient.build_http_client(settings.mcp_sync_timeout_s)
+    try:
+        client = RegistryClient(
+            http,
+            base_url=settings.mcp_registry_base_url,
+            page_size=settings.mcp_sync_page_size,
+            max_retries=settings.mcp_sync_max_retries,
+        )
+        # Never raises for an upstream failure: a registry outage must leave the
+        # catalogue stale and searchable, not take the scheduler down with it.
+        await sync_registry(PostgresSyncPort(_CATALOGUE_DB), client, now=scheduled)
+    finally:
+        await http.aclose()
 
     _assert_dbos_version()
     DBOS(config=build_dbos_config(settings))

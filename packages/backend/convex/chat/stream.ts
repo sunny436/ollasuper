@@ -86,6 +86,15 @@ function withScheduledDirective(
 
 /** Mirrors GenerateRequest.systemPrompt's `max_length` in the Python contract. */
 const MAX_SYSTEM_PROMPT_CHARS = 8000;
+/**
+ * Phase 5: how many connected MCP servers one turn may open sessions to.
+ *
+ * Matches the curated set's size — a user cannot connect to more servers than
+ * the deployment curated, so a longer list means a bug. It also bounds the work
+ * a single turn can do before the model sees anything: each connection costs a
+ * pooled session and a capability discovery round trip.
+ */
+const MAX_MCP_CONNECTIONS_PER_TURN = 30;
 
 const STALL_MS = 90_000;
 // Phase 7: how many times the reaper re-dispatches a crashed turn before giving
@@ -604,6 +613,37 @@ export const dispatchPayload = internalQuery({
     // for them.
     const customSkills = await loadSkillsForDispatch(ctx, stream.userId);
 
+    // Phase 5 (MCP): the user's CONNECTED servers, so the turn can open a session
+    // to each and offer its tools to the model.
+    //
+    // OWNERSHIP IS THE INDEX, not a filter applied afterwards: `by_user` is keyed
+    // on `stream.userId`, so there is no query shape here that could return
+    // somebody else's connection. Nothing credential-shaped travels — the Python
+    // plane looks a credential up from its own vault using
+    // `(user, workspace, connection)`.
+    //
+    // ONLY `ready` CONNECTIONS. A `configured` one has never been contacted, a
+    // `failed` one just failed, and a `disconnected` one was closed on purpose —
+    // sending any of them would make every turn re-attempt a server the user is
+    // not currently using, and `disconnected` in particular must never auto-
+    // reconnect.
+    const mcpConnections = (
+      await ctx.db
+        .query("mcpConnections")
+        .withIndex("by_user", (q) => q.eq("userId", stream.userId))
+        .collect()
+    )
+      .filter(
+        (c) => c.status === "ready" && c.workspaceId === stream.workspaceId,
+      )
+      .slice(0, MAX_MCP_CONNECTIONS_PER_TURN)
+      .map((c) => ({
+        connectionId: c._id,
+        serverName: c.serverName,
+        slug: c.slug,
+        version: c.versionMode === "pinned" ? c.version : null,
+      }));
+
     // Reconstruct completed tool steps on a crash-resume (attempts > 0) OR an
     // approval-resume (attempts stays 0, but events survived). Decoupled from
     // `attempt` and mirrored in the Python runner (`if req.completedTools`) so
@@ -746,6 +786,11 @@ export const dispatchPayload = internalQuery({
       // GenerateRequest is `extra="forbid"`, so a Python build without this
       // field 400s every turn once Convex starts sending it. Python first.
       customSkills,
+      // Phase 5 (MCP). SAME DEPLOY-ORDER HAZARD as the two fields above, and it
+      // is the reason Phase 5 re-engages the Python-before-Convex rule: a Python
+      // build that does not declare `mcpConnections` 400s every single turn the
+      // moment this starts travelling.
+      mcpConnections,
     };
   },
 });

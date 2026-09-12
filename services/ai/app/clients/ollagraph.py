@@ -4,11 +4,11 @@ Two responsibilities:
   * `fetch_spec` / `discover` — pull the PUBLIC OpenAPI spec (no credential) and
     hand it to the pure discovery parser. This is what startup discovery uses.
   * `call_tool` — the normalized request/response primitive (auth header, input
-    validation, response + error normalization). It is exercised ONLY by tests
-    (against httpx.MockTransport); NO FastAPI route, graph node, or chat-path
-    import calls it, and it makes ZERO real Ollagraph calls. Phase 1 executes
-    no tools — this exists so error normalization is testable and so a future
-    phase has a single, credential-safe execution seam.
+    validation, response + error normalization). This IS the live production
+    execution path: `runner.py` constructs this adapter and the executor
+    dispatches to it via `ctx.adapter`. An earlier version of this docstring
+    said "exercised ONLY by tests"; that was true when tools executed nothing
+    and has been wrong since the agent started calling them.
 
 Nothing here is wired to the LLM. Credentials never reach logs (we never
 `log.exception` a provider error — the Phase-0 redaction gap leaves tracebacks
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 
 import httpx
 
@@ -29,6 +28,7 @@ from app.models.tools import ToolDefinition
 from app.ssrf import SsrfError, assert_payload_urls_safe
 from app.tools.discovery import DiscoveryResult, discover_from_spec
 from app.tools.errors import ToolError, ToolErrorKind
+from app.tools.validate import validate_args
 
 log = get_logger(__name__)
 
@@ -125,33 +125,6 @@ def tool_gate(settings: Settings) -> AdaptiveGate:
         )
     return _gate
 
-_JSON_TYPES = {
-    "string": str,
-    "integer": int,
-    "number": (int, float),
-    "boolean": bool,
-    "array": list,
-    "object": dict,
-}
-
-# Phase 5 DoS defense-in-depth: absolute, schema-INDEPENDENT caps on a tool-call
-# body, so an unbounded or unschema'd field can't overflow the provider or the
-# pipeline even when the schema declares no minLength/maxItems/etc.
-_MAX_PAYLOAD_BYTES = 128 * 1024
-_MAX_NESTING_DEPTH = 12
-
-
-def _nesting_depth(value: object, level: int = 0) -> int:
-    """Max object/array nesting depth, short-circuited past the cap."""
-    if level > _MAX_NESTING_DEPTH:
-        return level
-    if isinstance(value, dict):
-        vals = value.values()
-        return max((_nesting_depth(v, level + 1) for v in vals), default=level)
-    if isinstance(value, list):
-        return max((_nesting_depth(v, level + 1) for v in value), default=level)
-    return level
-
 
 class OllagraphAdapter:
     def __init__(self, settings: Settings, client: httpx.AsyncClient) -> None:
@@ -222,90 +195,14 @@ class OllagraphAdapter:
 
     # --- execution primitive (TESTS ONLY; not wired to prod) -------------
     def _validate_input(self, payload: dict, input_schema: dict | None) -> None:
-        """Phase 5 DEFAULT-CLOSED validation. The model's args are untrusted:
-        reject undeclared fields, enforce enums + string/number bounds, recurse
-        into nested objects/arrays, and cap absolute payload size + nesting depth.
-        The input_schema handed in is fully dereferenced by the executor, so the
-        nested checks see real shapes, not $ref stubs."""
-        if not isinstance(payload, dict):
-            raise ToolError(ToolErrorKind.INVALID_INPUT, "payload must be an object")
-        # Absolute caps first (independent of the schema).
-        try:
-            size = len(json.dumps(payload, default=str))
-        except (TypeError, ValueError) as e:
-            raise ToolError(
-                ToolErrorKind.INVALID_INPUT, "payload is not serializable"
-            ) from e
-        if size > _MAX_PAYLOAD_BYTES:
-            raise ToolError(ToolErrorKind.SCHEMA_VALIDATION, "payload too large")
-        if _nesting_depth(payload) > _MAX_NESTING_DEPTH:
-            raise ToolError(
-                ToolErrorKind.SCHEMA_VALIDATION, "payload nested too deeply"
-            )
-        if input_schema:
-            self._validate_value(payload, input_schema, "$")
+        """Default-closed validation of the model's untrusted args.
 
-    def _validate_value(self, value: object, schema: dict, path: str) -> None:
-        """Recursive per-node check against a (dereferenced) JSON schema node."""
-        if not isinstance(schema, dict) or not schema:
-            return
-        jtype = schema.get("type")
-        expected = _JSON_TYPES.get(jtype) if isinstance(jtype, str) else None
-        # bool is an int subclass — guard against it satisfying `integer`/`number`.
-        if expected is not None and (
-            not isinstance(value, expected)
-            or (jtype in ("integer", "number") and isinstance(value, bool))
-        ):
-            raise ToolError(ToolErrorKind.SCHEMA_VALIDATION, f"{path} expected {jtype}")
-        enum = schema.get("enum")
-        if isinstance(enum, list) and value not in enum:
-            raise ToolError(
-                ToolErrorKind.SCHEMA_VALIDATION, f"{path} is not an allowed value"
-            )
-        if isinstance(value, str):
-            mx, mn = schema.get("maxLength"), schema.get("minLength")
-            if isinstance(mx, int) and len(value) > mx:
-                raise ToolError(ToolErrorKind.SCHEMA_VALIDATION, f"{path} too long")
-            if isinstance(mn, int) and len(value) < mn:
-                raise ToolError(ToolErrorKind.SCHEMA_VALIDATION, f"{path} too short")
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            mx, mn = schema.get("maximum"), schema.get("minimum")
-            if isinstance(mx, (int, float)) and value > mx:
-                raise ToolError(
-                    ToolErrorKind.SCHEMA_VALIDATION, f"{path} above maximum"
-                )
-            if isinstance(mn, (int, float)) and value < mn:
-                raise ToolError(
-                    ToolErrorKind.SCHEMA_VALIDATION, f"{path} below minimum"
-                )
-        if isinstance(value, dict) and (jtype == "object" or "properties" in schema):
-            props = schema.get("properties") or {}
-            for req in schema.get("required") or []:
-                if req not in value:
-                    raise ToolError(
-                        ToolErrorKind.SCHEMA_VALIDATION,
-                        f"missing required field: {req}",
-                    )
-            additional = schema.get("additionalProperties")
-            # DEFAULT-CLOSED when the tool DECLARES its inputs (properties) or
-            # explicitly forbids extras. A bare {"type":"object"} with neither is
-            # treated as open (bounded only by the DoS caps) since its shape is
-            # unknown — tightening that would need live-spec confirmation.
-            closed = bool(props) or additional is False
-            for k, v in value.items():
-                if k in props:
-                    self._validate_value(v, props[k], f"{path}.{k}")
-                elif isinstance(additional, dict):
-                    self._validate_value(v, additional, f"{path}.{k}")
-                elif additional is True:
-                    continue
-                elif closed:
-                    raise ToolError(
-                        ToolErrorKind.SCHEMA_VALIDATION, f"unexpected field: {k}"
-                    )
-        if isinstance(value, list) and isinstance(schema.get("items"), dict):
-            for i, item in enumerate(value):
-                self._validate_value(item, schema["items"], f"{path}[{i}]")
+        The rules MOVED to `app/tools/validate.py` unchanged. MCP became a
+        second provider that forwards model-authored JSON to a third party, and
+        a security check with two copies is a security check that drifts. Kept
+        as a method so every existing call site and test is untouched.
+        """
+        validate_args(payload, input_schema)
 
     def _auth_headers(
         self, tool: ToolDefinition, *, user_id: str = "", workspace_id: str = ""

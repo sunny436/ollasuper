@@ -44,7 +44,30 @@ export type QuotaKind =
   // though the probe half cannot be. Outbound mail is metered (~1500/month) and
   // the SAME transport carries OTP, verification and reset codes, so draining it
   // is a denial of service against authentication itself, not just spam.
-  | "passwordReset";
+  | "passwordReset"
+  // --- MCP (Phase 8) -------------------------------------------------------
+  // Each of these makes a REAL network call to a third party on the user's
+  // behalf, which is what separates them from ordinary reads. None of them
+  // existed before Phase 8: the whole MCP surface shipped with no rate limit of
+  // any kind, so a loop in a client — or a user holding a key down — spent
+  // somebody else's API quota and our outbound bandwidth without bound.
+  //
+  // The numbers are SCALED FROM `MAX_GENERATIONS_PER_HOUR` (120) and from what
+  // one person plausibly does, NOT from load testing. Said plainly because a
+  // limit presented as measured, when it was reasoned, is the kind of claim
+  // that stops anyone ever measuring it.
+  //
+  // Opening a session: handshake + capability discovery against a third party.
+  // 60/hr covers connecting every server in a curated set twice over.
+  | "mcpConnect"
+  // Starting an authorization: mints `state`, may trigger dynamic client
+  // registration, and puts a consent screen in front of a human. Deliberately
+  // the tightest of the three — a loop here is visible to the PROVIDER as
+  // abuse, and their response is to block the client for every user.
+  | "mcpAuth"
+  // Listing or reading resources and prompts. Each acquires a pooled session,
+  // so it is the same order of cost as a chat turn and carries the same limit.
+  | "mcpCapability";
 
 export type WindowResult =
   | { ok: true }

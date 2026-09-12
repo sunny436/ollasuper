@@ -11,8 +11,11 @@ so no CORS middleware is mounted at all.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+import json
+from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any
 
+import anyio
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
@@ -23,7 +26,16 @@ from app.config import Settings, get_settings
 from app.db.engine import create_knowledge_engine
 from app.logging import configure, get_logger
 from app.observability import init_sentry
-from app.routers import files, generate, health, report, schedule, tools
+from app.routers import (
+    files,
+    generate,
+    health,
+    mcp,
+    mcp_oauth,
+    report,
+    schedule,
+    tools,
+)
 from app.runtime.registry import Registry
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
@@ -60,10 +72,40 @@ async def _discover_tools_best_effort(app: FastAPI, settings: Settings) -> None:
         await client.aclose()
 
 
+def _scope_allowlist(settings: Settings) -> dict[str, list[str]]:
+    """Parse `mcp_oauth_scope_allowlist` into {slug: [scope, ...]}.
+
+    EMPTY BY DEFAULT, which means "request what the server's own metadata asks
+    for" — the specification's behaviour, and the only honest default given that
+    the SDK overwrites `client_metadata.scope` from that metadata. A malformed
+    value yields {} plus a warning rather than an exception: a misconfigured
+    least-privilege hint must not stop the service booting.
+    """
+    raw = (settings.mcp_oauth_scope_allowlist or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        log.warning("mcp_oauth_scope_allowlist_unparseable")
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        str(slug): [str(scope) for scope in scopes]
+        for slug, scopes in parsed.items()
+        if isinstance(scopes, list)
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     configure(settings.ai_log_level, settings.secrets())
+    # Holds the MCP pool's task group open across the yield. A plain assignment
+    # cannot: the group must be ENTERED here and EXITED here, in this task.
+    resources = AsyncExitStack()
+    await resources.__aenter__()
 
     http = ConvexClient.build_http_client()
     app.state.settings = settings
@@ -105,6 +147,86 @@ async def lifespan(app: FastAPI):
         if app.state.tool_registry is not None
         else None
     )
+    # Phase 3: live MCP sessions. None when disabled — with the flag off the
+    # lifespan is byte-identical to Phase 2 and no route can open a connection.
+    #
+    # The pool owns a task group that must outlive any single request, because
+    # sessions do. It is entered on `resources` (this task) and closed in the
+    # `finally` below (also this task): anyio refuses to exit a cancel scope
+    # from a different task than entered it, which is the same constraint that
+    # makes every session an actor with its own owner task.
+    app.state.mcp_pool = None
+    app.state.mcp_vault = None
+    app.state.mcp_oauth_flow = None
+    if settings.mcp_connections_enabled:
+        from app.mcp.credentials import (
+            EnvCredentialResolver,
+            VaultCredentialResolver,
+            parse_test_credentials,
+        )
+        from app.mcp.session import McpSessionPool, PoolLimits
+
+        # Phase 4: the credential vault. FAIL CLOSED — if OAuth is enabled but
+        # unkeyed, `KeyProvider` raises here, at boot, rather than letting the
+        # service run and discover it on a user's first authorization. There is
+        # deliberately no generated default: a boot-time key would encrypt
+        # credentials no later process could read.
+        resolver: Any = EnvCredentialResolver(
+            parse_test_credentials(settings.mcp_test_credentials)
+        )
+        if settings.mcp_oauth_enabled:
+            from app.mcp.oauth.attempts import AttemptRegistry
+            from app.mcp.oauth.flow import OAuthFlow
+            from app.mcp.vault.convex_store import ConvexCredentialStore
+            from app.mcp.vault.keys import KeyProvider
+            from app.mcp.vault.store import CredentialVault
+
+            keys = KeyProvider(
+                settings.mcp_credential_keys,
+                settings.mcp_credential_active_key_version,
+            )
+            app.state.mcp_vault = CredentialVault(
+                keys, ConvexCredentialStore(app.state.convex)
+            )
+            app.state.mcp_oauth_flow = OAuthFlow(
+                app.state.mcp_vault,
+                redirect_uri=settings.mcp_oauth_redirect_uri,
+                registry=AttemptRegistry(ttl_s=settings.mcp_oauth_attempt_ttl_s),
+                client_metadata_url=settings.mcp_oauth_client_metadata_url or None,
+                scope_allowlist=_scope_allowlist(settings),
+            )
+            # Authorization flows outlive the request that started them, so they
+            # need a lifespan-scoped group — the same anyio constraint that
+            # makes every pooled session an actor.
+            app.state.mcp_oauth_flow.bind(
+                await resources.enter_async_context(anyio.create_task_group())
+            )
+            # The pool's resolver becomes the vault-backed one: a pooled session
+            # can then refresh an expired token silently, while an INTERACTIVE
+            # authorization is refused from a tool call (see
+            # VaultCredentialResolver).
+            resolver = VaultCredentialResolver(
+                app.state.mcp_vault,
+                redirect_uri=settings.mcp_oauth_redirect_uri,
+                client_metadata_url=settings.mcp_oauth_client_metadata_url or None,
+            )
+            log.info(
+                "mcp_oauth_ready",
+                extra={"key_versions": list(keys.known_versions)},
+            )
+
+        app.state.mcp_pool = await McpSessionPool(
+            PoolLimits(
+                idle_ttl_s=settings.mcp_session_idle_ttl_s,
+                max_sessions=settings.mcp_max_sessions,
+                max_sessions_per_user=settings.mcp_max_sessions_per_user,
+                sweep_interval_s=settings.mcp_session_sweep_interval_s,
+                close_timeout_s=settings.mcp_pool_close_timeout_s,
+                max_tools_per_server=settings.mcp_max_tools_per_server,
+                max_tool_schema_bytes=settings.mcp_max_tool_schema_bytes,
+            ),
+            resolver=resolver,
+        ).start(resources)
 
     log.info(
         "startup",
@@ -134,6 +256,14 @@ async def lifespan(app: FastAPI):
         # until the Convex reaper fires 90s later.
         await app.state.registry.shutdown()
         await app.state.ingest_registry.shutdown()
+        # LOAD-BEARING, not hygiene. Every pooled MCP session is a task parked
+        # on an event; a parked task never returns on its own, so leaving one
+        # open makes the pool's task group wait forever and systemd shutdown
+        # with it. `aclose()` closes each session first and cancels the group as
+        # a backstop, both bounded, so a wedged remote server cannot hang us.
+        if getattr(app.state, "mcp_pool", None) is not None:
+            await app.state.mcp_pool.aclose()
+        await resources.aclose()
         from app.ingest.pool import shutdown_pool
 
         shutdown_pool()
@@ -165,6 +295,14 @@ def create_app() -> FastAPI:
     # Scheduled-report PDF. Same shape as the parser: payload in, bytes out, no
     # Convex client, no ingress secret, no write path of any kind.
     app.include_router(report.router)
+    # MCP server CATALOGUE (Phase 2). Read-only discovery over the local
+    # catalogue — it never contacts the upstream registry and never connects to
+    # an MCP server. Same service-key dependency as every other /v1 router.
+    app.include_router(mcp.router)
+    # Phase 4: the OAuth control plane. Same /v1/mcp prefix and the same
+    # service-key dependency; a separate module because driving an authorization
+    # flow against a third party is a different job from reading a local table.
+    app.include_router(mcp_oauth.router)
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:

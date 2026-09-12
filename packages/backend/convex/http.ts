@@ -825,11 +825,203 @@ http.route({
           }),
         );
       }
+      // ---------------------------------------------------- MCP credentials
+      //
+      // CIPHERTEXT ONLY. The Python plane encrypts with AES-256-GCM before
+      // anything reaches here, so every payload below carries an `envelope`
+      // string plus non-secret metadata. No plaintext token, refresh token or
+      // client secret can arrive through these ops, because none is ever sent.
+      //
+      // These live on the ingress path rather than as actions because
+      // `TokenStorage.set_tokens` fires deep inside an SDK token refresh,
+      // mid-tool-call, with no Convex action in the loop — the Python plane has
+      // to be able to write on its own.
+      case "mcp-credential-load": {
+        const credential = await ctx.runQuery(
+          internal.mcp.credentials.loadCredential,
+          {
+            connectionId: body.connectionId as Id<"mcpConnections">,
+            resource: String(body.resource ?? ""),
+            kind: (body.kind ?? "oauth_token") as
+              | "oauth_token"
+              | "api_key"
+              | "bearer",
+          },
+        );
+        return aiJson({ credential });
+      }
+      case "mcp-credential-save": {
+        const saved = await ctx.runMutation(
+          internal.mcp.credentials.saveCredential,
+          {
+            credentialId: String(body.credentialId ?? ""),
+            userId: body.userId as Id<"users">,
+            workspaceId: body.workspaceId as Id<"workspaces">,
+            connectionId: body.connectionId as Id<"mcpConnections">,
+            serverName: String(body.serverName ?? ""),
+            resource: String(body.resource ?? ""),
+            kind: (body.kind ?? "oauth_token") as
+              | "oauth_token"
+              | "api_key"
+              | "bearer",
+            envelope: String(body.envelope ?? ""),
+            keyVersion: Number(body.keyVersion ?? 0),
+            expiresAt:
+              typeof body.expiresAt === "number" ? body.expiresAt : undefined,
+            scope: typeof body.scope === "string" ? body.scope : undefined,
+            status: (body.status ?? "active") as
+              | "active"
+              | "expired"
+              | "refresh_failed"
+              | "revoked"
+              | "unreadable",
+            rev: Number(body.rev ?? 0),
+            expectedRev: Number(body.expectedRev ?? 0),
+          },
+        );
+        return aiJson(saved);
+      }
+      case "mcp-credential-mark": {
+        await ctx.runMutation(internal.mcp.credentials.markCredential, {
+          credentialId: String(body.credentialId ?? ""),
+          status: (body.status ?? "unreadable") as
+            | "active"
+            | "expired"
+            | "refresh_failed"
+            | "revoked"
+            | "unreadable",
+        });
+        return aiJson({ ok: true });
+      }
+      case "mcp-credential-delete": {
+        return aiJson(
+          await ctx.runMutation(internal.mcp.credentials.deleteCredential, {
+            credentialId: String(body.credentialId ?? ""),
+          }),
+        );
+      }
+      case "mcp-oauth-client-load": {
+        const client = await ctx.runQuery(internal.mcp.credentials.loadClient, {
+          serverName: String(body.serverName ?? ""),
+          issuer: String(body.issuer ?? ""),
+        });
+        return aiJson({ client });
+      }
+      case "mcp-oauth-client-save": {
+        await ctx.runMutation(internal.mcp.credentials.saveClient, {
+          clientRecordId: String(body.clientRecordId ?? ""),
+          serverName: String(body.serverName ?? ""),
+          issuer: String(body.issuer ?? ""),
+          envelope: String(body.envelope ?? ""),
+          keyVersion: Number(body.keyVersion ?? 0),
+          registrationMode: (body.registrationMode ?? "dcr") as
+            | "dcr"
+            | "cimd"
+            | "preregistered",
+        });
+        return aiJson({ ok: true });
+      }
       default:
         return aiJson({ error: `unknown op: ${body.op}` }, 400);
     }
   }),
 });
+
+// The OAuth redirect target.
+//
+// WHY IT LIVES HERE and not in the Next.js app: the app is locale-prefixed
+// (`/[locale]/...` via next-international), and an OAuth redirect_uri must be an
+// EXACT registered string. An app route would bake in "en" and break for every
+// other locale. This path has no locale segment and is already publicly routed.
+//
+// WHY IT IS UNAUTHENTICATED. The browser arrives straight from the OAuth
+// provider carrying no OllaSuper session — that is what a redirect is. The
+// binding is `state`: the Python plane holds it in memory against the tenant who
+// STARTED the flow, and the credential is written for THAT tenant, never for
+// whoever delivered the callback. So a replayed or misdirected callback cannot
+// bind an account to the wrong user, and the MCP SDK independently re-validates
+// the state with a constant-time compare before exchanging anything.
+http.route({
+  path: "/mcp/oauth/callback",
+  method: "GET",
+  handler: httpAction(async (_ctx, req) => {
+    const url = new URL(req.url);
+    const state = url.searchParams.get("state") ?? "";
+    const code = url.searchParams.get("code");
+    const error = url.searchParams.get("error");
+    const iss = url.searchParams.get("iss");
+
+    const base = process.env.AI_BASE_URL;
+    const key = process.env.AI_SERVICE_KEY;
+    if (!base || !key || !state) {
+      return callbackPage(false, "This authorization link is not valid.");
+    }
+
+    try {
+      const res = await fetch(`${base.replace(/\/$/, "")}/v1/mcp/oauth/callback`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-service-key": key },
+        body: JSON.stringify({ state, code, iss, error }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        detail?: string;
+      };
+      if (res.ok && payload.ok) {
+        return callbackPage(true, "You can close this window.");
+      }
+      // `detail` is already classified and bounded by the Python plane: an
+      // RFC 6749 code plus a sentence, never the provider's raw body.
+      return callbackPage(
+        false,
+        payload.detail ?? "Authorization did not complete.",
+      );
+    } catch {
+      // Never echo the exception: it can carry an internal hostname.
+      return callbackPage(false, "The service could not be reached.");
+    }
+  }),
+});
+
+/** Escape anything that reaches the callback page. */
+function escapeMcpHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * The page the user lands on. Deliberately plain.
+ *
+ * Carries NO token, NO code and NO state — the browser has already done its one
+ * job. `Cache-Control: no-store` because the URL that produced it contained an
+ * authorization code, and `Referrer-Policy: no-referrer` so that code cannot
+ * ride out in a Referer header.
+ */
+function callbackPage(ok: boolean, message: string): Response {
+  const title = ok ? "Connected" : "Authorization failed";
+  const body = "font:16px system-ui;margin:4rem auto;max-width:32rem;text-align:center;color:#111";
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeMcpHtml(title)}</title></head>
+<body style="${body}">
+<h1 style="font-size:1.25rem">${escapeMcpHtml(title)}</h1>
+<p style="color:#555">${escapeMcpHtml(message)}</p>
+</body></html>`;
+  return new Response(html, {
+    status: ok ? 200 : 400,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
 
 // Attachment bytes for the inference plane.
 //

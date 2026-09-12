@@ -28,7 +28,7 @@ import json
 import random
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import ToolMessage
 
@@ -66,6 +66,7 @@ from app.marketing.tool import (
     compute_marketing_calc,
     run_marketing_reference,
 )
+from app.mcp.resource_tool import MCP_READ_RESOURCE_TOOL_NAME
 from app.models.events import EventType
 from app.models.execution import (
     ExecutionLedger,
@@ -203,6 +204,11 @@ class ToolExecContext:
     # the durable run id + the code-enforced source/branch safety ceilings. None on
     # every non-research turn (and for delegated sub-agents) => byte-identical.
     research: ResearchContext | None = None
+    # Phase 5 (MCP): the turn's capability index, set only when a connected
+    # server advertises resources. Carries metadata and live clients — never a
+    # credential, which the vault resolves per session.
+    mcp_index: Any = None
+    mcp_resource_max_bytes: int = 128 * 1024
     # Data Analysis: set when the compute tools are bound (flag on + the thread has a
     # dataset). Holds the per-turn dataset map (name→ref; storageId never reaches the
     # model). None otherwise ⇒ byte-identical.
@@ -786,6 +792,22 @@ async def _run_one(
             execution,
             _run_generate_file(ctx, call_id, args),
             side_effect="external_side_effect",
+        )
+
+    # MCP resources — read ONE resource a connected server advertised (routed
+    # before the registry, like every other reserved tool).
+    #
+    # READ_ONLY, and that is a real classification rather than a convenience: this
+    # tool cannot write, and the connection it reads through is resolved
+    # server-side from the capability index, so the model cannot point it at
+    # somebody else's server. A URI matching nothing the user's own servers
+    # advertised is refused before any request leaves.
+    if ctx.mcp_index is not None and bound_name == MCP_READ_RESOURCE_TOOL_NAME:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_mcp_read_resource(ctx, call_id, args),
+            side_effect="read_only",
         )
 
     # Documents capability — read/edit/process an uploaded PPTX/PDF (routed before
@@ -1966,6 +1988,36 @@ async def _run_clarification(
         call_id,
         {"status": "clarification_requested", "question": question},
         status="success",
+    )
+
+
+async def _run_mcp_read_resource(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """Read one MCP resource the user's own connected servers advertised.
+
+    THE MODEL SUPPLIES ONLY A URI. It cannot name a connection, a server or a
+    credential; `index.resolve_resource` finds the connection from the URI
+    against capabilities discovered for THIS user this turn, and refuses anything
+    it does not recognise. That refusal — not a URL scheme check — is what makes
+    an arbitrary `file://` or `http://169.254.169.254` harmless here: there is no
+    fetch path for it to reach.
+
+    A failure comes back as a ToolMessage, never an exception. The model can
+    correct a wrong URI if it is told what happened, and cannot if the turn dies.
+    """
+    import json
+
+    from app.mcp.resource_tool import read_resource
+
+    uri = args.get("uri") if isinstance(args, dict) else None
+    result = await read_resource(
+        ctx.mcp_index, uri if isinstance(uri, str) else "",
+        max_bytes=ctx.mcp_resource_max_bytes,
+    )
+    body = json.dumps(result, ensure_ascii=False, default=str)
+    return ToolMessage(
+        tool_call_id=call_id, content=body[: ctx.result_max_chars]
     )
 
 

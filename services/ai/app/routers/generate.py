@@ -57,6 +57,9 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateAccepted:
                 tool_registry=getattr(app, "tool_registry", None),
                 tool_selector=getattr(app, "tool_selector", None),
                 ollagraph_http=getattr(app, "ollagraph_http", None),
+                # Phase 5: the MCP session pool. None when connections are
+                # off, which makes the turn byte-identical to Phase 4.
+                mcp_pool=getattr(app, "mcp_pool", None),
             )
         finally:
             app.registry.release(req.messageId)

@@ -6,8 +6,9 @@ import asyncio
 import contextlib
 import json
 import time
-from contextlib import aclosing
+from contextlib import AsyncExitStack, aclosing
 from dataclasses import replace
+from typing import Any
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -68,6 +69,8 @@ from app.marketing.tool import (
     MARKETING_CALC_TOOL_SPEC,
     MARKETING_REFERENCE_TOOL_SPEC,
 )
+from app.mcp.resource_tool import MCP_READ_RESOURCE_TOOL_SPEC
+from app.mcp.turn import TurnCapabilities, mcp_for_turn
 from app.models.chat import GenerateRequest
 from app.models.execution import hash_args
 from app.models.tools import SideEffect, ToolCandidate, ToolFilters
@@ -221,6 +224,7 @@ async def run_generation(
     tool_registry: ToolRegistry | None = None,
     tool_selector: ToolSelector | None = None,
     ollagraph_http: httpx.AsyncClient | None = None,
+    mcp_pool: Any = None,
 ) -> None:
     """Run one turn to completion.
 
@@ -276,6 +280,11 @@ async def run_generation(
     # the last tool call. That is what killed long deliverables mid-generation.
     writer.on_progress = _extend_deadline
     tools_ctx: ToolExecContext | None = None  # defined pre-try for the finally
+    # Phase 5: MCP sessions live for the whole turn. Entered here and closed in
+    # the `finally` below — the same task both ways, which is the anyio rule that
+    # makes every pooled session an actor in `app/mcp/session.py`.
+    mcp_stack = AsyncExitStack()
+    await mcp_stack.__aenter__()
 
     try:
         # Phase 1 (v2): arm the total-execution deadline BEFORE preparation, so a
@@ -906,6 +915,37 @@ async def run_generation(
         # shared prepare() here (before tools bind) and compose its guidance into the
         # system prompt; the tools block below REUSES these objects for
         # find_capabilities/delegation. v2-OFF: skipped entirely (byte-identical).
+        # ------------------------------------------------------------ Phase 5
+        # The user's connected MCP servers become ordinary tools for this turn.
+        #
+        # `mcp_for_turn` acquires one pooled session per connection, discovers
+        # resources/prompts into an index, and layers the discovered tools OVER
+        # the shared Ollagraph catalogue into a PER-REQUEST registry. Rebinding
+        # `tool_registry` here is what makes every downstream consumer — the
+        # selector, `build_tool_specs`, the executor's registry lookups — see MCP
+        # tools with no change of their own.
+        #
+        # The stack is exited in the `finally` at the end of the turn, so the
+        # sessions outlive tool binding and every tool call that follows.
+        mcp_caps = TurnCapabilities()
+        if mcp_pool is not None and req.mcpConnections:
+            mcp_caps = await mcp_stack.enter_async_context(
+                mcp_for_turn(
+                    mcp_pool,
+                    req.mcpConnections,
+                    # TRUSTED IDENTITY, from the authenticated request. Never
+                    # from the connection list and never from the model.
+                    user_id=req.userId,
+                    workspace_id=req.workspaceId,
+                    base=tool_registry,
+                    engine=engine,
+                    settings=settings,
+                )
+            )
+            if mcp_caps.registry is not None:
+                tool_registry = mcp_caps.registry
+                tool_selector = ToolSelector(tool_registry)
+
         candidates: list = []
         prepared_v2 = None
         orchestrator_v2 = None
@@ -1269,6 +1309,13 @@ async def run_generation(
             reserved_specs.append(MARKETING_REFERENCE_TOOL_SPEC)
         if documents_as_tool:
             reserved_specs.append(DOCUMENT_OPS_TOOL_SPEC)
+        # Phase 5: ONE generic resource reader, bound only when a connected server
+        # actually advertises resources. A user with no resource-bearing server
+        # never sees it, so it costs nothing in the context budget of every turn
+        # that could not have used it.
+        mcp_resources_bound = mcp_caps.index.has_resources
+        if mcp_resources_bound:
+            reserved_specs.append(MCP_READ_RESOURCE_TOOL_SPEC)
 
         llm_tools = None
         llm_tools_fallback = None
@@ -1296,6 +1343,10 @@ async def run_generation(
                         llm_tools_fallback = None
             # Per-request adapters keyed by tool.provider for the executor dispatch map.
             connector_adapters: dict = {}
+            # Phase 5: one adapter per connected MCP server, keyed by
+            # `mcp:<slug>` — exactly what `ctx.adapters.get(tool.provider)`
+            # already reads, so the executor needs no change at all.
+            connector_adapters.update(mcp_caps.adapters)
             # Phase 7: register the SEO write provider + its adapter (keyed by provider
             # "seo_write" for the executor dispatch map). The real site-write is an
             # injected seam — StubSeoWriteProvider until a GSC/CMS provider is dropped
@@ -1328,6 +1379,12 @@ async def run_generation(
                     rag=rag_ctx,
                     memory=mem_ctx,
                     research=research_ctx,
+                    # Phase 5: the capability index, set only when the reserved
+                    # resource tool was actually bound. The executor's branch is
+                    # gated on this being non-None, so a turn that did not bind
+                    # the tool cannot reach the read path at all.
+                    mcp_index=mcp_caps.index if mcp_resources_bound else None,
+                    mcp_resource_max_bytes=settings.mcp_resource_max_bytes,
                     data=data_ctx,
                     conversation=(
                         None if req.unattended else conversation_state
@@ -1948,6 +2005,13 @@ async def run_generation(
     finally:
         if hb_task is not None:
             hb_task.cancel()
+        # Phase 5: release the turn's MCP sessions back to the pool. Shielded the
+        # same way the finalize is — a cancellation that unwound the turn must not
+        # also skip the release, or the pool leaks a borrow per cancelled turn.
+        # Exiting here means the SAME TASK that entered the stack exits it, which
+        # is the anyio cancel-scope rule the whole session-actor design exists for.
+        with contextlib.suppress(Exception):
+            await asyncio.shield(mcp_stack.aclose())
         log.info(
             "generation_finished",
             extra={

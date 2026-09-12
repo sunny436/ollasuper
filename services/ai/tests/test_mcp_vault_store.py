@@ -1,0 +1,435 @@
+"""The vault's rules, against an in-memory store.
+
+Persistence is injected, so everything below is provable with no database —
+which is the point: these are the rules that decide whether a leaked backup is
+readable and whether one tenant can reach another's credential, and they should
+not be testable only where Postgres happens to be running. The Convex-backed
+port is covered separately.
+
+THE STRUCTURAL TEST IS `test_the_store_only_ever_sees_ciphertext`. Everything
+else checks behaviour; that one checks that no future implementation of the port
+CAN persist a secret, because plaintext never reaches it.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from app.mcp.vault.aad import AadKind
+from app.mcp.vault.keys import KeyProvider
+from app.mcp.vault.models import ClientRecord, CredentialRecord, CredentialStatus
+from app.mcp.vault.store import CredentialVault, new_credential_id
+
+TOKEN = {"access_token": "opaque-runtime-secret-abc123", "refresh_token": "r-987"}
+
+TENANT = {
+    "user_id": "user-a",
+    "workspace_id": "ws-1",
+    "connection_id": "conn-1",
+    "server_name": "acme.test/server",
+    "resource": "https://api.example.test/mcp",
+}
+
+
+class MemoryStore:
+    """An in-memory `CredentialStorePort`. Records everything it was handed, so
+    a test can assert on what actually crossed the boundary."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str, str], CredentialRecord] = {}
+        self.clients: dict[tuple[str, str], ClientRecord] = {}
+        self.saw: list[str] = []          # every envelope ever passed in
+        self.save_calls = 0
+        self.deleted: list[str] = []
+        self.marked: list[tuple[str, str]] = []
+        self.fail_next_save = False
+
+    async def load(self, *, connection_id, resource, kind):
+        return self.rows.get((connection_id, resource, kind))
+
+    async def save(self, record, *, expected_rev):
+        self.save_calls += 1
+        self.saw.append(record.envelope)
+        if self.fail_next_save:
+            self.fail_next_save = False
+            return False
+        key = (record.connection_id, record.resource, str(record.kind))
+        current = self.rows.get(key)
+        if current is not None and current.rev != expected_rev:
+            return False
+        self.rows[key] = record
+        return True
+
+    async def mark(self, *, credential_id, status):
+        self.marked.append((credential_id, status))
+        for row in self.rows.values():
+            if row.credential_id == credential_id:
+                row.status = CredentialStatus(status)
+
+    async def delete(self, *, credential_id):
+        self.deleted.append(credential_id)
+        for key, row in list(self.rows.items()):
+            if row.credential_id == credential_id:
+                del self.rows[key]
+
+    async def load_client(self, *, server_name, issuer):
+        return self.clients.get((server_name, issuer))
+
+    async def save_client(self, record):
+        self.saw.append(record.envelope)
+        self.clients[(record.server_name, record.issuer)] = record
+
+
+def _keys(versions=(1,), active=None) -> KeyProvider:
+    payload = {str(v): base64.b64encode(os.urandom(32)).decode() for v in versions}
+    return KeyProvider(json.dumps(payload), active or max(versions))
+
+
+def _vault(keys=None, store=None):
+    store = store or MemoryStore()
+    return CredentialVault(keys or _keys(), store), store
+
+
+# ---------------------------------------------------------------- round trip
+async def test_a_credential_round_trips_through_the_vault():
+    vault, _store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    got = await vault.get(**TENANT)
+    assert got is not None
+    payload, record = got
+    assert payload == TOKEN
+    assert record.status is CredentialStatus.ACTIVE
+
+
+async def test_the_store_only_ever_sees_ciphertext():
+    """THE structural test. The port never receives plaintext, so no
+    implementation of it — including one nobody has written yet — can persist a
+    secret by accident."""
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    await vault.put_client({"client_secret": "cs-abc"}, server_name="s", issuer="i")
+
+    assert store.saw, "nothing crossed the boundary — the assertion would be vacuous"
+    for envelope in store.saw:
+        assert envelope.startswith("v1.")
+        assert "access_token" not in envelope
+        assert "opaque-runtime-secret-abc123" not in envelope
+        assert "client_secret" not in envelope
+        assert "cs-abc" not in envelope
+
+
+async def test_a_missing_credential_reads_as_none_not_an_error():
+    vault, _store = _vault()
+    assert await vault.get(**TENANT) is None
+
+
+# --------------------------------------------------------------- isolation
+@pytest.mark.parametrize(
+    "field", ["user_id", "workspace_id", "connection_id", "server_name", "resource"]
+)
+async def test_a_credential_cannot_be_read_under_a_different_binding(field):
+    """A caller whose tenancy or RESOURCE differs gets nothing back.
+
+    WHERE THIS NOW REFUSES, and why that changed: the vault compares the
+    caller's five identifiers against the row's plaintext ones BEFORE
+    decrypting, because AES-GCM cannot tell "wrong AAD" from "tampered
+    ciphertext" and marking the latter would let a wrong caller flip somebody
+    else's credential to unreadable. So this test now proves the cheap refusal.
+
+    The AAD itself is proved separately and deliberately —
+    `test_a_row_whose_identifiers_were_rewritten_still_fails_to_decrypt` below,
+    and the whole binding matrix in `test_mcp_vault_crypto.py`. Without those
+    this test would silently stop covering the crypto.
+    """
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+
+    attacker = dict(TENANT)
+    attacker[field] = f"{TENANT[field]}-other"
+    if field in ("connection_id", "resource"):
+        # Those two are also the LOOKUP key, so point the lookup back at the
+        # stored row to isolate the crypto binding rather than the index.
+        row = next(iter(store.rows.values()))
+        key = (
+            attacker["connection_id"],
+            attacker["resource"],
+            str(AadKind.OAUTH_TOKEN),
+        )
+        store.rows[key] = row
+
+    assert await vault.get(**attacker) is None
+
+
+async def test_a_row_whose_identifiers_were_rewritten_still_fails_to_decrypt():
+    """THE attack the AAD exists for: a database an attacker can WRITE to.
+
+    They move a credential onto their own connection and rewrite the plaintext
+    identifier columns to match, so the tenant precheck agrees. The ciphertext
+    was sealed against the original binding, so it still will not open — even
+    though every non-secret field now says it should.
+    """
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    row = next(iter(store.rows.values()))
+
+    attacker = dict(TENANT, user_id="attacker", connection_id="attacker-conn")
+    row.user_id = attacker["user_id"]
+    row.connection_id = attacker["connection_id"]
+    store.rows.clear()
+    key = (attacker["connection_id"], attacker["resource"], str(AadKind.OAUTH_TOKEN))
+    store.rows[key] = row
+
+    assert await vault.get(**attacker) is None
+    # Reached the crypto and failed there — which is what marks it unreadable.
+    assert store.marked == [(row.credential_id, str(CredentialStatus.UNREADABLE))]
+
+
+async def test_a_mismatched_caller_cannot_mark_someone_elses_row_unreadable():
+    """A denial-of-service lever, closed.
+
+    Every decrypt failure used to mark the row UNREADABLE. So a caller asking
+    for a connection that is not theirs would flip the OWNER's credential to
+    unreadable and cost them a re-authorization — turning the AAD from a
+    defence into a weapon pointed at the victim.
+    """
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+
+    assert await vault.get(**dict(TENANT, user_id="somebody-else")) is None
+    assert store.marked == [], "a wrong caller marked the owner's row unreadable"
+    # And the owner is completely unaffected.
+    got = await vault.get(**TENANT)
+    assert got is not None and got[0] == TOKEN
+
+
+async def test_a_failed_decryption_marks_the_row_unreadable_and_keeps_it():
+    """Deleting would destroy the evidence that something was tampered with, or
+    that a key version was retired too early."""
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    row = next(iter(store.rows.values()))
+    row.envelope = row.envelope[:-4] + "AAAA"  # tamper
+
+    assert await vault.get(**TENANT) is None
+    assert store.marked == [(row.credential_id, str(CredentialStatus.UNREADABLE))]
+    assert store.deleted == [], "a corrupt credential must not be silently deleted"
+    assert store.rows, "the row was destroyed"
+
+
+async def test_a_revoked_credential_is_never_handed_out():
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    row = next(iter(store.rows.values()))
+    row.status = CredentialStatus.REVOKED
+    assert await vault.get(**TENANT) is None
+
+
+async def test_an_unreadable_credential_is_not_retried_forever():
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    next(iter(store.rows.values())).status = CredentialStatus.UNREADABLE
+    assert await vault.get(**TENANT) is None
+    assert store.marked == [], "an already-unreadable row was re-marked"
+
+
+# ----------------------------------------------------------- key rotation
+async def test_a_row_on_an_old_key_version_is_rewrapped_on_read():
+    """Lazy rotation: no bulk migration, and plaintext never leaves the process."""
+    keys = _keys((1, 2), active=1)
+    vault, store = _vault(keys)
+    await vault.put(TOKEN, **TENANT)
+    assert next(iter(store.rows.values())).key_version == 1
+
+    rotated = CredentialVault(_rotate(keys, 2), store)
+    got = await rotated.get(**TENANT)
+    assert got is not None and got[0] == TOKEN
+    assert next(iter(store.rows.values())).key_version == 2, "row was not rewrapped"
+
+
+async def test_a_rewrap_failure_does_not_fail_the_read():
+    """The caller already holds valid plaintext; the row simply stays on the old
+    version and is retried next time."""
+    keys = _keys((1, 2), active=1)
+    vault, store = _vault(keys)
+    await vault.put(TOKEN, **TENANT)
+
+    store.fail_next_save = True
+    rotated = CredentialVault(_rotate(keys, 2), store)
+    got = await rotated.get(**TENANT)
+    assert got is not None and got[0] == TOKEN
+
+
+async def test_a_row_written_by_a_retired_key_is_unreadable_not_a_crash():
+    """Retiring a key version makes rows that still name it permanently
+    unreadable — which is exactly why retiring one is a deliberate step."""
+    keys = _keys((1, 2), active=2)
+    vault, store = _vault(keys)
+    await vault.put(TOKEN, **TENANT)
+
+    retired = CredentialVault(_keys((3,), active=3), store)
+    assert await retired.get(**TENANT) is None
+    assert store.marked, "the row was not flagged"
+
+
+def _rotate(keys: KeyProvider, active: int) -> KeyProvider:
+    """Same master material, a different active version."""
+    import app.mcp.vault.keys as module
+
+    clone = module.KeyProvider.__new__(module.KeyProvider)
+    clone._masters = keys._masters  # noqa: SLF001 - constructing a sibling provider
+    clone._active = active
+    clone._derived = {}
+    return clone
+
+
+# ------------------------------------------------------------- concurrency
+async def test_a_compare_and_set_loss_warns_rather_than_raising():
+    """Another writer already persisted a token at least as fresh. Failing the
+    caller would turn a harmless race into a user-visible error."""
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    store.fail_next_save = True
+    record = await vault.put({"access_token": "second"}, **TENANT)
+    assert record is not None
+
+
+async def test_a_stale_writer_loses_the_compare_and_set():
+    vault, store = _vault()
+    first = await vault.put(TOKEN, **TENANT)
+    await vault.put({"access_token": "newer"}, **TENANT)
+
+    # A writer still holding the FIRST revision tries to write.
+    await vault.put({"access_token": "stale"}, **TENANT, expected_rev=first.rev - 1)
+    payload, _record = await vault.get(**TENANT)
+    assert payload["access_token"] == "newer", "a stale writer clobbered a newer token"
+
+
+async def test_the_vault_exposes_no_lock_to_be_mistaken_for_serialisation():
+    """A lock nobody acquires is worse than no lock.
+
+    The vault used to expose `lock_for()`, described as serialising refresh. It
+    was never taken anywhere, so the guarantee it implied did not exist — and it
+    could not be wired at this seam, because `get_tokens` and `set_tokens` are
+    two separate SDK callbacks with the refresh request between them.
+
+    What actually serialises refresh is the SDK's per-provider
+    `OAuthContext.lock` (measured in `test_mcp_oauth_refresh.py`); what protects
+    the cross-provider case is the compare-and-set below. This test exists so
+    the helper cannot quietly return.
+    """
+    vault, _store = _vault()
+    assert not hasattr(vault, "lock_for")
+
+
+# ------------------------------------------------------------------ delete
+async def test_delete_removes_the_secret_material():
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    assert await vault.delete(
+        connection_id=TENANT["connection_id"], resource=TENANT["resource"]
+    )
+    assert store.rows == {}
+    assert await vault.get(**TENANT) is None
+
+
+async def test_deleting_a_missing_credential_is_not_an_error():
+    vault, _store = _vault()
+    assert not await vault.delete(connection_id="nope", resource="nope")
+
+
+async def test_mark_revoked_keeps_the_row_but_stops_handing_it_out():
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    await vault.mark_revoked(
+        connection_id=TENANT["connection_id"], resource=TENANT["resource"]
+    )
+    assert store.rows, "revocation must not delete the audit trail"
+    assert await vault.get(**TENANT) is None
+
+
+# ---------------------------------------------------- deployment-scoped clients
+async def test_a_client_registration_round_trips_without_a_tenant():
+    vault, _store = _vault()
+    await vault.put_client(
+        {"client_id": "dyn-1", "client_secret": "cs-abc"},
+        server_name="acme.test/server",
+        issuer="https://as.test",
+    )
+    got = await vault.get_client(
+        server_name="acme.test/server", issuer="https://as.test"
+    )
+    assert got == {"client_id": "dyn-1", "client_secret": "cs-abc"}
+
+
+async def test_a_client_record_is_bound_to_its_server_and_issuer():
+    vault, _store = _vault()
+    await vault.put_client(
+        {"client_id": "dyn-1"}, server_name="a/srv", issuer="https://as.test"
+    )
+    assert await vault.get_client(server_name="b/srv", issuer="https://as.test") is None
+    assert await vault.get_client(server_name="a/srv", issuer="https://other") is None
+
+
+async def test_reregistering_reuses_the_record_id():
+    """A DCR client is registered once per (server, issuer) and reused by every
+    user; a new id each time would mean a registration storm."""
+    vault, store = _vault()
+    first = await vault.put_client({"client_id": "a"}, server_name="s", issuer="i")
+    second = await vault.put_client({"client_id": "b"}, server_name="s", issuer="i")
+    assert first.client_record_id == second.client_record_id
+    assert len(store.clients) == 1
+
+
+# ------------------------------------------------------------------ bounds
+async def test_an_oversized_payload_is_refused_before_encryption():
+    vault, store = _vault()
+    with pytest.raises(ValueError, match="ceiling"):
+        await vault.put({"access_token": "x" * 40_000}, **TENANT)
+    assert store.rows == {}
+
+
+async def test_credential_ids_are_opaque_and_unpredictable():
+    """Never derived from an email, a token or a row number: an id that encodes
+    something leaks it, and a guessable one turns an authorization bug into an
+    enumeration."""
+    ids = {new_credential_id() for _ in range(500)}
+    assert len(ids) == 500
+    for value in list(ids)[:5]:
+        assert value.startswith("cred_")
+        assert len(value) >= 20
+
+
+async def test_expiry_is_answered_without_decrypting():
+    """The refresh path asks "is this expired?" on every call; making that
+    require a decryption would be a needless use of the key."""
+    now = datetime.now(UTC)
+    record = CredentialRecord(
+        credential_id="c", user_id="u", workspace_id="w", connection_id="n",
+        server_name="s", resource="r", kind=AadKind.OAUTH_TOKEN,
+        envelope="v1.1.a.b", key_version=1,
+        expires_at=now - timedelta(seconds=1),
+    )
+    assert record.is_expired(now=now)
+    record.expires_at = now + timedelta(hours=1)
+    assert not record.is_expired(now=now)
+    record.expires_at = None
+    assert not record.is_expired(now=now)
+
+
+def test_records_never_render_their_envelope_in_a_repr():
+    record = CredentialRecord(
+        credential_id="c", user_id="u", workspace_id="w", connection_id="n",
+        server_name="s", resource="r", kind=AadKind.OAUTH_TOKEN,
+        envelope="v1.1.SECRETNONCE.SECRETCIPHERTEXT", key_version=1,
+    )
+    assert "SECRETCIPHERTEXT" not in repr(record)
+    client = ClientRecord(
+        client_record_id="cli", server_name="s", issuer="i",
+        envelope="v1.1.SECRETNONCE.SECRETCIPHERTEXT", key_version=1,
+    )
+    assert "SECRETCIPHERTEXT" not in repr(client)
