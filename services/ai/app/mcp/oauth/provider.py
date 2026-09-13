@@ -128,6 +128,45 @@ async def _root_authorization_server(request: Any, response: Any) -> str | None:
     return first if parts.path in ("", "/") and not parts.query else None
 
 
+async def _rfc6749_shaped(response: Any) -> Any:
+    """Slack's token endpoint speaks Slack's API convention, not RFC 6749.
+
+    Measured against `oauth.v2.user.access`: a failure is HTTP 200 with
+    `{"ok": false, "error": "invalid_code"}`, and a success carries
+    `"token_type": "user"` — which the SDK's `OAuthToken` rejects, so every
+    Slack authorization would have died at the exchange with "Invalid token
+    response". A body without an `ok` key is returned untouched.
+    """
+    import httpx2  # noqa: PLC0415
+
+    try:
+        await response.aread()
+        body = json.loads(response.content)
+    except (ValueError, AttributeError):
+        return response
+    if not isinstance(body, dict) or "ok" not in body:
+        return response
+    if not body.get("ok"):
+        # The SDK reads a non-2xx as "the exchange failed" and reports the body.
+        return httpx2.Response(400, json=body, request=response.request)
+    shaped = dict(body)
+    nested = body.get("authed_user")
+    if not isinstance(nested, dict):
+        nested = {}
+    if not shaped.get("access_token") and nested.get("access_token"):
+        shaped["access_token"] = nested["access_token"]
+    if not shaped.get("scope") and nested.get("scope"):
+        shaped["scope"] = nested["scope"]
+    if isinstance(shaped.get("scope"), str):
+        # Slack lists scopes comma-separated; OAuth 2.1 scope strings are
+        # space-separated, and that is what the step-up union splits on.
+        shaped["scope"] = " ".join(shaped["scope"].replace(",", " ").split())
+    if str(shaped.get("token_type", "")).lower() != "bearer":
+        # The RFC 6750 scheme name, not a credential.
+        shaped["token_type"] = "Bearer"  # noqa: S105
+    return httpx2.Response(200, json=shaped, request=response.request)
+
+
 async def _issuer_of(response: Any) -> str | None:
     """The `issuer` an authorization server's metadata response declares."""
     if response.status_code != 200:
@@ -207,11 +246,13 @@ def build_provider(
 
         async def _handle_token_response(self, response: Any) -> None:
             self._remember_metadata()
-            await super()._handle_token_response(response)
+            await super()._handle_token_response(await _rfc6749_shaped(response))
 
         async def _handle_refresh_response(self, response: Any) -> bool:
             self._remember_metadata()
-            return await super()._handle_refresh_response(response)
+            return await super()._handle_refresh_response(
+                await _rfc6749_shaped(response)
+            )
 
         # The SDK builds its token requests with no `Accept` header, and GitHub's
         # token endpoint then answers `application/x-www-form-urlencoded`, which
