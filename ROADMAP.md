@@ -551,6 +551,16 @@ unchanged by everything below. Every flag defaults OFF.
     operator's own workspace until the app is published. Verified: 27 tools, real channel data
     (`slack_list_user_channels`) with the stored token, and chat turns executing
     `slack_search_channels` / `slack_read_channel` / `slack_send_message` on production.
+  - **Google Workspace enrollment landed (2026-09-13, later).** Gmail, Calendar, Drive, Docs and
+    Sheets now answer from the user's real account — labels, calendars, shared PDFs, a real Doc
+    read, a Sheet created and read back — 18/18 plus Docs/Sheets/draft turns, zero console
+    errors. Two defects surfaced only once writes could actually run: (1) the approval RESUME
+    re-issued the parked call by tool_id, which for an MCP tool (`mcp:gmail:create_draft`, bound
+    as `mcp_gmail_create_draft`) hit the unknown-tool path every time; the model then re-called
+    the tool itself, so the write landed but cost a step and showed "Some steps didn't complete"
+    beside success — now re-issued by bound name; (2) the execution pill counted a parked
+    (awaiting-approval) result as a failure — it is a pause. Verified: approved draft → pill
+    "Done · 1 step", resume runs the tool directly; rejected draft still reads as not completed.
   - **Verified in headed Chrome on production with a real Google account** (`e2e/q5-google-mcp.js`;
     credentials read at runtime from the gitignored operator file): all six connect through
     Google's consent, list their real tools (23/9/8/2/6/5), zero console errors, the client secret
