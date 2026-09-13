@@ -96,6 +96,15 @@ class VaultTokenStorage:
     def __init__(self, vault: CredentialVault, identity: CredentialIdentity) -> None:
         self._vault = vault
         self._identity = identity
+        #: The authorization server's metadata, as the SDK discovered it when
+        #: the token was obtained. Stored WITH the token because a silent
+        #: refresh needs the token endpoint and the SDK only discovers it on a
+        #: 401: a fresh provider with no metadata posts the refresh to
+        #: `<mcp origin>/token`, which is nothing at Google or GitHub — measured
+        #: on production as "Token refresh failed: 404" on every session once
+        #: the hour was up, and a re-authorization asked of the user instead.
+        #: Set by the provider before `set_tokens`, read back by `get_tokens`.
+        self.authorization_server: dict[str, Any] | None = None
 
     # ---------------------------------------------------------------- tokens
     async def get_tokens(self) -> Any | None:
@@ -111,6 +120,9 @@ class VaultTokenStorage:
         if found is None:
             return None
         payload, record = found
+
+        stored_as = payload.get("authorization_server")
+        self.authorization_server = stored_as if isinstance(stored_as, dict) else None
 
         access_token = payload.get("access_token")
         if not isinstance(access_token, str) or not access_token:
@@ -146,6 +158,8 @@ class VaultTokenStorage:
         refresh = getattr(tokens, "refresh_token", None)
         if refresh:
             payload["refresh_token"] = refresh
+        if self.authorization_server:
+            payload["authorization_server"] = self.authorization_server
 
         record = await self._vault.put(
             payload,

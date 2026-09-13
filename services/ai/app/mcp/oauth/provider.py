@@ -169,6 +169,7 @@ def build_provider(
     import httpx2  # noqa: PLC0415 -- the SDK's HTTP stack
     from mcp.client.auth import OAuthClientProvider  # noqa: PLC0415
     from mcp.client.auth.utils import issuers_match  # noqa: PLC0415
+    from mcp.shared.auth import OAuthMetadata  # noqa: PLC0415
 
     class _ExpiryAwareProvider(OAuthClientProvider):
         """`OAuthClientProvider` that believes the expiry it loaded.
@@ -184,6 +185,33 @@ def build_provider(
             if tokens is not None and tokens.expires_in is not None:
                 # The context's own conversion; nothing is recomputed here.
                 self.context.update_token_expiry(tokens)
+            # The metadata discovered when this token was obtained, so a silent
+            # refresh knows the token endpoint. Without it the SDK posts the
+            # refresh to `<mcp origin>/token` and every session re-authorizes
+            # once the hour is up. See `VaultTokenStorage.authorization_server`.
+            stored = getattr(self.context.storage, "authorization_server", None)
+            if self.context.oauth_metadata is None and stored:
+                try:
+                    self.context.oauth_metadata = OAuthMetadata.model_validate(stored)
+                except Exception:  # noqa: BLE001 — a bad cache costs one re-auth
+                    log.warning("mcp.oauth_stored_metadata_invalid")
+
+        def _remember_metadata(self) -> None:
+            """Hand the storage what the SDK discovered, before it persists."""
+            metadata = self.context.oauth_metadata
+            storage = self.context.storage
+            if metadata is not None and hasattr(storage, "authorization_server"):
+                storage.authorization_server = metadata.model_dump(
+                    mode="json", exclude_none=True
+                )
+
+        async def _handle_token_response(self, response: Any) -> None:
+            self._remember_metadata()
+            await super()._handle_token_response(response)
+
+        async def _handle_refresh_response(self, response: Any) -> bool:
+            self._remember_metadata()
+            return await super()._handle_refresh_response(response)
 
         # The SDK builds its token requests with no `Accept` header, and GitHub's
         # token endpoint then answers `application/x-www-form-urlencoded`, which

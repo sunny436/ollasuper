@@ -51,19 +51,24 @@ async function ask(page, text, waitMs = 60000) {
   });
   const box = page.locator("textarea, [contenteditable='true']").first();
   await box.click();
+  // Measured BEFORE sending: on an account with history, /en/chat opens with
+  // earlier conversations on screen, and a "long enough and stable" wait
+  // returned that old text before the reply had started. The reply is what
+  // grows the page beyond this baseline plus the echoed question.
+  const baseline = (await page.locator("body").innerText()).length;
   await box.fill(text);
   await page.keyboard.press("Enter");
-  // Wait for the assistant to produce something beyond the echoed question.
   const started = Date.now();
   let last = "";
+  let stable = 0;
   while (Date.now() - started < waitMs) {
     await page.waitForTimeout(2500);
     const body = await page.locator("body").innerText();
-    if (body.length > last.length + 40) last = body;
-    // Stop once output has settled for a couple of polls.
-    if (last.length > text.length + 120 && body.length === last.length) break;
+    stable = body === last ? stable + 1 : 0;
+    last = body;
+    if (stable >= 2 && body.length > baseline + text.length + 20) break;
   }
-  return await page.locator("body").innerText();
+  return last;
 }
 
 (async () => {

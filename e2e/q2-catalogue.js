@@ -149,6 +149,18 @@ const settle = async (page, expect) => {
         waitUntil: "domcontentloaded",
       });
       await settle(page, "GitHub");
+      // IDEMPOTENT: once a real GitHub sign-in has been completed on this
+      // account (q4-github-oauth.js does that) there is no Connect button to
+      // press and nothing to prove here — the 401-as-auth property is then
+      // covered by that script's popup assertions, not lost.
+      if (
+        (await page.locator("body").innerText()).includes(
+          "OllaSuper can use this app's tools when a request needs them",
+        )
+      ) {
+        notes.push(`${AUTH_SLUG} already connected; 401 handling covered by q4`);
+        return;
+      }
       const btn = page
         .getByRole("button")
         .filter({ hasText: /^(Connect|Retry|Reconnect)$/ })

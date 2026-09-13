@@ -170,6 +170,19 @@ async function ask(page, text, waitMs = 150000) {
       await step(`${app.name}: connect with a real Google sign-in`, async () => {
         await page.goto(`${BASE}/en/settings/connectors/${app.slug}`, { waitUntil: "domcontentloaded" });
         await settle(page, app.name);
+        if (
+          process.env.GOOGLE_RECONNECT &&
+          (await page.locator("body").innerText()).includes(CONNECTED_HINT)
+        ) {
+          // Start from disconnected so the real popup sign-in runs again.
+          await page.getByRole("button", { name: /^Disconnect$/ }).first().click();
+          await page.waitForTimeout(800);
+          await page.getByRole("button", { name: /^Disconnect$/ }).last().click();
+          await page.waitForFunction((h) => !document.body.innerText.includes(h), CONNECTED_HINT, {
+            timeout: 30000,
+          });
+          notes.push(`${app.name}: disconnected first`);
+        }
         if ((await page.locator("body").innerText()).includes(CONNECTED_HINT)) {
           notes.push(`${app.name}: already connected`);
           return;
@@ -181,6 +194,9 @@ async function ask(page, text, waitMs = 150000) {
         const popup = await opened;
         const landed = await googleConsent(popup);
         notes.push(`${app.name} callback page: ${landed.slice(0, 120)}`);
+        // A user closes the "You can close this window" page. Left open, the app
+        // reuses this named window for the next connector and no new popup opens.
+        if (!popup.isClosed()) await popup.close();
         if (/failed|could not/i.test(landed)) throw new Error("callback says: " + landed.slice(0, 160));
         await page.waitForFunction((h) => document.body.innerText.includes(h), CONNECTED_HINT, { timeout: 90000 });
       });
