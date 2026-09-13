@@ -161,9 +161,11 @@ const settle = async (page, expect) => {
         notes.push(`${AUTH_SLUG} already connected; 401 handling covered by q4`);
         return;
       }
+      // "Open authorization page" is the same path one step later: a row left
+      // AUTHORIZING by an abandoned popup offers it instead of Connect.
       const btn = page
         .getByRole("button")
-        .filter({ hasText: /^(Connect|Retry|Reconnect)$/ })
+        .filter({ hasText: /^(Connect|Retry|Reconnect|Open authorization page)$/ })
         .first();
       await btn.waitFor({ timeout: 15000 });
       await btn.click();

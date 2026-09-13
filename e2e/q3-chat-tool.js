@@ -61,14 +61,23 @@ async function ask(page, text, waitMs = 60000) {
   const started = Date.now();
   let last = "";
   let stable = 0;
+  // Returns the REPLY — the block after the last "Assistant" header — not the
+  // whole page. The conversation rail lists earlier threads by title, and on
+  // an account with history those titles name Context7 outright, so a check
+  // over the whole body reported a connector "pulled into" a plain question
+  // that never touched one (measured: the turn emitted "68" and no tool call).
+  const replyOf = (body) => body.slice(body.lastIndexOf("Assistant"));
+  // Settle for 15s, not 5s: while a tool call runs the reply block can sit
+  // still for several seconds before the answer streams, and a short settle
+  // returned the status pill as if it were the reply.
   while (Date.now() - started < waitMs) {
     await page.waitForTimeout(2500);
     const body = await page.locator("body").innerText();
     stable = body === last ? stable + 1 : 0;
     last = body;
-    if (stable >= 2 && body.length > baseline + text.length + 20) break;
+    if (stable >= 6 && body.length > baseline + text.length + 20 && replyOf(body).length > 85) break;
   }
-  return last;
+  return replyOf(last);
 }
 
 (async () => {
