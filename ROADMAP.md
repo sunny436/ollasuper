@@ -471,6 +471,47 @@ unchanged by everything below. Every flag defaults OFF.
     oversight. A poisoned result comes back inside `<tool_output>` framing as a `ToolMessage`, and
     re-evaluating policy after it returns the same decision as before, so nothing a server says can
     widen what it may do next.
+- **Phase 9 — 42 verified connectors, live on production.** The catalogue was empty through
+  Phase 8; it now holds **42 real vendor-owned MCP servers**, every one confirmed by a live probe
+  before it was curated.
+  - **Three layers, kept separate.** `mcp_servers` mirrors the public registry — **31,538 rows**,
+    executable by nobody. A probe says what WORKS. `mcp_curated_servers` says what this deployment
+    will dial, and is the only executable layer. A registry entry never becomes executable on its
+    own, and nothing was curated without a probe result.
+  - **The verifier called 34 live servers dead, and that was the Phase 3 trap repeating.** The SDK
+    erases HTTP status: a 401, 403, 429, 500 and 503 all arrive as the identical `MCPError(-32603)`
+    inside a doubly-nested ExceptionGroup. Reading only the exception text classified GitHub,
+    Notion, Atlassian, Stripe and Linear as dead. Fixed by using `StatusRecorder` — the httpx2
+    response hook Phase 3 built for exactly this. Final tally: **37 auth · 5 open · 2 dead**.
+  - **`auth_kind` comes from the probe, not the registry** (`parse.py` refuses to infer OAuth), and
+    **`trusted=false` on all 42** — curating makes a server connectable, never makes its own
+    `readOnlyHint` credible.
+  - **Verified in headed Chrome on production:** catalogue 42 cards / 9 categories, search, the safe
+    projection holding (no endpoint, note or trust flag reaches the browser), an OAuth connector
+    reporting **Authentication required rather than an outage** for its 401, a no-auth connector
+    reaching Connected with its real tools discovered, no token in page/storage/network, and the
+    browser never addressing an MCP server directly. **A real tool executed against a live vendor
+    server** — Context7 `resolve-library-id` returned 2,015 characters through the production
+    transport.
+  - **Two product bugs found by the browser and fixed.** The Capabilities section claimed
+    "Connected, but…" on a connection that had never connected (it was gated on a row EXISTING); and
+    an `unsupported` row offered no action, so a connection refused before its catalogue entry was
+    complete stayed stuck. Neither was reachable by the 2594-test suite, because `apps/app` has no
+    DOM runner and both bugs lived in the page's COMPOSITION.
+  - **An honest limit on selection.** An MCP tool scores **0.27** against ~113 native tools, so the
+    model often ranks it below the cutoff. The plumbing is proven end to end; whether a given prompt
+    selects an MCP tool is a ranking outcome, and matches Phase 5's measured 0.22–0.46 range.
+  - **Not curated, and why.** Gmail, Google Calendar/Drive/Docs, Slack, Teams, Outlook, Dropbox,
+    Box, Discord, Salesforce, HubSpot, Shopify, Trello, Asana, ClickUp, QuickBooks, Sentry, Canva,
+    Datadog and AWS publish no remote MCP server in the public registry under their own verified
+    domain. Postgres, MySQL, Redis, MongoDB, Docker, Playwright and Chrome DevTools are **stdio-only
+    and structurally unconnectable** — `mcp_curated_servers` has a CHECK constraint that makes stdio
+    unrepresentable. None were faked.
+  - **A P1 found that is NOT MCP.** `OPENROUTER_API_KEY` returns 401 "User not found" from
+    OpenRouter's own endpoint; first occurrence **Aug 21**, three weeks before the MCP deploy. Title
+    generation, RAG/knowledge retrieval and OCR have been broken since. Chat is unaffected (Ollima
+    answers 200). Needs a key rotation on the account owner's side.
+
 - **Phase 8 — production hardening, and the DARK LAUNCH (deployed).** The standing "nothing on
   prod" rule lifted here. Everything from Phases 2–8 is now committed (`76c10c6`) and deployed to
   `app.ollasuper.com` with **every MCP flag still off** and `mcp_curated_servers` empty, so the

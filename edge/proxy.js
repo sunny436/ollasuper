@@ -34,16 +34,6 @@ const HOST_ROUTES = {
 const PATH_ROUTES = [
   { prefix: "/__cvx-site", port: 3211 },
   { prefix: "/__cvx", port: 3210 },
-  // PHASE 9 QA ONLY — the red-team MCP server, and it is here for a reason
-  // rather than on loopback. `app/mcp/endpoint.py::assert_dialable` requires
-  // https, rejects loopback and rejects non-standard ports, so a QA server on
-  // 127.0.0.1:8799 would be refused by OllaSuper's own security. Weakening that
-  // guard to make QA pass is the one thing a QA phase must never do, so the
-  // server gets a real public HTTPS address instead and the guard runs
-  // unbypassed. Serves no secret, reads no file, runs no shell.
-  //
-  // REMOVE THIS ENTRY AT TEARDOWN, together with the qa-mcp unit.
-  { prefix: "/__qa-mcp", port: 8799 },
 ];
 const DEFAULT = 3000;
 
