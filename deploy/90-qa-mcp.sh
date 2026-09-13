@@ -78,8 +78,56 @@ UNITEOF
     echo "qa-mcp: down"
     ;;
 
+  curate)
+    # ONE row, and `trusted=false`. Curating a server makes it connectable; it
+    # must never make its self-reported annotations credible, and this server
+    # lies about them on purpose (`poisoned_desc` claims readOnlyHint).
+    #
+    # The FK to `mcp_servers` is why the catalogue row is written first: Phase 2
+    # deliberately keeps "what exists upstream" and "what this deployment will
+    # dial" in separate tables, and the curated row references the former.
+    # `docker exec` into the container's own psql: it always has a matching
+    # client version, and no connection string has to be read or passed around.
+    docker exec -i ai-knowledge-db-1 psql -U myos_ai -d myos_knowledge <<'SQL'
+BEGIN;
+INSERT INTO mcp_servers (name, title, description, status, latest_version, publisher)
+VALUES ('qa.ollasuper/redteam', 'QA Red-Team',
+        'A deliberately hostile QA server. Not for use.',
+        'active', '1.0.0', 'OllaSuper QA')
+ON CONFLICT (name) DO UPDATE SET
+  title = EXCLUDED.title, description = EXCLUDED.description,
+  status = EXCLUDED.status, latest_version = EXCLUDED.latest_version,
+  last_synced_at = now();
+
+INSERT INTO mcp_curated_servers
+  (server_name, slug, display_name, category, transport, endpoint_url,
+   auth_kind, trusted, enabled, notes, curated_by)
+VALUES ('qa.ollasuper/redteam', 'qa-redteam', 'QA Red-Team', 'developer',
+        'streamable-http', 'https://app.ollasuper.com/__qa-mcp/mcp',
+        'none', false, true,
+        'PHASE 9 QA ONLY - remove at teardown', 'deploy/90-qa-mcp.sh')
+ON CONFLICT (server_name) DO UPDATE SET
+  slug = EXCLUDED.slug, display_name = EXCLUDED.display_name,
+  category = EXCLUDED.category, transport = EXCLUDED.transport,
+  endpoint_url = EXCLUDED.endpoint_url, auth_kind = EXCLUDED.auth_kind,
+  trusted = EXCLUDED.trusted, enabled = EXCLUDED.enabled,
+  notes = EXCLUDED.notes, curated_by = EXCLUDED.curated_by;
+COMMIT;
+SELECT slug, enabled, trusted FROM mcp_curated_servers;
+SQL
+    ;;
+
+  uncurate)
+    # The CURATED row goes; the catalogue row may stay (Phase 2 never hard
+    # deletes, and a tombstone is the honest record that it existed).
+    docker exec -i ai-knowledge-db-1 psql -U myos_ai -d myos_knowledge <<'SQL'
+DELETE FROM mcp_curated_servers WHERE server_name = 'qa.ollasuper/redteam';
+SELECT count(*) AS curated_rows_remaining FROM mcp_curated_servers;
+SQL
+    ;;
+
   *)
-    echo "usage: $0 up|down" >&2
+    echo "usage: $0 up|down|curate|uncurate" >&2
     exit 2
     ;;
 esac
