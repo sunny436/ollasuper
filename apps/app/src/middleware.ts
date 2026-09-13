@@ -16,6 +16,9 @@ const I18nMiddleware = createI18nMiddleware({
 const isSignInPage = createRouteMatcher(["/login"]);
 // Public shared-conversation pages — read-only, token-gated, no auth.
 const isPublicShare = createRouteMatcher(["/share", "/share/(.*)"]);
+// Public documents a signed-out visitor (or an app-marketplace reviewer) must be
+// able to open: static, server-rendered, no Convex, nothing per-user.
+const isPublicDoc = createRouteMatcher(["/privacy", "/terms", "/support", "/slack"]);
 
 /**
  * One fixed-window counter, and the two properties that matter.
@@ -172,7 +175,7 @@ const authMiddleware = convexAuthNextjsMiddleware(
   async (request, { convexAuth }) => {
     // Public share pages bypass the auth gate entirely (still get the locale
     // rewrite). Access is authorized server-side by the token + expiry/revocation.
-    if (isPublicShare(request)) {
+    if (isPublicShare(request) || isPublicDoc(request)) {
       if (
         limited(shareHits, trustedIp(request), SHARE_WINDOW_MS, SHARE_MAX)
       ) {
