@@ -902,6 +902,38 @@ unchanged by everything below. Every flag defaults OFF.
     in `mcp_curated_servers`, no code change — and the probe is the tool for deciding what it says.
   - **DB-gated tests cannot run here** (no Docker/Postgres on this machine), as in earlier phases.
 
+## Skills QA remediation (2026-09-13) — the 11.09 Sales / Marketing / HR report
+
+Every finding was cross-checked against the code and reproduced on production before a change was
+made; HR passed and was left alone. The report's two Sales failures and Marketing's two partials
+came down to three things, none of them the model's reasoning:
+
+- **ROI arithmetic lived in prose.** "Create a sales ROI summary …" activates `sales` + `finance`
+  (finance compacted) and called NO tool: the ROI figures were computed by the model. Finance's
+  own guidance pointed at `npv_irr`, an outlay-plus-cash-flows model that cannot express a
+  recurring subscription cost, so there was nothing to call. `finance_calc kind='business_case'`
+  now builds the per-year table and takes ROI as total net ÷ total cost over the SAME years —
+  the 4,733%-vs-1,611% failure (three years of benefit over one year of cost) is unrepresentable.
+  Both skills' `constraints` route every ROI / payback / net-value figure through it. Verified on
+  production: the stored action for the ROI turn is `toolId: finance_calc`, 3-year ROI == annual
+  ROI (1,340% for the QA inputs), net value $4.824M, payback 3.6 weeks.
+- **No rule against re-labelling a sourced figure.** The prompt banned *inventing* headcount, not
+  turning "8,000 employees" into "8,000 reps". A live run also invented a proof point ("one
+  customer cut forecast error by 30%"). Both are now constraints; the verified email keeps
+  "8,000-person" and carries no invented metric.
+- **Time-sensitive facts came from memory.** Marketing had 🟢/🟡/🔴 labels but nothing forced a
+  price, product rename or date to be fetched in the turn. Now fetched and cited with a
+  retrieval date; the verified answer ran 8 research steps and labelled the promo-price variance 🟡.
+- **Routing, measured.** With the old tags, "research X as a sales prospect", "handle these
+  objections", "design an A/B test" (`a/b` tokenizes to nothing), "write a job description", a
+  remote-work policy, a career ladder and a termination decision activated NO skill — the QA
+  "passes" for those ran on the bare model. Vocabulary added per skill; every negative control
+  (finance capex, blog, SEO audit, deep research, CSV, SOP, greeting) keeps its top skill; the
+  routing tests pin the QA phrasings. Verified on production: all four now show their skill in
+  `agent.skills_active`.
+- Rules were placed in `constraints` because a second skill is compacted to exactly that when the
+  20,000-char budget is exceeded — the ROI prompt is such a turn. Sales renders 17,115 (guard 19,000).
+
 ## ✅ Done (current state)
 Self-hosted Convex (Docker) · multi-tenant backend (workspaces/RBAC/invites) · hybrid backend adapter (proxy / JWKS-direct / webhook) · usage · API keys · audit · events · files · **AI chat at `/chat`** (Convex data plane + Python inference plane → OpenRouter; real streaming, search, attachments — see the AI chat section below) · **full auth** (email+password, mandatory email verification, password reset, magic OTP, Google provider [creds pending], password policy, brute-force lockout 5/hr) · real HTTPS via Cloudflare tunnel · **left sidebar shell** + reactive workspace switcher + responsive drawer · **toasts + confirm dialogs** · CI (typecheck+lint) + branch protection · nightly backup (**see the backup entry under Notes — this was listed as done but had never actually run on the current VM**).
 
