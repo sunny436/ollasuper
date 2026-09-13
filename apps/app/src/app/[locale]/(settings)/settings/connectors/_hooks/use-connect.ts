@@ -70,12 +70,14 @@ export function useConnect(
    *  Reconnect while a popup is open would mint a second `state` and orphan the
    *  first. */
   const authorizing = useRef<Set<string>>(new Set());
-  const timers = useRef<Array<ReturnType<typeof setInterval>>>([]);
+  /** Cleanup for each in-flight authorization watch: its poll and its focus
+   *  listener. */
+  const stops = useRef<Array<() => void>>([]);
 
   useEffect(
     () => () => {
-      for (const t of timers.current) clearInterval(t);
-      timers.current = [];
+      for (const stop of stops.current) stop();
+      stops.current = [];
     },
     [],
   );
@@ -111,19 +113,35 @@ export function useConnect(
   const watchAuthorization = useCallback(
     (connectionId: Id<"mcpConnections">, popup: Window | null, serverName: string) => {
       const started = Date.now();
+      // `popup.closed` is read when this window REGAINS FOCUS — which is what
+      // closing the popup does — never on every poll. While the popup shows a
+      // provider page that sends Cross-Origin-Opener-Policy (Google's do), each
+      // read makes Chrome log "Cross-Origin-Opener-Policy policy would block
+      // the window.closed call" as a console error, on every tick of sign-in.
+      let closed = false;
+      const checkClosed = () => {
+        closed = !!popup?.closed;
+      };
+      const onFocus = () => {
+        checkClosed();
+        // Focus can land a moment before the popup is actually gone.
+        setTimeout(checkClosed, 500);
+      };
+      const stop = () => {
+        clearInterval(timer);
+        window.removeEventListener("focus", onFocus);
+        authorizing.current.delete(serverName);
+      };
+      window.addEventListener("focus", onFocus);
       const timer = setInterval(async () => {
-        const expired = Date.now() - started > POLL_CEILING_MS;
-        const closed = !!popup?.closed;
-        if (expired) {
-          clearInterval(timer);
-          authorizing.current.delete(serverName);
+        if (Date.now() - started > POLL_CEILING_MS) {
+          stop();
           return;
         }
         try {
           const status = await oauthStatus({ connectionId });
           if (status?.auth_state === "CONNECTED") {
-            clearInterval(timer);
-            authorizing.current.delete(serverName);
+            stop();
             // Authorized is not the same as connected: the token exists, and
             // the session still has to be opened and its capabilities read.
             await connectAction({ connectionId });
@@ -138,11 +156,10 @@ export function useConnect(
           // The window is gone and the status is still not CONNECTED. Stop
           // asking; the row stays AUTHORIZING and the page offers the action
           // again, which is the honest outcome for a cancelled authorization.
-          clearInterval(timer);
-          authorizing.current.delete(serverName);
+          stop();
         }
       }, POLL_MS);
-      timers.current.push(timer);
+      stops.current.push(stop);
     },
     [connectAction, oauthStatus],
   );
