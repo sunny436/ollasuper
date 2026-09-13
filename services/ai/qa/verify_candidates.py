@@ -66,15 +66,43 @@ async def _probe_one(name: str, url: str, transport: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — a candidate may do anything
         out["detail"] = f"probe: {type(exc).__name__}"
 
-    # 2. A REAL MCP handshake. Nothing short of this proves the endpoint speaks
-    #    the protocol rather than merely answering HTTP.
+    # 2. A REAL MCP handshake, THROUGH A STATUS RECORDER.
+    #
+    # THE SDK ERASES THE HTTP STATUS — Phase 3 measured it: a 401, 403, 429, 500
+    # and 503 all arrive as the identical `MCPError(-32603)` inside a
+    # doubly-nested ExceptionGroup. A first version of this file read only the
+    # exception text and classified 34 live vendor servers as "dead" when every
+    # one of them was answering 401, which would have thrown away almost the
+    # entire catalogue.
+    #
+    # `StatusRecorder` is the httpx2 response event hook Phase 3 built for
+    # exactly this, and `build_http_client` is the production wiring. Reused
+    # rather than reimplemented, so this classifies failures the same way a real
+    # connection does.
+    from app.mcp.models import McpConnectionSpec, McpServerIdentity
+    from app.mcp.status import StatusRecorder
+    from app.mcp.transport import build_http_client
+
+    recorder = StatusRecorder()
     try:
         from mcp.client import Client
         from mcp.client.streamable_http import streamable_http_client
 
-        async with httpx2.AsyncClient(
-            timeout=httpx2.Timeout(TIMEOUT_S), follow_redirects=True
-        ) as http:
+        spec = McpConnectionSpec(
+            connection_id="verify",
+            identity=McpServerIdentity(slug="verify", trusted=False),
+            server_name=name,
+            version="probe",
+            transport="streamable-http",
+            endpoint_url=url,
+            auth_kind="none",
+            user_id="verify",
+            workspace_id="verify",
+            connect_timeout_s=TIMEOUT_S,
+            request_timeout_s=TIMEOUT_S,
+        )
+        http = build_http_client(spec, {}, recorder)
+        async with http:
             async with Client(
                 server=streamable_http_client(url, http_client=http)
             ) as session:
@@ -83,13 +111,16 @@ async def _probe_one(name: str, url: str, transport: str) -> dict[str, Any]:
                 out["tools"] = len(getattr(tools, "tools", tools) or [])
                 return out
     except Exception as exc:  # noqa: BLE001
-        msg = str(exc)[:120]
-        # A 401 can also surface here, through the SDK's erased status.
-        if "401" in msg or "auth" in msg.lower() or "unauthor" in msg.lower():
+        status = recorder.status
+        out["detail"] = f"{type(exc).__name__}: {str(exc)[:80]}"
+        if status in (401, 403):
             out["verdict"] = "auth"
-            out["detail"] = "401 during initialize"
-        else:
-            out["detail"] = f"{type(exc).__name__}: {msg}"
+            out["auth"] = (recorder.www_authenticate or "oauth")[:60]
+            out["detail"] = f"HTTP {status}"
+        elif status is not None:
+            out["detail"] = f"HTTP {status}"
+        elif not recorder.saw_response:
+            out["detail"] = "no response from the server"
         return out
 
 
