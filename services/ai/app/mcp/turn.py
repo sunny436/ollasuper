@@ -184,7 +184,7 @@ async def mcp_for_turn(
                     # server silently contributed no resources or prompts. The
                     # spec is the one object both branches always have.
                     server_slug=spec.identity.slug,
-                    snapshot=getattr(session, "capabilities", None),
+                    snapshot=getattr(session, "snapshot", None),
                     max_resources=getattr(
                         settings, "mcp_max_resources_per_server", 256
                     ),

@@ -415,7 +415,7 @@ async def _capability_index(request: Request, body: ConnectionBody):
             # that silently emptied every local server's capabilities in
             # `turn.py`; the spec is the one object both branches always have.
             server_slug=spec.identity.slug,
-            snapshot=getattr(session, "capabilities", None),
+            snapshot=getattr(session, "snapshot", None),
             max_resources=getattr(settings, "mcp_max_resources_per_server", 256),
             max_templates=getattr(
                 settings, "mcp_max_resource_templates_per_server", 64
