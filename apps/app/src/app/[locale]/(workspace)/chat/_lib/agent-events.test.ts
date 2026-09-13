@@ -320,5 +320,36 @@ describe("execution pill helpers", () => {
     expect(aggregateStatus([run({ status: "error", endedTs: 1 })], false).state).toBe(
       "error",
     );
+    // a call PARKED for approval is an "error" result by transport, not a
+    // failure: once the approved re-run succeeds the turn is done. Measured on
+    // production — every approved write showed "Some steps didn't complete".
+    expect(
+      aggregateStatus(
+        [
+          run({
+            callId: "parked",
+            status: "error",
+            result: { status: "awaiting_approval" },
+            endedTs: 1,
+          }),
+          run({ callId: "rerun", status: "success", endedTs: 2 }),
+        ],
+        false,
+      ),
+    ).toEqual({ state: "done", label: "Done · 2 steps" });
+    // ...but a parked call that was REJECTED still reads as not completed.
+    expect(
+      aggregateStatus(
+        [
+          run({
+            callId: "rejected",
+            status: "error",
+            result: { status: "rejected", reason: "not approved" },
+            endedTs: 1,
+          }),
+        ],
+        false,
+      ).state,
+    ).toBe("error");
   });
 });

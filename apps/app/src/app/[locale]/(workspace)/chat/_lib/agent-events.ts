@@ -591,6 +591,15 @@ export interface AggregateStatus {
   label: string;
 }
 
+function isParkedForApproval(run: ToolRunModel): boolean {
+  const result = run.result;
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    (result as { status?: unknown }).status === "awaiting_approval"
+  );
+}
+
 /**
  * The single, stable header for the execution pill. Keys on the SET of running
  * runs (not per-progress ticks), so the header never jitters:
@@ -603,7 +612,13 @@ export function aggregateStatus(
   isStreaming: boolean,
 ): AggregateStatus {
   const running = runs.filter((r) => r.status === "running");
-  const failed = runs.some((r) => r.status === "error");
+  // A call parked for approval arrives as an "error" result carrying
+  // `{status: "awaiting_approval"}` — that is how the backend stops the model
+  // until the user decides (executor.py `_park_all_for_approval`). The approved
+  // re-run is a NEW call, so the parked one keeps that status forever. It is a
+  // pause, not a failure: measured on production, every approved Gmail draft
+  // and Sheets write ended with "Some steps didn't complete" beside "Done".
+  const failed = runs.some((r) => r.status === "error" && !isParkedForApproval(r));
   const one = running[0];
   if (running.length === 1 && one)
     return { state: "running", label: runRunningLabel(one) };
