@@ -560,6 +560,22 @@ unchanged by everything below. Every flag defaults OFF.
     required" every hour: expiry alone is not a failure, the runtime's `auth_required` at next use
     is.
 
+  - **Writes ask; reads flow — a gap found while writing the privacy page.** MCP tools carried
+    `approval_required=False` on the assumption the side-effect ceiling would ask, but production
+    runs every turn elevated (`AI_AGENT_SIDE_EFFECT_ENABLED`), so a Slack `send_message` ran with no
+    approval prompt at all. A tool the server does not declare read-only now asks on every turn;
+    declared reads flow on an elevated turn and stay ceiling-gated under READ_SCOPE. Every
+    connected vendor server measured annotates every tool. Verified in headed Chrome: Maps search
+    runs unasked, Gmail `create_draft` shows "Approval required" and Reject runs nothing.
+  - **Public pages and eight more connectors.** `/privacy`, `/terms`, `/support`, `/slack` — the
+    documents the Slack Marketplace and Google's consent screen require — are server-rendered and
+    unauthenticated. Asana, Canva, Sentry, ClickUp, Dropbox, HubSpot, Box and AWS Knowledge were
+    probed live and curated (57 connectors); a real OAuth start on production proved 33 of the
+    catalogue's OAuth servers register dynamically and need no operator credentials. Zoom (×4),
+    HubSpot, Box, Asana and ElevenLabs need a pre-registered client; Dropbox admits only its
+    pre-registered partners. Microsoft 365, Salesforce, Discord, Trello, Datadog, Shopify and
+    Brave publish no remote MCP server and were not faked.
+
 - **Phase 8 — production hardening, and the DARK LAUNCH (deployed).** The standing "nothing on
   prod" rule lifted here. Everything from Phases 2–8 is now committed (`76c10c6`) and deployed to
   `app.ollasuper.com` with **every MCP flag still off** and `mcp_curated_servers` empty, so the
