@@ -41,9 +41,13 @@ log = get_logger(__name__)
 
 __all__ = ["AuthorizationAttempt", "AttemptRegistry", "state_from_url"]
 
-#: An authorization is a human clicking through a consent screen. Two minutes is
-#: generous for that and short enough that a leaked `state` is worth little.
-DEFAULT_TTL_S = 120.0
+#: An authorization is a human clicking through a consent screen — with a
+#: password, a second factor on a phone, Google's "unverified app" interstitial
+#: and a scope checklist in the way. Two minutes was not enough for that on
+#: production (the callback arrived to "no pending authorization"). Ten minutes
+#: matches how long the providers' own authorization codes stay valid, and a
+#: leaked `state` is still worth nothing without the PKCE verifier held here.
+DEFAULT_TTL_S = 600.0
 
 #: A hard ceiling on concurrent pending authorizations, so a caller that starts
 #: flows in a loop cannot grow this map without bound.

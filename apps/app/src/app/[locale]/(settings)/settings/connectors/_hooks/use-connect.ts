@@ -37,9 +37,11 @@ import { type UiError, fromReport } from "../_lib/errors";
  *  signals that actually matter, and this is only the backstop for a user who
  *  finishes in another tab. §56 — no hammering. */
 const POLL_MS = 2500;
-/** Give up the backstop after this long. The connection row still holds
- *  AUTHORIZING, so the page is correct; it just stops asking. */
-const POLL_CEILING_MS = 5 * 60 * 1000;
+/** Give up the backstop after this long — the server keeps an authorization
+ *  claimable for ten minutes (`mcp_oauth_attempt_ttl_s`), so this matches. The
+ *  connection row still holds AUTHORIZING, so the page is correct; it just
+ *  stops asking. */
+const POLL_CEILING_MS = 10 * 60 * 1000;
 
 export type ConnectHandlers = {
   connect: (view: ConnectorView) => Promise<void>;

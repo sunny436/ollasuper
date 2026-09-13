@@ -512,6 +512,44 @@ unchanged by everything below. Every flag defaults OFF.
     generation, RAG/knowledge retrieval and OCR have been broken since. Chat is unaffected (Ollima
     answers 200). Needs a key rotation on the account owner's side.
 
+- **Phase 10 — GitHub and Google sign-in, live on production.** OAuth is on
+  (`MCP_OAUTH_ENABLED`, vault keyed, callback `/__cvx-site/mcp/oauth/callback`). **GitHub**
+  (45 tools) and **Google Gmail, Calendar, Drive, Docs, Sheets and Maps** — Google's official MCP
+  servers, five of which are not in the public registry and were curated by `qa/curate_google.sql`
+  after a live probe — are connectable, with a real GitHub tool call and a real Maps tool call
+  proven from chat on production. Neither authorization server offers dynamic registration, so the
+  operator's OAuth clients are seeded into the vault (`qa/seed_oauth_client.py`, never a config
+  value, never printed).
+  - **Six real defects, each measured on production before it was fixed, none reachable by the
+    suite.** GitHub's token endpoint answers form-encoded unless asked for JSON (the SDK never
+    asks). Google's servers serve `initialize` and `tools/list` WITHOUT a token and 401 only on
+    `tools/call`, so a connection read as Connected with no account behind it (`require_bearer`).
+    Google's resource metadata names `https://accounts.google.com/` while its server signs as
+    `https://accounts.google.com`, and the SDK compares issuers as strings. The resolver's
+    AUTH_REQUIRED arrived wrapped in the SDK's task groups and was classified UNREACHABLE — the
+    page said "Temporarily unavailable" instead of opening sign-in. `discover_capabilities` read
+    `session.capabilities`, a field that does not exist, so every server was asked for resources
+    it never advertised — Google Maps answers that with 404 and the SDK tore the session down on
+    every turn. And **silent refresh never worked for any real provider**: the SDK learns the token
+    endpoint only during a 401 flow, so a fresh pooled provider posted the refresh to
+    `<mcp origin>/token`; every Google connection died after an hour. The discovered metadata is
+    now stored with its token, and the refresh was re-proven on production against an
+    expired-record token with the pool emptied. The fixture could show none of this because its
+    authorization server shares the MCP server's origin.
+  - **What is Google's to do, stated plainly.** Gmail, Calendar, Drive, Docs and Sheets tool calls
+    are refused by Google — *"requires that your Google Cloud project is enrolled in the Google
+    Workspace Developer Preview Program"* (Drive: "The caller does not have permission") — until
+    the project is enrolled. Each Workspace MCP server is also its own API to enable, separate from
+    the classic Gmail/Calendar/… APIs. Nothing in this repo can change either. Maps needs neither.
+  - **Verified in headed Chrome on production with a real Google account** (`e2e/q5-google-mcp.js`;
+    credentials read at runtime from the gitignored operator file): all six connect through
+    Google's consent, list their real tools (23/9/8/2/6/5), zero console errors, the client secret
+    never reaches the browser, and a Maps chat turn returns real places. The Chrome
+    Cross-Origin-Opener-Policy console errors that polling `popup.closed` produced during Google
+    pages are gone (checked on focus instead). The Settings page no longer says "Authentication
+    required" every hour: expiry alone is not a failure, the runtime's `auth_required` at next use
+    is.
+
 - **Phase 8 — production hardening, and the DARK LAUNCH (deployed).** The standing "nothing on
   prod" rule lifted here. Everything from Phases 2–8 is now committed (`76c10c6`) and deployed to
   `app.ollasuper.com` with **every MCP flag still off** and `mcp_curated_servers` empty, so the

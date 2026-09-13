@@ -68,7 +68,7 @@ const visible = async (loc) => (await loc.count()) > 0 && (await loc.first().isV
 
 /** Drive Google's sign-in + consent inside the popup until it lands on our callback. */
 async function googleConsent(popup) {
-  const deadline = Date.now() + 180000;
+  const deadline = Date.now() + 540000;
   while (Date.now() < deadline) {
     if (popup.isClosed()) return "popup closed";
     const url = popup.url();
@@ -114,7 +114,7 @@ async function googleConsent(popup) {
     }
     await popup.waitForTimeout(2500);
   }
-  throw new Error("Google consent did not finish in 3 minutes at " + new URL(popup.url()).host + new URL(popup.url()).pathname);
+  throw new Error("Google consent did not finish in 9 minutes at " + new URL(popup.url()).host + new URL(popup.url()).pathname);
 }
 
 async function ask(page, text, waitMs = 150000) {
@@ -127,6 +127,12 @@ async function ask(page, text, waitMs = 150000) {
   const started = Date.now();
   let last = "";
   let stable = 0;
+  // The reply is what follows the LAST "Assistant" header. Measured: waiting
+  // for the whole page to go quiet returned an EMPTY assistant block while the
+  // model was still working on a tool call, and the check then passed on the
+  // question's own echo. Below the header sit the timestamp and the composer's
+  // fixed copy (~80 chars); a real reply pushes well past that.
+  const replyOf = (body) => body.slice(body.lastIndexOf("Assistant"));
   while (Date.now() - started < waitMs) {
     await page.waitForTimeout(3000);
     // An approval gate for an untrusted server's tool: approve it, as a user would.
@@ -140,9 +146,12 @@ async function ask(page, text, waitMs = 150000) {
     const body = await page.locator("body").innerText();
     stable = body === last ? stable + 1 : 0;
     last = body;
-    if (stable >= 3 && body.length > text.length + 150) break;
+    if (stable >= 3 && replyOf(body).length > 160) break;
   }
-  return last;
+  if (replyOf(last).length <= 160) {
+    throw new Error("no assistant reply within " + waitMs / 1000 + "s");
+  }
+  return replyOf(last);
 }
 
 (async () => {
@@ -214,7 +223,7 @@ async function ask(page, text, waitMs = 150000) {
     for (const app of APPS.filter((a) => a.ask)) {
       await step(`${app.name}: a chat turn uses it`, async () => {
         const out = await ask(page, app.ask);
-        const tail = out.slice(-700).replace(/\s+/g, " ");
+        const tail = out.replace(/\s+/g, " ");
         notes.push(`${app.name} reply tail: ${tail.slice(-300)}`);
         if (/not connected|needs to be authorized|could not be reached|don.t have access|unable to|not enabled|Developer Preview|permission|isn.t available|failed/i.test(tail)) {
           throw new Error("reply reports a connector failure: " + tail.slice(-200));

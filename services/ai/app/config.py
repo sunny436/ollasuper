@@ -930,9 +930,10 @@ class Settings(BaseSettings):
     # placeholder here would be a lie told to every authorization server.
     mcp_oauth_client_metadata_url: str = ""
     # How long a pending authorization stays claimable. A human clicking through
-    # a consent screen; long enough for that, short enough that a leaked state
-    # is worth little.
-    mcp_oauth_attempt_ttl_s: float = 120.0
+    # a consent screen with a second factor and an "unverified app" warning in
+    # the way — two minutes was measured too short on production. Ten matches
+    # the providers' own authorization-code validity. See oauth/attempts.py.
+    mcp_oauth_attempt_ttl_s: float = 600.0
     # Per-server scope allowlist, e.g. {"github": ["repo:read"]}. EMPTY BY
     # DEFAULT, which means "request what the server's metadata asks for" — the
     # specification's behaviour. Narrowing is applied to the authorization URL
