@@ -229,3 +229,34 @@ async def test_the_catalogue_reports_enabled_when_mcp_is_on():
     body = res.json()
     assert body["enabled"] is True
     assert [s["slug"] for s in body["servers"]] == ["fake"]
+
+
+# ------------------------------------------------------------ everyday order
+async def test_the_catalogue_lists_everyday_connectors_first():
+    """The page renders in the order the API returns. Sorted by category then
+    slug, Apify and Bitly sat above Gmail; a user opening Connectors should see
+    mail, calendar, files, chat and code before an analytics SDK."""
+    rows = [
+        {
+            **ROW,
+            "slug": s,
+            "server_name": f"x/{s}",
+            "display_name": s.title(),
+            "category": c,
+        }
+        for s, c in (
+            ("apify", "browser"),
+            ("bitly", "business"),
+            ("gmail", "email"),
+            ("zapier", "productivity"),
+            ("slack", "communication"),
+            ("github", "developer"),
+            ("wix", "business"),
+        )
+    ]
+    out = await curated.list_curated(FakeEngine(rows), safe=True)
+    slugs = [r["slug"] for r in out]
+    assert slugs[:3] == ["gmail", "slack", "github"]
+    assert slugs.index("zapier") < slugs.index("apify")
+    # Unranked servers keep a stable alphabetical tail.
+    assert slugs[-3:] == ["apify", "bitly", "wix"]

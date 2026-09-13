@@ -131,7 +131,64 @@ async def list_curated(
     query = text(_SELECT + clause + " ORDER BY c.category, c.slug")
     async with engine.begin() as conn:
         rows = (await conn.execute(query)).mappings().all()
-    return [_safe(dict(r)) if safe else dict(r) for r in rows]
+    ordered = sorted(
+        (dict(r) for r in rows),
+        key=lambda r: (
+            _everyday_rank(r["slug"]),
+            str(r.get("display_name") or r["slug"]),
+        ),
+    )
+    return [_safe(r) if safe else r for r in ordered]
+
+
+#: What a browser sees FIRST. The catalogue holds ~60 servers and the page
+#: renders them in the order this list returns them, so "sorted by category,
+#: then slug" put Apify and Bitly above Gmail. Ranked by everyday use — mail,
+#: calendar, files, chat, code, tasks, docs — then everything else alphabetical.
+#: Presentation only: nothing else reads the order.
+_EVERYDAY_FIRST: tuple[str, ...] = (
+    "gmail",
+    "google-calendar",
+    "google-drive",
+    "google-docs",
+    "google-sheets",
+    "slack",
+    "github",
+    "notion",
+    "linear",
+    "atlassian",
+    "asana",
+    "clickup",
+    "monday",
+    "todoist",
+    "google-maps",
+    "zoom-meetings",
+    "zoom-chat",
+    "zoom-workspace",
+    "zoom-tasks",
+    "hubspot",
+    "canva",
+    "figma",
+    "miro",
+    "airtable",
+    "dropbox",
+    "box",
+    "stripe",
+    "paypal",
+    "zapier",
+    "make",
+    "gitlab",
+    "vercel",
+    "supabase",
+    "sentry",
+    "context7",
+    "exa",
+)
+_EVERYDAY_RANK = {slug: i for i, slug in enumerate(_EVERYDAY_FIRST)}
+
+
+def _everyday_rank(slug: str) -> int:
+    return _EVERYDAY_RANK.get(slug, len(_EVERYDAY_FIRST))
 
 
 async def resolve(engine: AsyncEngine, server_name: str) -> CuratedTarget | None:
