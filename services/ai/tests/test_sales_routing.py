@@ -120,3 +120,22 @@ def test_sales_coexists_with_all_flags_on():
     assert reg.discover("write a blog about kubernetes")[0].manifest.skill_id == (
         "blog-assist"
     )
+
+
+# --- the QA report's phrasings, measured as routing to nothing before -------
+def test_qa_report_phrasings_route_to_sales():
+    """Longer, realistic requests. Measured before the vocabulary fix: prospect
+    research scored 0.18 and objection handling 0.16 — below the 0.20 floor —
+    so the general assistant answered with none of the Sales evidence rules."""
+    cases = [
+        "Research HubSpot as a sales prospect: company profile, industry, size, "
+        "pain points, recent developments and sales angles.",
+        "How should I handle these sales objections: they already use a CRM, they "
+        "build internally, their data is poor quality, it's low priority.",
+        "Create a sales ROI summary for the prospect with assumptions, costs, "
+        "benefits, payback and 3-year ROI.",
+        "Write a personalized cold email to HubSpot's VP of Sales with a clear "
+        "CTA, max 120 words.",
+    ]
+    for q in cases:
+        assert _top(q) == "sales", f"{q!r} -> {_top(q)}"

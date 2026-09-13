@@ -97,3 +97,14 @@ def test_numbers_from_tools():
     _has("marketing_calc", "marketing_reference")
     _has("sample_size", "ab_test", "funnel", "attribution")
     _has("never hand-compute")
+
+
+def test_time_sensitive_facts_rule_survives_compaction():
+    minimal = MARKETING_SKILL.render_minimal().lower()
+    for needle in (
+        "time-sensitive facts",
+        "retrieval date",
+        "never 🟢",
+        "re-check every 🟢",
+    ):
+        assert needle in minimal, f"constraint not in minimal render: {needle!r}"

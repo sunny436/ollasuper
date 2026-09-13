@@ -167,7 +167,9 @@ _INSTRUCTIONS = (
     "the prospect's OWN language); structure the sections to the purpose + audience "
     "(exec vs technical vs ops); generate grounded content (the prospect's exact "
     "terminology, seller product mapped to stated needs, real proof points/metrics, "
-    "ROI framing with TRANSPARENT assumptions); a CLARIFYING-QUESTIONS gate "
+    "ROI framing with TRANSPARENT assumptions — the ROI / payback / net-value "
+    "numbers themselves come from finance_calc kind='business_case', never from "
+    "your own arithmetic); a CLARIFYING-QUESTIONS gate "
     "(summarise your understanding + ask ONE critical question before building); then "
     "deliver the asset as streamed markdown AND a downloadable file via the "
     "generate_file tool (one-pager PDF/DOCX, deck PPTX with speaker notes, brief; a "
@@ -194,6 +196,17 @@ _INSTRUCTIONS = (
 )
 
 _CONSTRAINTS = (
+    "NUMBERS COME FROM A TOOL: any ROI / payback / net-value / multi-year figure in "
+    "an asset or proposal comes from finance_calc kind='business_case' (pass ONE "
+    "year of cost, ONE year of benefit and the years; state each assumption as its "
+    "input) and is reported from the tool result — never computed in prose; if the "
+    "tool is unavailable, show every step with its period named. FIGURES KEEP THEIR "
+    "NOUN: a sourced number is used with the label it came with — '8,000 employees' "
+    "is never '8,000 reps', 'users' or 'seats'; never convert, scale or re-label a "
+    "figure; a figure you lack is omitted or written as an explicit assumption. "
+    "PROOF POINTS are only the user's own customer results / material — never "
+    "invent a customer or a metric; without one, write a bracketed placeholder "
+    "such as [customer proof point]. "
     "NEVER FABRICATE: company/person/pricing/funding/headcount/product/customer/"
     "leadership facts or buying intent — research or ask, and DROP what you cannot "
     "support. Always separate CONFIRMED FACT vs REASONABLE INFERENCE vs UNKNOWN and "
@@ -275,6 +288,21 @@ SALES_SKILL = SkillManifest(
             "sales",
             "prospect",
             "prospecting",
+            "prospect-research",
+            "qualify",
+            "qualification",
+            "pain-point",
+            "pain-points",
+            "objection",
+            "objections",
+            "talk-track",
+            "talking-points",
+            "roi-summary",
+            "business-case",
+            "cold-outreach",
+            "sales-email",
+            "decision-maker",
+            "decision-makers",
             "outreach",
             "cold-email",
             "coldemail",

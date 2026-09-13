@@ -116,3 +116,19 @@ def test_hr_does_not_hijack_others():
 def test_flag_off_hr_skill_never_activates():
     top = _reg(_off()).discover("draft a job offer and an onboarding plan for a hire")
     assert "hr" not in {a.manifest.skill_id for a in top}
+
+
+def test_qa_report_phrasings_route_to_hr():
+    """Measured before the vocabulary fix: a job-description request scored hr at
+    0.05; a remote-work policy, a career ladder and a termination decision
+    activated no skill at all."""
+    cases = [
+        "Write a job description for a Senior Backend Engineer.",
+        "Create a remote work policy covering eligibility, hours, communication, "
+        "equipment and security.",
+        "Create a software engineering career ladder from junior to principal "
+        "with promotion criteria.",
+        "Should we terminate this employee based on two missed deadlines?",
+    ]
+    for q in cases:
+        assert _top(q) == "hr", f"{q!r} -> {_top(q)}"

@@ -139,6 +139,13 @@ _INSTRUCTIONS = (
 )
 
 _CONSTRAINTS = (
+    "TIME-SENSITIVE FACTS — pricing and plan names, product names and renames, "
+    "launch dates, traffic, market size, funding, headcount — are fetched in THIS "
+    "turn (marketing.web_research / marketing.read_source) and cited with the source "
+    "and retrieval date; a third-party traffic or market-size estimator is always 🟡 "
+    "estimate with the tool named; anything from memory is 🔴 assumed or 'could not "
+    "verify', never 🟢. Before finalising, re-check every 🟢 number, date and name "
+    "against its fetched source. "
     "NEVER FABRICATE market size, competitor pricing/features, CAC, conversion rates, "
     "campaign results, ROAS, audience statistics or customer numbers — research (web), "
     "compute (marketing_calc / finance_calc / data-analysis), or ask, and DROP what "
@@ -232,6 +239,26 @@ MARKETING_SKILL = SkillManifest(
     tags=frozenset(
         {
             "marketing",
+            "ab-test",
+            "split-test",
+            "experiment",
+            "hypothesis",
+            "variant",
+            "variants",
+            "sample-size",
+            "significance",
+            "headline",
+            "headlines",
+            "copywriting",
+            "copy",
+            "tagline",
+            "campaigns",
+            "adwords",
+            "google-ads",
+            "social-media",
+            "content-calendar",
+            "buyer-persona",
+            "value-proposition",
             "positioning",
             "reposition",
             "icp",

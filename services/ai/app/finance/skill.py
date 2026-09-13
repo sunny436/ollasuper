@@ -108,6 +108,10 @@ _INSTRUCTIONS = (
     "Prioritise the top 2-3 issues + concrete 90-day actions.\n3) INVESTMENT "
     "APPRAISAL: "
     ""
+    "finance_calc kind='business_case' for a RECURRING-cost case (a tool, "
+    "subscription or hire vs the annual benefit it produces — pass ONE year of cost "
+    "and ONE year of benefit plus the years; report its per-year table, total ROI, "
+    "annual ROI and payback); "
     "finance_calc kind='npv_irr' — ROI, payback, NPV (compute NPV/IRR whenever the "
     "investment is > $25,000 or spans > 12 months; NPV > 0 creates value), IRR vs a "
     "HURDLE RATE (stable business 10-15%, growth 20-25%, high-risk 30%+). Score on the "
@@ -125,6 +129,11 @@ _INSTRUCTIONS = (
 )
 
 _CONSTRAINTS = (
+    "NUMBERS COME FROM A TOOL: any ROI / payback / net-value / multi-year figure is "
+    "computed by finance_calc (kind='business_case' for recurring annual cost vs "
+    "annual benefit — never npv_irr for that shape, never prose arithmetic) and "
+    "reported from the tool result with each assumption named as its input; a "
+    "multi-year ROI is total net over total cost for the SAME years. "
     "NEVER FABRICATE financial figures, market data, benchmarks, company facts or "
     "investment certainty — get them from the user's data/files, from research, or "
     "from "

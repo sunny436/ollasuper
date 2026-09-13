@@ -122,3 +122,18 @@ def test_marketing_coexists_with_all_flags_on():
         reg.discover("audit example.com technical seo")[0].manifest.skill_id
         == "seo-audit"
     )
+
+
+def test_qa_report_phrasings_route_to_marketing():
+    """Measured before the vocabulary fix: 'a/b' tokenizes to nothing, so an A/B
+    test request scored 0 and a landing-page review scored below the floor."""
+    cases = [
+        "Design an A/B test with hypothesis, variants, and the sample size needed "
+        "for significance.",
+        "Analyse this landing page: headline, value proposition, CTA, trust signals "
+        "and conversion friction.",
+        "Plan a Google Ads campaign structure with ad groups, keywords, negative "
+        "keywords and budget.",
+    ]
+    for q in cases:
+        assert _top(q) == "marketing", f"{q!r} -> {_top(q)}"

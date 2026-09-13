@@ -26,6 +26,7 @@ _KINDS = (
     "ev_bridge",
     "scenario",
     "npv_irr",
+    "business_case",
     "saas_metrics",
     "quick_ratio",
     "variance",
@@ -163,7 +164,9 @@ FINANCE_CALC_TOOL_SPEC: dict = {
             "for "
             ""
             ""
-            "a capex or investment), 'saas_metrics' "
+            "a capex or investment), 'business_case' (recurring annual cost vs annual "
+            "benefit over N years: per-year table, totals, ROI, annual ROI, payback), "
+            "'saas_metrics' "
             "(ARR/MRR-growth/churn/CAC/LTV/LTV:CAC/CAC-payback/NRR/Rule-of-40 + "
             "benchmark bands), 'quick_ratio' (SaaS quick ratio), 'variance' (budget vs "
             "actual + materiality), 'forecast' (driver-based revenue projection + "
@@ -246,6 +249,18 @@ FINANCE_CALC_TOOL_SPEC: dict = {
                     "description": "npv_irr: {initial_investment, cash_flows: "
                     "[per-period net inflows AFTER the outlay], discount_rate, "
                     "net_gain?}.",
+                },
+                "business_case": {
+                    "type": "object",
+                    "description": "business_case: {annual_cost, annual_benefit, "
+                    "years, one_time_cost?, benefit_by_year?}. A RECURRING-cost "
+                    "case (software/subscription/headcount vs the benefit it "
+                    "produces): pass ONE YEAR of cost and ONE YEAR of benefit, not "
+                    "multi-year totals — the tool builds the per-year table, "
+                    "totals, ROI (total net / total cost over the same years), "
+                    "annual ROI and payback so periods can never be mixed. Use "
+                    "this, not npv_irr, for any ROI summary / sales business "
+                    "case; report ITS numbers.",
                 },
                 "saas": {
                     "type": "object",
@@ -443,6 +458,25 @@ def compute_finance_calc(args: dict) -> dict:
             rate = _num(p.get("discount_rate"), 0.10) or 0.10
             return C.appraise_investment(
                 inv, cfs, discount_rate=rate, net_gain=_num(p.get("net_gain"))
+            )
+        if kind == "business_case":
+            p = _obj(args, "business_case")
+            annual_cost = _num(p.get("annual_cost"))
+            annual_benefit = _num(p.get("annual_benefit"))
+            years = _num(p.get("years"), 1.0) or 1.0
+            if annual_cost is None or annual_benefit is None:
+                return {
+                    "error": "business_case requires annual_cost and annual_benefit"
+                }
+            ramp = p.get("benefit_by_year")
+            return C.business_case(
+                _num(p.get("one_time_cost"), 0.0) or 0.0,
+                annual_cost,
+                annual_benefit,
+                int(years),
+                benefit_by_year=[_num(x, 0.0) or 0.0 for x in ramp]
+                if isinstance(ramp, list) and ramp
+                else None,
             )
         if kind == "saas_metrics":
             p = _obj(args, "saas")

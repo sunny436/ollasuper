@@ -173,3 +173,22 @@ def test_reference_tool_loads_and_errors():
     assert "error" in run_finance_reference({"doc": "nope/nope"})
     assert "error" in run_finance_reference({"doc": "../../config"})  # traversal guard
     assert "error" in run_finance_reference("bad")  # type: ignore[arg-type]
+
+
+def test_kind_business_case_dispatch_and_validation():
+    out = compute_finance_calc(
+        {
+            "kind": "business_case",
+            "business_case": {
+                "annual_cost": "120,000",
+                "annual_benefit": "$1,728,000",
+                "years": 3,
+            },
+        }
+    )
+    assert out["roi_pct"] == 1340.0
+    assert out["total_net"] == 4_824_000.0
+    assert len(out["table"]) == 3
+    assert "error" in compute_finance_calc(
+        {"kind": "business_case", "business_case": {"annual_cost": 1}}
+    )

@@ -144,3 +144,21 @@ def test_daily_briefing_contract():
     _has_all("#1 priority", "$50k", "today's numbers", "suggested actions")
     # explicitly disclaims live calendar/CRM/email access
     assert "do not have live" in _LOW or "no crm/email/calendar" in _LOW
+
+
+# --- the QA report: numbers from a tool, figures keep their noun -------------
+def test_numbers_and_nouns_rules_survive_compaction():
+    """These rules live in `constraints` on purpose: when Sales is the SECOND
+    skill of a turn it is compacted to its constraints, and the ROI asset prompt
+    is exactly such a turn (sales + finance). A rule in `instructions` would
+    vanish there."""
+    minimal = SALES_SKILL.render_minimal().lower()
+    for needle in (
+        "finance_calc kind='business_case'",
+        "never computed in prose",
+        "figures keep their noun",
+        "8,000 employees",
+        "proof points are only the user's own",
+    ):
+        assert needle in minimal, f"constraint not in minimal render: {needle!r}"
+    _has_all("business_case", "never from your own arithmetic")

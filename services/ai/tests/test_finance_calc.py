@@ -579,3 +579,49 @@ def test_rule_of_40_names_profit_margin_when_it_is_the_blocker():
     m = C.saas_metrics(mrr=105_000, mrr_prev=100_000)
     assert m["rule_of_40"]["value"] is None
     assert "profit_margin" in m["_missing"]
+
+
+# --- business case: recurring cost vs benefit, periods never mixed ----------
+def test_business_case_periods_are_consistent_by_construction():
+    """The QA report's failure: a 3-year ROI of 4,733% where the same-period
+    figure was right. Flat benefits => the N-year ROI equals the annual ROI, and
+    the net value is the same-years difference. Inputs are the QA scenario."""
+    from app.finance.calc import business_case
+
+    out = business_case(0, 120_000, 1_728_000, 3)
+    assert out["total_benefit"] == 5_184_000.0
+    assert out["total_cost"] == 360_000.0
+    assert out["total_net"] == 4_824_000.0
+    assert out["roi_pct"] == 1340.0
+    assert out["annual_roi_pct"] == 1340.0  # the identity a reviewer checks
+    assert out["payback_months"] == 0.83
+    assert out["payback_weeks"] == 3.61
+    assert [r["cumulative_net"] for r in out["table"]] == [
+        1_608_000.0,
+        3_216_000.0,
+        4_824_000.0,
+    ]
+    assert "same years" in out["periods"]
+
+
+def test_business_case_one_time_cost_and_ramp():
+    from app.finance.calc import business_case
+
+    out = business_case(50_000, 20_000, 100_000, 3, benefit_by_year=[40_000, 100_000])
+    # Year 1 carries the outlay; the ramp pads with its last value.
+    assert [r["benefit"] for r in out["table"]] == [40_000.0, 100_000.0, 100_000.0]
+    assert out["table"][0]["cost"] == 70_000.0
+    assert out["total_cost"] == 110_000.0
+    assert out["total_net"] == 130_000.0
+    assert out["roi_pct"] == 118.18
+    # No net benefit in year 1 beyond the outlay => payback from monthly net.
+    assert out["payback_months"] == 30.0
+
+
+def test_business_case_never_divides_by_zero():
+    from app.finance.calc import business_case
+
+    out = business_case(0, 0, 10_000, 2)
+    assert out["roi_pct"] is None
+    assert out["annual_roi_pct"] is None
+    assert out["payback_months"] == 0.0  # nothing to pay back

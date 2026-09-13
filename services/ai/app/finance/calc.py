@@ -885,6 +885,84 @@ def appraise_investment(
     }
 
 
+def business_case(
+    one_time_cost: float,
+    annual_cost: float,
+    annual_benefit: float,
+    years: int,
+    benefit_by_year: list[float] | None = None,
+) -> dict:
+    """A recurring-cost business case: ANNUAL cost vs ANNUAL benefit over N years.
+
+    THE ONE PROPERTY THIS EXISTS FOR: every figure is built from the same per-year
+    table, so a multi-year ROI can never divide 3 years of benefit by 1 year of
+    cost. Measured on production before this existed — a sales ROI summary
+    reported 4,733% where 1,611% was right, exactly that mix-up, because the
+    model did the arithmetic in prose. `npv_irr` does not fit this shape (an
+    outlay plus cash flows has no recurring cost), which is why the model had
+    nothing to call.
+
+    `benefit_by_year` overrides the flat annual benefit per year (ramp-up); its
+    length is padded with the last value / truncated to `years`.
+    ROI% is total net / total cost (cost includes the one-time outlay), which
+    for flat benefits equals the annual ROI — the identity a reviewer checks.
+    """
+    n = max(1, int(years))
+    ramp = list(benefit_by_year or [])
+    if ramp:
+        ramp = [float(x) for x in ramp[:n]] + [float(ramp[-1])] * max(0, n - len(ramp))
+    else:
+        ramp = [float(annual_benefit)] * n
+    rows: list[dict] = []
+    cumulative = -float(one_time_cost)
+    for i, benefit in enumerate(ramp, start=1):
+        cost = float(annual_cost) + (float(one_time_cost) if i == 1 else 0.0)
+        net = benefit - cost
+        cumulative += benefit - float(annual_cost)
+        rows.append(
+            {
+                "year": i,
+                "benefit": _r(benefit),
+                "cost": _r(cost),
+                "net": _r(net),
+                "cumulative_net": _r(cumulative),
+            }
+        )
+    total_benefit = sum(ramp)
+    total_cost = float(annual_cost) * n + float(one_time_cost)
+    total_net = total_benefit - total_cost
+    first_year_net_monthly = (ramp[0] - float(annual_cost)) / 12.0
+    # Payback: months until cumulative net covers the one-time cost — with no
+    # outlay, the months of benefit needed to cover one year of cost.
+    if first_year_net_monthly > 0:
+        to_cover = float(one_time_cost) if one_time_cost else float(annual_cost)
+        monthly_benefit = ramp[0] / 12.0
+        payback_months = (
+            to_cover / first_year_net_monthly
+            if one_time_cost
+            else to_cover / monthly_benefit
+        )
+    else:
+        payback_months = None
+    return {
+        "years": n,
+        "table": rows,
+        "total_benefit": _r(total_benefit),
+        "total_cost": _r(total_cost),
+        "total_net": _r(total_net),
+        "roi_pct": roi(total_net, total_cost),
+        "annual_roi_pct": roi(ramp[0] - float(annual_cost), float(annual_cost))
+        if annual_cost
+        else None,
+        "payback_months": _r(payback_months),
+        "payback_weeks": _r(payback_months * 52.0 / 12.0) if payback_months else None,
+        "periods": (
+            f"all figures are {n}-year totals built from the per-year table; "
+            "ROI = total net / total cost over the same years"
+        ),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # 5. SaaS metrics (metrics_calculator.py + quick_ratio_calculator.py) + bands
 # --------------------------------------------------------------------------- #

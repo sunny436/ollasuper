@@ -81,3 +81,10 @@ def test_plain_language_and_boundaries():
         "can we afford",
     )
     _has("equity-research")  # defer listed-stock analysis
+
+
+def test_business_case_rule_survives_compaction():
+    minimal = FINANCE_SKILL.render_minimal().lower()
+    assert "kind='business_case'" in minimal
+    assert "never npv_irr for that shape" in minimal
+    _has("finance_calc kind='business_case' for a recurring-cost case")
