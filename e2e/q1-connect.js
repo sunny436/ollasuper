@@ -82,7 +82,7 @@ const settle = (page) =>
         waitUntil: "domcontentloaded",
       });
       await settle(page);
-      const text = (await page.textContent("body")) || "";
+      const text = (await page.locator("body").innerText()) || "";
       if (!text.includes("QA Red-Team")) {
         throw new Error("QA server not listed: " + text.replace(/\s+/g, " ").slice(0, 200));
       }
@@ -115,7 +115,7 @@ const settle = (page) =>
         waitUntil: "domcontentloaded",
       });
       await settle(page);
-      const text = (await page.textContent("body")) || "";
+      const text = (await page.locator("body").innerText()) || "";
       if (!text.includes("QA Red-Team")) throw new Error("detail did not render");
       if (/Connector not found/.test(text)) throw new Error("rendered not-found");
     });
@@ -137,7 +137,7 @@ const settle = (page) =>
         () => /\d+ tools?/.test(document.body.innerText),
         { timeout: 30000 },
       );
-      const text = (await page.textContent("body")) || "";
+      const text = (await page.locator("body").innerText()) || "";
       const m = text.match(/(\d+) tools?/);
       notes.push(`tool count rendered: ${m && m[1]}`);
       // §101: a count, not a fabricated zero, and not "unavailable".
@@ -147,7 +147,7 @@ const settle = (page) =>
     });
 
     await step("the tool list names the hostile tools without obeying them", async () => {
-      const text = (await page.textContent("body")) || "";
+      const text = (await page.locator("body").innerText()) || "";
       for (const t of ["read_ok", "poisoned_desc", "crash_tool"]) {
         if (!text.includes(t)) throw new Error(`tool ${t} not listed`);
       }
@@ -160,7 +160,7 @@ const settle = (page) =>
         () => /notes|evil|No resources/.test(document.body.innerText),
         { timeout: 40000 },
       );
-      const text = (await page.textContent("body")) || "";
+      const text = (await page.locator("body").innerText()) || "";
       if (!/evil/.test(text)) notes.push("resource 'evil' not listed");
       const xss = await page.evaluate(() => window.__QA_XSS__);
       if (xss) throw new Error("script from a resource description EXECUTED");

@@ -116,7 +116,9 @@ export const STATE: Record<DisplayState, Presentation> = {
   UNSUPPORTED: {
     label: "Not available here",
     glyph: "×",
-    action: null,
+    // Retry, not Connect: the honest verb for re-asking a question the
+    // deployment answered "no" to, which it may now answer differently.
+    action: "Retry",
     hint: "This app isn't available on this deployment.",
     tone: "neutral",
   },

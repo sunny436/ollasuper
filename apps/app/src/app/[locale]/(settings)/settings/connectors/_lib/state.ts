@@ -156,6 +156,17 @@ const ACTIONABLE: ReadonlySet<DisplayState> = new Set<DisplayState>([
   "UNAVAILABLE",
   "DISCONNECTED",
   "CAPABILITIES_UNAVAILABLE",
+  // UNSUPPORTED IS RETRYABLE, AND BLOCKED IS NOT — the difference is who owns
+  // the refusal. `unsupported` means the DEPLOYMENT could not offer this server
+  // when it was last asked: not curated yet, not enabled yet, no version row.
+  // Every one of those can change, and found in production: a row refused
+  // before its catalogue entry was complete stayed stuck afterwards with no
+  // action at all, because the state was treated as terminal.
+  //
+  // Retrying re-asks a question only the server can answer, so it is not the
+  // "Run anyway" that §38 forbids. `BLOCKED` — a local policy verdict — stays
+  // absent, because there no amount of retrying changes the answer.
+  "UNSUPPORTED",
 ]);
 
 /** Is there a primary action to offer?

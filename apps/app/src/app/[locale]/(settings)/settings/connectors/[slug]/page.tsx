@@ -62,6 +62,17 @@ export default function ConnectorDetailPage({
   );
 
   const connected = view?.state === "CONNECTED";
+  // WHETHER "capabilities" IS EVEN A MEANINGFUL WORD FOR THIS CONNECTION.
+  //
+  // The section used to render whenever a connection ROW existed, and
+  // `CapabilitySummary` with a null count says "Connected, but OllaSuper could
+  // not list what this app offers". For an `unsupported` or `failed` row that
+  // sentence asserts "Connected" about something that never connected — found
+  // in headed Chrome against production, on a row stuck at `unsupported`.
+  //
+  // Existence of a row is not evidence of a connection. These two states are.
+  const hasCapabilities =
+    view?.state === "CONNECTED" || view?.state === "CAPABILITIES_UNAVAILABLE";
   const { resources, prompts } = useCapabilities(
     view?.connectionId ?? null,
     connected,
@@ -146,7 +157,7 @@ export default function ConnectorDetailPage({
         )}
       </section>
 
-      {view.connectionId && (
+      {hasCapabilities && (
         <section className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-medium text-primary/70">Capabilities</h2>

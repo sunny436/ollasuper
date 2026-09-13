@@ -296,8 +296,22 @@ describe("the full cross product", () => {
   test("every state is either actionable or terminal, and the terminal set is closed", () => {
     const terminal = ALL.filter((s) => !isActionable(s));
     expect(terminal.sort()).toEqual(
-      ["BLOCKED", "CONNECTED", "CONNECTING", "UNSUPPORTED"].sort(),
+      ["BLOCKED", "CONNECTED", "CONNECTING"].sort(),
     );
+  });
+
+  test("UNSUPPORTED is retryable but BLOCKED is not — found in production", () => {
+    // A connection refused before its catalogue entry was complete stayed
+    // stuck at `unsupported` afterwards with NO action at all, because the
+    // state was treated as terminal. `unsupported` means the DEPLOYMENT could
+    // not offer this server when it was last asked — not curated, not enabled,
+    // no version row — and every one of those can change.
+    //
+    // Retrying re-asks a question only the server can answer, so it is not the
+    // "Run anyway" §38 forbids. `BLOCKED` is a LOCAL POLICY verdict, where no
+    // amount of retrying changes the answer, so it stays actionless.
+    expect(isActionable("UNSUPPORTED")).toBe(true);
+    expect(isActionable("BLOCKED")).toBe(false);
   });
 
   test("the reducer is pure — same input, same answer", () => {
