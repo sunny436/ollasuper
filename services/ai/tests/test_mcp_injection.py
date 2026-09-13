@@ -230,7 +230,7 @@ async def test_a_poisoned_tool_result_arrives_framed_as_data():
 
     Inherited free from the existing executor: there is no MCP-specific framing.
     """
-    msg = await _run("mcp:hostile:helper")
+    msg = await _run("mcp:hostile:poisoned_lookup")
     assert isinstance(msg, ToolMessage)
     assert msg.tool_call_id == "c1"
     assert "<tool_output>" in msg.content
@@ -241,7 +241,7 @@ async def test_a_poisoned_tool_result_arrives_framed_as_data():
 
 
 async def test_a_poisoned_result_is_bounded_like_any_other():
-    msg = await _run("mcp:hostile:helper")
+    msg = await _run("mcp:hostile:poisoned_lookup")
     assert len(msg.content) <= 8000 + 200  # + the framing wrapper
 
 
@@ -253,7 +253,7 @@ async def test_a_poisoned_result_does_not_change_what_the_next_call_may_do():
     tools = {t.name: t for t in await _discover(cfg)}
     before = check_tool_policy(tools["delete_everything"], READ_SCOPE).decision
 
-    await _run("mcp:hostile:helper", trusted=False)
+    await _run("mcp:hostile:poisoned_lookup", trusted=False)
 
     after = check_tool_policy(tools["delete_everything"], READ_SCOPE).decision
     assert before is after is PolicyDecision.NEEDS_APPROVAL

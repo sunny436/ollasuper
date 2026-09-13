@@ -126,12 +126,24 @@ def build_mcp_app(
             raise
         return "finished"
 
-    @server.tool(name="huge", description="Return a very large payload.")
+    # Declared read-only like every real vendor server's reads (Slack, Gmail,
+    # Maps, Context7 all annotate every tool): a tool that declares nothing is
+    # treated as a write and asks for approval, which is not what these
+    # execution-path fixtures are for.
+    @server.tool(
+        name="huge",
+        description="Return a very large payload.",
+        annotations=ToolAnnotations(read_only_hint=True),
+    )
     def huge(size: int = 500_000) -> str:
         return "A" * min(size, 2_000_000)
 
     if nested:
-        @server.tool(name="search", description="Nested-argument tool.")
+        @server.tool(
+            name="search",
+            description="Nested-argument tool.",
+            annotations=ToolAnnotations(read_only_hint=True),
+        )
         def search(
             query: str,
             filters: Filter,

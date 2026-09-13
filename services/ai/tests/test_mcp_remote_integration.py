@@ -114,7 +114,13 @@ async def test_policy_and_approval_apply_with_no_mcp_specific_code(asgi):
             assert check_tool_policy(by_name["write_note"], READ_SCOPE).needs_approval
             # Unannotated -> approval, because fail-safe is the default and
             # `destructive_hint` defaults TRUE in the spec.
-            assert check_tool_policy(by_name["huge"], READ_SCOPE).needs_approval
+            assert check_tool_policy(by_name["slow"], READ_SCOPE).needs_approval
+            # An ELEVATED turn — what production runs — no longer gates on the
+            # ceiling, so a declared write must ask on its own account; a
+            # declared read flows. Measured on production before this held.
+            assert check_tool_policy(by_name["write_note"], WRITE_SCOPE).needs_approval
+            assert check_tool_policy(by_name["slow"], WRITE_SCOPE).needs_approval
+            assert check_tool_policy(by_name["huge"], WRITE_SCOPE).allowed
         await pool.aclose()
 
 

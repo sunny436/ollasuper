@@ -159,3 +159,40 @@ def test_a_malformed_tool_is_skipped_not_fatal():
 
 def test_empty_list_is_empty():
     assert normalize_tools([], TRUSTED) == []
+
+
+# ------------------------------------------------ approval on an elevated turn
+def _decision(tool, identity, scope):
+    from app.agent.policy import check_tool_policy
+
+    return check_tool_policy(normalize_tool(tool, identity), scope).decision
+
+
+def test_a_declared_write_asks_for_approval_even_on_an_elevated_turn():
+    """Measured on production: every turn runs under WRITE_SCOPE, whose ceiling
+    is EXTERNAL_SIDE_EFFECT, so the ceiling gated nothing and a Slack
+    `send_message` ran with no approval. A write must ask regardless."""
+    from app.agent.policy import WRITE_SCOPE, PolicyDecision
+
+    write = _Tool(name="send_message", annotations=_Ann(read_only_hint=False))
+    assert _decision(write, UNTRUSTED, WRITE_SCOPE) is PolicyDecision.NEEDS_APPROVAL
+    assert _decision(write, TRUSTED, WRITE_SCOPE) is PolicyDecision.NEEDS_APPROVAL
+
+
+def test_silence_about_read_only_is_treated_as_a_write():
+    from app.agent.policy import WRITE_SCOPE, PolicyDecision
+
+    assert _decision(_Tool(name="x"), UNTRUSTED, WRITE_SCOPE) is (
+        PolicyDecision.NEEDS_APPROVAL
+    )
+
+
+def test_a_declared_read_runs_unasked_only_on_an_elevated_turn():
+    """The ChatGPT-connector shape: reads flow, writes ask. Under READ_SCOPE an
+    untrusted server's read is still gated by the ceiling, as before."""
+    from app.agent.policy import READ_SCOPE, WRITE_SCOPE, PolicyDecision
+
+    read = _Tool(name="search", annotations=_Ann(read_only_hint=True))
+    assert _decision(read, UNTRUSTED, WRITE_SCOPE) is PolicyDecision.ALLOW
+    assert _decision(read, UNTRUSTED, READ_SCOPE) is PolicyDecision.NEEDS_APPROVAL
+    assert _decision(read, TRUSTED, READ_SCOPE) is PolicyDecision.ALLOW

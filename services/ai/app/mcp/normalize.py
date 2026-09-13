@@ -115,6 +115,11 @@ def resolve_local_refs(
     return out
 
 
+def _declared_read_only(annotations: Any) -> bool:
+    """The server's own `readOnlyHint`, and ONLY an explicit True."""
+    return getattr(annotations, "read_only_hint", None) is True
+
+
 def _side_effect(annotations: Any, *, trusted: bool) -> SideEffect:
     """Blast-radius classification. FAIL SAFE — see the module docstring.
 
@@ -185,9 +190,20 @@ def normalize_tool(
         side_effect=_side_effect(
             getattr(tool, "annotations", None), trusted=identity.trusted
         ),
-        # Approval is driven by the side-effect ceiling in check_tool_policy;
-        # a second independent flag here would be a second thing to keep in sync.
-        permissions=ToolPermissions(),
+        # A WRITE ALWAYS ASKS. The side-effect ceiling gates nothing on an
+        # elevated turn (production runs every turn elevated), so without this
+        # flag a Slack `send_message` or a GitHub `create_issue` ran with no
+        # approval at all — measured on production. Only a tool the server
+        # itself declares read-only runs unasked, and only on an elevated turn;
+        # under READ_SCOPE the ceiling still gates it (`_side_effect` above
+        # never believes an untrusted server). A server lying about
+        # `readOnlyHint` can therefore skip approval for a read-shaped tool on
+        # an elevated turn; it cannot make a declared write run unasked.
+        permissions=ToolPermissions(
+            approval_required=not _declared_read_only(
+                getattr(tool, "annotations", None)
+            )
+        ),
         timeout=timeout_s,
         enabled=True,
         availability=Availability.AVAILABLE,
