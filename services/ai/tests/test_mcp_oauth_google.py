@@ -217,3 +217,32 @@ def test_google_authorization_asks_for_offline_access():
 def test_other_providers_are_untouched():
     url = "https://github.com/login/oauth/authorize?client_id=c&state=s"
     assert provider_params(url) == url
+
+
+# ------------------------------------------- 4: the classification in front of it
+def test_a_wrapped_auth_required_stays_auth_required_without_a_401():
+    """Measured on production after the first Google deploy: Connect reported
+    `kind=unreachable status=null` and the UI showed "Temporarily unavailable".
+
+    The resolver's AUTH_REQUIRED is raised inside the SDK's task groups, so it
+    reaches the classifier wrapped. GitHub earns a real 401 and was classified
+    by status; Google's handshake is a 200, so nothing was recorded and the
+    error fell through to UNREACHABLE — no sign-in was ever offered.
+    """
+    from app.mcp.errors import to_connection_error
+    from app.mcp.status import StatusRecorder
+
+    refused = McpConnectionError(
+        McpErrorKind.AUTH_REQUIRED,
+        "this connection needs to be authorized before it can be used",
+        server_slug="gmail",
+    )
+    recorder = StatusRecorder()
+    recorder.saw_response = True  # the 200 handshake, and no error status
+
+    err = to_connection_error(
+        ExceptionGroup("outer", [ExceptionGroup("inner", [refused])]),
+        server_slug="gmail",
+        recorder=recorder,
+    )
+    assert err.kind is McpErrorKind.AUTH_REQUIRED

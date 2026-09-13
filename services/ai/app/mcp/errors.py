@@ -238,6 +238,14 @@ def to_connection_error(
     from pydantic import ValidationError  # noqa: PLC0415
 
     found = leaves(exc)
+    # Already classified, but WRAPPED: the OAuth provider's AUTH_REQUIRED is
+    # raised inside the SDK's task groups. Google's MCP servers answer the
+    # handshake 200, so no 401 is recorded and it fell through to UNREACHABLE —
+    # the UI said "Temporarily unavailable" instead of starting sign-in.
+    inner = next((e for e in found if isinstance(e, McpConnectionError)), None)
+    if inner is not None:
+        return inner
+
     detail = _detail(found, exc)
     status = recorder.status if recorder else None
     retry_after = recorder.retry_after if recorder else None
