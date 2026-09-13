@@ -42,10 +42,25 @@ async function login(page) {
   await page.waitForTimeout(4000);
 }
 
-const settle = (page) =>
-  page.waitForFunction(() => !document.querySelector('[aria-busy="true"]'), {
-    timeout: 40000,
-  });
+/** Wait for the page to be DONE, not merely un-busy.
+ *
+ *  `aria-busy` clears when the skeleton unmounts, which happens before the
+ *  catalogue action resolves — so asserting on content right after it raced and
+ *  reported "not listed" for data that arrived a moment later. Waiting for the
+ *  content itself is the honest wait. */
+const settle = async (page, expect) => {
+  await page.waitForFunction(
+    () => !document.querySelector('[aria-busy="true"]'),
+    { timeout: 40000 },
+  );
+  if (expect) {
+    await page.waitForFunction(
+      (needle) => document.body.innerText.includes(needle),
+      expect,
+      { timeout: 40000 },
+    );
+  }
+};
 
 (async () => {
   const b = await chromium.launch({
@@ -81,7 +96,7 @@ const settle = (page) =>
       await page.goto(BASE + "/en/settings/connectors", {
         waitUntil: "domcontentloaded",
       });
-      await settle(page);
+      await settle(page, "QA Red-Team");
       const text = (await page.locator("body").innerText()) || "";
       if (!text.includes("QA Red-Team")) {
         throw new Error("QA server not listed: " + text.replace(/\s+/g, " ").slice(0, 200));
@@ -114,21 +129,44 @@ const settle = (page) =>
       await page.goto(`${BASE}/en/settings/connectors/${SLUG}`, {
         waitUntil: "domcontentloaded",
       });
-      await settle(page);
+      await settle(page, "QA Red-Team");
       const text = (await page.locator("body").innerText()) || "";
       if (!text.includes("QA Red-Team")) throw new Error("detail did not render");
       if (/Connector not found/.test(text)) throw new Error("rendered not-found");
     });
 
     await step("Connect drives the connection to Connected", async () => {
-      const btn = page.getByRole("button", { name: "Connect" }).first();
-      await btn.waitFor({ timeout: 15000 });
-      await btn.click();
-      // The whole round trip: create -> connect -> Python -> session -> tools
-      // -> recordOutcome -> the live query re-firing.
+      // Connect OR Retry: a row left at `unsupported` by an earlier attempt
+      // offers Retry instead, and both drive the same server-authoritative
+      // round trip.
+      const CONNECTED_HINT =
+        "OllaSuper can use this app's tools when a request needs them";
+      // IDEMPOTENT. A connected row offers NO action button — `isActionable`
+      // excludes CONNECTED on purpose, because a button that does nothing is
+      // worse than no button. So "already connected" satisfies this step rather
+      // than failing it, and the run can be repeated without a teardown.
+      const already = (await page.locator("body").innerText()).includes(
+        CONNECTED_HINT,
+      );
+      if (!already) {
+        const btn = page
+          .getByRole("button")
+          .filter({ hasText: /^(Connect|Retry|Reconnect)$/ })
+          .first();
+        await btn.waitFor({ timeout: 15000 });
+        await btn.click();
+      }
+      // ASSERTED ON THE STATUS HINT, NOT ON THE WORD "Connected". The page's
+      // own educational blurb begins "Connected apps can provide tools..." —
+      // so /Connected/ over the whole body matched static copy and passed while
+      // the connection had never been attempted. A false pass is worse than a
+      // failure: it hides the thing the test exists to find.
       await page.waitForFunction(
-        () => /Connected/.test(document.body.innerText),
-        { timeout: 60000 },
+        () =>
+          /OllaSuper can use this app's tools when a request needs them/.test(
+            document.body.innerText,
+          ),
+        { timeout: 90000 },
       );
     });
 
@@ -222,7 +260,7 @@ const settle = (page) =>
       await page.goto(`${BASE}/en/settings/connectors/${SLUG}`, {
         waitUntil: "domcontentloaded",
       });
-      await settle(page);
+      await settle(page, "QA Red-Team");
       const any = page.getByRole("button").filter({ hasText: /Connect|Reconnect|Retry/ });
       if ((await any.count()) > 0) {
         for (let i = 0; i < 3; i++) {
