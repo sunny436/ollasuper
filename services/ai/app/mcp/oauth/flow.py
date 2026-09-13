@@ -59,7 +59,7 @@ from app.mcp.vault.store import CredentialVault
 
 log = get_logger(__name__)
 
-__all__ = ["AuthorizationStart", "OAuthFlow", "narrow_scope"]
+__all__ = ["AuthorizationStart", "OAuthFlow", "narrow_scope", "provider_params"]
 
 #: How long `start` waits for the SDK to produce an authorization URL. This
 #: covers PRM discovery, AS metadata and possibly a dynamic registration, so it
@@ -119,6 +119,29 @@ def narrow_scope(authorization_url: str, allowed: list[str]) -> str:
     return urlunparse(parts._replace(query=flat))
 
 
+#: Authorization-request parameters a provider needs beyond OAuth 2.1, by
+#: authorization host. Google issues NO refresh token without
+#: `access_type=offline`, so every Google connection would die when its one-hour
+#: access token did; `prompt=consent` makes it issue one on a re-authorization
+#: too, not only the first time an account consents.
+_PROVIDER_AUTH_PARAMS: dict[str, dict[str, str]] = {
+    "accounts.google.com": {"access_type": "offline", "prompt": "consent"},
+}
+
+
+def provider_params(authorization_url: str) -> str:
+    """Add the provider-specific parameters above, if the host has any."""
+    parts = urlparse(authorization_url)
+    extra = _PROVIDER_AUTH_PARAMS.get(parts.hostname or "")
+    if not extra:
+        return authorization_url
+    query = parse_qs(parts.query, keep_blank_values=True)
+    for key, value in extra.items():
+        query[key] = [value]
+    flat = urlencode({k: v[0] for k, v in query.items()})
+    return urlunparse(parts._replace(query=flat))
+
+
 class OAuthFlow:
     """Owns pending authorizations and the background tasks driving them."""
 
@@ -165,6 +188,7 @@ class OAuthFlow:
         endpoint_url: str,
         resource: str,
         connect: Any,
+        require_bearer: bool = False,
     ) -> AuthorizationStart:
         """Begin an authorization and return the URL the browser must visit.
 
@@ -172,6 +196,10 @@ class OAuthFlow:
         the MCP connection. Injected rather than imported so this module never
         reaches into the session pool, and so the whole flow is testable against
         a bare HTTP client.
+
+        `require_bearer` is set for a server curated as `oauth`: one that serves
+        its handshake without a token (Google's do) must still be authorized.
+        See `build_provider`.
         """
         if self._task_group is None:
             raise McpConnectionError(
@@ -204,7 +232,7 @@ class OAuthFlow:
             # The SDK hands us the URL it built. We read `state` out of it to
             # route the callback, optionally narrow the scope, and release the
             # waiting `start` request.
-            final = narrow_scope(url, allowed) if allowed else url
+            final = provider_params(narrow_scope(url, allowed) if allowed else url)
             attempt.authorization_url = final
             attempt.requested_scope = (
                 parse_qs(urlparse(final).query).get("scope") or [None]
@@ -229,6 +257,7 @@ class OAuthFlow:
             redirect_handler=redirect_handler,
             callback_handler=callback_handler,
             client_metadata_url=self._client_metadata_url,
+            require_bearer=require_bearer,
         )
 
         async def run() -> None:

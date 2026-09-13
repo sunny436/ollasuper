@@ -182,6 +182,7 @@ async def oauth_start(request: Request, body: OAuthBody) -> dict[str, Any]:
         endpoint_url=target.endpoint_url,
         resource=target.endpoint_url,
         connect=connect,
+        require_bearer=target.auth_kind == "oauth",
     )
     return {"auth_state": "AUTHORIZING", **started.as_dict()}
 

@@ -28,12 +28,18 @@ path. Measured, not theorised: the regression test drives the real provider.
 
 The override is four lines, calls `super()`, and uses the context's own
 `update_token_expiry`. No protocol logic is copied.
+
+A few more narrow overrides sit beside it, each documented where it is defined:
+JSON token responses (GitHub), and forced authorization plus root-issuer
+tolerance (Google's MCP servers).
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlparse
 
 from app.logging import get_logger
 from app.mcp.oauth.storage import CredentialIdentity, VaultTokenStorage
@@ -89,6 +95,51 @@ def _accept_json(request: Any) -> Any:
     return request
 
 
+#: Authorization-server metadata, relative to the issuer's origin.
+_AS_METADATA = "/.well-known/oauth-authorization-server"
+
+
+def _unauthenticated_success(request: Any, response: Any, endpoint: str) -> bool:
+    """A non-error answer from the MCP endpoint to a request carrying no token."""
+    url = str(request.url).split("?", 1)[0].rstrip("/")
+    return (
+        response.status_code < 400
+        and "authorization" not in request.headers
+        and url == endpoint.rstrip("/")
+    )
+
+
+async def _root_authorization_server(request: Any, response: Any) -> str | None:
+    """The authorization server a protected-resource metadata response names,
+    when it is a bare origin — the only form whose trailing slash is ambiguous."""
+    if response.status_code != 200 or (
+        "/.well-known/oauth-protected-resource" not in request.url.path
+    ):
+        return None
+    try:
+        await response.aread()
+        servers = json.loads(response.content).get("authorization_servers") or []
+    except (ValueError, AttributeError):
+        return None
+    first = servers[0] if isinstance(servers, list) and servers else None
+    if not isinstance(first, str):
+        return None
+    parts = urlparse(first)
+    return first if parts.path in ("", "/") and not parts.query else None
+
+
+async def _issuer_of(response: Any) -> str | None:
+    """The `issuer` an authorization server's metadata response declares."""
+    if response.status_code != 200:
+        return None
+    try:
+        await response.aread()
+        issuer = json.loads(response.content).get("issuer")
+    except (ValueError, AttributeError):
+        return None
+    return issuer if isinstance(issuer, str) else None
+
+
 class VaultOAuthClientProvider:
     """Factory namespace — see `build_provider`. Kept as a name so the override
     below has an obvious home in tracebacks."""
@@ -103,15 +154,21 @@ def build_provider(
     callback_handler: Callable[[], Awaitable[Any]],
     scope: str | None = None,
     client_metadata_url: str | None = None,
+    require_bearer: bool = False,
 ) -> Any:
     """Build the provider for one connection.
+
+    `require_bearer` is for a server curated as `oauth`: such a server is never
+    used without a token, even when it would answer without one.
 
     `client_metadata_url` enables Client ID Metadata Documents when the server
     advertises support. It is wired but NOT exercised locally: CIMD requires a
     publicly reachable HTTPS document, and this phase does not expose the
     service. Passing None simply falls through to dynamic registration.
     """
+    import httpx2  # noqa: PLC0415 -- the SDK's HTTP stack
     from mcp.client.auth import OAuthClientProvider  # noqa: PLC0415
+    from mcp.client.auth.utils import issuers_match  # noqa: PLC0415
 
     class _ExpiryAwareProvider(OAuthClientProvider):
         """`OAuthClientProvider` that believes the expiry it loaded.
@@ -142,6 +199,49 @@ def build_provider(
 
         async def _refresh_token(self, *args: Any, **kwargs: Any) -> Any:
             return _accept_json(await super()._refresh_token(*args, **kwargs))
+
+        # GOOGLE'S MCP SERVERS ANSWER `initialize` AND `tools/list` WITHOUT A
+        # TOKEN and challenge only on `tools/call`. The SDK starts OAuth on a
+        # 401, so a Google connection read as Connected with no account behind
+        # it, and `OAuthFlow.start` never got a URL. With `require_bearer`, an
+        # unauthenticated success from the endpoint reaches the SDK as the 401
+        # it should have been. Discovery requests go to other URLs and pass.
+        #
+        # The same wrapper learns the issuer form a bare-origin authorization
+        # server signs as, for `_select_authorization_server` below.
+        async def async_auth_flow(self, request: Any) -> Any:
+            flow = super().async_auth_flow(request)
+            try:
+                outgoing = await flow.__anext__()
+                while True:
+                    response = yield outgoing
+                    if require_bearer and _unauthenticated_success(
+                        outgoing, response, self.context.server_url
+                    ):
+                        response = httpx2.Response(401, request=outgoing)
+                    root = await _root_authorization_server(outgoing, response)
+                    if root is not None:
+                        metadata = yield httpx2.Request(
+                            "GET", root.rstrip("/") + _AS_METADATA
+                        )
+                        self._issuer_form = await _issuer_of(metadata)
+                    outgoing = await flow.asend(response)
+            except StopAsyncIteration:
+                return
+            finally:
+                await flow.aclose()
+
+        # Google's resource metadata names `https://accounts.google.com/`; its
+        # authorization server signs as `https://accounts.google.com`. The SDK
+        # compares issuers as strings and refused the metadata, although its own
+        # `issuers_match` holds that a root issuer with and without the slash is
+        # one server. So use the form the server itself signs as.
+        def _select_authorization_server(self, advertised: list[str]) -> str:
+            chosen = super()._select_authorization_server(advertised)
+            form = getattr(self, "_issuer_form", None)
+            if form and form != chosen and issuers_match(form, chosen):
+                return form
+            return chosen
 
     return _ExpiryAwareProvider(
         server_url=server_url,

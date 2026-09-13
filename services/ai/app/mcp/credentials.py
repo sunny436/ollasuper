@@ -342,5 +342,8 @@ class VaultCredentialResolver:
             redirect_handler=refuse_interactive,
             callback_handler=refuse_callback,
             client_metadata_url=self._client_metadata_url,
+            # A server curated as `oauth` is never used without a token, even
+            # one that would answer (see `build_provider`).
+            require_bearer=auth_kind == "oauth",
         )
         return ResolvedCredential(auth=provider)
