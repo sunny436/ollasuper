@@ -541,6 +541,16 @@ unchanged by everything below. Every flag defaults OFF.
     Workspace Developer Preview Program"* (Drive: "The caller does not have permission") — until
     the project is enrolled. Each Workspace MCP server is also its own API to enable, separate from
     the classic Gmail/Calendar/… APIs. Nothing in this repo can change either. Maps needs neither.
+  - **Slack (official `mcp.slack.com`), live the same day.** Curated by probe, the operator's
+    Slack app seeded as its client. Its token endpoint speaks Slack's API convention — errors as
+    HTTP 200 `{"ok": false}`, successes with `"token_type": "user"` — which the SDK's `OAuthToken`
+    rejects; Slack-shaped responses are reshaped before the SDK reads them. Two gates were Slack's:
+    the callback URL must be saved on the app, and the app must have **MCP server access enabled**
+    (`/apps/<id>/app-assistant`) — measured as `App is not enabled for Slack MCP server access`
+    with a valid token. Slack allows only Marketplace or internal apps, so this serves the
+    operator's own workspace until the app is published. Verified: 27 tools, real channel data
+    (`slack_list_user_channels`) with the stored token, and chat turns executing
+    `slack_search_channels` / `slack_read_channel` / `slack_send_message` on production.
   - **Verified in headed Chrome on production with a real Google account** (`e2e/q5-google-mcp.js`;
     credentials read at runtime from the gitignored operator file): all six connect through
     Google's consent, list their real tools (23/9/8/2/6/5), zero console errors, the client secret
