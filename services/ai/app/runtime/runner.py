@@ -32,6 +32,7 @@ from app.agent.executor import (
     MemoryContext,
     RagContext,
     ToolExecContext,
+    bound_name_for_tool_id,
     build_tool_specs,
     execute_tool_calls,
 )
@@ -1753,13 +1754,16 @@ async def run_generation(
                     "token": ap.token,
                 }
                 cid = f"approved_{j}"
+                # By the BOUND name, not the id: an MCP id binds under a
+                # sanitised spelling, and `_run_one` resolves bound names.
+                bound = bound_name_for_tool_id(tools_ctx.name_to_tool_id, ap.toolId)
                 out = await execute_tool_calls(
-                    [{"name": ap.toolId, "args": ap.args, "id": cid}], tools_ctx
+                    [{"name": bound, "args": ap.args, "id": cid}], tools_ctx
                 )
                 messages.append(
                     AIMessage(
                         content="",
-                        tool_calls=[{"name": ap.toolId, "args": ap.args, "id": cid}],
+                        tool_calls=[{"name": bound, "args": ap.args, "id": cid}],
                     )
                 )
                 messages.extend(out)

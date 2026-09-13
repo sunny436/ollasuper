@@ -238,3 +238,41 @@ async def test_approved_pending_then_model_reemit_is_deduped(monkeypatch):
     finally:
         await http.aclose()
     assert adapter_calls["n"] == 1  # direct run only; the model re-emit was DEDUPED
+
+
+def test_an_approved_mcp_call_is_reissued_by_its_bound_name():
+    """Measured on production: the approved resume of a Gmail `create_draft`
+    ran as `approved_0 -> {"error": "unknown tool"}` because the call was
+    re-issued by tool_id (`mcp:gmail:create_draft`) while the model — and
+    `_run_one` — know it as the sanitised `mcp_gmail_create_draft`. The model
+    then re-called the tool itself, which is why the write still landed."""
+    from app.agent.executor import bound_name_for_tool_id, build_tool_specs
+
+    class _Tool:
+        tool_id = "mcp:gmail:create_draft"
+        name = "create_draft"
+        description = "d"
+        input_schema = {"type": "object", "properties": {}}
+        provider = "mcp:gmail"
+
+    class _Cand:
+        tool = _Tool()
+
+    class _Registry:
+        components = {}
+
+        def components_for(self, _provider):
+            return {}
+
+    _specs, name_to_id = build_tool_specs([_Cand()], _Registry())
+    assert name_to_id == {"mcp_gmail_create_draft": "mcp:gmail:create_draft"}
+    assert (
+        bound_name_for_tool_id(name_to_id, "mcp:gmail:create_draft")
+        == "mcp_gmail_create_draft"
+    )
+    # Ollagraph ids bind under their own spelling: unchanged behaviour.
+    same = {"search_web": "search_web"}
+    assert bound_name_for_tool_id(same, "search_web") == "search_web"
+    # Not bound this turn: falls back to the id, which fails as before.
+    unbound = "mcp:gmail:create_draft"
+    assert bound_name_for_tool_id({}, unbound) == unbound

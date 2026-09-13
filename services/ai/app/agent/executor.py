@@ -292,6 +292,23 @@ class ToolExecContext:
 
 
 # --- OpenAI function-spec construction (runner-side) ----------------------
+def bound_name_for_tool_id(name_to_tool_id: dict[str, str], tool_id: str) -> str:
+    """The name the MODEL was offered for `tool_id`, for re-issuing a call.
+
+    Ollagraph ids bind under their own spelling, so the two were interchangeable
+    and the approval resume passed `tool_id` straight back in. MCP ids are
+    `mcp:<slug>:<tool>` and bind as `mcp_<slug>_<tool>` (colons are sanitised),
+    so that resume hit the unknown-tool path on every approved connector write
+    — measured on production: `approved_0 -> {"error": "unknown tool"}`, after
+    which the model re-called the tool itself. Falls back to the id when the
+    tool was not bound this turn, which then fails exactly as before.
+    """
+    for name, tid in name_to_tool_id.items():
+        if tid == tool_id:
+            return name
+    return tool_id
+
+
 def _sanitize_name(tool_id: str, used: set[str]) -> str | None:
     name = _NAME_OK.sub("_", tool_id)[:64].strip("_")
     if not name:
