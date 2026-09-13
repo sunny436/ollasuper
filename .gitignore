@@ -88,6 +88,8 @@ google_auth.txt
 seo_endpoint.txt
 google_seo_analytics.txt
 convex.txt
+mcp_servers_creds.txt
+*_creds*.txt
 *_auth*.txt
 *.client_secret*.json
 *_token*.txt

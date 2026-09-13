@@ -83,6 +83,12 @@ def build_client_metadata(redirect_uri: str, *, scope: str | None = None) -> Any
     )
 
 
+def _accept_json(request: Any) -> Any:
+    """Ask the token endpoint for JSON. See the override in `build_provider`."""
+    request.headers["Accept"] = "application/json"
+    return request
+
+
 class VaultOAuthClientProvider:
     """Factory namespace — see `build_provider`. Kept as a name so the override
     below has an obvious home in tracebacks."""
@@ -121,6 +127,21 @@ def build_provider(
             if tokens is not None and tokens.expires_in is not None:
                 # The context's own conversion; nothing is recomputed here.
                 self.context.update_token_expiry(tokens)
+
+        # The SDK builds its token requests with no `Accept` header, and GitHub's
+        # token endpoint then answers `application/x-www-form-urlencoded`, which
+        # `OAuthToken.model_validate_json` cannot parse — so every GitHub
+        # authorization failed at the exchange. RFC 6749 §5.1 token responses
+        # are JSON, so asking for JSON is correct for every server.
+        async def _exchange_token_authorization_code(
+            self, *args: Any, **kwargs: Any
+        ) -> Any:
+            return _accept_json(
+                await super()._exchange_token_authorization_code(*args, **kwargs)
+            )
+
+        async def _refresh_token(self, *args: Any, **kwargs: Any) -> Any:
+            return _accept_json(await super()._refresh_token(*args, **kwargs))
 
     return _ExpiryAwareProvider(
         server_url=server_url,
