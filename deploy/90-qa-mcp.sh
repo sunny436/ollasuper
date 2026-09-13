@@ -99,6 +99,25 @@ ON CONFLICT (name) DO UPDATE SET
   status = EXCLUDED.status, latest_version = EXCLUDED.latest_version,
   last_synced_at = now();
 
+-- THE VERSION ROW IS NOT OPTIONAL, and finding that out was worth the trip.
+-- `compat.assess` reads `remotes` from HERE, not from the curated row, so a
+-- curated server with no version record is refused with "this server declares
+-- no remote endpoint" — measured, exactly that. That separation is Phase 2
+-- working as designed: the curated row is the operator's decision, the version
+-- row is what upstream declares, and a server that dropped its remote is caught
+-- before anything is dialled rather than trusted blindly.
+INSERT INTO mcp_server_versions
+  (server_name, version, is_latest, status, remotes, packages, transports,
+   auth_kind, raw)
+VALUES ('qa.ollasuper/redteam', '1.0.0', true, 'active',
+        '[{"type":"streamable-http","url":"https://app.ollasuper.com/__qa-mcp/mcp"}]'::jsonb,
+        '[]'::jsonb, ARRAY['streamable-http'], 'none',
+        '{"qa":true}'::jsonb)
+ON CONFLICT (server_name, version) DO UPDATE SET
+  is_latest = EXCLUDED.is_latest, status = EXCLUDED.status,
+  remotes = EXCLUDED.remotes, transports = EXCLUDED.transports,
+  auth_kind = EXCLUDED.auth_kind;
+
 INSERT INTO mcp_curated_servers
   (server_name, slug, display_name, category, transport, endpoint_url,
    auth_kind, trusted, enabled, notes, curated_by)
