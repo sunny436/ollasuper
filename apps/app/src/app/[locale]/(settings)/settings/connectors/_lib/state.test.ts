@@ -70,19 +70,44 @@ describe("the no-credential trap", () => {
     ).toBe("CONNECTED");
   });
 
-  test("but a credential that EXISTS and is expired does mean reauth", () => {
+  test("a credential that EXISTS and is revoked or unreadable means reauth", () => {
     expect(
-      deriveState({ status: "ready", auth: withCredential("TOKEN_EXPIRED") }),
+      deriveState({ status: "ready", auth: withCredential("REVOKED") }),
+    ).toBe("REAUTH_REQUIRED");
+    expect(
+      deriveState({
+        status: "ready",
+        auth: withCredential("REAUTHORIZATION_REQUIRED"),
+      }),
     ).toBe("REAUTH_REQUIRED");
   });
 
-  test("`updatedAt` is the whole discriminator, nothing else differs", () => {
-    const expired = { authState: "TOKEN_EXPIRED" } as const;
+  test("a credential that merely EXPIRED is still connected: refresh is silent", () => {
+    // Measured on production: every Google access token expires after an
+    // hour and the runtime refreshes it at the next use. Rendering expiry as
+    // "Authentication required" told every Google user to reconnect hourly
+    // while nothing was wrong. A credential that truly cannot refresh reaches
+    // the UI as `lastErrorKind: auth_required` from its next use instead.
     expect(
-      deriveState({ status: "ready", auth: { ...expired, updatedAt: null } }),
+      deriveState({ status: "ready", auth: withCredential("TOKEN_EXPIRED") }),
     ).toBe("CONNECTED");
     expect(
-      deriveState({ status: "ready", auth: { ...expired, updatedAt: 1 } }),
+      deriveState({
+        status: "ready",
+        lastErrorKind: "auth_required",
+        userActionRequired: true,
+        auth: withCredential("TOKEN_EXPIRED"),
+      }),
+    ).toBe("AUTH_REQUIRED");
+  });
+
+  test("`updatedAt` is the whole discriminator, nothing else differs", () => {
+    const revoked = { authState: "REVOKED" } as const;
+    expect(
+      deriveState({ status: "ready", auth: { ...revoked, updatedAt: null } }),
+    ).toBe("CONNECTED");
+    expect(
+      deriveState({ status: "ready", auth: { ...revoked, updatedAt: 1 } }),
     ).toBe("REAUTH_REQUIRED");
   });
 
@@ -99,15 +124,23 @@ describe("the no-credential trap", () => {
 });
 
 describe("the clock-alone disagreement (ready + TOKEN_EXPIRED)", () => {
-  test("is reachable and resolves to REAUTH_REQUIRED, never to two states", () => {
+  test("is reachable and resolves to ONE state, decided by the runtime", () => {
     // Nothing rewrites `status` when a token expires, so this pair happens on
-    // its own with no failure anywhere. §189.
-    const state = deriveState({
-      status: "ready",
-      auth: withCredential("TOKEN_EXPIRED"),
-    });
-    expect(state).toBe("REAUTH_REQUIRED");
-    expect(state).not.toBe("CONNECTED");
+    // its own every hour with no failure anywhere. §189 wants one answer, not
+    // "Connected" beside "expired": the answer is the runtime's. A working
+    // refresh keeps it CONNECTED; a refresh that failed at the next use
+    // arrives as `auth_required` and becomes AUTH_REQUIRED.
+    expect(
+      deriveState({ status: "ready", auth: withCredential("TOKEN_EXPIRED") }),
+    ).toBe("CONNECTED");
+    expect(
+      deriveState({
+        status: "failed",
+        lastErrorKind: "auth_required",
+        userActionRequired: true,
+        auth: withCredential("TOKEN_EXPIRED"),
+      }),
+    ).toBe("AUTH_REQUIRED");
   });
 });
 

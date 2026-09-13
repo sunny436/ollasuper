@@ -14,10 +14,15 @@ import type { CredentialStatus } from "@v1/backend/convex/mcp/credentials";
  *                                CONNECTED
  *
  * `ready` + `TOKEN_EXPIRED` is reachable BY THE CLOCK ALONE — nothing rewrites
- * `status` when a token expires — so rendering the axes independently would
- * show "Connected" beside "expired" on the same card. The brief's §189 asks for
- * exactly this not to happen, and the only way to guarantee it is to make one
- * function the sole author of the answer.
+ * `status` when a token expires — and it is NOT a failure: an access token
+ * expiring is the hourly normal for Google (eight-hourly for GitHub), and the
+ * runtime refreshes it silently at the next use. Measured on production: reading
+ * expiry as "reauthorize" rendered "Authentication required" over every Google
+ * connector once an hour while nothing was wrong. A credential that truly
+ * cannot be refreshed is reported by the runtime as `auth_required` at its
+ * next use, which is the only authority on auth (trap 2). The brief's §189 —
+ * never "Connected" beside "expired" on one card — holds because expiry is not
+ * rendered anywhere; only this function's answer is.
  *
  * TWO TRAPS THIS ENCODES, both measured against the backend rather than assumed:
  *
@@ -128,11 +133,16 @@ export function deriveState(input: StateInput): DisplayState {
     return "AUTHORIZING";
   }
 
-  // 6. A credential that exists and has stopped working. Guarded by
-  //    `hasCredential` — see trap 1 in the module docstring.
-  if (hasCredential(auth) && auth?.authState !== "CONNECTED") {
-    // AUTHORIZATION_REQUIRED cannot reach here: a row exists, so
-    // `credentialStatusFor` returned one of the four failure states instead.
+  // 6. A credential that exists and has STOPPED WORKING: revoked, or unreadable
+  //    / refresh-failed. Guarded by `hasCredential` — see trap 1 in the module
+  //    docstring. `TOKEN_EXPIRED` is deliberately NOT here — see the docstring:
+  //    expiry is routine and refreshes silently; treating it as a failure asked
+  //    every Google user to reconnect once an hour.
+  if (
+    hasCredential(auth) &&
+    (auth?.authState === "REVOKED" ||
+      auth?.authState === "REAUTHORIZATION_REQUIRED")
+  ) {
     return "REAUTH_REQUIRED";
   }
 
