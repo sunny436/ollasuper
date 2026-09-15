@@ -468,10 +468,19 @@ def _leaves_the_box(tool: ToolDefinition) -> bool:
 
 
 def _flow_sources(ctx: ToolExecContext, tool: ToolDefinition, args: dict) -> set[str]:
-    """Which OTHER connectors' content do these args carry? (H-06)"""
+    """Which OTHER connectors' content do these args carry? (H-06)
+
+    Also the STICKY rule: a destination that was gated earlier this turn keeps
+    asking, whatever these args carry — the retry-in-fragments (taint.py).
+    """
     if not _leaves_the_box(tool):
         return set()
-    return ctx.taint.sources_in(args, exclude={_source_of(tool)})
+    dest = _source_of(tool)
+    found = ctx.taint.sources_in(args, exclude={dest})
+    found |= ctx.taint.flagged_sources(dest)
+    if found:
+        ctx.taint.flag(dest, found)
+    return found
 
 
 def _approval_reason(

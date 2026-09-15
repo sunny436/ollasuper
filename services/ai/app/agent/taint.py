@@ -29,8 +29,15 @@ matched. If any match points at a DIFFERENT connector than the one being
 called, the call needs approval, whatever its side-effect class, and the
 approval card names the flow ("sends data from Gmail to Notion").
 
+STICKY DESTINATIONS. Once a flow A -> B has been gated in a turn, EVERY later
+call to B in that turn asks too, whatever its arguments carry. Measured on
+production: after the user rejected "send Gmail data to Drive", the model
+re-issued the Drive search with the value split into fragments too short to
+match — and it ran. The user's "no" to A -> B holds for the rest of the turn.
+
 HONEST LIMITS, stated once: values shorter than 8 characters and paraphrased
-content do not match. The gate is a precise control over verbatim data
+content do not match on their own (the sticky rule above is what catches the
+retry-in-fragments); the gate is a precise control over verbatim data
 movement, not a semantic one.
 """
 
@@ -116,7 +123,18 @@ class _Source:
 class TaintLedger:
     """Per-turn record of which connector produced which content."""
 
+    def flag(self, destination: str, sources: Iterable[str]) -> None:
+        """A flow into `destination` was gated: keep asking for it this turn."""
+        if destination:
+            self.flagged.setdefault(destination, set()).update(s for s in sources if s)
+
+    def flagged_sources(self, destination: str) -> set[str]:
+        return set(self.flagged.get(destination, ()))
+
     sources: dict[str, _Source] = field(default_factory=dict)
+    #: Destinations a flow was gated INTO this turn, with the sources that were
+    #: named: every later call to that destination asks (see the docstring).
+    flagged: dict[str, set[str]] = field(default_factory=dict)
 
     def record(self, source: str, value: Any) -> None:
         """Remember `value` (a tool result, any shape) as having come from

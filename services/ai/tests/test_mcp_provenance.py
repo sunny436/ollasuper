@@ -196,6 +196,34 @@ async def test_an_approval_for_the_flow_is_bound_to_its_sources():
     assert msgs[1].status == "success"
 
 
+async def test_a_gated_destination_keeps_asking_for_the_rest_of_the_turn():
+    """Measured on production: after "Gmail -> Drive" was rejected, the model
+    re-issued the Drive search with the value broken into fragments too short
+    to match, and it ran. The user's no to A -> B holds for the whole turn."""
+    gmail, drive = _mcp("gmail", "read_mail"), _mcp("google-drive", "search_files")
+    stub = _McpStub(
+        {
+            gmail.tool_id: {"text": f"code {SECRET}"},
+            drive.tool_id: {"text": "nothing"},
+        }
+    )
+    msgs, _, convex = await _run(
+        [
+            _tc(gmail.tool_id, {"q": "latest"}, "c1"),
+            _tc(drive.tool_id, {"q": SECRET}, "c2"),  # gated: names gmail -> drive
+            _tc(drive.tool_id, {"q": "7781"}, "c3"),  # fragments: still asks
+        ],
+        [gmail, drive],
+        stub,
+    )
+    assert [c[0] for c in stub.calls] == [gmail.tool_id]
+    assert json.loads(msgs[1].content)["status"] == "awaiting_approval"
+    assert json.loads(msgs[2].content)["status"] == "awaiting_approval"
+    parked = [c for c in convex.calls if c.get("op") == "approval"]
+    assert len(parked) == 2
+    assert all("gmail" in p["reason"] and "google-drive" in p["reason"] for p in parked)
+
+
 async def test_web_tools_count_as_a_destination_and_a_source():
     """`search_web(q=<gmail secret>)` is exfiltration through the web tool."""
     gmail = _mcp("gmail", "read_mail")
