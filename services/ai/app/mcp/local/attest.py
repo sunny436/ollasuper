@@ -85,8 +85,14 @@ def check(inspect: dict[str, Any], exp: Expected) -> list[str]:
     host = _host_config(inspect)
     config = inspect.get("Config") or {}
 
+    # `.Image` is the image ID. With the containerd image store (Docker 29 on
+    # the host) that IS the manifest digest the row pins; on the legacy graph
+    # driver the two differ and `.Config.Image` — the reference the container
+    # was created from, which the launcher wrote as `name@digest` — is what
+    # carries the digest. Either form must name exactly the row's digest.
     image = str(inspect.get("Image") or "")
-    if image != exp.image_digest:
+    created_from = str(config.get("Image") or "")
+    if image != exp.image_digest and not created_from.endswith("@" + exp.image_digest):
         failed.append("image digest")
     if [str(c).upper() for c in (host.get("CapDrop") or [])] != ["ALL"]:
         failed.append("CapDrop")
