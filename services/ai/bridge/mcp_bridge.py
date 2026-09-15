@@ -201,7 +201,13 @@ async def run(slug: str, port: int) -> int:
     params = StdioServerParameters(command=argv[0], args=argv[1:], env={})
     started = time.time()
     try:
-        async with Client(server=params) as client:
+        # LEGACY HANDSHAKE, deliberately. The containerised servers in the MCP
+        # catalogue are built on older SDKs, and the modern `server/discover`
+        # probe does not merely go unanswered by them — measured on mcp/time,
+        # it CRASHES the server (an unhandled method in its dispatcher), so the
+        # session dies before initialize is ever tried. `initialize` is what
+        # every stdio server understands.
+        async with Client(server=params, mode="legacy") as client:
             info = await _wait_for_container(name)
             failed = attest.check(info, exp)
             container_id = str(info.get("Id") or "")[:64]
