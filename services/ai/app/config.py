@@ -904,6 +904,11 @@ class Settings(BaseSettings):
     mcp_max_identical_calls_turn: int = 2
     mcp_max_result_bytes_per_turn: int = 2 * 1024 * 1024
     mcp_max_concurrent_calls_per_user: int = 4
+    # Static test credentials from the environment (`mcp_test_credentials`)
+    # are a DEVELOPMENT convenience: they hold a real third-party secret in a
+    # process env var, in the unit file and in `systemctl show`. They are
+    # refused unless this is set (audit M-08); production runs the vault.
+    mcp_allow_env_credentials: bool = False
     # Phase 5: the same reasoning, for the two capability kinds that are not
     # tools. A resource body and a rendered prompt both land in the context
     # window, so each needs its own ceiling; the executor's `result_max_chars`

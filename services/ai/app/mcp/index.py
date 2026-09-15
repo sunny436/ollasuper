@@ -145,8 +145,18 @@ class McpCapabilityIndex:
         return list(entry.prompts) if entry else []
 
     # ---------------------------------------------------------------- lookup
-    def resolve_resource(self, uri: str) -> tuple[McpResource, Any]:
+    def resolve_resource(
+        self, uri: str, *, connector: str | None = None
+    ) -> tuple[McpResource, Any]:
         """URI -> `(resource, live client)`, or `CapabilityLookupError`.
+
+        `connector` is the server slug the model may name. AMBIGUITY IS REFUSED
+        (audit M-04): two connections can advertise the same URI, and the first
+        match used to win — so a read of `file:///report.pdf` could land on a
+        different connection than the user meant. When more than one holds the
+        URI (or fits it by template) and no connector was named, the read asks
+        the model to name one; when a connector is named, only that one is
+        searched.
 
         THE AUTHORIZATION GATE FOR RESOURCE READS. A URI reaches here from the
         model, so it is untrusted input; what makes the read safe is that the
@@ -161,17 +171,30 @@ class McpCapabilityIndex:
         """
         if not isinstance(uri, str) or not uri:
             raise CapabilityLookupError("no resource uri was supplied")
+        wanted = (connector or "").strip() or None
 
-        for (connection_id, known), resource in self._resources.items():
-            if known == uri:
-                client = self._clients.get(connection_id)
-                if client is None:
-                    raise CapabilityLookupError("that resource is not available")
-                return resource, client
+        exact = [
+            (resource, self._clients.get(connection_id))
+            for (connection_id, known), resource in self._resources.items()
+            if known == uri and (wanted is None or resource.server_slug == wanted)
+        ]
+        exact = [(r, c) for r, c in exact if c is not None]
+        if len(exact) > 1:
+            raise CapabilityLookupError(
+                "more than one connected server offers that resource; name the "
+                "connector: " + ", ".join(sorted({r.server_slug for r, _ in exact}))
+            )
+        if exact:
+            return exact[0]
 
-        matched = self._match_template(uri)
-        if matched is not None:
-            template, client = matched
+        matched = self._match_templates(uri, wanted)
+        if len(matched) > 1:
+            raise CapabilityLookupError(
+                "more than one connected server offers that resource; name the "
+                "connector: " + ", ".join(sorted({t.server_slug for t, _ in matched}))
+            )
+        if matched:
+            template, client = matched[0]
             return (
                 McpResource(
                     uri=uri,
@@ -187,8 +210,26 @@ class McpCapabilityIndex:
         # Same refusal for absent and unauthorized. No oracle.
         raise CapabilityLookupError("that resource is not available")
 
+    def _match_templates(
+        self, uri: str, wanted: str | None
+    ) -> list[tuple[McpResourceTemplate, Any]]:
+        """EVERY template `uri` fits (one per connection), so ambiguity is
+        visible to the caller. Restricted to `wanted` when a connector is named."""
+        out: list[tuple[McpResourceTemplate, Any]] = []
+        seen: set[str] = set()
+        for template in self._templates.values():
+            if wanted is not None and template.server_slug != wanted:
+                continue
+            if template.connection_id in seen:
+                continue
+            hit = self._match_template(uri, only=template)
+            if hit is not None:
+                out.append(hit)
+                seen.add(template.connection_id)
+        return out
+
     def _match_template(
-        self, uri: str
+        self, uri: str, *, only: McpResourceTemplate | None = None
     ) -> tuple[McpResourceTemplate, Any] | None:
         """Does `uri` fit an advertised template on a connection we hold?
 
@@ -198,7 +239,8 @@ class McpCapabilityIndex:
         REFUSES `mem://repo/main/a/b`: a variable that could swallow separators
         would let one template authorize URIs its author never offered.
         """
-        for template in self._templates.values():
+        candidates = [only] if only is not None else list(self._templates.values())
+        for template in candidates:
             if not template.fillable or not template.variables:
                 continue
             pattern = template.uri_template

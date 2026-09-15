@@ -85,7 +85,7 @@ describe("the OAuth callback route", () => {
 
     const res = await callback(
       t,
-      "?state=st_abc&code=authcode123&iss=https%3A%2F%2Fissuer.test",
+      "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&code=authcode123&iss=https%3A%2F%2Fissuer.test",
     );
     expect(res.status).toBe(200);
 
@@ -103,14 +103,14 @@ describe("the OAuth callback route", () => {
       "iss",
       "state",
     ]);
-    expect(forwarded.state).toBe("st_abc");
+    expect(forwarded.state).toBe("st_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
     expect(forwarded.code).toBe("authcode123");
   });
 
   test("the rendered page carries no authorization code", async () => {
     const t = convexTest(schema, modules);
     stubPlane({ ok: true, auth_state: "CONNECTED" });
-    const res = await callback(t, "?state=st_abc&code=authcode123");
+    const res = await callback(t, "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&code=authcode123");
     const html = await res.text();
     expect(html).not.toContain("authcode123");
     expect(html).not.toContain("st_abc");
@@ -122,7 +122,7 @@ describe("the OAuth callback route", () => {
     // in a Referer header to anything the page touches.
     const t = convexTest(schema, modules);
     stubPlane({ ok: true, auth_state: "CONNECTED" });
-    const res = await callback(t, "?state=st_abc&code=authcode123");
+    const res = await callback(t, "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&code=authcode123");
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
@@ -134,7 +134,7 @@ describe("the OAuth callback route", () => {
     // browser. Escaped, not filtered: the safety is by construction.
     const t = convexTest(schema, modules);
     stubPlane({ ok: false, detail: "<img src=x onerror=alert(1)>" });
-    const res = await callback(t, "?state=st_abc&error=access_denied");
+    const res = await callback(t, "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&error=access_denied");
     const html = await res.text();
     expect(html).not.toContain("<img");
     expect(html).toContain("&lt;img");
@@ -149,12 +149,31 @@ describe("the OAuth callback route", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("a malformed state, code or error is refused before the plane is asked", async () => {
+    // Audit M-01. The state is a 43-char url-safe token the plane minted; a
+    // provider's code is bounded; an error string is short. Anything else is
+    // not a callback and never reaches the plane.
+    const t = convexTest(schema, modules);
+    const calls = stubPlane({ ok: true });
+    for (const query of [
+      "?state=short&code=x",
+      "?state=" + "a".repeat(200) + "&code=x",
+      "?state=has%20space%3C%3E&code=x",
+      "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&code=" + "c".repeat(3000),
+      "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&error=" + "e".repeat(300),
+    ]) {
+      const res = await callback(t, query);
+      expect(res.status, query.slice(0, 40)).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   test("an unmatched state is refused and says nothing specific", async () => {
     // A distinguishable answer would tell an attacker which states exist. The
     // plane already returns the same shape for expired, replayed and forged.
     const t = convexTest(schema, modules);
     stubPlane({ ok: false, auth_state: "ERROR", detail: "no pending authorization" });
-    const res = await callback(t, "?state=st_forged&code=x");
+    const res = await callback(t, "?state=st_forgedforgedforgedforgedforged0123&code=x");
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("no pending authorization");
   });
@@ -165,7 +184,7 @@ describe("the OAuth callback route", () => {
     fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockRejectedValue(new Error("connect ECONNREFUSED 172.16.70.25:8770"));
-    const res = await callback(t, "?state=st_abc&code=x");
+    const res = await callback(t, "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&code=x");
     const html = await res.text();
     expect(html).not.toContain("172.16.70.25");
     expect(html).not.toContain("ECONNREFUSED");
@@ -178,7 +197,7 @@ describe("the OAuth callback route", () => {
     process.env.AI_SERVICE_KEY = undefined;
     // biome-ignore lint/performance/noDelete: the route reads absence, not ""
     delete process.env.AI_SERVICE_KEY;
-    const res = await callback(t, "?state=st_abc&code=x");
+    const res = await callback(t, "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&code=x");
     expect(res.status).toBe(400);
     expect(calls).toHaveLength(0);
   });
@@ -186,7 +205,7 @@ describe("the OAuth callback route", () => {
   test("a non-2xx from the plane is not reported as success", async () => {
     const t = convexTest(schema, modules);
     stubPlane({ ok: true, auth_state: "CONNECTED" }, 503);
-    const res = await callback(t, "?state=st_abc&code=x");
+    const res = await callback(t, "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&code=x");
     // `ok: true` in the body must not outrank a 503 status — a vault that is
     // not configured has stored nothing.
     expect(res.status).toBe(400);
@@ -566,7 +585,7 @@ describe("the OAuth actions are the tenancy gate", () => {
     const s = await seeded(t);
     stubPlane({
       auth_state: "AUTHORIZING",
-      authorization_url: "https://issuer.test/authorize?state=st_abc",
+      authorization_url: "https://issuer.test/authorize?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD",
     });
 
     const report = await t

@@ -208,7 +208,14 @@ async def run_sandboxed(
     except (TimeoutError, RuntimeError):
         raise
     except Exception as e:  # noqa: BLE001 — transport (spawn) failure, not a decode
+        # FAIL CLOSED (audit C-03). An earlier version ran the parser in-process
+        # when the sandbox could not be spawned — which is precisely the moment
+        # an attacker-shaped payload gets the unsandboxed parser it wanted. The
+        # attachment is refused with a retryable error instead; the dev box
+        # (tier 4) still has its explicit in-process path above.
         log.warning(
             "sandbox.transport_failed", extra={"op": op, "err": type(e).__name__}
         )
-        return await fallback()
+        raise RuntimeError(
+            "the attachment sandbox is unavailable; try again shortly"
+        ) from e

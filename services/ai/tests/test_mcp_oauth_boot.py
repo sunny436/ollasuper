@@ -152,15 +152,25 @@ def test_the_scope_allowlist_is_off_by_default():
     assert main_mod._scope_allowlist(make_settings("http://x")) == {}
 
 
-@pytest.mark.parametrize(
-    "raw", ["", "   ", "not json", "[]", '"a string"', "null"]
-)
-def test_an_unparseable_allowlist_is_empty_rather_than_fatal(raw):
-    # An unparseable development setting must not stop the service booting —
-    # and "empty" means "request what the server asks for", which is the
-    # specification's own behaviour, not a silent widening of anything.
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_an_absent_allowlist_is_empty(raw):
+    # Empty means "request what the server asks for" — the specification's own
+    # behaviour, not a silent widening of anything.
     settings = make_settings("http://x", mcp_oauth_scope_allowlist=raw)
     assert main_mod._scope_allowlist(settings) == {}
+
+
+@pytest.mark.parametrize(
+    "raw", ["not json", "[]", '"a string"', "null", '{"gmail": "x"}', '{"gmail": [1]}']
+)
+def test_a_malformed_allowlist_refuses_boot(raw):
+    """Audit M-01. An earlier version logged and returned {} — an operator who
+    had narrowed Gmail to read-only and then made a typo silently got
+    full-scope authorizations. A narrowing that cannot be parsed must not
+    widen; boot refuses so the operator sees it."""
+    settings = make_settings("http://x", mcp_oauth_scope_allowlist=raw)
+    with pytest.raises(RuntimeError, match="MCP_OAUTH_SCOPE_ALLOWLIST"):
+        main_mod._scope_allowlist(settings)
 
 
 def test_a_well_formed_allowlist_is_parsed_per_server():
@@ -181,3 +191,18 @@ def test_the_credential_keys_are_registered_as_a_secret():
     it would be redacted only by shape — and base64 has no shape."""
     settings = make_settings("http://x", mcp_credential_keys=KEYS)
     assert KEYS in settings.secrets()
+
+
+def test_environment_credentials_refuse_boot_unless_explicitly_allowed():
+    """Audit M-08. `MCP_TEST_CREDENTIALS` holds a real third-party secret in a
+    process env var; it is a development convenience, not a production
+    credential source. Without `MCP_ALLOW_ENV_CREDENTIALS` the service refuses
+    to boot with it set — loudly, at startup, not silently on a user's turn."""
+    raw = '{"github": "ghp_x"}'
+    with pytest.raises(RuntimeError, match="MCP_ALLOW_ENV_CREDENTIALS"):
+        main_mod._env_credentials(make_settings("http://x", mcp_test_credentials=raw))
+    allowed = make_settings(
+        "http://x", mcp_test_credentials=raw, mcp_allow_env_credentials=True
+    )
+    assert main_mod._env_credentials(allowed) == {"github": "ghp_x"}
+    assert main_mod._env_credentials(make_settings("http://x")) == {}

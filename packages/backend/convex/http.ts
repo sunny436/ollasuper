@@ -969,7 +969,15 @@ http.route({
 
     const base = process.env.AI_BASE_URL;
     const key = process.env.AI_SERVICE_KEY;
-    if (!base || !key || !state) {
+    // SHAPE-CHECKED before anything is forwarded (audit M-01): `state` is a
+    // 43-char URL-safe token the plane minted; `code` is what a provider
+    // issues. Anything else is not a callback, and the plane is not asked.
+    const shaped =
+      /^[A-Za-z0-9_-]{16,128}$/.test(state) &&
+      (code === null || (code.length > 0 && code.length <= 2048)) &&
+      (iss === null || iss.length <= 512) &&
+      (error === null || error.length <= 256);
+    if (!base || !key || !state || !shaped) {
       return callbackPage(false, "This authorization link is not valid.");
     }
 
@@ -978,6 +986,7 @@ http.route({
         method: "POST",
         headers: { "content-type": "application/json", "x-service-key": key },
         body: JSON.stringify({ state, code, iss, error }),
+        signal: AbortSignal.timeout(45_000),
       });
       const payload = (await res.json().catch(() => ({}))) as {
         ok?: boolean;

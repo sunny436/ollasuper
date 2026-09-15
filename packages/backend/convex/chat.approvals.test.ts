@@ -326,6 +326,23 @@ describe("Phase 8 approval — resolve", () => {
 });
 
 describe("Phase 8 approval — expiry & cancel", () => {
+  test("a click after the deadline expires the approval, never approves it", async () => {
+    // Audit M-05. The card shows a deadline; resolving after it minted an
+    // execute token anyway. Now: expired, no token, the stream is not requeued.
+    const t = convexTest(schema, modules);
+    const s = await seedStream(t, { status: "waiting_approval", hasEvents: true });
+    const apId = await seedApproval(t, s, { expiresAt: Date.now() - 1000 });
+    const r = await t
+      .withIdentity(as(s.userId))
+      .mutation(api.chat.approvals.resolve, { approvalId: apId, decision: "approve" });
+    expect(r).toMatchObject({ status: "expired" });
+    const rows = await loadApprovals(t, s.streamId);
+    expect(rows[0]?.status).toBe("expired");
+    expect(rows[0]?.token).toBeUndefined();
+    const stream = await loadStream(t, s.streamId);
+    expect(stream?.status).toBe("waiting_approval");
+  });
+
   test("reapExpired expires a stale approval and terminates the turn", async () => {
     const t = convexTest(schema, modules);
     const s = await seedStream(t, { status: "waiting_approval", hasEvents: true });

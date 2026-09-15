@@ -79,6 +79,7 @@ async function readPlane(path: string): Promise<Plane | null> {
     const res = await fetch(`${base.replace(/\/$/, "")}${path}`, {
       method: "GET",
       headers: { "x-service-key": key },
+      signal: AbortSignal.timeout(20_000),
     });
     if (!res.ok) return null;
     return (await res.json()) as Plane;

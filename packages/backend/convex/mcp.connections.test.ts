@@ -131,6 +131,33 @@ describe("creation", () => {
     expect(second).toBe(first);
   });
 
+  test("a local server may only be connected by a workspace admin or owner", async () => {
+    // Audit H-11. A local server runs code on the operator's box.
+    const t = convexTest(schema, modules);
+    const { owner, peer, ws } = await seed(t);
+    await expect(
+      t.withIdentity(as(peer)).mutation(api.mcp.connections.create, {
+        workspaceId: ws,
+        serverName: "local/filesystem",
+        slug: "filesystem",
+        version: "1.0.0",
+        versionMode: "latest_at_connect",
+        transport: "streamable-http",
+        authKind: "none",
+      }),
+    ).rejects.toThrow("Forbidden");
+    const id = await t.withIdentity(as(owner)).mutation(api.mcp.connections.create, {
+      workspaceId: ws,
+      serverName: "local/filesystem",
+      slug: "filesystem",
+      version: "1.0.0",
+      versionMode: "latest_at_connect",
+      transport: "streamable-http",
+      authKind: "none",
+    });
+    expect(id).toBeTruthy();
+  });
+
   test("two different users may each connect the same server", async () => {
     const t = convexTest(schema, modules);
     const { owner, peer, ws } = await seed(t);
@@ -329,6 +356,39 @@ describe("outcome recording", () => {
       .withIdentity(as(owner))
       .query(api.mcp.connections.get, { connectionId: id });
     expect(row?.version).toBe("2.5.1");
+  });
+
+  test("a ready outcome overwrites the client-supplied labels with the plane's", async () => {
+    // Audit M-06. `create` takes slug/transport/authKind from the browser; the
+    // plane resolves the curated row by serverName and reports what it dialled.
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const id = await createFor(t, owner, ws);
+    const before = await t.withIdentity(as(owner)).query(api.mcp.connections.get, { connectionId: id });
+    expect(before?.slug).toBe("acme");
+    await t.run(async (ctx) =>
+      ctx.runMutation(internal.mcp.connections.recordOutcome, {
+        connectionId: id,
+        status: "ready",
+        slug: "acme-official",
+        transport: "sse",
+        authKind: "oauth",
+      }),
+    );
+    const row = await t.withIdentity(as(owner)).query(api.mcp.connections.get, { connectionId: id });
+    expect(row?.slug).toBe("acme-official");
+    expect(row?.transport).toBe("sse");
+    expect(row?.authKind).toBe("oauth");
+    // A FAILED outcome carrying labels does not touch them.
+    await t.run(async (ctx) =>
+      ctx.runMutation(internal.mcp.connections.recordOutcome, {
+        connectionId: id,
+        status: "failed",
+        slug: "should-not-land",
+      }),
+    );
+    const after = await t.withIdentity(as(owner)).query(api.mcp.connections.get, { connectionId: id });
+    expect(after?.slug).toBe("acme-official");
   });
 
   test("recording against a deleted connection is a no-op, not a crash", async () => {

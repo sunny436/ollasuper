@@ -78,6 +78,7 @@ async function callPlane(
       {
         method: "POST",
         headers: { "content-type": "application/json", "x-service-key": key },
+        signal: AbortSignal.timeout(45_000),
         body: JSON.stringify({
           connection_id: connectionId,
           server_name: tenant.serverName,

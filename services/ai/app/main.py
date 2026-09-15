@@ -72,30 +72,54 @@ async def _discover_tools_best_effort(app: FastAPI, settings: Settings) -> None:
         await client.aclose()
 
 
+def _env_credentials(settings: Settings) -> dict[str, str]:
+    """The static per-slug credentials from the environment, or an empty map.
+
+    FAIL CLOSED (audit M-08): `MCP_TEST_CREDENTIALS` holds a real third-party
+    secret in a process env var — a development convenience, not a credential
+    source a deployment agreed to. With it set and `MCP_ALLOW_ENV_CREDENTIALS`
+    off, boot refuses rather than quietly serving connectors from it.
+    """
+    from app.mcp.credentials import parse_test_credentials  # noqa: PLC0415
+
+    found = parse_test_credentials(settings.mcp_test_credentials)
+    if found and not settings.mcp_allow_env_credentials:
+        raise RuntimeError(
+            "MCP_TEST_CREDENTIALS is set but MCP_ALLOW_ENV_CREDENTIALS is not; "
+            "environment credentials are for development only"
+        )
+    return found
+
+
 def _scope_allowlist(settings: Settings) -> dict[str, list[str]]:
     """Parse `mcp_oauth_scope_allowlist` into {slug: [scope, ...]}.
 
     EMPTY BY DEFAULT, which means "request what the server's own metadata asks
     for" — the specification's behaviour, and the only honest default given that
-    the SDK overwrites `client_metadata.scope` from that metadata. A malformed
-    value yields {} plus a warning rather than an exception: a misconfigured
-    least-privilege hint must not stop the service booting.
+    the SDK overwrites `client_metadata.scope` from that metadata.
+
+    A MALFORMED VALUE REFUSES BOOT (audit M-01). An earlier version logged and
+    returned {}: an operator who had narrowed Gmail to read-only, and then made
+    a typo, silently got full-scope authorizations. The setting exists to
+    narrow; a narrowing that cannot be parsed must not widen.
     """
     raw = (settings.mcp_oauth_scope_allowlist or "").strip()
     if not raw:
         return {}
     try:
         parsed = json.loads(raw)
-    except ValueError:
-        log.warning("mcp_oauth_scope_allowlist_unparseable")
-        return {}
+    except ValueError as exc:
+        raise RuntimeError("MCP_OAUTH_SCOPE_ALLOWLIST is not valid JSON") from exc
     if not isinstance(parsed, dict):
-        return {}
-    return {
-        str(slug): [str(scope) for scope in scopes]
-        for slug, scopes in parsed.items()
-        if isinstance(scopes, list)
-    }
+        raise RuntimeError("MCP_OAUTH_SCOPE_ALLOWLIST must be a JSON object")
+    out: dict[str, list[str]] = {}
+    for slug, scopes in parsed.items():
+        if not isinstance(scopes, list) or not all(isinstance(x, str) for x in scopes):
+            raise RuntimeError(
+                f"MCP_OAUTH_SCOPE_ALLOWLIST[{slug!r}] must be a list of strings"
+            )
+        out[str(slug)] = list(scopes)
+    return out
 
 
 @asynccontextmanager
@@ -123,15 +147,11 @@ async def lifespan(app: FastAPI):
     )
     # Knowledge DB (pgvector). None when unconfigured — RAG then degrades to off
     # and /v1/ingest returns 503, but chat is unaffected.
-    app.state.db = (
-        create_knowledge_engine(settings) if settings.rag_enabled else None
-    )
+    app.state.db = create_knowledge_engine(settings) if settings.rag_enabled else None
     # Tool Registry (Ollagraph). None when unconfigured — the introspection
     # route then 503s, but chat is unaffected. It is a CATALOGUE only: never
     # wired to the LLM/graph, and discovery below is best-effort.
-    app.state.tool_registry = (
-        ToolRegistry() if settings.ollagraph_enabled else None
-    )
+    app.state.tool_registry = ToolRegistry() if settings.ollagraph_enabled else None
     # Shared Ollagraph http client + a cached ToolSelector, used by the agent
     # (Phase 4) to EXECUTE discovered tools. None when unconfigured -> the
     # generation path binds no tools and is byte-identical to before. The
@@ -162,7 +182,6 @@ async def lifespan(app: FastAPI):
         from app.mcp.credentials import (
             EnvCredentialResolver,
             VaultCredentialResolver,
-            parse_test_credentials,
         )
         from app.mcp.session import McpSessionPool, PoolLimits
 
@@ -171,9 +190,7 @@ async def lifespan(app: FastAPI):
         # service run and discover it on a user's first authorization. There is
         # deliberately no generated default: a boot-time key would encrypt
         # credentials no later process could read.
-        resolver: Any = EnvCredentialResolver(
-            parse_test_credentials(settings.mcp_test_credentials)
-        )
+        resolver: Any = EnvCredentialResolver(_env_credentials(settings))
         if settings.mcp_oauth_enabled:
             from app.mcp.oauth.attempts import AttemptRegistry
             from app.mcp.oauth.flow import OAuthFlow

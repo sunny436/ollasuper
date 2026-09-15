@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.logging import get_logger
 from app.mcp.models import McpServerIdentity
 from app.models.tools import (
     Availability,
@@ -136,11 +137,24 @@ def _side_effect(annotations: Any, *, trusted: bool) -> SideEffect:
 
 
 def _schema(raw: Any, *, max_bytes: int) -> dict[str, Any]:
+    """The tool's input schema, or `ValueError` for one the executor could not
+    validate against (audit M-03).
+
+    RAISED, NOT DEGRADED. An earlier version mapped a non-object or unresolvable
+    schema to an empty object schema. Under default-closed validation that means
+    "accepts no arguments", which is not fail-open — but it silently offered the
+    model a tool it could never call correctly, and a cyclic `$ref` resolved to
+    `{}` for the cyclic SUBTREE, a hole validation could not see into. A tool
+    whose contract cannot be established is not offered; the caller's
+    skip-one-bad-tool loop drops just that tool and logs it.
+    """
     if not isinstance(raw, dict) or raw.get("type") != "object":
-        return dict(_EMPTY_SCHEMA)
+        raise ValueError("tool input schema is not an object schema")
+    if _has_cycle(raw):
+        raise ValueError("tool input schema has a cyclic $ref")
     resolved = resolve_local_refs(raw)
     if not isinstance(resolved, dict) or resolved.get("type") != "object":
-        return dict(_EMPTY_SCHEMA)
+        raise ValueError("tool input schema did not resolve to an object schema")
     # AFTER resolution: inlining a `$defs` entry used in ten places multiplies it.
     try:
         size = len(json.dumps(resolved, default=str))
@@ -234,6 +248,56 @@ def normalize_tool(
         origin=origin,
         trusted=identity.trusted,
     )
+
+
+def _has_cycle(schema: dict[str, Any]) -> bool:
+    """Does any `$ref` chain in `$defs`/`definitions` refer back to itself?"""
+    defs: dict[str, Any] = {}
+    for key in ("$defs", "definitions"):
+        block = schema.get(key)
+        if isinstance(block, dict):
+            defs.update(block)
+    if not defs:
+        return False
+
+    def refs_in(node: Any, out: set[str], depth: int = 0) -> None:
+        if depth > 64:
+            return
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str):
+                for prefix in ("#/$defs/", "#/definitions/"):
+                    if ref.startswith(prefix):
+                        out.add(ref[len(prefix) :])
+            for value in node.values():
+                refs_in(value, out, depth + 1)
+        elif isinstance(node, list):
+            for value in node:
+                refs_in(value, out, depth + 1)
+
+    graph = {}
+    for name, body in defs.items():
+        targets: set[str] = set()
+        refs_in(body, targets)
+        graph[name] = targets
+    state: dict[str, int] = {}
+
+    def visit(name: str) -> bool:
+        if state.get(name) == 1:
+            return True
+        if state.get(name) == 2:
+            return False
+        state[name] = 1
+        for target in graph.get(name, ()):
+            if target in graph and visit(target):
+                return True
+        state[name] = 2
+        return False
+
+    return any(visit(name) for name in graph)
+
+
+log = get_logger(__name__)
 
 
 #: The JSON-Schema keys an untrusted server's schema may keep. Everything the
@@ -337,6 +401,14 @@ def normalize_tools(
                     origin=origin,
                 )
             )
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError) as exc:
+            log.warning(
+                "mcp.tool_dropped",
+                extra={
+                    "server": identity.slug,
+                    "tool": str(getattr(t, "name", "") or "")[:80],
+                    "reason": str(exc)[:120],
+                },
+            )
             continue
     return out

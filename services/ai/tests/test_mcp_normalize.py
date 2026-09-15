@@ -129,9 +129,35 @@ def test_input_schema_passes_through():
     )
 
 
-def test_a_non_object_schema_degrades_rather_than_dropping_the_tool():
-    d = normalize_tool(_Tool(name="x", input_schema={"type": "string"}), TRUSTED)
-    assert d.input_schema == {"type": "object", "properties": {}}
+def test_a_schema_the_executor_cannot_validate_against_drops_the_tool():
+    """Audit M-03. An earlier version degraded a non-object schema to an empty
+    object schema — a tool the model could never call correctly, offered
+    anyway — and a cyclic `$ref` left a `{}` subtree validation could not see
+    into. A tool whose contract cannot be established is not offered; the list
+    keeps every other tool."""
+    with pytest.raises(ValueError):
+        normalize_tool(_Tool(name="x", input_schema={"type": "string"}), TRUSTED)
+    cyclic = {
+        "type": "object",
+        "properties": {"node": {"$ref": "#/$defs/node"}},
+        "$defs": {
+            "node": {
+                "type": "object",
+                "properties": {"next": {"$ref": "#/$defs/node"}},
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="cyclic"):
+        normalize_tool(_Tool(name="y", input_schema=cyclic), TRUSTED)
+    kept = normalize_tools(
+        [
+            _Tool(name="ok"),
+            _Tool(name="x", input_schema={"type": "string"}),
+            _Tool(name="y", input_schema=cyclic),
+        ],
+        TRUSTED,
+    )
+    assert [d.name for d in kept] == ["ok"]
 
 
 def test_http_only_fields_are_blank_not_defaulted():

@@ -168,6 +168,18 @@ export const resolve = mutation({
 
     const stream = await loadStreamById(ctx, row.streamId);
     const now = Date.now();
+    if (row.expiresAt <= now) {
+      // EXPIRED IS EXPIRED (audit M-05). The card shows a deadline; a click
+      // after it must not mint an execute token — an earlier version resolved
+      // a stale card as approved and ran the tool minutes after the user's
+      // context for it was gone.
+      await ctx.db.patch(approvalId, {
+        status: "expired",
+        resolvedAt: now,
+        resolvedBy: userId,
+      });
+      return { status: "expired" };
+    }
     if (!stream || stream.status !== "waiting_approval") {
       // The turn moved on (stopped / terminal) while the dialog was open.
       await ctx.db.patch(approvalId, {

@@ -58,11 +58,17 @@ def init_sentry(settings: Settings, *, component: str) -> None:
     except ImportError:
         log.warning("sentry_dsn_set_but_sdk_missing")
         return
-    def _before_send(event: dict, _hint: object) -> dict:
+    def _before_send(event: dict, _hint: object) -> dict | None:
         try:
             return redact_sentry_event(event)
-        except Exception:  # noqa: BLE001 — redaction must never drop the report
-            return event
+        except Exception:  # noqa: BLE001 — a scrub that fails DROPS the report
+            # FAIL CLOSED (audit M-10). An earlier version exported the raw
+            # event when redaction raised — exactly the event most likely to
+            # carry something unusual (a cyclic object, a huge local) and
+            # therefore a token. A lost report is a cost; a leaked token is a
+            # breach. Counted so the loss is visible.
+            log.warning("sentry_event_dropped_unscrubbed")
+            return None
 
     sentry_sdk.init(dsn=dsn, traces_sample_rate=0.0, before_send=_before_send)
     try:

@@ -62,7 +62,15 @@ MCP_READ_RESOURCE_TOOL_SPEC: dict = {
                         "The resource URI exactly as the connected server "
                         "advertised it, for example 'git://repo/main/README.md'."
                     ),
-                }
+                },
+                "connector": {
+                    "type": "string",
+                    "description": (
+                        "The connector (server slug) that advertised the resource, "
+                        "for example 'github'. Required when more than one "
+                        "connected server offers the same URI."
+                    ),
+                },
             },
             "required": ["uri"],
             "additionalProperties": False,
@@ -76,6 +84,7 @@ async def read_resource(
     uri: str,
     *,
     max_bytes: int = DEFAULT_RESOURCE_MAX_BYTES,
+    connector: str | None = None,
 ) -> dict[str, Any]:
     """Resolve, read and bound one resource. Never raises for a caller error.
 
@@ -84,7 +93,7 @@ async def read_resource(
     is told what went wrong, and cannot if the turn fails.
     """
     try:
-        resource, client = index.resolve_resource(uri)
+        resource, client = index.resolve_resource(uri, connector=connector)
     except CapabilityLookupError as exc:
         return {
             "is_error": True,

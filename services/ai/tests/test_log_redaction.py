@@ -141,9 +141,7 @@ def test_sentry_events_are_redacted_recursively():
             "values": [
                 {
                     "value": f"rejected {SECRET}",
-                    "stacktrace": {
-                        "frames": [{"vars": {"api_key": SECRET, "n": 3}}]
-                    },
+                    "stacktrace": {"frames": [{"vars": {"api_key": SECRET, "n": 3}}]},
                 }
             ]
         },
@@ -394,3 +392,33 @@ def test_httpx2_is_silenced_exactly_as_httpx_is(emitted):
     _log, read = emitted
     logging.getLogger("httpx2").info("HTTP Request: POST https://as.test/token")
     assert "as.test/token" not in read()
+
+
+def test_a_scrub_that_fails_drops_the_event_rather_than_leaking_it(monkeypatch):
+    """Audit M-10. `before_send` used to return the RAW event when redaction
+    raised — the event most likely to carry something unusual, and therefore
+    a token. A lost report is a cost; a leaked token is a breach."""
+    import types
+
+    import app.observability as obs
+
+    captured: dict = {}
+
+    class FakeSentry:
+        @staticmethod
+        def init(**kw):
+            captured["before_send"] = kw["before_send"]
+
+        @staticmethod
+        def set_tag(*_a, **_k):
+            return None
+
+    monkeypatch.setitem(__import__("sys").modules, "sentry_sdk", FakeSentry)
+    monkeypatch.setattr(
+        obs,
+        "redact_sentry_event",
+        lambda e: (_ for _ in ()).throw(ValueError("cyclic")),
+    )
+    settings = types.SimpleNamespace(ai_sentry_dsn="https://k@sentry.example/1")
+    obs.init_sentry(settings, component="test")
+    assert captured["before_send"]({"extra": {"token": "secret"}}, None) is None

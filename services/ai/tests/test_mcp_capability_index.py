@@ -166,8 +166,15 @@ def test_a_connection_with_no_client_is_refused_not_half_resolved():
         ("mem://other/main/a", False),
         ("mem://repo/main/README.md/extra", False),
     ],
-    ids=["simple", "other-branch", "too-deep", "too-short", "empty-var",
-         "wrong-prefix", "trailing"],
+    ids=[
+        "simple",
+        "other-branch",
+        "too-deep",
+        "too-short",
+        "empty-var",
+        "wrong-prefix",
+        "trailing",
+    ],
 )
 def test_template_matching_is_segment_exact(uri, ok):
     """A variable matches ONE segment, never a path.
@@ -249,3 +256,40 @@ def test_the_safe_projection_carries_no_client_and_no_session():
     # It is still useful: counts and per-connection errors survive.
     assert "conn-a" in blob
     assert index.as_dict()["connections"][0]["resources"] == 1
+
+
+# ------------------------------------------------ M-04: ambiguity is refused
+def test_an_ambiguous_uri_is_refused_until_a_connector_is_named():
+    """Audit M-04. The first exact match used to win, so a read of a URI two
+    connections both offer landed on whichever was added first — the wrong
+    account's copy, silently. Now: ambiguity refuses and names the choice; a
+    named connector resolves exactly that one; a wrong name is 'not available'."""
+    from app.mcp.index import CapabilityLookupError
+
+    index = McpCapabilityIndex()
+    index.add(_entry("conn-a", uris=("mem://notes",)), client=_Client("a"))
+    index.add(_entry("conn-b", uris=("mem://notes",)), client=_Client("b"))
+
+    with pytest.raises(
+        CapabilityLookupError, match="name the connector: conn-a, conn-b"
+    ):
+        index.resolve_resource("mem://notes")
+    resource, client = index.resolve_resource("mem://notes", connector="conn-b")
+    assert resource.connection_id == "conn-b" and client.tag == "b"
+    with pytest.raises(CapabilityLookupError, match="not available"):
+        index.resolve_resource("mem://notes", connector="conn-z")
+    # A URI only one connection offers needs no name.
+    index.add(_entry("conn-c", uris=("mem://only-c",)), client=_Client("c"))
+    assert index.resolve_resource("mem://only-c")[0].connection_id == "conn-c"
+
+
+def test_ambiguous_templates_are_refused_too():
+    from app.mcp.index import CapabilityLookupError
+
+    index = McpCapabilityIndex()
+    index.add(_entry("conn-a", templates=("mem://repo/{branch}",)), client=_Client("a"))
+    index.add(_entry("conn-b", templates=("mem://repo/{branch}",)), client=_Client("b"))
+    with pytest.raises(CapabilityLookupError, match="name the connector"):
+        index.resolve_resource("mem://repo/main")
+    resource, client = index.resolve_resource("mem://repo/main", connector="conn-a")
+    assert resource.connection_id == "conn-a" and client.tag == "a"

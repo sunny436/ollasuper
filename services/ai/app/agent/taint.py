@@ -48,8 +48,18 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["TaintLedger", "fingerprint", "leaf_strings", "source_of", "source_of_id"]
+__all__ = [
+    "REJECTED_EARLIER",
+    "TaintLedger",
+    "fingerprint",
+    "leaf_strings",
+    "source_of",
+    "source_of_id",
+]
 
+#: The sentinel source a resume flags a destination with when the user REJECTED
+#: a call to it before the pause (no content to name, just the refusal).
+REJECTED_EARLIER = "rejected-earlier"
 SHINGLE = 32
 STEP = 16
 MIN_TOKEN = 8

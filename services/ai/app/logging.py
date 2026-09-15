@@ -317,6 +317,13 @@ def configure(level: str = "INFO", secrets: tuple[str, ...] = ()) -> None:
     # URLs there too.
     for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    # The MCP SDK's own loggers print request and response bodies at DEBUG
+    # (audit M-09) — tool arguments, results and, on the auth path, token
+    # responses. They are clamped to WARNING whatever the service level is;
+    # an operator who needs them for one incident lifts this in code, not by
+    # turning on DEBUG in production.
+    for name in ("mcp", "mcp.client", "mcp.shared", "mcp.server"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

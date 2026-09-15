@@ -12,7 +12,7 @@ import {
 import { isActiveUser } from "../accountState";
 import { audit } from "../auditLog";
 import { getUserIdOrNull, requireUserId } from "../chat/authz";
-import { requireMember } from "../orgs";
+import { requireMember, requireRole } from "../orgs";
 import { consumeWindow } from "../quotas";
 import { auditRemoval } from "./audit";
 // `clamp` MOVED to ./text to break the cycle this file now has with
@@ -199,6 +199,12 @@ export const create = mutation({
     // user: a connection is billed and audited against a workspace, so creating
     // one inside a workspace you are not a member of must fail.
     await requireMember(ctx, userId, args.workspaceId);
+    if (args.serverName.startsWith("local/")) {
+      // A LOCAL server runs code on the operator's box; connecting one is an
+      // administrative act, not a member's (audit H-11). The plane refuses too,
+      // but the row must not even exist for a non-admin.
+      await requireRole(ctx, userId, args.workspaceId, ["owner", "admin"]);
+    }
 
     // One connection per (user, server). A second row for the same server would
     // give the pool two keys for one account and make "disconnect" ambiguous.
@@ -321,6 +327,11 @@ export const recordOutcome = internalMutation({
     connectionId: v.id("mcpConnections"),
     status: STATUS,
     version: v.optional(v.string()),
+    slug: v.optional(v.string()),
+    transport: v.optional(
+      v.union(v.literal("streamable-http"), v.literal("sse")),
+    ),
+    authKind: v.optional(v.string()),
     lastError: v.optional(v.string()),
     lastErrorKind: v.optional(v.string()),
     userActionRequired: v.optional(v.boolean()),
@@ -338,6 +349,10 @@ export const recordOutcome = internalMutation({
       // The version actually used is written down, so a later catalogue change
       // cannot retroactively rewrite what this connection ran against.
       ...(args.version ? { version: args.version } : {}),
+      // Only a READY outcome carries the plane's authoritative labels.
+      ...(ready && args.slug ? { slug: clamp(args.slug, 120) } : {}),
+      ...(ready && args.transport ? { transport: args.transport } : {}),
+      ...(ready && args.authKind ? { authKind: clamp(args.authKind, 40) } : {}),
       ...(ready ? { lastConnectedAt: now } : {}),
       ...(args.status === "failed" ? { lastFailureAt: now } : {}),
       // Cleared on success rather than left behind: a stale error next to a
@@ -379,6 +394,9 @@ type Operation = "connect" | "refresh" | "disconnect";
  * or a token being rejected, is information the UI must render — not an
  * exception that logs a console.error and fails every e2e script.
  */
+/** How long an action waits for the plane before giving up (audit M-13). */
+const PLANE_DEADLINE_MS = 45_000;
+
 async function runOperation(
   ctx: ActionCtx,
   operation: Operation,
@@ -431,6 +449,9 @@ async function runOperation(
         method: "POST",
         headers: { "content-type": "application/json", "x-service-key": key },
         body: JSON.stringify(body),
+        // A DEADLINE (audit M-13): the plane bounds its own work, but a hung
+        // socket would otherwise pin this action for the runtime's maximum.
+        signal: AbortSignal.timeout(PLANE_DEADLINE_MS),
       },
     );
     if (!res.ok) {
@@ -459,6 +480,16 @@ async function runOperation(
     connectionId,
     status,
     version: typeof report.version === "string" ? report.version : undefined,
+    // THE PLANE'S LABELS WIN (audit M-06). `create` accepts slug/transport/
+    // authKind from the browser because the catalogue is rendered there; the
+    // plane resolves the curated row by serverName and reports what it
+    // actually dialled, and a `ready` outcome overwrites the client's copy.
+    slug: typeof report.slug === "string" ? report.slug : undefined,
+    transport:
+      report.transport === "streamable-http" || report.transport === "sse"
+        ? report.transport
+        : undefined,
+    authKind: typeof report.auth_kind === "string" ? report.auth_kind : undefined,
     lastError:
       typeof report.error_detail === "string" ? report.error_detail : undefined,
     lastErrorKind:

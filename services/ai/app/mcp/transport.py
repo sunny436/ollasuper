@@ -391,8 +391,10 @@ def build_http_client(
     guarded = _guarded_kwargs(trust, limits)
     kwargs: dict[str, Any] = {
         "headers": {**dict(headers), **_IDENTITY_ONLY},
+        # The CONFIGURED connect timeout (audit M-13): an earlier `max(30, cfg)`
+        # meant a shorter operator value was silently ignored.
         "timeout": httpx2.Timeout(
-            max(_CONNECT_TIMEOUT_S, spec.connect_timeout_s),
+            spec.connect_timeout_s or _CONNECT_TIMEOUT_S,
             read=_STREAM_READ_TIMEOUT_S,
         ),
         "trust_env": False,

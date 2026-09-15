@@ -50,7 +50,7 @@ from app.agent.orchestration_tools import (
     ORCHESTRATION_BUILTIN_NAMES,
 )
 from app.agent.policy import PolicyScope, check_tool_policy
-from app.agent.taint import TaintLedger, source_of
+from app.agent.taint import REJECTED_EARLIER, TaintLedger, source_of
 from app.data.tool import DATA_TOOL_NAMES, DataContext, run_tool
 from app.documents.context import DocumentsContext, run_document_ops
 from app.documents.tool import DOCUMENT_OPS_TOOL_NAME
@@ -485,11 +485,14 @@ def _approval_reason(
     flow = _flow_sources(ctx, tool, args)
     if not flow:
         return policy_reason
-    return (
-        "this call sends data that came from "
-        + ", ".join(sorted(s.removeprefix("mcp:") for s in flow))
-        + f" to {_source_of(tool).removeprefix('mcp:')}"
-    )
+    dest = _source_of(tool).removeprefix("mcp:")
+    named = sorted(s.removeprefix("mcp:") for s in flow if s != REJECTED_EARLIER)
+    if not named:
+        return (
+            f"you declined a call to {dest} earlier in this turn; "
+            "this call needs approval too"
+        )
+    return f"this call sends data that came from {', '.join(named)} to {dest}"
 
 
 async def _emit(
@@ -2145,10 +2148,12 @@ async def _run_mcp_read_resource(
     from app.mcp.resource_tool import read_resource
 
     uri = args.get("uri") if isinstance(args, dict) else None
+    connector = args.get("connector") if isinstance(args, dict) else None
     result = await read_resource(
         ctx.mcp_index,
         uri if isinstance(uri, str) else "",
         max_bytes=ctx.mcp_resource_max_bytes,
+        connector=connector if isinstance(connector, str) else None,
     )
     body = json.dumps(result, ensure_ascii=False, default=str)
     return ToolMessage(tool_call_id=call_id, content=body[: ctx.result_max_chars])

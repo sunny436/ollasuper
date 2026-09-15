@@ -186,10 +186,9 @@ def test_tool_count_is_capped_because_the_server_chooses_it():
     assert len(normalize_tools(tools, IDENTITY, max_tools=10)) == 10
 
 
-def test_a_non_object_schema_still_falls_back_to_empty_object():
-    """Phase 1 behaviour preserved: offering a tool with no arguments beats
-    dropping it silently."""
-    assert normalize_tool(_Tool("x", "nonsense"), IDENTITY).input_schema == {
-        "type": "object",
-        "properties": {},
-    }
+def test_a_non_object_schema_drops_the_tool():
+    """Audit M-03. Offering a tool as zero-argument when its real contract is
+    unknown put a tool the model could never call correctly in front of it;
+    the tool is dropped (and logged) instead, and only that tool."""
+    with pytest.raises(ValueError):
+        normalize_tool(_Tool("x", "nonsense"), IDENTITY)

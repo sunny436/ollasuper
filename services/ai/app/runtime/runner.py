@@ -52,7 +52,7 @@ from app.agent.memory import (
 from app.agent.orchestration_tools import FIND_CAPABILITIES_TOOL_SPEC
 from app.agent.personalization import compile_personalization
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE
-from app.agent.taint import source_of_id
+from app.agent.taint import REJECTED_EARLIER, source_of_id
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
 from app.clients.ollagraph import OllagraphAdapter
@@ -1719,7 +1719,7 @@ async def run_generation(
             for a in req.approvals:
                 dest = source_of_id(a.toolId, tools_ctx.registry)
                 if a.decision == "rejected" and dest:
-                    tools_ctx.taint.flag(dest, {"a rejected call"})
+                    tools_ctx.taint.flag(dest, {REJECTED_EARLIER})
         # Phase 2: side-effecting tools ATTEMPTED with an UNKNOWN outcome (crash /
         # INDETERMINATE). Inject an "outcome unknown; not retried" observation and
         # seed BOTH dedup guards so a re-emit is DEDUPED and never re-executed — the

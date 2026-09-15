@@ -150,3 +150,40 @@ def test_pdf_op_degrades_never_raises():
     # ops.extract_pdf_text is the in-process fallback contract: garbage in -> a
     # note, never an exception that would fail the turn.
     assert ops.extract_pdf_text(b"not a pdf").startswith("[This PDF")
+
+
+async def test_a_sandbox_that_cannot_spawn_refuses_rather_than_parsing_in_process(
+    monkeypatch,
+):
+    """Audit C-03. The in-process fallback used to run whenever the child could
+    not be spawned — precisely the moment an attacker-shaped payload would get
+    the unsandboxed parser. Now the attachment is refused with a retryable
+    error; the dev box's tier-4 path stays explicit."""
+    import app.sandbox.harness as harness
+
+    ran_fallback = {"n": 0}
+
+    async def fallback():
+        ran_fallback["n"] += 1
+        return {}, b""
+
+    def broken_child(*_a, **_k):
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(harness, "_TIER", 1)
+    monkeypatch.setattr(harness, "_run_child", broken_child)
+    with pytest.raises(RuntimeError, match="sandbox is unavailable"):
+        await harness.run_sandboxed(
+            "pdf_text", b"%PDF", {}, timeout_s=5.0, fallback=fallback
+        )
+    assert ran_fallback["n"] == 0
+
+    # Tier 4 (no fork/exec at all) is the ONE explicit in-process path.
+    monkeypatch.setattr(harness, "_TIER", 4)
+    got = await harness.run_sandboxed(
+        "pdf_text", b"%PDF", {}, timeout_s=5.0, fallback=fallback
+    )
+    assert got == ({}, b"")
+    assert ran_fallback["n"] == 1
+
+pytestmark = pytest.mark.anyio
