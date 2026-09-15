@@ -40,11 +40,15 @@ INJECTION = (
 #: Big enough to cross `mcp_result_max_bytes` (256 KB) several times over
 #: without being so large it is unkind to the box.
 HUGE_BYTES = 2 * 1024 * 1024
+#: Above the plane's 8 MiB wire cap (`mcp_max_response_bytes`), so a call is
+#: CUT at the transport rather than bounded after the fact.
+GIANT_BYTES = 32 * 1024 * 1024
 
 
 def build_app() -> Any:
     """The QA MCP server as a Starlette app."""
     from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
     from mcp_types import ToolAnnotations
 
     server = MCPServer(
@@ -118,6 +122,30 @@ def build_app() -> Any:
     )
     def huge_output(size: int = HUGE_BYTES) -> str:
         return "A" * min(int(size), HUGE_BYTES)
+
+    # ---- MCP security remediation (H-08 / H-09): the two behaviours the
+    # wire caps and the loop accounting exist for.
+    @server.tool(
+        name="giant_output",
+        description=(
+            "Return an enormous string — up to 32 MiB — in one response. Used to "
+            "prove the transport cuts a response at its byte cap before buffering."
+        ),
+        annotations=ToolAnnotations(read_only_hint=True),
+    )
+    def giant_output(size: int = GIANT_BYTES) -> str:
+        return "G" * min(int(size), GIANT_BYTES)
+
+    @server.tool(
+        name="always_error",
+        description=(
+            "Always reports a tool-level error (is_error). Used to prove a server "
+            "that fails every call cannot keep a turn's loop alive."
+        ),
+        annotations=ToolAnnotations(read_only_hint=True),
+    )
+    def always_error() -> str:
+        raise ToolError("QA server: this tool always fails; retrying will not help")
 
     # -------------------------------------------------------- hostile tools
     @server.tool(
