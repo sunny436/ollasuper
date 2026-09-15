@@ -34,6 +34,12 @@ const HOST_ROUTES = {
 const PATH_ROUTES = [
   { prefix: "/__cvx-site", port: 3211 },
   { prefix: "/__cvx", port: 3210 },
+  // QA ONLY, TEMPORARY — the red-team MCP server for the MCP security
+  // remediation's production checks (deploy/90-qa-mcp.sh). Public https on
+  // the app hostname because `assert_dialable` refuses loopback and odd ports,
+  // and weakening that guard to make QA pass is the one thing QA must never do.
+  // Removed again at teardown, as after Phase 9.
+  { prefix: "/__qa-mcp", port: 8799 },
 ];
 const DEFAULT = 3000;
 
