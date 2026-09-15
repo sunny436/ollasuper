@@ -132,6 +132,14 @@ async def _attested_run(
     dials a server whose bridge is gone."""
     try:
         return await body()
+    except BaseExceptionGroup as group:
+        # The stop signal lands inside the MCP client's task group, which
+        # wraps it; a group holding NOTHING but SystemExit is still a clean
+        # stop (measured: the unit otherwise ends status=1/FAILURE).
+        _stops, rest = group.split(SystemExit)
+        if rest is not None:
+            raise
+        raise SystemExit(0) from None
     finally:
         _remove(name)
         try:

@@ -363,6 +363,39 @@ async def test_a_stop_signal_still_ends_in_a_stopped_attestation(tmp_path, monke
     assert attest.verified_for(row, tmp_path) is False
 
 
+async def test_a_stop_wrapped_by_the_client_task_group_is_still_a_clean_stop(
+    tmp_path, monkeypatch
+):
+    """anyio wraps whatever leaves the MCP client's task group in a group.
+    A group of nothing but SystemExit is the stop signal, not a failure —
+    measured: without this the unit ended status=1/FAILURE on every stop."""
+    from bridge import mcp_bridge
+
+    monkeypatch.setattr(attest, "ATTESTATION_DIR", tmp_path)
+    monkeypatch.setattr(mcp_bridge, "_remove", lambda _name: None)
+    row = LocalRow(slug="gw-fixture", image_digest=DIGEST, cpus=0.5, memory_mb=256)
+
+    async def wrapped_stop() -> int:
+        raise BaseExceptionGroup("unhandled errors in a TaskGroup", [SystemExit(0)])
+
+    with pytest.raises(SystemExit) as info:
+        await mcp_bridge._attested_run(
+            wrapped_stop, slug="gw-fixture", exp=expected(row), name="x", started=1.0
+        )
+    assert info.value.code == 0
+    assert attest.verified_for(row, tmp_path) is False
+
+    async def real_failure() -> int:
+        raise BaseExceptionGroup(
+            "boom", [SystemExit(0), RuntimeError("container died")]
+        )
+
+    with pytest.raises(BaseExceptionGroup):
+        await mcp_bridge._attested_run(
+            real_failure, slug="gw-fixture", exp=expected(row), name="x", started=1.0
+        )
+
+
 def test_no_module_in_the_mcp_package_spawns_anything_the_bridge_does():
     """The bridge lives OUTSIDE app/mcp; the package stays spawn-free. Code
     identifiers, not prose — a docstring may mention what it refuses."""
