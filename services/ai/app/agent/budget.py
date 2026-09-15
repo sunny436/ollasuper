@@ -226,7 +226,7 @@ LIMITS: dict[str, str] = {
     "tool_schema_tokens": "working-set drops lowest-ranked specs if over (runner B2)",
     # --- work / concurrency / duration ---
     "workflow_steps": "ai_agent_max_steps=4 (graph tool_budget)",
-    "tool_calls_per_step": "ai_agent_max_tool_calls_per_step=8 (executor fan-out)",
+    "tool_calls_per_step": "ai_agent_max_tool_calls_per_step=32 (executor fan-out)",
     "concurrent_tools": "ai_agent_max_concurrent_tools=4 (executor semaphore, P7)",
     "total_tools_per_turn": "max_steps x fan-out = 32 (resume-aware via tool_budget)",
     "tool_retries": "ai_agent_tool_max_retries=2 (executor retry loop)",

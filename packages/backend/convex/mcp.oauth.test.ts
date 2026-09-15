@@ -395,6 +395,40 @@ describe("the credential ingress ops", () => {
     ).toHaveLength(1);
   });
 
+  test("the plane-charged hourly tool-call window counts, refuses and fails closed", async () => {
+    // H-09. The plane charges one unit per tool call before touching the wire.
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const charge = () =>
+      post(t, { op: "mcp-quota-consume", userId: s.owner, kind: "mcpToolCall" });
+
+    expect(await (await charge()).json()).toEqual({ ok: true });
+    // Exhaust the window (LIMITS.mcpToolCall = 600): the 601st is refused with a
+    // reason the plane can hand to the model.
+    for (let i = 1; i < 600; i++) await charge();
+    const over = (await (await charge()).json()) as { ok: boolean; detail?: string };
+    expect(over.ok).toBe(false);
+    expect(over.detail).toMatch(/Hourly connector call limit/);
+
+    // A malformed charge is a 400, never a silent pass.
+    expect((await post(t, { op: "mcp-quota-consume", kind: "mcpToolCall" })).status).toBe(400);
+    expect(
+      (await post(t, { op: "mcp-quota-consume", userId: s.owner, kind: "mcpConnect" })).status,
+    ).toBe(400);
+    // A suspended account has no window to charge.
+    await t.run((ctx) => ctx.db.patch(s.owner, { accountStatus: "suspended" }));
+    const t2 = convexTest(schema, modules);
+    const s2 = await seed(t2);
+    await t2.run((ctx) => ctx.db.patch(s2.owner, { accountStatus: "suspended" }));
+    expect(
+      await (
+        await post(t2, { op: "mcp-quota-consume", userId: s2.owner, kind: "mcpToolCall" })
+      ).json(),
+    ).toEqual({ ok: false, detail: "account is not active" });
+    // Without the ingress key: refused like every other op.
+    expect((await post(t, { op: "mcp-quota-consume", userId: s.owner, kind: "mcpToolCall" }, null)).status).toBe(401);
+  });
+
   test("the client record round-trips and is not tenant-scoped", async () => {
     const t = convexTest(schema, modules);
     await post(t, {

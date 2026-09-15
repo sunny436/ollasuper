@@ -65,8 +65,13 @@ from app.mcp.exceptions import McpConnectionError, McpErrorKind
 from app.mcp.local.gateway import GATEWAY_TRUST, assert_gateway_url
 from app.mcp.models import McpConnectionConfig, McpConnectionSpec
 from app.mcp.normalize import normalize_tools
+from app.mcp.quota import UserGate
 from app.mcp.status import StatusRecorder
-from app.mcp.transport import build_http_client, build_transport_factory
+from app.mcp.transport import (
+    ResponseLimits,
+    build_http_client,
+    build_transport_factory,
+)
 from app.models.tools import ToolDefinition
 
 log = get_logger(__name__)
@@ -89,6 +94,12 @@ class PoolLimits:
     close_timeout_s: float = 10.0
     max_tools_per_server: int = 256
     max_tool_schema_bytes: int = 64 * 1024
+    #: Wire-level response caps (see `transport.ResponseLimits`).
+    max_response_bytes: int = 8 * 1024 * 1024
+    max_stream_bytes_per_request: int = 16 * 1024 * 1024
+    max_listen_stream_bytes: int = 64 * 1024 * 1024
+    #: Calls in flight at once, per user (see `quota.UserGate`).
+    max_concurrent_calls_per_user: int = 4
 
 
 @dataclass
@@ -111,6 +122,10 @@ class McpSession:
     #: it on the next acquire. An approval given against the old definition
     #: therefore never executes the new one.
     stale: bool = False
+    #: The owning actor's per-session call lock (audit M-07). `McpToolAdapter`
+    #: holds it for the duration of one `call_tool`, so the shared recorder is
+    #: never reset under a call in flight.
+    call_lock: Any = None
 
     @property
     def key(self) -> PoolKey:
@@ -146,6 +161,14 @@ class _SessionActor:
         self.error: McpConnectionError | None = None
         self._stop = anyio.Event()
         self._done = anyio.Event()
+        #: Set once `run` has either published a session or given up. A second
+        #: caller for the same key waits on this instead of opening a duplicate
+        #: — and waits OUTSIDE the pool lock (see `_get`).
+        self.settled = anyio.Event()
+        #: Serialises `call_tool` on this session (audit M-07): the session's
+        #: `StatusRecorder` is reset per call, so two calls in flight at once
+        #: would attribute one's 401 to the other.
+        self.call_lock = anyio.Lock()
 
     async def run(self, *, task_status: Any = anyio.TASK_STATUS_IGNORED) -> None:
         started = False
@@ -194,7 +217,19 @@ class _SessionActor:
                 # pooling and this recorder are all tenant-scoped.
                 http = await stack.enter_async_context(
                     build_http_client(
-                        self.spec, headers, recorder, auth=credential.auth
+                        self.spec,
+                        headers,
+                        recorder,
+                        auth=credential.auth,
+                        limits=ResponseLimits(
+                            max_response_bytes=self._limits.max_response_bytes,
+                            max_stream_bytes_per_request=(
+                                self._limits.max_stream_bytes_per_request
+                            ),
+                            max_listen_stream_bytes=(
+                                self._limits.max_listen_stream_bytes
+                            ),
+                        ),
                     )
                 )
                 factory = build_transport_factory(self.spec, http, headers)
@@ -225,8 +260,10 @@ class _SessionActor:
                     ),
                     tools=tools,
                     last_used_at=anyio.current_time(),
+                    call_lock=self.call_lock,
                 )
                 self.session = session
+                self.settled.set()
                 log.info(
                     "mcp.session_ready",
                     extra={
@@ -272,6 +309,7 @@ class _SessionActor:
             )
         finally:
             self.session = None
+            self.settled.set()
             if not started:
                 # Unblocks `tg.start()`. Without it a failed connect surfaces as
                 # "Child exited without calling task_status.started()" — a
@@ -403,6 +441,7 @@ class McpSessionPool:
         resolver: CredentialResolver | None = None,
     ) -> None:
         self._limits = limits or PoolLimits()
+        self._user_gate = UserGate(self._limits.max_concurrent_calls_per_user)
         self._resolver = resolver or NullCredentialResolver()
         self._actors: dict[PoolKey, _SessionActor] = {}
         self._lock = anyio.Lock()
@@ -473,38 +512,70 @@ class McpSessionPool:
                 server_slug=spec.identity.slug,
             )
         key = spec.pool_key
-        async with self._lock:
-            actor = self._actors.get(key)
-            if (
-                actor is not None
-                and actor.session is not None
-                and not actor.session.stale
-            ):
-                actor.session.last_used_at = anyio.current_time()
-                return actor.session
-            if actor is not None:
-                # A previous attempt failed and left a dead entry behind — or
-                # the server changed its list and the session is stale. Either
-                # way it is replaced, never reused.
-                self._actors.pop(key, None)
-                if actor.session is not None:
-                    with contextlib.suppress(Exception):
-                        await actor.aclose()
+        while True:
+            to_close: list[_SessionActor] = []
+            waiter: _SessionActor | None = None
+            opening: _SessionActor | None = None
+            async with self._lock:
+                actor = self._actors.get(key)
+                if actor is not None and actor.session is not None:
+                    if not actor.session.stale:
+                        actor.session.last_used_at = anyio.current_time()
+                        return actor.session
+                    # Stale (the server changed its list): replaced, never
+                    # reused. Closed OUTSIDE the lock, below.
+                    self._actors.pop(key, None)
+                    to_close.append(actor)
+                    actor = None
+                if actor is not None and not actor.settled.is_set():
+                    # Somebody else is opening this very session. Wait for it
+                    # — outside the lock, so their DNS/connect/initialize
+                    # cannot stall every other tenant (audit H-10).
+                    waiter = actor
+                elif actor is not None:
+                    # A previous attempt failed and left a dead entry behind.
+                    self._actors.pop(key, None)
+                if waiter is None:
+                    to_close.extend(self._make_room(key))
+                    opening = _SessionActor(
+                        spec, resolver or self._resolver, self._limits
+                    )
+                    # Registered BEFORE it is started, so two concurrent
+                    # first-calls for the same key cannot both open a session —
+                    # the classic pool race — and so the slot counts against
+                    # the caps while it opens.
+                    self._actors[key] = opening
 
-            await self._make_room(key)
+            for victim in to_close:
+                with contextlib.suppress(Exception):
+                    await victim.aclose()
+            if waiter is not None:
+                await waiter.settled.wait()
+                continue
 
-            actor = _SessionActor(spec, resolver or self._resolver, self._limits)
-            # Started INSIDE the lock so two concurrent first-calls for the same
-            # key cannot both open a session — the classic pool race.
-            await self._tg.start(actor.run)
-            if actor.session is None:
-                raise actor.error or McpConnectionError(
+            assert opening is not None
+            try:
+                await self._tg.start(opening.run)
+            except BaseException:
+                async with self._lock:
+                    if self._actors.get(key) is opening:
+                        self._actors.pop(key, None)
+                opening.settled.set()
+                raise
+            if opening.session is None:
+                async with self._lock:
+                    if self._actors.get(key) is opening:
+                        self._actors.pop(key, None)
+                raise opening.error or McpConnectionError(
                     McpErrorKind.UNREACHABLE,
                     "the session did not start and reported no error",
                     server_slug=spec.identity.slug,
                 )
-            self._actors[key] = actor
-            return actor.session
+            return opening.session
+
+    def user_gate(self, user_id: str) -> anyio.Semaphore:
+        """The per-user concurrency gate `McpToolAdapter` holds during a call."""
+        return self._user_gate.for_user(user_id)
 
     async def discard(self, key: PoolKey) -> None:
         """Evict one session — after a transport failure, or on disconnect.
@@ -523,19 +594,31 @@ class McpSessionPool:
             )
 
     # ------------------------------------------------------------- internals
-    async def _make_room(self, incoming: PoolKey) -> None:
-        """Enforce the per-user and global caps. Caller holds the lock."""
+    def _make_room(self, incoming: PoolKey) -> list[_SessionActor]:
+        """Enforce the per-user and global caps. Caller holds the lock.
+
+        RETURNS the actors to close and does no I/O itself: closing a session
+        is a network round trip (the terminating DELETE), and it used to run
+        under the pool lock. FAILS CLOSED on both caps (audit H-10): with no
+        idle session to evict, the acquire is refused rather than allowed
+        through over the limit — an earlier version `break`-ed out of the
+        per-user loop and opened the ninth session anyway.
+
+        A slot that is still OPENING counts: it is registered before it starts.
+        """
         user_id = incoming[0]
-        per_user = [
-            (k, a)
-            for k, a in self._actors.items()
-            if k[0] == user_id and a.session is not None
-        ]
+        victims: list[_SessionActor] = []
+        per_user = [(k, a) for k, a in self._actors.items() if k[0] == user_id]
         while len(per_user) >= self._limits.max_sessions_per_user:
             victim = self._evict_choice(per_user)
             if victim is None:
-                break
-            await self._close_locked(victim)
+                raise McpConnectionError(
+                    McpErrorKind.RATE_LIMITED,
+                    f"you already have {self._limits.max_sessions_per_user} "
+                    "connectors in use; wait for a turn to finish",
+                    server_slug=incoming[2],
+                )
+            victims.append(self._actors.pop(victim))
             per_user = [(k, a) for k, a in per_user if k != victim]
 
         while len(self._actors) >= self._limits.max_sessions:
@@ -548,7 +631,8 @@ class McpSessionPool:
                     "the MCP session pool is at capacity; try again shortly",
                     server_slug=incoming[2],
                 )
-            await self._close_locked(victim)
+            victims.append(self._actors.pop(victim))
+        return victims
 
     @staticmethod
     def _evict_choice(
@@ -561,12 +645,6 @@ class McpSessionPool:
             if a.session is not None and a.session.in_flight == 0
         ]
         return min(idle)[1] if idle else None
-
-    async def _close_locked(self, key: PoolKey) -> None:
-        actor = self._actors.pop(key, None)
-        if actor is not None:
-            with contextlib.suppress(Exception):
-                await actor.aclose()
 
     async def _sweep(self) -> None:
         """One sweeper for the whole pool — not one task per session."""
@@ -589,8 +667,12 @@ class McpSessionPool:
                 and a.session.in_flight == 0
                 and a.session.last_used_at < cutoff
             ]
-            for key in stale:
-                await self._close_locked(key)
+            victims = [self._actors.pop(k) for k in stale]
+        # Closed OUTSIDE the lock: a wedged remote server must not hold the
+        # pool's map hostage for `close_timeout_s`.
+        for actor in victims:
+            with contextlib.suppress(Exception):
+                await actor.aclose()
         if stale:
             log.info("mcp.sessions_swept", extra={"closed": len(stale)})
 
@@ -603,9 +685,7 @@ class McpSessionPool:
         """Credential-free summary for the status route and for tests."""
         return {
             "sessions": len(self._actors),
-            "by_server": sorted(
-                {a.spec.identity.slug for a in self._actors.values()}
-            ),
+            "by_server": sorted({a.spec.identity.slug for a in self._actors.values()}),
             "limits": {
                 "max_sessions": self._limits.max_sessions,
                 "max_sessions_per_user": self._limits.max_sessions_per_user,

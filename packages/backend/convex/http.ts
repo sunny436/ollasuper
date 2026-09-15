@@ -903,6 +903,19 @@ http.route({
       // `mcp-credential-delete` was REMOVED (audit H-17): the ingress secret
       // must not carry the authority to delete a credential. Rows are purged by
       // `mcp.oauth.disconnect` after the plane confirms the session is gone.
+      case "mcp-quota-consume": {
+        // The durable hourly tool-call window (audit H-09). Fail closed on a
+        // malformed body: no user, no window, no call.
+        if (typeof body.userId !== "string" || body.kind !== "mcpToolCall") {
+          return aiJson({ ok: false, detail: "bad request" }, 400);
+        }
+        return aiJson(
+          await ctx.runMutation(internal.mcp.limits.consumeForPlane, {
+            userId: body.userId as Id<"users">,
+            kind: "mcpToolCall",
+          }),
+        );
+      }
       case "mcp-oauth-client-load": {
         const client = await ctx.runQuery(internal.mcp.credentials.loadClient, {
           serverName: String(body.serverName ?? ""),

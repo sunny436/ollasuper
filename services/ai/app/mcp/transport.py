@@ -59,27 +59,62 @@ hop it does follow is still a request, so the hook and the backend see it.
 
 TLS IS NEVER WEAKENED. There is no `verify=` argument anywhere in this module,
 and a test asserts the string does not appear in `app/mcp/`.
+
+3. RESPONSES ARE BOUNDED ON THE WIRE, before the SDK buffers or parses a byte
+   (audit H-08). `adapter.py` bounds what reaches the MODEL, but by then the
+   SDK's `response.aread()` had already materialised the whole body — 200 MB of
+   JSON, or 1 MB of gzip that decodes to 1 GB. So `_bounded_transport` sits
+   above the pinned transport and:
+
+     * refuses any `Content-Encoding` other than identity (the client asks for
+       identity; a server that compresses anyway is refused rather than
+       decoded, because a compressed body's decoded size is unknowable);
+     * refuses a `Content-Length` over the cap before reading the body;
+     * wraps the body stream in a counter that cuts the stream the moment the
+       cap is crossed — for a JSON body, for the SSE stream that answers a
+       POST, and for the standalone GET stream (which is long-lived and gets
+       the largest cap; the SDK reconnects when it is cut).
+
+   The per-EVENT bound stays httpx2's own `EventSource` default (1 MiB); a
+   test pins it so a library bump cannot raise it silently.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import socket
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from app.logging import get_logger
+from app.mcp.exceptions import McpConnectionError, McpErrorKind
 from app.mcp.models import McpConnectionSpec
 from app.mcp.status import StatusRecorder
 
 log = get_logger(__name__)
 
 __all__ = [
+    "ResponseLimits",
     "TransportFactory",
     "build_guarded_client",
     "build_http_client",
     "build_transport_factory",
 ]
+
+
+@dataclass(frozen=True)
+class ResponseLimits:
+    """Byte caps applied on the wire. Defaults match `Settings`."""
+
+    max_response_bytes: int = 8 * 1024 * 1024
+    max_stream_bytes_per_request: int = 16 * 1024 * 1024
+    max_listen_stream_bytes: int = 64 * 1024 * 1024
+
+
+#: Sent on every client so a server has no reason to compress; a server that
+#: compresses anyway is refused by `_bounded_transport`.
+_IDENTITY_ONLY = {"Accept-Encoding": "identity"}
 
 TransportFactory = Callable[[], Any]
 
@@ -213,6 +248,73 @@ def _pinned_transport(allowed: Callable[[ipaddress._BaseAddress], bool]) -> Any:
     return PinnedTransport()
 
 
+def _too_large(detail: str) -> McpConnectionError:
+    return McpConnectionError(McpErrorKind.RESPONSE_TOO_LARGE, detail)
+
+
+def _bounded_transport(inner: Any, limits: ResponseLimits) -> Any:
+    """Wrap `inner` so every response body is counted and cut at its cap."""
+    import httpx2  # noqa: PLC0415
+
+    class CountingStream(httpx2.AsyncByteStream):
+        """The body, cut the moment the cap is crossed. Nothing is buffered."""
+
+        def __init__(self, stream: Any, cap: int, what: str) -> None:
+            self._stream = stream
+            self._cap = cap
+            self._what = what
+            self._seen = 0
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            async for chunk in self._stream:
+                self._seen += len(chunk)
+                if self._seen > self._cap:
+                    log.warning(
+                        "mcp.response_cut",
+                        extra={"what": self._what, "cap": self._cap},
+                    )
+                    raise _too_large(
+                        f"{self._what} exceeded {self._cap} bytes and was cut"
+                    )
+                yield chunk
+
+        async def aclose(self) -> None:
+            await self._stream.aclose()
+
+    class BoundedTransport(httpx2.AsyncBaseTransport):
+        async def handle_async_request(self, request: Any) -> Any:
+            response = await inner.handle_async_request(request)
+            headers = httpx2.Headers(response.headers)
+            encoding = headers.get("content-encoding", "").strip().lower()
+            if encoding and encoding != "identity":
+                await response.aclose()
+                raise _too_large(
+                    f"compressed response ({encoding}) refused; "
+                    "the decoded size of a compressed body cannot be bounded"
+                )
+            content_type = headers.get("content-type", "").lower()
+            streaming = content_type.startswith("text/event-stream")
+            if streaming and request.method.upper() == "GET":
+                cap, what = limits.max_listen_stream_bytes, "listen stream"
+            elif streaming:
+                cap, what = limits.max_stream_bytes_per_request, "response stream"
+            else:
+                cap, what = limits.max_response_bytes, "response body"
+            declared = headers.get("content-length", "")
+            if declared.isdigit() and int(declared) > cap:
+                await response.aclose()
+                raise _too_large(
+                    f"{what} declares {declared} bytes, over the {cap} byte cap"
+                )
+            response.stream = CountingStream(response.stream, cap, what)
+            return response
+
+        async def aclose(self) -> None:
+            await inner.aclose()
+
+    return BoundedTransport()
+
+
 def _request_guard(trust: str) -> Callable[[Any], Any]:
     """The per-request hook: the DNS-free URL policy for this trust level."""
     if trust == _GATEWAY_TRUST:
@@ -231,7 +333,7 @@ def _request_guard(trust: str) -> Callable[[Any], Any]:
     return _catalogue_guard
 
 
-def _guarded_kwargs(trust: str) -> dict[str, Any]:
+def _guarded_kwargs(trust: str, limits: ResponseLimits | None = None) -> dict[str, Any]:
     """The client kwargs that make egress guarded, for any client this module
     hands out. One place, so `build_http_client` and `build_guarded_client`
     cannot disagree about what "guarded" means."""
@@ -242,7 +344,9 @@ def _guarded_kwargs(trust: str) -> dict[str, Any]:
     )
     return {
         "trust_env": False,
-        "transport": _pinned_transport(allowed),
+        "transport": _bounded_transport(
+            _pinned_transport(allowed), limits or ResponseLimits()
+        ),
         "event_hooks": {"request": [_request_guard(trust)]},
     }
 
@@ -255,6 +359,7 @@ def build_http_client(
     *,
     transport: Any = None,
     auth: Any = None,
+    limits: ResponseLimits | None = None,
 ) -> Any:
     """One tenant's httpx2 client: their credentials, their status recorder.
 
@@ -283,9 +388,9 @@ def build_http_client(
     import httpx2  # noqa: PLC0415 -- the SDK's HTTP stack, not the repo's httpx
 
     trust = getattr(spec, "endpoint_trust", "catalogue") or "catalogue"
-    guarded = _guarded_kwargs(trust)
+    guarded = _guarded_kwargs(trust, limits)
     kwargs: dict[str, Any] = {
-        "headers": dict(headers),
+        "headers": {**dict(headers), **_IDENTITY_ONLY},
         "timeout": httpx2.Timeout(
             max(_CONNECT_TIMEOUT_S, spec.connect_timeout_s),
             read=_STREAM_READ_TIMEOUT_S,
@@ -300,7 +405,9 @@ def build_http_client(
         "transport": guarded["transport"],
     }
     if transport is not None:
-        kwargs["transport"] = transport
+        # A test-supplied socket layer still gets the byte caps: the counting
+        # wrapper is what the suite exercises with oversized fixtures.
+        kwargs["transport"] = _bounded_transport(transport, limits or ResponseLimits())
     if auth is not None:
         kwargs["auth"] = auth
     return httpx2.AsyncClient(**kwargs)
@@ -316,7 +423,9 @@ def build_guarded_client(timeout_s: float = 15.0) -> Any:
     import httpx2  # noqa: PLC0415
 
     return httpx2.AsyncClient(
-        timeout=httpx2.Timeout(timeout_s), **_guarded_kwargs("catalogue")
+        timeout=httpx2.Timeout(timeout_s),
+        headers=dict(_IDENTITY_ONLY),
+        **_guarded_kwargs("catalogue"),
     )
 
 

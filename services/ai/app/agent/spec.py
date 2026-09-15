@@ -82,11 +82,12 @@ class ExecutionPolicy:
     # httpx pool (ollagraph_max_connections) and the adaptive 429 gate — the only
     # real limits. The model batches independent calls (PARALLEL_TOOL_GUIDANCE) and
     # the executor runs them concurrently; a batch wider than the budget QUEUES
-    # rather than being refused. `max_tool_calls_per_step` is 0 (off) by default:
-    # an emergency backstop, not routine policy. Kept in lockstep with the config
-    # defaults + the grounding test (test_agent.py).
+    # rather than being refused. `max_tool_calls_per_step` is a BACKSTOP far
+    # above any real batch (32; audit H-09 made it non-zero), not routine
+    # policy. Kept in lockstep with the config defaults + the grounding test
+    # (test_agent.py).
     max_concurrent_tools: int = 100
-    max_tool_calls_per_step: int = 0
+    max_tool_calls_per_step: int = 32
     max_stall_steps: int = 2
     tool_max_retries: int = 2
     tool_retry_base_s: float = 0.5
@@ -141,7 +142,7 @@ DEFAULT_AGENT = AgentSpec(
     context=ContextPolicy(max_steps=4, tool_result_max_chars=8000),
     execution=ExecutionPolicy(
         max_concurrent_tools=100,
-        max_tool_calls_per_step=0,
+        max_tool_calls_per_step=32,
         tool_max_retries=2,
         tool_retry_base_s=0.5,
         default_timeout_s=30.0,

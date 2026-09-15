@@ -252,7 +252,8 @@ def test_env_proxies_are_ignored(monkeypatch: Any) -> None:
         build_http_client(spec(), {}, _Recorder()),
     ):
         assert client._mounts == {}, "a proxy mount was installed from the environment"
-        assert type(client._transport).__name__ == "PinnedTransport"
+        # Bounded (H-08) over pinned (M-02): both layers, in that order.
+        assert type(client._transport).__name__ == "BoundedTransport"
 
 
 def test_no_bare_httpx2_client_is_built_outside_the_transport_module() -> None:

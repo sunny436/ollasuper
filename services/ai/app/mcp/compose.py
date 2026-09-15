@@ -64,6 +64,11 @@ def compose_tools(
     base: ToolRegistry | None = None,
     pool: McpSessionPool | None = None,
     result_max_bytes: int = 256 * 1024,
+    result_max_blocks: int = 512,
+    result_max_depth: int = 32,
+    quota: Any = None,
+    user_gate: Any = None,
+    hourly: Callable[[], Any] | None = None,
 ) -> ComposedTools:
     """Build a per-request registry carrying `base`'s tools plus every session's.
 
@@ -97,7 +102,16 @@ def compose_tools(
         # Surgical per provider: refreshing or dropping one connection cannot
         # disturb another's tools.
         registry.replace_provider(provider, session.tools)
-        adapters[provider] = _adapter_for(session, pool, result_max_bytes)
+        adapters[provider] = _adapter_for(
+            session,
+            pool,
+            result_max_bytes,
+            result_max_blocks,
+            result_max_depth,
+            quota=quota,
+            user_gate=user_gate,
+            hourly=hourly,
+        )
         composed.extend(session.tools)
 
     log.info(
@@ -128,6 +142,12 @@ def _adapter_for(
     session: McpSession,
     pool: McpSessionPool | None,
     result_max_bytes: int,
+    result_max_blocks: int = 512,
+    result_max_depth: int = 32,
+    *,
+    quota: Any = None,
+    user_gate: Any = None,
+    hourly: Callable[[], Any] | None = None,
 ) -> McpToolAdapter:
     spec = session.spec
     if pool is None:
@@ -155,6 +175,12 @@ def _adapter_for(
         session_provider=provider,
         result_max_bytes=result_max_bytes,
         server_slug=spec.identity.slug,
+        result_max_blocks=result_max_blocks,
+        result_max_depth=result_max_depth,
+        quota=quota,
+        user_gate=user_gate,
+        hourly=hourly,
+        connection_id=spec.connection_id,
     )
 
 

@@ -224,6 +224,10 @@ async def lifespan(app: FastAPI):
                 close_timeout_s=settings.mcp_pool_close_timeout_s,
                 max_tools_per_server=settings.mcp_max_tools_per_server,
                 max_tool_schema_bytes=settings.mcp_max_tool_schema_bytes,
+                max_response_bytes=settings.mcp_max_response_bytes,
+                max_stream_bytes_per_request=settings.mcp_max_stream_bytes_per_request,
+                max_listen_stream_bytes=settings.mcp_max_listen_stream_bytes,
+                max_concurrent_calls_per_user=settings.mcp_max_concurrent_calls_per_user,
             ),
             resolver=resolver,
         ).start(resources)

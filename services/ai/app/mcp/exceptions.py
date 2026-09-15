@@ -43,6 +43,10 @@ class McpErrorKind(StrEnum):
     PROTOCOL_MISMATCH = "protocol_mismatch"
     MALFORMED_INITIALIZE = "malformed_initialize"
     CAPABILITY_ERROR = "capability_error"
+    # The response was cut at the transport for exceeding a byte cap, or was
+    # compressed (refused: a compressed body's decoded size is unknowable in
+    # advance). Not retryable — the same request would be cut again.
+    RESPONSE_TOO_LARGE = "response_too_large"
 
 
 #: Kinds a bounded retry can plausibly fix. Everything else needs a human: a

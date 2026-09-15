@@ -941,6 +941,8 @@ async def run_generation(
                     base=tool_registry,
                     engine=engine,
                     settings=settings,
+                    # The control plane, for the durable hourly call window.
+                    convex=convex,
                 )
             )
             if mcp_caps.registry is not None:

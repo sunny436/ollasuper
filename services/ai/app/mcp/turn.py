@@ -33,6 +33,7 @@ from app.logging import get_logger
 from app.mcp.compose import ComposedTools, compose_tools
 from app.mcp.index import McpCapabilityIndex, discover_capabilities
 from app.mcp.models import McpConnectionSpec, McpServerIdentity
+from app.mcp.quota import QuotaLimits, TurnQuota, refused
 from app.tools.registry import ToolRegistry
 
 log = get_logger(__name__)
@@ -54,6 +55,8 @@ class TurnCapabilities:
         #: Server slugs that could not be reached. Reported so "no MCP tools" is
         #: distinguishable from "MCP tools, but the server is down".
         self.failures = failures or []
+        #: The turn's call counters (`quota.py`); set by `mcp_for_turn`.
+        self.quota: TurnQuota | None = None
 
     @property
     def active(self) -> bool:
@@ -92,6 +95,7 @@ async def mcp_for_turn(
     resolve_target: Any = None,
     engine: Any = None,
     settings: Any = None,
+    convex: Any = None,
 ):
     """Acquire every connected server for this turn; yield its capabilities.
 
@@ -130,8 +134,12 @@ async def mcp_for_turn(
                 # the adapter — is identical for both, which is the parity
                 # §93/§94 asks for and the reason local needs no second stack.
                 local = await _local_spec(
-                    ref, slug, user_id=user_id, workspace_id=workspace_id,
-                    settings=settings, engine=engine,
+                    ref,
+                    slug,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    settings=settings,
+                    engine=engine,
                 )
                 if local is not None:
                     session = await stack.enter_async_context(pool.acquire(local))
@@ -200,21 +208,73 @@ async def mcp_for_turn(
                     extra={"server": slug, "reason": type(exc).__name__},
                 )
 
+        quota = TurnQuota(_quota_limits(settings))
         composed = (
             compose_tools(
                 sessions,
                 base=base,
                 pool=pool,
-                result_max_bytes=getattr(
-                    settings, "mcp_result_max_bytes", 256 * 1024
-                ),
+                result_max_bytes=getattr(settings, "mcp_result_max_bytes", 256 * 1024),
+                result_max_blocks=getattr(settings, "mcp_max_result_blocks", 512),
+                result_max_depth=getattr(settings, "mcp_max_result_depth", 32),
+                quota=quota,
+                user_gate=pool.user_gate(user_id)
+                if hasattr(pool, "user_gate")
+                else None,
+                hourly=_hourly_charger(convex, user_id),
             )
             if sessions
             else None
         )
         capabilities = TurnCapabilities(composed, index, failures)
+        capabilities.quota = quota
         log.info("mcp.turn_capabilities", extra=capabilities.as_log_fields())
-        yield capabilities
+        try:
+            yield capabilities
+        finally:
+            if quota.calls:
+                log.info("mcp.turn_quota", extra=quota.as_log_fields())
+
+
+def _quota_limits(settings: Any) -> QuotaLimits:
+    g = lambda name, default: getattr(settings, name, default)  # noqa: E731
+    return QuotaLimits(
+        max_calls_per_turn=g("mcp_max_calls_per_turn", 64),
+        max_calls_per_connection_turn=g("mcp_max_calls_per_connection_turn", 24),
+        max_calls_per_tool_turn=g("mcp_max_calls_per_tool_turn", 8),
+        max_identical_calls_turn=g("mcp_max_identical_calls_turn", 2),
+        max_result_bytes_per_turn=g("mcp_max_result_bytes_per_turn", 2 * 1024 * 1024),
+        max_concurrent_calls_per_user=g("mcp_max_concurrent_calls_per_user", 4),
+    )
+
+
+def _hourly_charger(convex: Any, user_id: str) -> Any:
+    """The durable per-user hourly window, charged through Convex.
+
+    FAIL CLOSED: a window that cannot be charged — Convex down, the op
+    rejected, a malformed answer — is a call that does not run. None when no
+    control plane is attached (tests, one-shot probes), which is the only
+    configuration in which the hourly cap is not enforced.
+    """
+    if convex is None:
+        return None
+
+    async def charge() -> None:
+        try:
+            body = await convex.ingress(
+                {"op": "mcp-quota-consume", "userId": user_id, "kind": "mcpToolCall"}
+            )
+        except Exception as exc:  # noqa: BLE001 -- refused, whatever the cause
+            log.warning("mcp.quota_charge_failed", extra={"reason": type(exc).__name__})
+            raise refused("the connector call budget could not be checked") from exc
+        if not isinstance(body, dict) or body.get("ok") is not True:
+            raise refused(
+                str((body or {}).get("detail") or "hourly connector call limit reached")
+                if isinstance(body, dict)
+                else "hourly connector call limit reached"
+            )
+
+    return charge
 
 
 async def _local_spec(

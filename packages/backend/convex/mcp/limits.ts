@@ -43,6 +43,7 @@ export const LIMITS: Record<string, number> = {
   mcpConnect: 60,
   mcpAuth: 20,
   mcpCapability: 120,
+  mcpToolCall: 600,
 };
 
 const KIND = v.union(
@@ -57,6 +58,7 @@ const MESSAGE: Record<string, string> = {
   mcpConnect: "Too many connection attempts",
   mcpAuth: "Too many authorization attempts",
   mcpCapability: "Too many connector requests",
+  mcpToolCall: "Hourly connector call limit reached",
 };
 
 export const consume = internalMutation({
@@ -85,5 +87,45 @@ export const consume = internalMutation({
       );
     }
     return null;
+  },
+});
+
+/**
+ * The plane-charged window (audit H-09). Reached from `/ai/ingress` with the
+ * ingress secret, so — unlike `consume` above — the user is NAMED IN THE BODY:
+ * the plane acts for the user whose turn it is running. That is the same trust
+ * the credential ops extend to it, and it is bounded the same way: a user id
+ * that does not resolve to an active account is refused, and the answer is a
+ * plain `{ok, detail}` rather than a thrown error so the plane can refuse the
+ * tool call with the reason in hand.
+ */
+export const consumeForPlane = internalMutation({
+  args: { userId: v.id("users"), kind: v.literal("mcpToolCall") },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ ok: boolean; detail?: string; retryInMs?: number }> => {
+    const user = await ctx.db.get(args.userId);
+    if (!user || (user.accountStatus && user.accountStatus !== "active")) {
+      return { ok: false, detail: "account is not active" };
+    }
+    const res = await consumeWindow(
+      ctx,
+      args.userId,
+      args.kind,
+      LIMITS[args.kind] ?? 600,
+      WINDOW_MS,
+    );
+    if (!res.ok) {
+      const mins = Math.ceil(res.retryInMs / 60_000);
+      return {
+        ok: false,
+        retryInMs: res.retryInMs,
+        detail: `${MESSAGE[args.kind]} — try again in ${mins} minute${
+          mins === 1 ? "" : "s"
+        }`,
+      };
+    }
+    return { ok: true };
   },
 });

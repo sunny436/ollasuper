@@ -1206,6 +1206,15 @@ async def _run_one(
     body, truncated = _bounded(result.get("data"), ctx.result_max_chars)
     execution.result = body
     _advance(execution, ExecutionState.SUCCEEDED)
+    # A TOOL-REPORTED FAILURE IS NOT PROGRESS (audit H-09). An MCP server may
+    # answer `is_error: true` — the spec's way to let the model self-correct —
+    # and the content is kept exactly as the model needs it. But the
+    # ToolMessage's STATUS is "error", so `graph.py`'s stall accounting does
+    # not count a server that fails every call as a productive step; before
+    # this, such a server kept the loop alive until the absolute deadline.
+    # `_bounded` wraps the adapter's data under "result".
+    _inner = body.get("result") if isinstance(body, dict) else None
+    reported_error = isinstance(_inner, dict) and _inner.get("is_error") is True
     # Phase 5: the MODEL-facing content is injection-framed (untrusted web/tool
     # output is DATA, never instructions). The structured `body` still rides the
     # TOOL_RESULT event for the UI; record the framed content so resume
@@ -1213,7 +1222,7 @@ async def _run_one(
     result_msg = ToolMessage(
         content=_frame_tool_output(json.dumps(body, ensure_ascii=False, default=str)),
         tool_call_id=call_id,
-        status="success",
+        status="error" if reported_error else "success",
     )
     # Phase 3: durably record the terminal outcome + the ToolMessage content that
     # resume injects verbatim (recovery authority).

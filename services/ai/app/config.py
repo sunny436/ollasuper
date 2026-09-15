@@ -134,7 +134,12 @@ class Settings(BaseSettings):
     # a step that produces no new successful tool result is not progress, and a few
     # of those in a row is a loop. Convergence is bounded by that, by the no-progress
     # deadline, and by the context/cost budget — all real signals.
-    ai_agent_max_steps: int = 0
+    #
+    # A NON-ZERO BACKSTOP since the MCP audit (H-09): a hostile connector can
+    # feed the loop `is_error` results forever and the convergence criteria
+    # above are then the only bound. 40 is far above any legitimate SEO or
+    # research run measured on production and far below "until the deadline".
+    ai_agent_max_steps: int = 40
     # Consecutive UNPRODUCTIVE steps (no successful, non-duplicate tool result)
     # tolerated before the loop is stopped and the model must answer in text. This
     # is a convergence criterion, not a work ceiling: a productive step resets it,
@@ -149,7 +154,10 @@ class Settings(BaseSettings):
     # punished exactly the batching PARALLEL_TOOL_GUIDANCE asks for, surfaced as
     # failed tool runs in the UI, and cost another step to re-emit work already
     # decided on. Set non-zero only to contain a genuinely degenerate model.
-    ai_agent_max_tool_calls_per_step: int = 0
+    # Since the MCP audit (H-09): 32, not 0. Batching is still unpunished — no
+    # real assistant message has come near 32 parallel calls — and a degenerate
+    # model or an injected fan-out is contained.
+    ai_agent_max_tool_calls_per_step: int = 32
     # Max tool calls that run SIMULTANEOUSLY within one step. Aligned to
     # `ollagraph_max_connections` so a whole step's independent calls launch at
     # once and the CONNECTION POOL (plus the adaptive 429 gate) is the single real
@@ -872,6 +880,30 @@ class Settings(BaseSettings):
     mcp_max_tools_per_server: int = 256
     mcp_max_tool_schema_bytes: int = 64 * 1024
     mcp_result_max_bytes: int = 256 * 1024
+    # ON THE WIRE, before any buffering (audit H-08). `mcp_result_max_bytes`
+    # above bounds what reaches the model AFTER the SDK has read and parsed a
+    # response in full; these bound what is READ at all. A JSON body larger
+    # than the first, an SSE stream that keeps flowing past the second, or a
+    # server-notification stream past the third is cut at the transport. Every
+    # response must be uncompressed (`Accept-Encoding: identity`, and a
+    # compressed one is refused), so wire bytes are decoded bytes.
+    mcp_max_response_bytes: int = 8 * 1024 * 1024
+    mcp_max_stream_bytes_per_request: int = 16 * 1024 * 1024
+    mcp_max_listen_stream_bytes: int = 64 * 1024 * 1024
+    # Content blocks per tool result, and nesting depth of structured content,
+    # both applied BEFORE anything is serialised for the model.
+    mcp_max_result_blocks: int = 512
+    mcp_max_result_depth: int = 32
+    # Tool-call quotas (audit H-09; `app/mcp/quota.py`). Per TURN: total calls,
+    # calls per connector, calls per tool, identical calls, result bytes. Per
+    # USER: calls in flight at once (process-wide). The hourly per-user cap is
+    # Convex's (`mcp/limits.ts`, kind `mcpToolCall`).
+    mcp_max_calls_per_turn: int = 64
+    mcp_max_calls_per_connection_turn: int = 24
+    mcp_max_calls_per_tool_turn: int = 8
+    mcp_max_identical_calls_turn: int = 2
+    mcp_max_result_bytes_per_turn: int = 2 * 1024 * 1024
+    mcp_max_concurrent_calls_per_user: int = 4
     # Phase 5: the same reasoning, for the two capability kinds that are not
     # tools. A resource body and a rendered prompt both land in the context
     # window, so each needs its own ceiling; the executor's `result_max_chars`

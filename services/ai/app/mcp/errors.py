@@ -174,7 +174,21 @@ def to_tool_error(
                 ToolErrorKind.UPSTREAM_ERROR, detail, status=status, retryable=False
             )
 
-    # 2. Leaf type: a real, specific Python failure.
+    # 2. Our own transport cut the response (audit H-08). Checked before the
+    #    leaf types: a byte cap is neither a timeout nor a connection fault,
+    #    and repeating the request would only be cut again.
+    for leaf in found:
+        if (
+            isinstance(leaf, McpConnectionError)
+            and leaf.kind is McpErrorKind.RESPONSE_TOO_LARGE
+        ):
+            return ToolError(
+                ToolErrorKind.MALFORMED_RESPONSE,
+                f"[{server_slug}] {leaf.detail}",
+                retryable=False,
+            )
+
+    # 3. Leaf type: a real, specific Python failure.
     typed = _typed(found)
     if isinstance(typed, TimeoutError):
         return ToolError(ToolErrorKind.TIMEOUT, detail, retryable=True)

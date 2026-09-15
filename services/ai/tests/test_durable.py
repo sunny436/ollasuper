@@ -392,10 +392,12 @@ async def test_resume_seeds_budget_in_steps_not_tool_calls(monkeypatch):
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     convex = RecordingConvex()
-    # 35 completed CALLS that were made across only 3 executor PASSES.
+    # 45 completed CALLS that were made across only 3 executor PASSES — more
+    # calls than the step backstop (40), so seeding the budget in CALLS would
+    # refuse the resume outright.
     completed = [
         CompletedTool(toolId="search_web", args={"q": str(i)}, resultContent="{}")
-        for i in range(35)
+        for i in range(45)
     ]
     req = _req(
         "keep going",
@@ -404,7 +406,7 @@ async def test_resume_seeds_budget_in_steps_not_tool_calls(monkeypatch):
         completedSteps=3,
         eventSeqBaseline=80,
     )
-    assert len(req.completedTools) == 35
+    assert len(req.completedTools) == 45
     assert settings.ai_agent_max_steps < len(req.completedTools)  # the trap
     try:
         await run_generation(
@@ -547,8 +549,12 @@ async def test_a_wide_fanout_runs_every_call_instead_of_refusing_the_overflow():
         return httpx.Response(200, json={"hits": ["a"]})
 
     ctx, client = _retry_ctx(handler, retries=0)
-    assert ctx.max_tool_calls_per_step == 0, "the count cap is off by default"
     n = 30  # comfortably over the old cap of 24
+    # `_retry_ctx` builds a bare context (cap 0 = off); the production backstop
+    # is `ai_agent_max_tool_calls_per_step` (32), above any real batch (H-09).
+    from app.config import Settings
+
+    assert Settings.model_fields["ai_agent_max_tool_calls_per_step"].default > n
     # DISTINCT args: identical (tool, args) inside one turn are deduped on purpose
     # (the read-only loop guard), which is a different mechanism from the fan-out.
     batch = [

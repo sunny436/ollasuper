@@ -67,7 +67,14 @@ export type QuotaKind =
   | "mcpAuth"
   // Listing or reading resources and prompts. Each acquires a pooled session,
   // so it is the same order of cost as a chat turn and carries the same limit.
-  | "mcpCapability";
+  | "mcpCapability"
+  // ONE TOOL CALL on a connected server, charged by the Python plane before the
+  // wire is touched (audit H-09; `app/mcp/quota.py`). The per-turn ceilings
+  // live in Python; this is the DURABLE per-user hour, the one bound that
+  // survives a restart and a fresh turn. 600/hr = 5 turns' worth of the
+  // per-turn cap, or ~10 calls a minute sustained — an order of magnitude above
+  // measured use, an order of magnitude below a loop.
+  | "mcpToolCall";
 
 export type WindowResult =
   | { ok: true }
