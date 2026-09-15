@@ -586,6 +586,68 @@ unchanged by everything below. Every flag defaults OFF.
     pre-registered partners. Microsoft 365, Salesforce, Discord, Trello, Datadog, Shopify and
     Brave publish no remote MCP server and were not faked.
 
+- **MCP security remediation (2026-09-14/15) — the Codex audit, closed on production.** Every
+  finding was re-read in the code before it was fixed (C-02, C-03, H-04…H-17, M-01…M-14, plus six
+  found on the way: N-01…N-06); M-15/L-01/L-02 were cut off in the paste and remain UNSEEN. Trust
+  model chosen for quality: vendor-official servers are `trusted` after review (44 rows, by
+  `qa/curate_trusted.sql`) and only their DECLARED reads run unasked; every write asks; the 13
+  untrusted servers ask on every call and are not even composed into a thread until the user
+  names them there (`chatThreads.mcpActivated`). Deployed Python → Convex → frontend; Python
+  2783 passed / 52 skipped, Convex 1040 passed, zero console errors in every prod run.
+  - **Egress (C-02, M-02, M-14).** One guarded transport for every MCP and OAuth byte: the
+    httpcore backend resolves, checks EVERY address, then dials the validated IP (SNI/cert still
+    from the origin host) — rebinding between resolve and dial is closed; `trust_env=False`;
+    a per-request shape hook refuses non-https, non-443, userinfo and secret-shaped query keys
+    before DNS. Probe and revoke use it too; `httpx2.AsyncClient(` exists in one file.
+  - **Limits on the wire (H-08).** Compressed responses refused, `content-length` and the actual
+    stream counted at the transport (8 MiB body / 16 MiB POST stream / 64 MiB listen stream),
+    blocks ≤512, depth ≤32, text bounded in bytes — measured on prod: the red-team server's 32 MiB
+    reply was cut at 20 MB on the wire (`response_too_large`), the always-error loop ended.
+  - **Quotas and loops (H-09, H-10).** Per turn / connection / tool / identical-call / result-byte
+    caps, per-user concurrency, a durable hourly `mcpToolCall` window charged through ingress
+    (fail closed), `ai_agent_max_steps=40`, `is_error` recorded as an error. The pool's lock no
+    longer spans I/O; a full pool refuses instead of evicting a busy session.
+  - **Approvals bound to what was reviewed (H-05, H-07).** The approval id is a digest of
+    (tool, provider, origin, trust, side-effect, description, schema, canonical args, taint
+    sources); a stale one is simply not found and re-parks. `readOnlyHint` waives nothing on an
+    untrusted server. `tools/list_changed` drops the session.
+  - **Provenance and the cross-connector gate (H-06).** Every result AND error is framed with
+    `<provenance source=… trusted=…>`; a taint ledger (shingles + dense tokens, values only)
+    parks any call whose arguments carry another connector's content — sticky for the turn and
+    rebuilt on approval resume. Measured on prod: a re-issued Drive search after a rejection was
+    stopped only once the destination was made sticky, and again only once the ledger was rebuilt
+    from `completedTools` on resume; both fixed and verified.
+  - **Vault authority (H-17, H-04).** Every credential op names its (user, workspace, connection)
+    and Convex refuses anything else or anything after disconnect; the plane has no delete;
+    disconnect is one Convex mutation after the plane confirms — verified on prod with the plane
+    stopped (row stays `ready`, UI toasts) and up (purge + mark in one step).
+  - **Local MCP runtime (H-12, N-06), proven then torn down, flag still OFF.** `docker mcp
+    gateway` was not installed on the host and could not be inspected, so it is replaced by
+    `bridge/mcp_bridge.py`: one process per server that emits every hardening flag from the row,
+    `docker inspect`s the container, writes a root-owned attestation the plane REQUIRES before
+    dialling, and serves it behind `MCP_GATEWAY_AUTH_TOKEN` (which was configured and sent by
+    nobody). Proven on the VM with a real container: attestation `verified: true`, bearer
+    401/401/200, a real `get_current_time` through the bridge; a container launched by hand
+    without `--cap-drop ALL` fails attestation (`CapDrop`); removing the attestation makes the
+    plane refuse. Two host-only facts fixed on the way: `systemctl stop` left `verified: true`
+    on disk because uvicorn re-raises SIGTERM with the default handler restored (the bridge now
+    unwinds through its finally), and the stop then read as `1/FAILURE` because anyio wraps the
+    SystemExit. `network=allowlist` is refused until an egress filter is verified.
+  - **Smaller confirmed items.** Resource reads refuse ambiguity across connections (M-04);
+    non-object/cyclic schemas drop the tool (M-03); approvals expire (M-05); env credentials
+    need `MCP_ALLOW_ENV_CREDENTIALS` (M-08); malformed scope allowlist refuses boot (M-01); SDK
+    loggers clamped (M-09); a Sentry scrub failure drops the event (M-10); plane fetches carry
+    deadlines (M-13); the sandbox no longer falls back in-process (C-03); `local/*` connections
+    need an admin (H-11); account deletion sweeps MCP rows (H-03).
+  - **Residual, stated plainly.** Taint matching misses secrets shorter than 8 characters and
+    paraphrases; framing lowers, never removes, compliance with injected text. A trusted vendor
+    lying in `readOnlyHint` gets its reads unasked (writes still ask). The plane still holds the
+    vault keys and ingress key. A bridge that is SIGKILLed (not stopped) leaves its attestation
+    until the next start. In-process counters reset with `myos-ai`; the hourly cap is durable.
+    Gmail on the QA account needs a MANUAL reconnect — Google refuses automated re-consent — so
+    the final prod approvals run drove Drive/Docs/Context7 instead. The red-team server, its
+    edge route and the local proof (row, unit, images) were all removed after the run.
+
 - **Phase 8 — production hardening, and the DARK LAUNCH (deployed).** The standing "nothing on
   prod" rule lifted here. Everything from Phases 2–8 is now committed (`76c10c6`) and deployed to
   `app.ollasuper.com` with **every MCP flag still off** and `mcp_curated_servers` empty, so the
