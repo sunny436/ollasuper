@@ -26,6 +26,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.mcp.oauth.storage import CredentialIdentity, VaultTokenStorage
+from app.mcp.vault.envelope import ENVELOPE_VERSION
 from app.mcp.vault.keys import KeyProvider
 from app.mcp.vault.store import CredentialVault
 from tests.test_mcp_vault_store import MemoryStore
@@ -41,9 +42,7 @@ IDENTITY = CredentialIdentity(
 
 def _storage(store: MemoryStore | None = None):
     store = store or MemoryStore()
-    keys = KeyProvider(
-        json.dumps({"1": base64.b64encode(os.urandom(32)).decode()}), 1
-    )
+    keys = KeyProvider(json.dumps({"1": base64.b64encode(os.urandom(32)).decode()}), 1)
     return VaultTokenStorage(CredentialVault(keys, store), IDENTITY), store
 
 
@@ -287,7 +286,7 @@ async def test_a_client_secret_is_encrypted_like_a_token():
     assert store.clients
     for record in store.clients.values():
         assert "cs-super-secret" not in record.envelope
-        assert record.envelope.startswith("v1.")
+        assert record.envelope.startswith(f"{ENVELOPE_VERSION}.")
 
 
 async def test_a_client_record_for_another_server_is_not_returned():
@@ -296,9 +295,7 @@ async def test_a_client_record_for_another_server_is_not_returned():
     store = MemoryStore()
     storage, _ = _storage(store)
     await storage.set_client_info(
-        OAuthClientInformationFull(
-            client_id="a", redirect_uris=["https://cb.test/cb"]
-        )
+        OAuthClientInformationFull(client_id="a", redirect_uris=["https://cb.test/cb"])
     )
     elsewhere = VaultTokenStorage(
         storage._vault,  # noqa: SLF001

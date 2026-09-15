@@ -41,6 +41,7 @@ import pytest
 
 import app.logging as app_logging
 from app.logging import configure
+from app.mcp.vault.envelope import ENVELOPE_VERSION
 from tests.fakes.oauth_server import BASE, MCP_URL, authorize
 from tests.test_mcp_oauth_flow import TENANT, Harness
 from tests.test_mcp_oauth_refresh import _in_harness
@@ -192,7 +193,7 @@ def test_the_envelope_looks_like_an_envelope_and_nothing_else(run_result):
     assert got.envelopes, "nothing was ever persisted"
     for envelope in got.envelopes:
         parts = envelope.split(".")
-        assert len(parts) == 4 and parts[0] == "v1", envelope
+        assert len(parts) == 4 and parts[0] == ENVELOPE_VERSION, envelope
         # No structure from the plaintext survives: no JSON keys, no scheme.
         for marker in ("access_token", "refresh_token", "Bearer", "{", '"'):
             assert marker not in envelope

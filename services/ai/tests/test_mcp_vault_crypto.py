@@ -25,6 +25,7 @@ import pytest
 
 from app.mcp.vault.aad import DEPLOYMENT_SCOPED, AadKind, build_aad
 from app.mcp.vault.envelope import (
+    ENVELOPE_VERSION,
     NONCE_BYTES,
     AuthenticationFailed,
     EnvelopeError,
@@ -58,7 +59,7 @@ def test_a_sealed_credential_round_trips():
     version, key = keys.active_key()
     aad = build_aad(**BINDING)
     envelope = seal(PLAINTEXT, aad=aad, key=key, key_version=version)
-    assert unseal(envelope, aad=aad, key=key) == PLAINTEXT
+    assert unseal(envelope, aad=aad, key=key, key_version=version) == PLAINTEXT
 
 
 def test_the_envelope_is_version_first_and_self_describing():
@@ -66,7 +67,7 @@ def test_the_envelope_is_version_first_and_self_describing():
     keys = _keys()
     version, key = keys.active_key()
     envelope = seal(PLAINTEXT, aad=build_aad(**BINDING), key=key, key_version=version)
-    assert envelope.startswith("v1.")
+    assert envelope.startswith(f"{ENVELOPE_VERSION}.")
     assert envelope.split(".")[1] == str(version)
     assert parse_key_version(envelope) == version
 
@@ -118,7 +119,7 @@ def test_changing_any_binding_field_makes_decryption_fail(field):
         AadKind.OAUTH_CLIENT if field == "kind" else f"{BINDING[field]}-other"
     )
     with pytest.raises(AuthenticationFailed):
-        unseal(envelope, aad=build_aad(**altered), key=key)
+        unseal(envelope, aad=build_aad(**altered), key=key, key_version=version)
 
 
 def test_a_client_record_cannot_be_opened_as_a_token_record():
@@ -141,7 +142,12 @@ def test_a_client_record_cannot_be_opened_as_a_token_record():
         key_version=version,
     )
     with pytest.raises(AuthenticationFailed):
-        unseal(envelope, aad=build_aad(kind=AadKind.OAUTH_TOKEN, **shared), key=key)
+        unseal(
+            envelope,
+            aad=build_aad(kind=AadKind.OAUTH_TOKEN, **shared),
+            key=key,
+            key_version=version,
+        )
 
 
 def test_a_deployment_scoped_record_uses_the_placeholder_not_an_empty_field():
@@ -153,9 +159,22 @@ def test_a_deployment_scoped_record_uses_the_placeholder_not_an_empty_field():
         connection_id=None,
         server_name="s",
         resource="r",
-    ).decode()
-    marker = DEPLOYMENT_SCOPED
-    assert f"|{marker}|{marker}|{marker}|" in aad
+    )
+    # v2 is length-prefixed: each absent tenant field is the 1-byte placeholder.
+    marker = DEPLOYMENT_SCOPED.encode()
+    assert aad.count(b"\x00\x00\x00\x01" + marker) == 3
+    assert (
+        build_aad(
+            kind=AadKind.OAUTH_CLIENT,
+            credential_id="c",
+            user_id="",
+            workspace_id="",
+            connection_id="",
+            server_name="s",
+            resource="r",
+        )
+        == aad
+    ), "an empty tenant field is the placeholder, not a zero-length field"
 
 
 def test_the_separator_cannot_be_smuggled_between_fields():
@@ -186,7 +205,7 @@ def test_a_wrong_key_version_cannot_decrypt():
     aad = build_aad(**BINDING)
     envelope = seal(PLAINTEXT, aad=aad, key=keys.key_for(1), key_version=1)
     with pytest.raises(AuthenticationFailed):
-        unseal(envelope, aad=aad, key=keys.key_for(2))
+        unseal(envelope, aad=aad, key=keys.key_for(2), key_version=1)
 
 
 def test_each_version_derives_a_distinct_key_from_the_same_master():
@@ -270,7 +289,7 @@ def test_a_flipped_ciphertext_byte_fails_authentication():
     aad = build_aad(**BINDING)
     envelope = seal(PLAINTEXT, aad=aad, key=key, key_version=version)
     with pytest.raises((AuthenticationFailed, EnvelopeError)):
-        unseal(_bump(envelope, 3), aad=aad, key=key)
+        unseal(_bump(envelope, 3), aad=aad, key=key, key_version=version)
 
 
 def test_a_flipped_nonce_byte_fails_authentication():
@@ -279,7 +298,7 @@ def test_a_flipped_nonce_byte_fails_authentication():
     aad = build_aad(**BINDING)
     envelope = seal(PLAINTEXT, aad=aad, key=key, key_version=version)
     with pytest.raises((AuthenticationFailed, EnvelopeError)):
-        unseal(_bump(envelope, 2), aad=aad, key=key)
+        unseal(_bump(envelope, 2), aad=aad, key=key, key_version=version)
 
 
 def test_a_truncated_ciphertext_fails_and_returns_no_prefix():
@@ -291,7 +310,7 @@ def test_a_truncated_ciphertext_fails_and_returns_no_prefix():
     parts = seal(PLAINTEXT, aad=aad, key=key, key_version=version).split(".")
     parts[3] = parts[3][:-4]
     with pytest.raises((AuthenticationFailed, EnvelopeError)):
-        unseal(".".join(parts), aad=aad, key=key)
+        unseal(".".join(parts), aad=aad, key=key, key_version=version)
 
 
 @pytest.mark.parametrize(
@@ -311,7 +330,7 @@ def test_a_malformed_envelope_is_refused_before_any_crypto(envelope):
     keys = _keys()
     _version, key = keys.active_key()
     with pytest.raises(EnvelopeError):
-        unseal(envelope, aad=build_aad(**BINDING), key=key)
+        unseal(envelope, aad=build_aad(**BINDING), key=key, key_version=1)
 
 
 def test_an_implausibly_large_envelope_is_refused_before_any_decode():
@@ -321,19 +340,24 @@ def test_an_implausibly_large_envelope_is_refused_before_any_decode():
     keys = _keys()
     _version, key = keys.active_key()
     with pytest.raises(EnvelopeError, match="implausibly large"):
-        unseal("v1.1.YWJj." + ("A" * 70_000), aad=build_aad(**BINDING), key=key)
+        unseal(
+            "v1.1.YWJj." + ("A" * 70_000),
+            aad=build_aad(**BINDING),
+            key=key,
+            key_version=1,
+        )
 
 
 def test_an_unknown_envelope_version_is_a_format_error_not_a_tamper_error():
-    """"I cannot read this format" is a rollback/deploy problem; "this did not
+    """ "I cannot read this format" is a rollback/deploy problem; "this did not
     authenticate" is tampering. Collapsing them hides the first."""
     keys = _keys()
     version, key = keys.active_key()
     aad = build_aad(**BINDING)
     envelope = seal(PLAINTEXT, aad=aad, key=key, key_version=version)
-    future = "v2." + envelope.split(".", 1)[1]
+    future = "v9." + envelope.split(".", 1)[1]
     with pytest.raises(EnvelopeError, match="unsupported envelope version"):
-        unseal(future, aad=aad, key=key)
+        unseal(future, aad=aad, key=key, key_version=version)
 
 
 def test_the_nonce_is_the_specified_width():
@@ -343,3 +367,43 @@ def test_the_nonce_is_the_specified_width():
     segment = envelope.split(".")[2]
     raw = base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
     assert len(raw) == NONCE_BYTES == 12
+
+
+# --------------------------------------------------- audit L-01 / L-02
+def test_a_literal_and_a_percent_encoded_separator_are_distinct_bindings():
+    """L-01: v1 percent-encoded "|" without encoding "%", so `a|b` and `a%7Cb`
+    produced the SAME AAD. v2 is length-prefixed; the legacy builder is kept
+    only to read old rows, and this pins both facts."""
+    common = {k: v for k, v in BINDING.items() if k != "credential_id"}
+    assert build_aad(credential_id="a|b", **common) != build_aad(
+        credential_id="a%7Cb", **common
+    )
+    assert build_aad(credential_id="a|b", version="v1", **common) == build_aad(
+        credential_id="a%7Cb", version="v1", **common
+    ), "the legacy form is ambiguous — that is why it is read-only"
+    with pytest.raises(ValueError):
+        build_aad(version="v7", **BINDING)
+
+
+def test_the_record_key_version_must_equal_the_envelope_header():
+    """L-02: the column the store picks the key by and the version the envelope
+    carries used to be two values that could disagree. Now they must agree,
+    checked before any decrypt."""
+    keys = _keys((1, 2))
+    aad = build_aad(**BINDING)
+    envelope = seal(PLAINTEXT, aad=aad, key=keys.key_for(1), key_version=1)
+    with pytest.raises(EnvelopeError, match="names key version 1, the record names 2"):
+        unseal(envelope, aad=aad, key=keys.key_for(2), key_version=2)
+
+
+def test_the_envelope_header_is_under_the_tag():
+    """L-02: a v1 header was editable in place. In v2 the version and key
+    version are authenticated: rewriting the header to another key version —
+    even holding the right key — fails authentication."""
+    keys = _keys()
+    version, key = keys.active_key()
+    aad = build_aad(**BINDING)
+    parts = seal(PLAINTEXT, aad=aad, key=key, key_version=version).split(".")
+    parts[1] = str(version + 1)
+    with pytest.raises(AuthenticationFailed):
+        unseal(".".join(parts), aad=aad, key=key, key_version=version + 1)

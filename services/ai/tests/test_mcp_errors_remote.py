@@ -355,3 +355,19 @@ def test_an_http_date_retry_after_is_ignored_rather_than_guessed():
 
     anyio.run(recorder, Response())
     assert recorder.retry_after is None
+
+
+def test_a_url_in_exception_text_is_cut_to_its_host():
+    """Audit M-14: httpx puts the FULL request URL in its messages; a path or
+    query component is where an endpoint's embedded credential would sit. The
+    detail keeps the host (attributable) and nothing after it."""
+    import httpx2
+
+    req = httpx2.Request("POST", "https://mcp.example.com/t/sk_live_abc/mcp?code=z9")
+    exc = httpx2.ConnectError("All connection attempts failed", request=req)
+    err = to_tool_error(
+        RuntimeError(f"upstream: {exc} for url '{req.url}'"), server_slug="ex"
+    )
+    text = str(err)
+    assert "sk_live_abc" not in text and "code=z9" not in text
+    assert text.count("https://mcp.example.com") == 1

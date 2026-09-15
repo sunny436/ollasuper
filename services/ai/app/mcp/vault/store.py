@@ -64,8 +64,10 @@ from typing import Any, Protocol
 from app.logging import get_logger
 from app.mcp.vault.aad import AadKind, build_aad
 from app.mcp.vault.envelope import (
+    ENVELOPE_VERSION,
     AuthenticationFailed,
     EnvelopeError,
+    parse_version,
     seal,
     unseal,
 )
@@ -217,18 +219,23 @@ class CredentialVault:
             )
             return None
 
-        aad = build_aad(
-            kind=kind,
-            credential_id=record.credential_id,
-            user_id=user_id,
-            workspace_id=workspace_id,
-            connection_id=connection_id,
-            server_name=server_name,
-            resource=resource,
-        )
         try:
+            env_version = parse_version(record.envelope)
+            aad = build_aad(
+                kind=kind,
+                credential_id=record.credential_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                connection_id=connection_id,
+                server_name=server_name,
+                resource=resource,
+                version=env_version,
+            )
             plaintext = unseal(
-                record.envelope, aad=aad, key=self._keys.key_for(record.key_version)
+                record.envelope,
+                aad=aad,
+                key=self._keys.key_for(record.key_version),
+                key_version=record.key_version,
             )
         except (AuthenticationFailed, EnvelopeError, VaultKeyError) as exc:
             # Identifiers only. The envelope and the AAD are never logged: one is
@@ -256,11 +263,24 @@ class CredentialVault:
         if payload is None:
             return None
 
-        # Lazy rotation: re-wrap under the active key, in THIS process.
-        if record.key_version != self._keys.active_version:
-            await self._rewrap(record, payload, aad_fields=(
-                user_id, workspace_id, connection_id, server_name, resource, kind,
-            ))
+        # Lazy rotation: re-wrap under the active key — and the current envelope
+        # format (a v1 row re-seals as v2 on its first read) — in THIS process.
+        if (
+            record.key_version != self._keys.active_version
+            or env_version != ENVELOPE_VERSION
+        ):
+            await self._rewrap(
+                record,
+                payload,
+                aad_fields=(
+                    user_id,
+                    workspace_id,
+                    connection_id,
+                    server_name,
+                    resource,
+                    kind,
+                ),
+            )
         return payload, record
 
     # ----------------------------------------------------------------- write
@@ -297,8 +317,10 @@ class CredentialVault:
         record_id = credential_id or (
             existing.credential_id if existing else new_credential_id()
         )
-        base_rev = expected_rev if expected_rev is not None else (
-            existing.rev if existing else 0
+        base_rev = (
+            expected_rev
+            if expected_rev is not None
+            else (existing.rev if existing else 0)
         )
 
         plaintext = self._encode(payload)
@@ -378,18 +400,23 @@ class CredentialVault:
         record = await self._store.load_client(server_name=server_name, issuer=issuer)
         if record is None:
             return None
-        aad = build_aad(
-            kind=AadKind.OAUTH_CLIENT,
-            credential_id=record.client_record_id,
-            user_id=None,
-            workspace_id=None,
-            connection_id=None,
-            server_name=server_name,
-            resource=issuer,
-        )
         try:
+            env_version = parse_version(record.envelope)
+            aad = build_aad(
+                kind=AadKind.OAUTH_CLIENT,
+                credential_id=record.client_record_id,
+                user_id=None,
+                workspace_id=None,
+                connection_id=None,
+                server_name=server_name,
+                resource=issuer,
+                version=env_version,
+            )
             plaintext = unseal(
-                record.envelope, aad=aad, key=self._keys.key_for(record.key_version)
+                record.envelope,
+                aad=aad,
+                key=self._keys.key_for(record.key_version),
+                key_version=record.key_version,
             )
         except (AuthenticationFailed, EnvelopeError, VaultKeyError) as exc:
             log.warning(
@@ -397,7 +424,28 @@ class CredentialVault:
                 extra={"server": server_name, "reason": type(exc).__name__},
             )
             return None
-        return self._decode(plaintext, record.client_record_id)
+        payload = self._decode(plaintext, record.client_record_id)
+        if payload is not None and (
+            record.key_version != self._keys.active_version
+            or env_version != ENVELOPE_VERSION
+        ):
+            # Same lazy re-wrap as credentials. `replace_preregistered=True`
+            # because this is the record's OWN payload being re-sealed, not a
+            # server response — the overwrite guard is about provenance.
+            try:
+                await self.put_client(
+                    payload,
+                    server_name=server_name,
+                    issuer=issuer,
+                    registration_mode=record.registration_mode,
+                    replace_preregistered=True,
+                )
+                log.info("mcp.client_record_rewrapped", extra={"server": server_name})
+            except Exception:  # noqa: BLE001 — a rewrap must never fail a read
+                log.warning(
+                    "mcp.client_record_rewrap_failed", extra={"server": server_name}
+                )
+        return payload
 
     async def put_client(
         self,
@@ -420,9 +468,7 @@ class CredentialVault:
         the operator's seed path (`qa/seed_oauth_client.py`) may replace one,
         and it says so explicitly with `replace_preregistered=True`.
         """
-        existing = await self._store.load_client(
-            server_name=server_name, issuer=issuer
-        )
+        existing = await self._store.load_client(server_name=server_name, issuer=issuer)
         if (
             existing is not None
             and existing.registration_mode == "preregistered"
@@ -433,9 +479,7 @@ class CredentialVault:
                 extra={"server": server_name, "mode": registration_mode},
             )
             return None
-        record_id = (
-            existing.client_record_id if existing else new_credential_id("cli")
-        )
+        record_id = existing.client_record_id if existing else new_credential_id("cli")
         key_version, key = self._keys.active_key()
         aad = build_aad(
             kind=AadKind.OAUTH_CLIENT,

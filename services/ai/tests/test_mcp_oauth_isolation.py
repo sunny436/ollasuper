@@ -178,11 +178,15 @@ async def test_the_right_key_is_not_enough_to_open_the_wrong_binding(override):
     # The unmodified binding opens it — so a failure below is the override's
     # doing and not a broken fixture.
     key = harness.vault._keys.key_for(row.key_version)
-    assert unseal(row.envelope, aad=build_aad(**fields), key=key)
+    assert unseal(
+        row.envelope, aad=build_aad(**fields), key=key, key_version=row.key_version
+    )
 
     fields.update(override)
     with pytest.raises(AuthenticationFailed):
-        unseal(row.envelope, aad=build_aad(**fields), key=key)
+        unseal(
+            row.envelope, aad=build_aad(**fields), key=key, key_version=row.key_version
+        )
 
 
 async def test_a_credential_cannot_be_moved_between_deployments():
@@ -315,7 +319,7 @@ async def test_five_concurrent_users_each_hold_a_distinct_credential():
             server_name=row.server_name,
             resource=row.resource,
         )
-        assert unseal(row.envelope, aad=mine, key=key)
+        assert unseal(row.envelope, aad=mine, key=key, key_version=row.key_version)
         for other in rows:
             if other.credential_id == row.credential_id:
                 continue
@@ -329,7 +333,7 @@ async def test_five_concurrent_users_each_hold_a_distinct_credential():
                 resource=other.resource,
             )
             with pytest.raises(AuthenticationFailed):
-                unseal(row.envelope, aad=theirs, key=key)
+                unseal(row.envelope, aad=theirs, key=key, key_version=row.key_version)
 
 
 # ------------------------------------------------------------ the store view

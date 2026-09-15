@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.mcp.vault.aad import AadKind
+from app.mcp.vault.envelope import ENVELOPE_VERSION
 from app.mcp.vault.keys import KeyProvider
 from app.mcp.vault.models import ClientRecord, CredentialRecord, CredentialStatus
 from app.mcp.vault.store import CredentialVault, new_credential_id
@@ -43,7 +44,7 @@ class MemoryStore:
     def __init__(self) -> None:
         self.rows: dict[tuple[str, str, str], CredentialRecord] = {}
         self.clients: dict[tuple[str, str], ClientRecord] = {}
-        self.saw: list[str] = []          # every envelope ever passed in
+        self.saw: list[str] = []  # every envelope ever passed in
         self.save_calls = 0
         self.deleted: list[str] = []
         self.marked: list[tuple[str, str]] = []
@@ -123,7 +124,7 @@ async def test_the_store_only_ever_sees_ciphertext():
 
     assert store.saw, "nothing crossed the boundary — the assertion would be vacuous"
     for envelope in store.saw:
-        assert envelope.startswith("v1.")
+        assert envelope.startswith(f"{ENVELOPE_VERSION}.")
         assert "access_token" not in envelope
         assert "opaque-runtime-secret-abc123" not in envelope
         assert "client_secret" not in envelope
@@ -430,9 +431,15 @@ async def test_expiry_is_answered_without_decrypting():
     require a decryption would be a needless use of the key."""
     now = datetime.now(UTC)
     record = CredentialRecord(
-        credential_id="c", user_id="u", workspace_id="w", connection_id="n",
-        server_name="s", resource="r", kind=AadKind.OAUTH_TOKEN,
-        envelope="v1.1.a.b", key_version=1,
+        credential_id="c",
+        user_id="u",
+        workspace_id="w",
+        connection_id="n",
+        server_name="s",
+        resource="r",
+        kind=AadKind.OAUTH_TOKEN,
+        envelope="v1.1.a.b",
+        key_version=1,
         expires_at=now - timedelta(seconds=1),
     )
     assert record.is_expired(now=now)
@@ -444,14 +451,23 @@ async def test_expiry_is_answered_without_decrypting():
 
 def test_records_never_render_their_envelope_in_a_repr():
     record = CredentialRecord(
-        credential_id="c", user_id="u", workspace_id="w", connection_id="n",
-        server_name="s", resource="r", kind=AadKind.OAUTH_TOKEN,
-        envelope="v1.1.SECRETNONCE.SECRETCIPHERTEXT", key_version=1,
+        credential_id="c",
+        user_id="u",
+        workspace_id="w",
+        connection_id="n",
+        server_name="s",
+        resource="r",
+        kind=AadKind.OAUTH_TOKEN,
+        envelope="v1.1.SECRETNONCE.SECRETCIPHERTEXT",
+        key_version=1,
     )
     assert "SECRETCIPHERTEXT" not in repr(record)
     client = ClientRecord(
-        client_record_id="cli", server_name="s", issuer="i",
-        envelope="v1.1.SECRETNONCE.SECRETCIPHERTEXT", key_version=1,
+        client_record_id="cli",
+        server_name="s",
+        issuer="i",
+        envelope="v1.1.SECRETNONCE.SECRETCIPHERTEXT",
+        key_version=1,
     )
     assert "SECRETCIPHERTEXT" not in repr(client)
 
@@ -505,3 +521,99 @@ async def test_a_dcr_record_may_still_be_re_registered():
     assert again is not None
     got = await vault.get_client(server_name="s", issuer="i")
     assert got is not None and got["client_id"] == "b"
+
+
+# ------------------------------------------------- audit L-01 / L-02 migration
+def _legacy_v1_envelope(plaintext: bytes, *, aad_v1: bytes, key: bytes, kv: int) -> str:
+    """What every row on production looked like before the change: a v1 header
+    outside the tag, over the "|"-joined AAD."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    b64u = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()  # noqa: E731
+    nonce = os.urandom(12)
+    return ".".join(
+        (
+            "v1",
+            str(kv),
+            b64u(nonce),
+            b64u(AESGCM(key).encrypt(nonce, plaintext, aad_v1)),
+        )
+    )
+
+
+async def test_a_legacy_v1_row_is_still_readable_and_rewrapped_to_v2_on_read():
+    """The versioned migration L-01 asked for: no bulk rewrite, no reconnects.
+    A v1 row decrypts under the legacy AAD and is re-sealed as v2 in place;
+    the second read is v2 all the way."""
+    import dataclasses
+
+    from app.mcp.vault.aad import build_aad
+    from app.mcp.vault.envelope import ENVELOPE_VERSION
+
+    vault, store = _vault()
+    await vault.put(TOKEN, **TENANT)
+    key_ref, row = next(iter(store.rows.items()))
+    aad_v1 = build_aad(
+        kind=AadKind.OAUTH_TOKEN,
+        credential_id=row.credential_id,
+        version="v1",
+        **TENANT,
+    )
+    legacy = _legacy_v1_envelope(
+        json.dumps(TOKEN, separators=(",", ":")).encode(),
+        aad_v1=aad_v1,
+        key=vault._keys.key_for(row.key_version),
+        kv=row.key_version,
+    )
+    store.rows[key_ref] = dataclasses.replace(row, envelope=legacy)
+
+    got = await vault.get(**TENANT)
+    assert got is not None and got[0] == TOKEN
+    assert store.rows[key_ref].envelope.startswith(f"{ENVELOPE_VERSION}."), (
+        "not rewrapped"
+    )
+    again = await vault.get(**TENANT)
+    assert again is not None and again[0] == TOKEN
+
+
+async def test_a_legacy_v1_client_record_is_rewrapped_even_when_preregistered():
+    """Client records migrate the same way; re-sealing the record's OWN payload
+    is not a server response, so the preregistered guard does not apply."""
+    import dataclasses
+
+    from app.mcp.vault.aad import build_aad
+    from app.mcp.vault.envelope import ENVELOPE_VERSION
+
+    vault, store = _vault()
+    await vault.put_client(
+        {"client_id": "cid", "client_secret": "cs-abc"},
+        server_name="s",
+        issuer="i",
+        registration_mode="preregistered",
+    )
+    key_ref, rec = next(iter(store.clients.items()))
+    aad_v1 = build_aad(
+        kind=AadKind.OAUTH_CLIENT,
+        credential_id=rec.client_record_id,
+        user_id=None,
+        workspace_id=None,
+        connection_id=None,
+        server_name="s",
+        resource="i",
+        version="v1",
+    )
+    legacy = _legacy_v1_envelope(
+        json.dumps(
+            {"client_id": "cid", "client_secret": "cs-abc"}, separators=(",", ":")
+        ).encode(),
+        aad_v1=aad_v1,
+        key=vault._keys.key_for(rec.key_version),
+        kv=rec.key_version,
+    )
+    store.clients[key_ref] = dataclasses.replace(rec, envelope=legacy)
+
+    payload = await vault.get_client(server_name="s", issuer="i")
+    assert payload == {"client_id": "cid", "client_secret": "cs-abc"}
+    after = store.clients[key_ref]
+    assert after.envelope.startswith(f"{ENVELOPE_VERSION}.")
+    assert after.registration_mode == "preregistered"

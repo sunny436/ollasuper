@@ -26,6 +26,7 @@ import pytest
 from app.mcp.exceptions import McpConnectionError, McpErrorKind
 from app.mcp.oauth.attempts import AttemptRegistry
 from app.mcp.oauth.flow import OAuthFlow
+from app.mcp.vault.envelope import ENVELOPE_VERSION
 from app.mcp.vault.keys import KeyProvider
 from app.mcp.vault.store import CredentialVault
 from tests.fakes.oauth_server import (
@@ -164,7 +165,7 @@ async def test_only_ciphertext_is_persisted():
     assert harness.store.saw, "nothing was persisted"
     issued = set(harness.state.issued_access)
     for envelope in harness.store.saw:
-        assert envelope.startswith("v1.")
+        assert envelope.startswith(f"{ENVELOPE_VERSION}.")
         for token in issued:
             assert token not in envelope
 
@@ -219,9 +220,12 @@ async def test_an_expired_attempt_cannot_be_completed():
             started = await harness.flow.start(connect=harness.connect_with, **TENANT)
             callback = authorize(harness.state, started.authorization_url)
             await anyio.sleep(0.05)
-            assert await harness.flow.complete(
-                state=callback["state"], code=callback["code"]
-            ) is None
+            assert (
+                await harness.flow.complete(
+                    state=callback["state"], code=callback["code"]
+                )
+                is None
+            )
             tg.cancel_scope.cancel()
 
 

@@ -152,6 +152,5 @@ class KeyProvider:
     def __repr__(self) -> str:  # pragma: no cover - trivial
         # Explicit, because the default would render the key bytes.
         return (
-            f"KeyProvider(active={self._active}, "
-            f"versions={list(self.known_versions)})"
+            f"KeyProvider(active={self._active}, versions={list(self.known_versions)})"
         )

@@ -28,9 +28,21 @@ import binascii
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-__all__ = ["EnvelopeError", "NONCE_BYTES", "seal", "unseal"]
+__all__ = [
+    "ENVELOPE_VERSION",
+    "EnvelopeError",
+    "NONCE_BYTES",
+    "parse_version",
+    "seal",
+    "unseal",
+]
 
-ENVELOPE_VERSION = "v1"
+#: What `seal` writes. v2 (audit L-01/L-02) authenticates its own header —
+#: version and key version are folded into the AAD, so neither can be edited
+#: on a stored row without the tag failing — and pairs with the length-prefixed
+#: AAD of `aad.py`. v1 is READ ONLY, for rows written before the change.
+ENVELOPE_VERSION = "v2"
+_READABLE_VERSIONS = ("v1", ENVELOPE_VERSION)
 NONCE_BYTES = 12  # 96 bits — the size AES-GCM is specified for
 _PARTS = 4
 #: A stored envelope is our own output, so a huge one means corruption or
@@ -82,7 +94,9 @@ def seal(plaintext: bytes, *, aad: bytes, key: bytes, key_version: int) -> str:
     if key_version < 0:
         raise EnvelopeError("key_version must be non-negative")
     nonce = _random_nonce()
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
+    ciphertext = AESGCM(key).encrypt(
+        nonce, plaintext, _bind_header(aad, ENVELOPE_VERSION, key_version)
+    )
     return ".".join(
         (
             ENVELOPE_VERSION,
@@ -91,6 +105,20 @@ def seal(plaintext: bytes, *, aad: bytes, key: bytes, key_version: int) -> str:
             _b64u_encode(ciphertext),
         )
     )
+
+
+def _bind_header(aad: bytes, version: str, key_version: int) -> bytes:
+    """v2: the header travels under the tag. A v1 envelope authenticated only
+    the caller's AAD, so its version and key version were editable in place."""
+    if version == "v1":
+        return aad
+    return aad + b"\x00" + f"{version}.{key_version}".encode("ascii")
+
+
+def parse_version(envelope: str) -> str:
+    """The envelope version WITHOUT decrypting — it selects the AAD encoding
+    (`aad.build_aad(version=...)`) and tells `store.py` whether to re-wrap."""
+    return _split(envelope)[0]
 
 
 def parse_key_version(envelope: str) -> int:
@@ -104,22 +132,32 @@ def parse_key_version(envelope: str) -> int:
     return _split(envelope)[1]
 
 
-def unseal(envelope: str, *, aad: bytes, key: bytes) -> bytes:
+def unseal(envelope: str, *, aad: bytes, key: bytes, key_version: int) -> bytes:
     """Decrypt an envelope, or raise.
+
+    `key_version` is the record's own column — the value the caller chose
+    `key` by. It MUST equal the version embedded in the envelope (audit L-02):
+    two values that can disagree are two values that will, and a row whose
+    column and header name different keys is refused before any decrypt.
 
     Raises `EnvelopeError` for a shape/version problem and `InvalidTag` for an
     authentication failure. The caller distinguishes them: the first is a
     configuration or rollback fault, the second means the ciphertext does not
     belong to this key and this binding.
     """
-    _version, _key_version, nonce, ciphertext = _split(envelope)
-    if len(nonce) != NONCE_BYTES:
+    version, embedded_key_version, nonce, ciphertext = _split(envelope)
+    if embedded_key_version != key_version:
         raise EnvelopeError(
-            f"nonce is {len(nonce)} bytes, expected {NONCE_BYTES}"
+            f"envelope names key version {embedded_key_version}, the record "
+            f"names {key_version}"
         )
+    if len(nonce) != NONCE_BYTES:
+        raise EnvelopeError(f"nonce is {len(nonce)} bytes, expected {NONCE_BYTES}")
     # Deliberately NOT wrapped: `InvalidTag` propagates so the caller can tell
     # "did not authenticate" from "could not be parsed".
-    return AESGCM(key).decrypt(nonce, ciphertext, aad)
+    return AESGCM(key).decrypt(
+        nonce, ciphertext, _bind_header(aad, version, embedded_key_version)
+    )
 
 
 def _split(envelope: str) -> tuple[str, int, bytes, bytes]:
@@ -129,23 +167,24 @@ def _split(envelope: str) -> tuple[str, int, bytes, bytes]:
         raise EnvelopeError("envelope is implausibly large")
     parts = envelope.split(".")
     if len(parts) != _PARTS:
-        raise EnvelopeError(
-            f"envelope has {len(parts)} segments, expected {_PARTS}"
-        )
+        raise EnvelopeError(f"envelope has {len(parts)} segments, expected {_PARTS}")
     version, key_version, nonce_b64, ciphertext_b64 = parts
     # The version gate comes FIRST, before any decode of attacker-influenced
     # bytes. An unknown version is refused, never guessed at.
-    if version != ENVELOPE_VERSION:
+    if version not in _READABLE_VERSIONS:
         raise EnvelopeError(
             f"unsupported envelope version {version!r}; this build reads "
-            f"{ENVELOPE_VERSION!r}"
+            f"{_READABLE_VERSIONS!r}"
         )
     try:
         parsed_key_version = int(key_version)
     except (TypeError, ValueError) as exc:
         raise EnvelopeError("envelope key version is not an integer") from exc
-    return version, parsed_key_version, _b64u_decode(nonce_b64), _b64u_decode(
-        ciphertext_b64
+    return (
+        version,
+        parsed_key_version,
+        _b64u_decode(nonce_b64),
+        _b64u_decode(ciphertext_b64),
     )
 
 

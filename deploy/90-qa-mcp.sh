@@ -21,6 +21,15 @@
 # deliberate: `assert_dialable` requires public https, and the alternative was
 # to weaken the guard, which a QA phase must never do. Nothing it serves is
 # sensitive, and `down` removes it.
+#
+# THE ROUTE IS NOT IN edge/proxy.js BY DEFAULT (audit M-15: this script once
+# claimed a route the proxy did not have, so the "hostile server" path was never
+# actually exercised). The operator adds `{ prefix: "/__qa-mcp", port: 8799 }`
+# to edge/proxy.js for the run, copies it to /opt/myos-edge/proxy.js and
+# restarts myos-edge; `up` and `curate` ACCEPT ONLY AFTER A REAL EXTERNAL MCP
+# HANDSHAKE through the public URL succeeds, and refuse otherwise. `down`
+# uncurates BEFORE it stops the service, in one invocation, so an enabled
+# hostile row can never outlive the run.
 set -euo pipefail
 
 REPO=${REPO:-/opt/myos}
@@ -28,6 +37,27 @@ AI="$REPO/services/ai"
 UNIT=/etc/systemd/system/qa-mcp.service
 PORT=${QA_MCP_PORT:-8799}
 ACTION=${1:-}
+PUBLIC_URL=${QA_MCP_PUBLIC_URL:-https://app.ollasuper.com/__qa-mcp/mcp}
+
+# QA SETUP ACCEPTANCE (audit M-15): the hostile server must answer a real MCP
+# `initialize` THROUGH THE PUBLIC ROUTE — the same path the AI plane dials — or
+# the setup is refused. A local port answering proves nothing about the route.
+accept_public_handshake() {
+  local body
+  body=$(curl -sS --max-time 15 -X POST "$PUBLIC_URL" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"90-qa-mcp","version":"0"}}}' \
+    2>/dev/null || true)
+  if ! grep -q '"serverInfo"' <<<"$body"; then
+    echo "REFUSED: no MCP handshake through $PUBLIC_URL" >&2
+    echo "  the edge proxy has no /__qa-mcp route (or the service is down);" >&2
+    echo "  add { prefix: \"/__qa-mcp\", port: $PORT } to edge/proxy.js, cp it to" >&2
+    echo "  /opt/myos-edge/proxy.js and restart myos-edge, then retry" >&2
+    return 1
+  fi
+  echo "accepted: MCP initialize answered through $PUBLIC_URL"
+}
 
 case "$ACTION" in
   up)
@@ -59,26 +89,41 @@ UNITEOF
     sleep 3
     systemctl is-active qa-mcp
 
-    echo "[3/3] restarting the edge proxy so /__qa-mcp routes"
-    systemctl restart myos-edge
-    sleep 2
-    systemctl is-active myos-edge
-    echo "qa-mcp: up on 127.0.0.1:$PORT, published at /__qa-mcp"
+    echo "[3/3] acceptance: a real handshake through the public route"
+    if ! accept_public_handshake; then
+      systemctl disable --now qa-mcp >/dev/null 2>&1 || true
+      rm -f "$UNIT"
+      systemctl daemon-reload
+      echo "qa-mcp: NOT up (setup refused; service removed again)" >&2
+      exit 1
+    fi
+    echo "qa-mcp: up on 127.0.0.1:$PORT, answering at $PUBLIC_URL"
     ;;
 
   down)
-    echo "[1/2] stopping and removing the unit"
+    # ORDER IS THE POINT: the curated row goes first, in this same invocation,
+    # so no enabled hostile entry can survive a teardown that then fails.
+    echo "[1/3] uncurating the hostile row"
+    "$0" uncurate
+    echo "[2/3] stopping and removing the unit"
     systemctl disable --now qa-mcp >/dev/null 2>&1 || true
     rm -f "$UNIT"
     systemctl daemon-reload
-    echo "[2/2] restarting the edge proxy (route removed in source)"
+    echo "[3/3] restarting the edge proxy"
     systemctl restart myos-edge
     sleep 2
     systemctl is-active myos-edge
-    echo "qa-mcp: down"
+    if curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PUBLIC_URL" 2>/dev/null | grep -q '^200$'; then
+      echo "WARNING: $PUBLIC_URL still answers 200 — the route is still in /opt/myos-edge/proxy.js; remove it" >&2
+      exit 1
+    fi
+    echo "qa-mcp: down (row removed, service removed, route not answering)"
     ;;
 
   curate)
+    # Curating is what makes the plane dial it, so the same acceptance applies:
+    # no enabled row for an endpoint that does not actually answer (audit M-15).
+    accept_public_handshake
     # ONE row, and `trusted=false`. Curating a server makes it connectable; it
     # must never make its self-reported annotations credible, and this server
     # lies about them on purpose (`poisoned_desc` claims readOnlyHint).

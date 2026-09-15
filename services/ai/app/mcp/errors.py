@@ -42,6 +42,7 @@ raise.
 
 from __future__ import annotations
 
+import re
 import socket
 import ssl
 
@@ -96,11 +97,22 @@ def _looks_like(message: str, hints: tuple[str, ...]) -> bool:
     return any(h in low for h in hints)
 
 
+_URL_IN_TEXT = re.compile(r"(https?://[^\s/'\"<>]+)[^\s'\"<>]*")
+
+
+def _redact_urls(text: str) -> str:
+    """Any URL in exception text is cut to scheme://host (audit M-14): httpx
+    puts the FULL request URL in its messages, and a path or query component
+    is where an endpoint's embedded credential would sit. The host is enough
+    to attribute a failure."""
+    return _URL_IN_TEXT.sub(r"\1", text)
+
+
 def _detail(found: list[BaseException], fallback: BaseException) -> str:
     """Exception text only -- never the request payload, which is where
-    credentials and user data would be."""
+    credentials and user data would be -- and never a URL's path or query."""
     best = _typed(found) or (found[0] if found else fallback)
-    return (str(best).strip() or best.__class__.__name__)[:_MAX_DETAIL]
+    return _redact_urls(str(best).strip() or best.__class__.__name__)[:_MAX_DETAIL]
 
 
 def _is_dns(exc: BaseException) -> bool:
