@@ -587,8 +587,9 @@ unchanged by everything below. Every flag defaults OFF.
     Brave publish no remote MCP server and were not faked.
 
 - **MCP security remediation (2026-09-14/15) — the Codex audit, closed on production.** Every
-  finding was re-read in the code before it was fixed (C-02, C-03, H-04…H-17, M-01…M-14, plus six
-  found on the way: N-01…N-06); M-15/L-01/L-02 were cut off in the paste and remain UNSEEN. Trust
+  finding was re-read in the code before it was fixed (C-02, C-03, H-04…H-17, M-01…M-15,
+  L-01, L-02, plus six found on the way: N-01…N-06). M-15/L-01/L-02 were cut off in the pasted
+  audit by the 50k-character message limit and were recovered from the Codex session log. Trust
   model chosen for quality: vendor-official servers are `trusted` after review (44 rows, by
   `qa/curate_trusted.sql`) and only their DECLARED reads run unasked; every write asks; the 13
   untrusted servers ask on every call and are not even composed into a thread until the user
@@ -639,14 +640,34 @@ unchanged by everything below. Every flag defaults OFF.
     loggers clamped (M-09); a Sentry scrub failure drops the event (M-10); plane fetches carry
     deadlines (M-13); the sandbox no longer falls back in-process (C-03); `local/*` connections
     need an admin (H-11); account deletion sweeps MCP rows (H-03).
+  - **The audit's tail (M-14 fix clause, M-15, L-01, L-02).** URLs in exception text are cut
+    to scheme://host before they become a tool-error detail — httpx puts the full request URL,
+    path and query, in its messages (M-14). `deploy/90-qa-mcp.sh` once claimed a public route
+    the proxy did not have, so the hostile path was never actually exercised, and `down` left
+    the enabled curated row behind (M-15): `up` and `curate` now accept only after a real MCP
+    `initialize` through the public URL, and `down` uncurates first, in the same invocation —
+    proven on the host: without the route, `up` refuses and removes its own unit, `curate`
+    refuses before writing. The vault's AAD percent-encoded `|` without encoding `%`, so `a|b`
+    and `a%7Cb` were one binding (L-01), and `unseal` ignored the envelope's embedded key
+    version (L-02): envelope **v2** uses a length-prefixed AAD, folds its header (version + key
+    version) under the tag, and requires the record's key-version column to equal it; v1 rows
+    stay readable and are re-sealed as v2 on first read. Proven on production: 19 credential
+    rows + 16 client records were v1; one chat turn re-wrapped 5 + 5 (`mcp.credential_rewrapped`,
+    `mcp.client_record_rewrapped`), zero decrypt failures, real Drive files returned. A build
+    older than this cannot read v2 rows — rollback means redeploying this build.
+  - **The SIGKILL residual is closed.** The bridge re-stamps `heartbeat_at` every 30 s and the
+    plane's gate refuses a stamp older than 120 s. Proven on real Docker: `kill -9` left the
+    file at `verified: true` (no finally ran), the gate honoured it while the stamp was fresh
+    and refused once it went stale. Proof artefacts torn down again; the flag stays OFF.
   - **Residual, stated plainly.** Taint matching misses secrets shorter than 8 characters and
     paraphrases; framing lowers, never removes, compliance with injected text. A trusted vendor
     lying in `readOnlyHint` gets its reads unasked (writes still ask). The plane still holds the
-    vault keys and ingress key. A bridge that is SIGKILLed (not stopped) leaves its attestation
-    until the next start. In-process counters reset with `myos-ai`; the hourly cap is durable.
-    Gmail on the QA account needs a MANUAL reconnect — Google refuses automated re-consent — so
-    the final prod approvals run drove Drive/Docs/Context7 instead. The red-team server, its
-    edge route and the local proof (row, unit, images) were all removed after the run.
+    vault keys and ingress key. In-process counters reset with `myos-ai`; the hourly cap is
+    durable. Gmail on the QA account was reconnected through Google's consent with
+    `e2e/q5-google-mcp.js` (its launch flags pass Google's automation check; a plain Playwright
+    launch does not) and the Gmail-flavoured q7 modes — read unasked, draft asks, disconnect
+    purges, reconnect, check — all pass on the final build. The red-team server, its edge route
+    and both local proofs (rows, units, images) were removed after the runs.
 
 - **Phase 8 — production hardening, and the DARK LAUNCH (deployed).** The standing "nothing on
   prod" rule lifted here. Everything from Phases 2–8 is now committed (`76c10c6`) and deployed to
