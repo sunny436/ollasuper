@@ -100,6 +100,8 @@ class PoolLimits:
     max_listen_stream_bytes: int = 64 * 1024 * 1024
     #: Calls in flight at once, per user (see `quota.UserGate`).
     max_concurrent_calls_per_user: int = 4
+    #: The local bridge's bearer token; sent only to gateway-trust endpoints.
+    gateway_auth_token: str = field(default="", repr=False)
 
 
 @dataclass
@@ -211,6 +213,14 @@ class _SessionActor:
             )
             headers = dict(credential.headers)
             credential_presented = credential.is_present
+            if self.spec.endpoint_trust == GATEWAY_TRUST:
+                # The bridge's bearer (audit N-06). Held by the pool, never on
+                # the spec (specs carry no secret material) and never logged.
+                if self._limits.gateway_auth_token:
+                    headers["Authorization"] = (
+                        f"Bearer {self._limits.gateway_auth_token}"
+                    )
+                    credential_presented = True
 
             async with AsyncExitStack() as stack:
                 # One client per session: never shared, so cookies, connection

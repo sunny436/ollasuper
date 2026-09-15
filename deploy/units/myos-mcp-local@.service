@@ -1,0 +1,36 @@
+# One local MCP server, as one systemd unit: `systemctl start myos-mcp-local@<slug>`.
+#
+# The bridge (services/ai/bridge/mcp_bridge.py) spawns the container with every
+# hardening flag explicit, ATTESTS it with `docker inspect` and serves it on
+# loopback behind MCP_GATEWAY_AUTH_TOKEN. A container that does not match its
+# row is removed and the unit FAILS — that is the point. The AI plane
+# (myos-ai) holds no Docker socket; it dials this server only when
+# /run/myos/mcp-local/<slug>.json says the attestation passed.
+#
+# The port is 8811 + the ordinal in /etc/myos/mcp-local/ports; see
+# deploy/76-mcp-local.sh, which writes the drop-in with MCP_LOCAL_PORT.
+[Unit]
+Description=OllaSuper local MCP bridge (%i)
+After=docker.service network.target
+Requires=docker.service
+PartOf=myos-ai.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/myos/services/ai
+EnvironmentFile=/opt/myos/services/ai/.env
+Environment=MCP_LOCAL_PORT=8811
+RuntimeDirectory=myos/mcp-local
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/myos/services/ai/.venv/bin/python -m bridge.mcp_bridge %i --port ${MCP_LOCAL_PORT}
+Restart=on-failure
+RestartSec=5
+# The bridge itself runs unprivileged apart from the Docker socket it needs.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run/myos/mcp-local /etc/myos/mcp-local
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -24,15 +24,15 @@ than a weaker first one — and this guard FAILS CLOSED IN THE OTHER DIRECTION: 
 gateway URL that is NOT loopback is refused, because a non-loopback gateway would
 put the `MCP_GATEWAY_AUTH_TOKEN` bearer header on a network.
 
-ONE GATEWAY PER LOCAL SERVER. Docker's gateway aggregates many servers behind one
-endpoint, and the convention it uses to distinguish their tool names is NOT
-DOCUMENTED (checked: neither the docs site nor the README states it; the
-`server::tool` form circulating online is a different project's). Rather than
-parse an undocumented string, each enabled local server gets its own gateway
-instance on its own port, launched `--servers <one>`. One endpoint then equals
-one server equals one slug, Phase 5's identity model applies unchanged, and the
-unknown never matters. The cost is N processes for N servers, which is cheap for
-a curated set in single digits.
+ONE BRIDGE PER LOCAL SERVER. The "gateway" is OllaSuper's own
+`bridge/mcp_bridge.py` since the MCP security remediation (audit H-12): one
+process per enabled local server on its own loopback port, which spawns the
+container with every hardening flag explicit, ATTESTS it with `docker inspect`
+(`attest.py`) and serves it behind a bearer token. `resolve_local_spec` refuses
+to dial without a verified attestation for the row's digest. One endpoint equals
+one server equals one slug, so Phase 5's identity model applies unchanged. (The
+Docker MCP gateway it replaced was not installed on the host and could not be
+inspected — see `launch.py`.)
 """
 
 from __future__ import annotations
@@ -113,8 +113,7 @@ def assert_gateway_url(url: str) -> None:
     except ValueError as exc:
         raise McpConnectionError(
             McpErrorKind.UNSUPPORTED_TRANSPORT,
-            "the gateway host must be a loopback address or 'localhost', "
-            f"got {host!r}",
+            f"the gateway host must be a loopback address or 'localhost', got {host!r}",
         ) from exc
     if not address.is_loopback:
         raise McpConnectionError(
@@ -225,7 +224,11 @@ async def resolve_local_spec(
         # gateway is dialled, so the path is byte-identical to Phase 5.
         return None
 
-    from app.mcp.local.policy import PolicyCeilings, validate_local_server
+    from app.mcp.local.policy import (
+        LocalServerPolicyError,
+        PolicyCeilings,
+        validate_local_server,
+    )
     from app.mcp.registry import local_store
 
     row = await local_store.resolve(engine, slug)
@@ -241,6 +244,23 @@ async def resolve_local_spec(
         allow_untrusted=getattr(settings, "mcp_local_allow_untrusted", False),
     ).raise_if_refused(slug)
 
+    # THE RUNTIME GATE (audit H-12). Policy says the row MAY run; the
+    # attestation says the container that IS running matches it — digest, no
+    # network, no caps, read-only root, non-root user, the row's limits — as
+    # inspected by the launcher (`bridge/mcp_bridge.py`) and written root-only.
+    # No attestation, a stale one, a failed one, or one for another digest:
+    # refused, before a packet leaves. The plane still holds no Docker socket.
+    from app.mcp.local import attest  # noqa: PLC0415
+
+    if not attest.verified_for(row, _attestation_dir(settings)):
+        raise LocalServerPolicyError(
+            slug,
+            [
+                "no verified runtime attestation for this server's image digest "
+                "(the bridge unit has not attested a matching container)"
+            ],
+        )
+
     return gateway_spec(
         row,
         connection_id=connection_id,
@@ -248,6 +268,16 @@ async def resolve_local_spec(
         workspace_id=workspace_id,
         base_url=getattr(settings, "mcp_gateway_url", ""),
     )
+
+
+def _attestation_dir(settings: Any) -> Any:
+    """Where the launcher writes attestations; overridable for tests only."""
+    from pathlib import Path  # noqa: PLC0415
+
+    from app.mcp.local import attest  # noqa: PLC0415
+
+    raw = getattr(settings, "mcp_local_attestation_dir", "") or ""
+    return Path(raw) if raw else attest.ATTESTATION_DIR
 
 
 def local_slug(server_name: str) -> str:

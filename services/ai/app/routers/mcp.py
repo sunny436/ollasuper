@@ -150,9 +150,7 @@ def _pool(request: Request):
     if pool is None:
         # 503, not 500: connections are OFF by configuration, which is a
         # deployment state rather than a bug.
-        raise HTTPException(
-            status_code=503, detail="MCP connections are not enabled"
-        )
+        raise HTTPException(status_code=503, detail="MCP connections are not enabled")
     return pool
 
 
@@ -298,9 +296,7 @@ async def connection_status(
     user id in a query string ends up in access logs and in a Referer header.
     """
     _assert_path_matches(connection_id, body)
-    return await lifecycle.status(
-        _engine(request), _pool(request), _request(body)
-    )
+    return await lifecycle.status(_engine(request), _pool(request), _request(body))
 
 
 @router.get("/pool")
@@ -516,8 +512,7 @@ async def connection_prompt_get(
             raise HTTPException(
                 status_code=502,
                 detail=(
-                    "the server could not render that prompt "
-                    f"({type(exc).__name__})"
+                    f"the server could not render that prompt ({type(exc).__name__})"
                 ),
             ) from exc
 
@@ -531,6 +526,7 @@ async def connection_prompt_get(
             "messages": messages,
             "truncated": truncated,
         }
+
 
 # ------------------------------------------------------- Phase 6: local servers
 @router.get("/local")
@@ -558,6 +554,9 @@ async def list_local_servers(
         # what stops Phase 7 rendering "no servers" for a disabled feature.
         return {"enabled": False, "servers": [], "gateway": None}
 
+    from app.mcp.local import attest  # noqa: PLC0415
+    from app.mcp.local.gateway import _attestation_dir  # noqa: PLC0415
+
     rows = await local_store.list_local(
         _engine(request), enabled_only=not include_disabled
     )
@@ -575,6 +574,7 @@ async def list_local_servers(
             allow_untrusted=getattr(settings, "mcp_local_allow_untrusted", False),
             remote_slugs=frozenset(remote),
         )
+        attested = attest.verified_for(row, _attestation_dir(settings))
         servers.append(
             {
                 "slug": row.slug,
@@ -582,11 +582,19 @@ async def list_local_servers(
                 "trust": row.trust,
                 "enabled": row.enabled,
                 "network": row.network,
-                # The STATE Phase 7 renders, not the machinery behind it.
-                "state": "available" if verdict.ok else "blocked",
+                # The STATE Phase 7 renders, not the machinery behind it. A row
+                # policy approves is still BLOCKED until the bridge has attested
+                # a matching container (audit H-12).
+                "state": "available" if verdict.ok and attested else "blocked",
                 # Reasons are an operator diagnostic. They name fields, never
                 # values — see the validator.
-                "reasons": verdict.reasons,
+                "reasons": verdict.reasons
+                + (
+                    []
+                    if attested or not verdict.ok
+                    else ["no verified runtime attestation"]
+                ),
+                "attested": attested,
             }
         )
     return {
@@ -612,10 +620,11 @@ def _gateway_status(settings: Any) -> dict[str, Any]:
         "configured": True,
         # The token's PRESENCE, never its value.
         "authenticated": bool(getattr(settings, "mcp_gateway_auth_token", "")),
-        "flags_verified": False,
+        # Per-server now: `servers[].attested` is the launcher's `docker
+        # inspect` verdict for that row's digest and flags (audit H-12).
+        "flags_verified": "per-server",
         "detail": (
-            "OllaSuper reaches the gateway as an MCP client; no protocol method "
-            "reports which flags it was launched with, so its security "
-            "configuration is documented and shipped, not verified from here"
+            "each local server is launched, inspected and attested by "
+            "bridge/mcp_bridge.py; the plane dials only an attested one"
         ),
     }

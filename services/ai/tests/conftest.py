@@ -51,3 +51,43 @@ async def convex_client(fake_convex):
         yield ConvexClient(settings, http), settings
     finally:
         await http.aclose()
+
+
+@pytest.fixture(autouse=True)
+def _attested_fixture_rows(monkeypatch, tmp_path_factory):
+    """Every `LocalRow` fixture slug has a fresh, verified runtime attestation.
+
+    `resolve_local_spec` refuses a local server without one (audit H-12), and
+    the local-MCP suites predate that gate: they exercise policy, identity and
+    the turn, not the launcher. The launcher's own verdicts are tested in
+    `test_mcp_local_runtime.py`, which points `mcp_local_attestation_dir` at
+    its own empty directory and therefore ignores this.
+    """
+    import time
+
+    from app.mcp.local import attest
+    from tests.fakes.mcp_gateway import LocalRow
+
+    base = tmp_path_factory.mktemp("attest")
+    digest = LocalRow().image_digest
+    for slug in (
+        "gw-fixture",
+        "gw-hostile",
+        "fs-local",
+        "github",
+        "srv-a",
+        "srv-b",
+        "a",
+        "b",
+    ):
+        attest.write(
+            attest.Attestation(
+                slug=slug,
+                verified=True,
+                image_digest=digest,
+                container_id="fixture",
+                started_at=time.time() - 1,
+            ),
+            base,
+        )
+    monkeypatch.setattr(attest, "ATTESTATION_DIR", base)

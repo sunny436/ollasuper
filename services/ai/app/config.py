@@ -928,9 +928,15 @@ class Settings(BaseSettings):
     # loopback — `assert_gateway_url` refuses anything else, because a remote
     # gateway would put the auth token below on a network.
     mcp_gateway_url: str = "http://127.0.0.1:8811"
-    # `docker mcp gateway run --transport streaming` authenticates localhost
-    # callers with this. Registered in `secrets()` so the log redactor scrubs it.
+    # The bearer the bridge (`bridge/mcp_bridge.py`) requires on every request
+    # and the resolver sends for gateway-trust endpoints (audit N-06: it used to
+    # be configured and sent by nobody). Registered in `secrets()` so the log
+    # redactor scrubs it.
     mcp_gateway_auth_token: str = ""
+    # Where `bridge/mcp_bridge.py` writes runtime attestations (root-owned);
+    # `resolve_local_spec` refuses a local server without a verified one. Empty
+    # = the fixed system path; tests point it at a temp dir.
+    mcp_local_attestation_dir: str = ""
     # Ceilings a curated row may ask UNDER, never over.
     mcp_local_max_cpus: float = 2.0
     mcp_local_max_memory_mb: int = 2048

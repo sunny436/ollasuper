@@ -241,6 +241,14 @@ def validate_local_server(
     if network not in ("none", "allowlist"):
         # There is deliberately no 'internet' mode to select.
         reasons.append(f"unknown network policy {network!r}")
+    elif network == "allowlist":
+        # Representable, NOT launchable (audit H-12): no egress filter has been
+        # verified on this host, so the only policy the launcher emits — and
+        # the attestation checks — is `--network none`.
+        reasons.append(
+            "network 'allowlist' cannot be launched: no egress filter is verified; "
+            "use 'none'"
+        )
     allow = list(getattr(row, "network_allow", None) or [])
     if network == "none" and allow:
         reasons.append("network is 'none' but an allowlist was supplied")

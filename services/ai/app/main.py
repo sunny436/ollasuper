@@ -245,6 +245,7 @@ async def lifespan(app: FastAPI):
                 max_stream_bytes_per_request=settings.mcp_max_stream_bytes_per_request,
                 max_listen_stream_bytes=settings.mcp_max_listen_stream_bytes,
                 max_concurrent_calls_per_user=settings.mcp_max_concurrent_calls_per_user,
+                gateway_auth_token=settings.mcp_gateway_auth_token,
             ),
             resolver=resolver,
         ).start(resources)
