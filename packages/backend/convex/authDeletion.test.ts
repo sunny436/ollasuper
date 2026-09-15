@@ -176,6 +176,57 @@ describe("account deletion is durable", () => {
     });
   });
 
+  test("MCP connections and their stored credentials are purged with the account", async () => {
+    // H-03. A stored OAuth token is a live credential for the user's third-
+    // party account; it must not outlive the OllaSuper account it was granted
+    // to.
+    const t = convexTest(schema, modules);
+    const seed = await seedUserWithContent(t);
+    const now = Date.now();
+    const connectionId = await t.run((ctx) =>
+      ctx.db.insert("mcpConnections", {
+        userId: seed.userId,
+        workspaceId: seed.ws,
+        serverName: "acme.test/server",
+        slug: "acme",
+        version: "1.0.0",
+        versionMode: "latest_at_connect",
+        transport: "streamable-http",
+        authKind: "oauth",
+        status: "ready",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    await t.run((ctx) =>
+      ctx.db.insert("mcpCredentials", {
+        credentialId: "cred_gone",
+        userId: seed.userId,
+        workspaceId: seed.ws,
+        connectionId,
+        serverName: "acme.test/server",
+        resource: "https://acme.test/mcp",
+        kind: "oauth_token",
+        envelope: "v1.1.AAAAAAAAAAAAAAAA.Y2lwaGVydGV4dA",
+        keyVersion: 1,
+        status: "active",
+        rev: 1,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    await t.run((ctx) =>
+      ctx.runMutation(internal.users.deleteUserAccount, { userId: seed.userId }),
+    );
+    await drain(t);
+
+    await t.run(async (ctx) => {
+      expect(await ctx.db.query("mcpCredentials").collect()).toEqual([]);
+      expect(await ctx.db.query("mcpConnections").collect()).toEqual([]);
+    });
+  });
+
   test("the cascade is idempotent — a second run is a no-op, not a crash", async () => {
     const t = convexTest(schema, modules);
     const seed = await seedUserWithContent(t);

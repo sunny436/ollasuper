@@ -67,6 +67,16 @@ def _ip_is_forbidden(ip: ipaddress._BaseAddress) -> bool:
     return not ip.is_global
 
 
+def address_is_forbidden(ip: ipaddress._BaseAddress) -> bool:
+    """The address policy, exported for a transport that pins the socket to the
+    address it validated (`app/mcp/transport.py`). ONE policy, two enforcement
+    points: this module checks a URL before it is sent anywhere; the MCP
+    transport checks every resolved address at connect time and dials only a
+    literal that passed. A second copy of the matrix would be a second thing
+    to keep correct."""
+    return _ip_is_forbidden(ip)
+
+
 def _resolved_ips(host: str, port: int) -> list[ipaddress._BaseAddress]:
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)

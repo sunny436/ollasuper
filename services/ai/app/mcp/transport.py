@@ -1,7 +1,9 @@
 """Build the HTTP client and the transport FACTORY for one connection.
 
-THIS FILE EXISTS FOR ONE REASON: the two remote MCP transports take credentials
-in incompatible ways, and nothing above this layer should have to know that.
+THIS FILE EXISTS FOR TWO REASONS.
+
+1. The two remote MCP transports take credentials in incompatible ways, and
+   nothing above this layer should have to know that.
 
     streamable_http_client(url, *, http_client, terminate_on_close)
         -> no `headers` parameter, no `auth` parameter. Authentication can ONLY
@@ -9,9 +11,34 @@ in incompatible ways, and nothing above this layer should have to know that.
     sse_client(url, headers=..., timeout=..., auth=..., ...)
         -> takes headers directly, and builds its own client from a factory.
 
-`Client(server=<url string>)` is therefore NEVER used: the SDK would construct
-the transport with no `http_client`, so it could carry no Authorization header
-at all.
+   `Client(server=<url string>)` is therefore NEVER used: the SDK would construct
+   the transport with no `http_client`, so it could carry no Authorization
+   header at all.
+
+2. EVERY BYTE THAT LEAVES FOR AN MCP SERVER OR ITS AUTHORIZATION SERVER GOES
+   THROUGH ONE GUARDED TRANSPORT. The OAuth SDK follows URLs the SERVER chooses
+   — protected-resource metadata, authorization-server metadata, dynamic client
+   registration, token, refresh, revocation — and it does so on the same httpx2
+   client as the MCP endpoint. A pre-flight check of the endpoint alone
+   therefore covered one URL out of seven. Here the guard is structural:
+
+     * a REQUEST HOOK runs `check_url_shape` on every request (https, :443,
+       no userinfo, no credential-shaped query key) — DNS-free, so it is safe
+       on the event loop;
+     * a NETWORK BACKEND resolves each hostname itself, checks EVERY returned
+       address against `app/ssrf.py::address_is_forbidden`, and then dials the
+       validated literal. The address that was checked is the address the
+       socket goes to, which closes the resolve-then-dial (DNS rebinding)
+       window that a URL check can never close. TLS is unaffected: httpcore
+       takes the SNI / certificate hostname from the request's origin, not
+       from the address it dialled (verified in `httpcore2/_async/connection.py`).
+     * `trust_env=False` on both the client and the transport, so no
+       `HTTPS_PROXY` in the service's environment can reroute a request, and no
+       env-supplied CA can be trusted.
+
+   The gateway (local, loopback) path gets the SAME machinery with the OPPOSITE
+   address policy: loopback only, the failure direction `assert_gateway_url`
+   documents.
 
 WHY A FACTORY AND NOT A TRANSPORT. `streamable_http_client` is decorated with
 `@asynccontextmanager`, so the object it returns is SINGLE-USE — entering it a
@@ -27,7 +54,8 @@ structural, not conventional.
 REDIRECTS ARE THE SDK'S. `stream_within_origin` follows a redirect only within
 the endpoint's own origin (or http->https on the same host), and REFUSES an
 https->http downgrade. It does not consult `follow_redirects`, so setting it
-here would be theatre. Verified by reading `mcp/shared/_httpx_utils.py`.
+here would be theatre. Verified by reading `mcp/shared/_httpx_utils.py`. Every
+hop it does follow is still a request, so the hook and the backend see it.
 
 TLS IS NEVER WEAKENED. There is no `verify=` argument anywhere in this module,
 and a test asserts the string does not appear in `app/mcp/`.
@@ -35,13 +63,23 @@ and a test asserts the string does not appear in `app/mcp/`.
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 from collections.abc import Callable
 from typing import Any
 
+from app.logging import get_logger
 from app.mcp.models import McpConnectionSpec
 from app.mcp.status import StatusRecorder
 
-__all__ = ["TransportFactory", "build_http_client", "build_transport_factory"]
+log = get_logger(__name__)
+
+__all__ = [
+    "TransportFactory",
+    "build_guarded_client",
+    "build_http_client",
+    "build_transport_factory",
+]
 
 TransportFactory = Callable[[], Any]
 
@@ -52,7 +90,164 @@ TransportFactory = Callable[[], Any]
 _CONNECT_TIMEOUT_S = 30.0
 _STREAM_READ_TIMEOUT_S = 300.0
 
+#: `McpConnectionSpec.endpoint_trust` for a local gateway; the only value that
+#: selects the loopback policy. Restated here (rather than imported from
+#: `local/gateway.py`) so this module has no dependency on the local package.
+_GATEWAY_TRUST = "gateway"
 
+
+# --------------------------------------------------------------- the guard
+def _catalogue_address_allowed(ip: ipaddress._BaseAddress) -> bool:
+    from app.ssrf import address_is_forbidden  # noqa: PLC0415 -- one policy
+
+    return not address_is_forbidden(ip)
+
+
+def _loopback_address_allowed(ip: ipaddress._BaseAddress) -> bool:
+    return ip.is_loopback
+
+
+def _guarded_backend(allowed: Callable[[ipaddress._BaseAddress], bool]) -> Any:
+    """A network backend that dials only an address `allowed` approved.
+
+    Built inside a function because `httpcore2` is imported lazily (it is the
+    SDK's HTTP stack, not the repo's).
+    """
+    import httpcore2  # noqa: PLC0415
+
+    class GuardedBackend(httpcore2.AnyIOBackend):
+        """Resolve here, validate every address, dial the literal that passed."""
+
+        allowed_policy = staticmethod(allowed)
+
+        async def connect_tcp(
+            self,
+            host: str,
+            port: int,
+            timeout: float | None = None,  # noqa: ASYNC109 -- httpcore's own signature
+            local_address: str | None = None,
+            socket_options: Any = None,
+        ) -> Any:
+            addresses = await _resolve_checked(host, port, self.allowed_policy)
+            # THE PINNED DIAL: the literal that was just validated, never the
+            # hostname again. SNI and certificate verification still use the
+            # origin's hostname (httpcore passes it separately).
+            return await super().connect_tcp(
+                str(addresses[0]),
+                port,
+                timeout=timeout,
+                local_address=local_address,
+                socket_options=socket_options,
+            )
+
+    return GuardedBackend()
+
+
+async def _resolve_checked(
+    host: str, port: int, allowed: Callable[[ipaddress._BaseAddress], bool]
+) -> list[ipaddress._BaseAddress]:
+    """Resolve `host` and refuse unless EVERY address passes `allowed`.
+
+    Every address, not the first: a rebinding or split-horizon answer that mixes
+    one public address with one private one is refused outright rather than
+    dialled on the public half. Separate from the backend class so the policy is
+    testable with a stubbed resolver and no socket at all.
+    """
+    import anyio  # noqa: PLC0415
+    import httpcore2  # noqa: PLC0415
+
+    try:
+        infos = await anyio.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, OSError, UnicodeError) as exc:
+        raise httpcore2.ConnectError("could not resolve host") from exc
+
+    addresses: list[ipaddress._BaseAddress] = []
+    for info in infos:
+        try:
+            addresses.append(ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]))
+        except ValueError:
+            continue
+    if not addresses:
+        raise httpcore2.ConnectError("host resolved to nothing")
+    for address in addresses:
+        if not allowed(address):
+            # The host, never the address: the refusal must not become an
+            # internal-network oracle (same rule as `endpoint._redact_addresses`).
+            log.warning(
+                "mcp.egress_refused",
+                extra={"host": host, "port": port, "rule": "address policy"},
+            )
+            raise httpcore2.ConnectError("blocked address")
+    return addresses
+
+
+def _pinned_transport(allowed: Callable[[ipaddress._BaseAddress], bool]) -> Any:
+    """`httpx2.AsyncHTTPTransport` whose connection pool uses the guarded backend.
+
+    httpx2 exposes no `network_backend` parameter, so the pool the base class
+    built is replaced with one that does. `test_mcp_egress.py` asserts the
+    replacement took, so an httpx2 upgrade that renames `_pool` fails a test
+    rather than silently reverting to the unguarded resolver.
+    """
+    import httpcore2  # noqa: PLC0415
+    import httpx2  # noqa: PLC0415
+
+    class PinnedTransport(httpx2.AsyncHTTPTransport):
+        def __init__(self) -> None:
+            # `trust_env=False`: no proxy from the environment, no env CA.
+            super().__init__(trust_env=False, retries=0, http1=True, http2=False)
+            # One session's client: a handful of connections is plenty, and a
+            # low ceiling is itself a bound on what a hostile server can make
+            # us hold open.
+            self._pool = httpcore2.AsyncConnectionPool(
+                ssl_context=httpx2.create_ssl_context(trust_env=False),
+                max_connections=8,
+                max_keepalive_connections=4,
+                keepalive_expiry=60.0,
+                http1=True,
+                http2=False,
+                retries=0,
+                network_backend=_guarded_backend(allowed),
+            )
+
+    return PinnedTransport()
+
+
+def _request_guard(trust: str) -> Callable[[Any], Any]:
+    """The per-request hook: the DNS-free URL policy for this trust level."""
+    if trust == _GATEWAY_TRUST:
+        from app.mcp.local.gateway import assert_gateway_url  # noqa: PLC0415
+
+        async def _gateway_guard(request: Any) -> None:
+            assert_gateway_url(str(request.url))
+
+        return _gateway_guard
+
+    from app.mcp.endpoint import check_url_shape  # noqa: PLC0415
+
+    async def _catalogue_guard(request: Any) -> None:
+        check_url_shape(str(request.url))
+
+    return _catalogue_guard
+
+
+def _guarded_kwargs(trust: str) -> dict[str, Any]:
+    """The client kwargs that make egress guarded, for any client this module
+    hands out. One place, so `build_http_client` and `build_guarded_client`
+    cannot disagree about what "guarded" means."""
+    allowed = (
+        _loopback_address_allowed
+        if trust == _GATEWAY_TRUST
+        else _catalogue_address_allowed
+    )
+    return {
+        "trust_env": False,
+        "transport": _pinned_transport(allowed),
+        "event_hooks": {"request": [_request_guard(trust)]},
+    }
+
+
+# -------------------------------------------------------------- the clients
 def build_http_client(
     spec: McpConnectionSpec,
     headers: dict[str, str],
@@ -77,21 +272,32 @@ def build_http_client(
     `transport` swaps the SOCKET LAYER ONLY and is never passed in production.
     It exists so the test suite can point a real protocol session at an
     in-process ASGI MCP server: everything above the socket -- the headers, the
-    timeouts, the status hook, TLS handling -- stays exactly as built here, so a
-    test cannot drift away from the client production actually uses. Note what
-    it is NOT: there is no `verify=` argument in this module, and no way to
-    reach one, so no test can weaken TLS to make a fixture work.
+    timeouts, the status hook, the request guard, TLS handling -- stays exactly
+    as built here, so a test cannot drift away from the client production
+    actually uses. Note what it is NOT: there is no `verify=` argument in this
+    module, and no way to reach one, so no test can weaken TLS to make a
+    fixture work. What a test-supplied transport DOES bypass is the address
+    policy (there is no socket to pin), which is why `test_mcp_egress.py`
+    exercises the guarded backend directly.
     """
     import httpx2  # noqa: PLC0415 -- the SDK's HTTP stack, not the repo's httpx
 
+    trust = getattr(spec, "endpoint_trust", "catalogue") or "catalogue"
+    guarded = _guarded_kwargs(trust)
     kwargs: dict[str, Any] = {
         "headers": dict(headers),
         "timeout": httpx2.Timeout(
             max(_CONNECT_TIMEOUT_S, spec.connect_timeout_s),
             read=_STREAM_READ_TIMEOUT_S,
         ),
-        # The hook the SDK's error path erases the status from. See status.py.
-        "event_hooks": {"response": [recorder]},
+        "trust_env": False,
+        # The request guard first; then the hook the SDK's error path erases the
+        # status from (see status.py).
+        "event_hooks": {
+            "request": list(guarded["event_hooks"]["request"]),
+            "response": [recorder],
+        },
+        "transport": guarded["transport"],
     }
     if transport is not None:
         kwargs["transport"] = transport
@@ -100,6 +306,21 @@ def build_http_client(
     return httpx2.AsyncClient(**kwargs)
 
 
+def build_guarded_client(timeout_s: float = 15.0) -> Any:
+    """A bare guarded client for the one-shot OAuth paths (probe, revoke).
+
+    Same request guard, same pinned transport, no credential, no recorder. It
+    exists so that no caller in `app/mcp` or `app/routers/mcp_oauth.py` has a
+    reason to write `httpx2.AsyncClient(` itself — a test asserts none does.
+    """
+    import httpx2  # noqa: PLC0415
+
+    return httpx2.AsyncClient(
+        timeout=httpx2.Timeout(timeout_s), **_guarded_kwargs("catalogue")
+    )
+
+
+# ------------------------------------------------------------- the factory
 def build_transport_factory(
     spec: McpConnectionSpec,
     http_client: Any,

@@ -846,6 +846,9 @@ http.route({
               | "oauth_token"
               | "api_key"
               | "bearer",
+            // The tenant the plane acts for; the query holds it to the row.
+            userId: body.userId as Id<"users">,
+            workspaceId: body.workspaceId as Id<"workspaces">,
           },
         );
         return aiJson({ credential });
@@ -882,24 +885,24 @@ http.route({
         return aiJson(saved);
       }
       case "mcp-credential-mark": {
-        await ctx.runMutation(internal.mcp.credentials.markCredential, {
-          credentialId: String(body.credentialId ?? ""),
-          status: (body.status ?? "unreadable") as
-            | "active"
-            | "expired"
-            | "refresh_failed"
-            | "revoked"
-            | "unreadable",
-        });
-        return aiJson({ ok: true });
-      }
-      case "mcp-credential-delete": {
         return aiJson(
-          await ctx.runMutation(internal.mcp.credentials.deleteCredential, {
+          await ctx.runMutation(internal.mcp.credentials.markCredential, {
             credentialId: String(body.credentialId ?? ""),
+            status: (body.status ?? "unreadable") as
+              | "active"
+              | "expired"
+              | "refresh_failed"
+              | "revoked"
+              | "unreadable",
+            userId: body.userId as Id<"users">,
+            workspaceId: body.workspaceId as Id<"workspaces">,
+            connectionId: body.connectionId as Id<"mcpConnections">,
           }),
         );
       }
+      // `mcp-credential-delete` was REMOVED (audit H-17): the ingress secret
+      // must not carry the authority to delete a credential. Rows are purged by
+      // `mcp.oauth.disconnect` after the plane confirms the session is gone.
       case "mcp-oauth-client-load": {
         const client = await ctx.runQuery(internal.mcp.credentials.loadClient, {
           serverName: String(body.serverName ?? ""),

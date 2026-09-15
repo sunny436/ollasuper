@@ -184,6 +184,21 @@ class McpToolAdapter:
         """Yield `(client, recorder)`. Pooled when available, one-shot otherwise."""
         if self._session_provider is not None:
             async with self._session_provider() as session:
+                if getattr(session, "stale", False):
+                    # The server changed its list after this turn bound its
+                    # tools. What the model would call is no longer what the
+                    # server serves; the next turn re-discovers.
+                    from app.mcp.exceptions import (  # noqa: PLC0415
+                        McpConnectionError,
+                        McpErrorKind,
+                    )
+
+                    raise McpConnectionError(
+                        McpErrorKind.CAPABILITY_ERROR,
+                        "the server changed its tool list during this turn; "
+                        "start a new turn to use the updated tools",
+                        server_slug=self._slug,
+                    )
                 yield session.client, session.recorder
             return
         async with AsyncExitStack() as stack:

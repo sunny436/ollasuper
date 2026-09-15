@@ -22,11 +22,13 @@ connections and the Python-before-Convex deploy ordering that comes with it.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
 from app.logging import get_logger
 from app.mcp.adapter import McpToolAdapter
+from app.mcp.exceptions import McpConnectionError, McpErrorKind
 from app.mcp.session import McpSession, McpSessionPool
 from app.models.tools import ToolDefinition
 from app.tools.registry import ToolRegistry
@@ -109,6 +111,19 @@ def compose_tools(
     return ComposedTools(registry, adapters, composed)
 
 
+@contextlib.asynccontextmanager
+async def _unless_stale(bound: McpSession, borrow: Any) -> Any:
+    if bound.stale:
+        raise McpConnectionError(
+            McpErrorKind.CAPABILITY_ERROR,
+            "the server changed its tool list during this turn; "
+            "start a new turn to use the updated tools",
+            server_slug=bound.spec.identity.slug,
+        )
+    async with borrow as session:
+        yield session
+
+
 def _adapter_for(
     session: McpSession,
     pool: McpSessionPool | None,
@@ -126,8 +141,13 @@ def _adapter_for(
 
         def _from_pool() -> Any:
             # Re-borrowed per call, so an eviction between composing and calling
-            # costs a reconnect rather than a failure.
-            return pool.acquire(spec)
+            # costs a reconnect rather than a failure. BUT the tools this turn
+            # bound came from `session`: if THAT session went stale (the server
+            # changed its list), a reconnect would serve the new definitions to
+            # calls validated and policy-checked against the old ones — a read
+            # renamed into a write would run unasked. So a stale turn session
+            # refuses for the rest of the turn; the next turn re-discovers.
+            return _unless_stale(session, pool.acquire(spec))
 
         provider = _from_pool
 

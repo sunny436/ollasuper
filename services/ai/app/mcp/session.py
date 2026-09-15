@@ -105,6 +105,12 @@ class McpSession:
     #: Calls currently in flight. Eviction must never close a session mid-call:
     #: `terminate_on_close` sends a DELETE, which would abort the request.
     in_flight: int = 0
+    #: The server said its tool/resource/prompt list changed since discovery.
+    #: The definitions this session handed out are no longer what the server
+    #: serves, so the adapter REFUSES further calls on it and the pool reopens
+    #: it on the next acquire. An approval given against the old definition
+    #: therefore never executes the new one.
+    stale: bool = False
 
     @property
     def key(self) -> PoolKey:
@@ -118,6 +124,10 @@ class McpSession:
         finally:
             self.in_flight -= 1
             self.last_used_at = anyio.current_time()
+
+
+#: See `_SessionActor._park`. Production never changes this.
+_WATCH_LIST_CHANGES = True
 
 
 class _SessionActor:
@@ -191,6 +201,7 @@ class _SessionActor:
                 config = McpConnectionConfig(
                     identity=self.spec.identity,
                     server=factory,
+                    on_list_changed=self._mark_stale,
                     # Bounds initialize and every later request. NOT wrapped in
                     # an `anyio.fail_after`: that scope would close while the
                     # Client's own task group is still open on the stack, which
@@ -232,8 +243,9 @@ class _SessionActor:
                 started = True
                 task_status.started()
                 # Park IN THE OWNER TASK. Everything above is torn down here,
-                # in this same task, when `aclose()` sets the event.
-                await self._stop.wait()
+                # in this same task, when `aclose()` sets the event. While
+                # parked, watch for the server changing its lists.
+                await self._park(client)
         except anyio.get_cancelled_exc_class():
             # MUST propagate: swallowing cancellation breaks structured
             # shutdown and leaves the process wedged.
@@ -268,6 +280,77 @@ class _SessionActor:
                     task_status.started()
             self._done.set()
 
+    async def _park(self, client: Any) -> None:
+        """Wait for `aclose()`; meanwhile subscribe to list changes.
+
+        TWO DELIVERY PATHS, because the protocol has two. On a 2025-era session
+        the server sends `notifications/*/list_changed` spontaneously on the
+        standalone GET stream and `build_client`'s message handler marks us
+        stale. On a 2026-07-28 session nothing is sent unless the client opens
+        `subscriptions/listen` — measured: without it the server logs "dropped
+        notifications/tools/list_changed: no standalone channel" and the
+        notification is lost. So the modern path is opened here, for the life
+        of the session, and each event marks the session stale.
+
+        BEST EFFORT, NEVER FATAL. A server that predates listen, refuses it or
+        drops it still serves tool calls; the session simply cannot learn about
+        list changes, which is the pre-existing state of the world, not a
+        regression. Nothing here can raise into the actor.
+
+        `_WATCH_LIST_CHANGES` exists for ONE reason: the test suite's in-process
+        ASGI transport buffers a whole response before returning it, so a
+        long-lived listen stream can never be acknowledged and — measured — the
+        SDK's in-flight POST for it can never be aborted either, which wedges
+        the client's teardown. `tests/fakes/mcp_http.patch_transport` turns the
+        watch off alongside the socket layer it replaces; the listen contract
+        is proven separately against the SDK in-process (test_approval_binding).
+        """
+        if not _WATCH_LIST_CHANGES:
+            await self._stop.wait()
+            return
+
+        async def watch() -> None:
+            try:
+                async with client.listen(
+                    tools_list_changed=True,
+                    prompts_list_changed=True,
+                    resources_list_changed=True,
+                ) as subscription:
+                    async for event in subscription:
+                        self._mark_stale(type(event).__name__)
+            except anyio.get_cancelled_exc_class():
+                raise
+            except Exception as exc:  # noqa: BLE001 -- see docstring
+                log.debug(
+                    "mcp.listen_unavailable",
+                    extra={
+                        "server": self.spec.identity.slug,
+                        "reason": type(exc).__name__,
+                    },
+                )
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(watch)
+            await self._stop.wait()
+            # The scope belongs to THIS task, so cancelling it here is the one
+            # cancel-scope shape that is safe in this file.
+            tg.cancel_scope.cancel()
+
+    def _mark_stale(self, kind: str) -> None:
+        """A `list_changed` notification arrived on this session."""
+        session = self.session
+        if session is None or session.stale:
+            return
+        session.stale = True
+        log.warning(
+            "mcp.session_stale",
+            extra={
+                "server": self.spec.identity.slug,
+                "kind": kind,
+                "user_id": self.spec.user_id,
+            },
+        )
+
     async def _discover(self, client: Any) -> tuple[list[ToolDefinition], int]:
         """`tools/list` -> bounded, normalized ToolDefinitions.
 
@@ -285,6 +368,9 @@ class _SessionActor:
             timeout_s=self.spec.tool_timeout_s,
             max_tools=self._limits.max_tools_per_server,
             max_schema_bytes=self._limits.max_tool_schema_bytes,
+            # Binds every definition to THIS connection and endpoint, so an
+            # approval cannot be replayed against another (see binding.py).
+            origin=f"{self.spec.connection_id}|{self.spec.endpoint_url}",
         )
         dropped = len(advertised) - len(tools)
         if dropped > 0:
@@ -389,12 +475,21 @@ class McpSessionPool:
         key = spec.pool_key
         async with self._lock:
             actor = self._actors.get(key)
-            if actor is not None and actor.session is not None:
+            if (
+                actor is not None
+                and actor.session is not None
+                and not actor.session.stale
+            ):
                 actor.session.last_used_at = anyio.current_time()
                 return actor.session
             if actor is not None:
-                # A previous attempt failed and left a dead entry behind.
+                # A previous attempt failed and left a dead entry behind — or
+                # the server changed its list and the session is stale. Either
+                # way it is replaced, never reused.
                 self._actors.pop(key, None)
+                if actor.session is not None:
+                    with contextlib.suppress(Exception):
+                        await actor.aclose()
 
             await self._make_room(key)
 

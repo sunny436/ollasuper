@@ -187,6 +187,10 @@ export function useConnect(
       // popup — it is cross-origin and its page carries no token, no code and
       // no state — so this grants the provider's page nothing.
       const popup = window.open(url, "mcp-authorize", "width=520,height=720");
+      // The reverse handle is dropped: the provider's page (and anything it
+      // redirects to) gets no `window.opener` to navigate this tab with, while
+      // this side keeps its reference and therefore `popup.closed`.
+      if (popup) popup.opener = null;
       if (!popup) {
         // §55: a blocked popup is its own state with its own recovery, not a
         // failed connection.
@@ -279,7 +283,19 @@ export function useConnect(
         // `scope` would silently leave that credential in the vault — a secret
         // outliving the thing it authorizes.
         if (view.hasCredential) {
-          await oauthDisconnect({ connectionId });
+          // FAIL CLOSED. The row is marked disconnected only once the AI plane
+          // has confirmed the live session is gone (H-04); a plane that could
+          // not be reached leaves the connector exactly as it was, and says so,
+          // rather than showing "disconnected" over a session that still runs.
+          const report = await oauthDisconnect({ connectionId });
+          if (report.ok !== true) {
+            toast.error(
+              typeof report.detail === "string"
+                ? report.detail
+                : "Couldn't disconnect this connector — try again",
+            );
+            return;
+          }
         } else {
           await disconnectAction({ connectionId });
         }

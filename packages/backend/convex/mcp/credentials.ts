@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { internalMutation, internalQuery, query } from "../_generated/server";
+import { audit } from "../auditLog";
 import { getUserIdOrNull } from "../chat/authz";
 
 /**
@@ -23,6 +24,15 @@ import { getUserIdOrNull } from "../chat/authz";
  * path for Python-initiated writes (artifacts, SEO runs, scheduled deliveries),
  * and it is necessary here because `TokenStorage.set_tokens` fires deep inside a
  * token refresh, mid-tool-call, with no Convex action in the loop.
+ *
+ * THE INGRESS SECRET NAMES NOTHING ON ITS OWN (audit H-17). Every op — the read
+ * and the mark included, not only the save — carries the tenant it acts for:
+ * `userId`, `workspaceId` and `connectionId`. `scopedConnection` below holds the
+ * caller to that triple against the connection row, and refuses when the row
+ * is `disconnected`. So a bug (or a compromise) in the plane can reach exactly
+ * the credentials of the user whose turn it is running, and none after the user
+ * disconnected. There is deliberately NO delete op: rows are purged by
+ * `oauth.disconnect` once the plane has confirmed the session is gone.
  */
 
 /** Bounded so a hostile or malfunctioning server cannot bloat a row. */
@@ -71,14 +81,44 @@ function toWire(row: Doc<"mcpCredentials">) {
   };
 }
 
+/**
+ * The connection a credential op may act on, or the reason it may not.
+ *
+ * `null` for a missing connection, a different owner, a different workspace,
+ * or a disconnected one — the four cases the plane must never read or write
+ * through. Reads through the index inside the calling mutation, so a
+ * concurrent disconnect conflicts and retries rather than racing past.
+ */
+async function scopedConnection(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    connectionId: Id<"mcpConnections">;
+    userId: Id<"users">;
+    workspaceId: Id<"workspaces">;
+  },
+): Promise<{ connection: Doc<"mcpConnections"> } | { reason: string }> {
+  const connection = await ctx.db.get(args.connectionId);
+  if (!connection) return { reason: "not_found" };
+  if (connection.userId !== args.userId) return { reason: "forbidden" };
+  if (connection.workspaceId !== args.workspaceId) return { reason: "forbidden" };
+  if (connection.status === "disconnected") return { reason: "disconnected" };
+  return { connection };
+}
+
 // ------------------------------------------------------------------ reads
 export const loadCredential = internalQuery({
   args: {
     connectionId: v.id("mcpConnections"),
     resource: v.string(),
     kind: KIND,
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
   },
   handler: async (ctx, args) => {
+    // SCOPED, like the writes. A read that named only a connection id would let
+    // the plane fetch any tenant's ciphertext — and the plane holds the key.
+    const scoped = await scopedConnection(ctx, args);
+    if (!("connection" in scoped)) return null;
     const row = await ctx.db
       .query("mcpCredentials")
       .withIndex("by_connection_resource", (q) =>
@@ -88,7 +128,10 @@ export const loadCredential = internalQuery({
           .eq("kind", args.kind),
       )
       .first();
-    return row ? toWire(row) : null;
+    if (!row || row.userId !== args.userId || row.workspaceId !== args.workspaceId) {
+      return null;
+    }
+    return toWire(row);
   },
 });
 
@@ -133,20 +176,30 @@ export const saveCredential = internalMutation({
     rev: v.number(),
     expectedRev: v.number(),
   },
-  handler: async (ctx, args): Promise<{ stored: boolean }> => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ stored: boolean; refused?: true; reason?: string }> => {
     if (args.envelope.length > MAX_ENVELOPE_CHARS) {
       // A credential envelope is ~100 characters. Something this large is
       // corruption or abuse, not a token.
-      return { stored: false };
+      return { stored: false, refused: true, reason: "envelope_too_large" };
     }
 
-    // OWNERSHIP IS RE-CHECKED HERE, not trusted from the body. The Python plane
-    // holds the ingress secret, so it *could* claim any tenant; this is what
-    // stops a bug there from writing a credential onto someone else's
-    // connection.
-    const connection = await ctx.db.get(args.connectionId);
-    if (!connection || connection.userId !== args.userId) {
-      return { stored: false };
+    // OWNERSHIP, WORKSPACE AND STATUS ARE RE-CHECKED HERE, not trusted from the
+    // body. The Python plane holds the ingress secret, so it *could* claim any
+    // tenant; this is what stops a bug there from writing a credential onto
+    // someone else's connection — and what stops a refresh that lands AFTER a
+    // disconnect from resurrecting the row (audit H-04). `refused` is distinct
+    // from a lost compare-and-set: the plane must fail the call, not shrug.
+    const scoped = await scopedConnection(ctx, args);
+    if (!("connection" in scoped)) {
+      return { stored: false, refused: true, reason: scoped.reason };
+    }
+    if (scoped.connection.serverName !== args.serverName) {
+      // The body's server is what the AAD was bound to; a mismatch is a
+      // mis-routed write, never something to fix up silently.
+      return { stored: false, refused: true, reason: "server_mismatch" };
     }
 
     const existing = await ctx.db
@@ -180,6 +233,11 @@ export const saveCredential = internalMutation({
         createdAt: now,
         updatedAt: now,
       });
+      await audit(ctx, args.workspaceId, args.userId, "mcp.credential_saved", {
+        serverName: args.serverName.slice(0, 200),
+        connectionId: args.connectionId,
+        kind: args.kind,
+      });
       return { stored: true };
     }
 
@@ -202,6 +260,12 @@ export const saveCredential = internalMutation({
       rev: args.rev,
       updatedAt: now,
       lastUsedAt: now,
+    });
+    await audit(ctx, args.workspaceId, args.userId, "mcp.credential_saved", {
+      serverName: args.serverName.slice(0, 200),
+      connectionId: args.connectionId,
+      kind: args.kind,
+      rev: args.rev,
     });
     return { stored: true };
   },
@@ -254,41 +318,50 @@ export const saveClient = internalMutation({
 });
 
 export const markCredential = internalMutation({
-  args: { credentialId: v.string(), status: STATUS },
-  handler: async (ctx, args): Promise<null> => {
+  args: {
+    credentialId: v.string(),
+    status: STATUS,
+    userId: v.id("users"),
+    workspaceId: v.id("workspaces"),
+    connectionId: v.id("mcpConnections"),
+  },
+  handler: async (ctx, args): Promise<{ ok: boolean }> => {
+    // A mark by id alone let the plane flip ANY tenant's credential to
+    // `unreadable` or `revoked` — a denial of service one bug away. The row
+    // must belong to the named tenant and connection.
+    const scoped = await scopedConnection(ctx, args);
+    if (!("connection" in scoped)) return { ok: false };
     const row = await ctx.db
       .query("mcpCredentials")
       .withIndex("by_credential_id", (q) =>
         q.eq("credentialId", args.credentialId),
       )
       .first();
-    if (!row) return null;
+    if (
+      !row ||
+      row.connectionId !== args.connectionId ||
+      row.userId !== args.userId ||
+      row.workspaceId !== args.workspaceId
+    ) {
+      return { ok: false };
+    }
     await ctx.db.patch(row._id, {
       status: args.status,
       updatedAt: Date.now(),
       ...(args.status === "revoked" ? { revokedAt: Date.now() } : {}),
     });
-    return null;
+    await audit(ctx, args.workspaceId, args.userId, "mcp.credential_marked", {
+      serverName: row.serverName.slice(0, 200),
+      connectionId: args.connectionId,
+      status: args.status,
+    });
+    return { ok: true };
   },
 });
 
-export const deleteCredential = internalMutation({
-  args: { credentialId: v.string() },
-  handler: async (ctx, args): Promise<{ deleted: boolean }> => {
-    const row = await ctx.db
-      .query("mcpCredentials")
-      .withIndex("by_credential_id", (q) =>
-        q.eq("credentialId", args.credentialId),
-      )
-      .first();
-    if (!row) return { deleted: false };
-    // A real delete, not a status change: disconnect must remove the secret
-    // material. Non-secret audit metadata lives in the connection row, which
-    // survives.
-    await ctx.db.delete(row._id);
-    return { deleted: true };
-  },
-});
+// THERE IS NO `deleteCredential`. Deletion happens in `oauth.disconnect`'s
+// single mutation (`connections.completeDisconnect`) and in `connections.remove`
+// — both authenticated as the owner, neither reachable with the ingress secret.
 
 /**
  * Orphan cleanup: a connection deleted while its credential remained.

@@ -23,7 +23,6 @@ success. Nothing here streams as user-visible text (the runner only forwards the
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import random
 import re
@@ -33,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import ToolMessage
 
 from app.agent.adapters import ToolAdapter
+from app.agent.binding import approval_id_for
 from app.agent.filegen_tool import FILE_GEN_TOOL_NAME
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, retrieve_knowledge
 from app.agent.memory import (
@@ -605,8 +605,9 @@ def _fresh_approval_id(tc: dict, ctx: ToolExecContext) -> str | None:
     if not (decision.needs_approval or tool_id in ctx.force_approval_ids):
         return None
     args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
-    dedup_key = json.dumps(args, sort_keys=True, default=str)
-    approval_id = f"{tool_id}:{hashlib.sha256(dedup_key.encode()).hexdigest()[:16]}"
+    # BOUND to the current definition (binding.py): a changed schema/description/
+    # origin yields a new id, so a stale approval is simply not found.
+    approval_id = approval_id_for(tool, args)
     d = ctx.approvals.get(approval_id)
     if d and d.get("decision") == "approved" and d.get("token"):
         return None  # already approved — runs normally (approvedPending/_run_one)
@@ -943,11 +944,27 @@ async def _run_one(
     decision = check_tool_policy(tool, ctx.scope)
     needs_approval = decision.needs_approval or tool_id in ctx.force_approval_ids
     if needs_approval:
-        # STABLE approval id = tool_id + hash(canonical args). Resume-stable
-        # (unlike the model's per-turn call_id), so a re-emitted request upserts
-        # the SAME durable row instead of creating a duplicate.
-        approval_id = f"{tool_id}:{hashlib.sha256(dedup_key.encode()).hexdigest()[:16]}"
+        # STABLE approval id = tool_id + hash(everything the decision rested on:
+        # connection, endpoint, side effect, description, schema, canonical
+        # args — see binding.py). Resume-stable (unlike the model's per-turn
+        # call_id), so a re-emitted request upserts the SAME durable row; and
+        # definition-bound, so an approval given to one definition is NOT found
+        # for a changed one, which parks a fresh request below.
+        approval_id = approval_id_for(tool, args)
         d = ctx.approvals.get(approval_id)
+        if d is None and any(
+            k.startswith(f"{tool_id}:")
+            and (v or {}).get("decision") == "approved"
+            for k, v in ctx.approvals.items()
+        ):
+            # An approval for this tool exists but its binding no longer
+            # matches: the tool's definition, origin or side effect changed
+            # since the user said yes. Loud, because it is either a server
+            # changing its contract under an approval or a bug in the binding.
+            log.warning(
+                "agent.approval_stale",
+                extra={"tool_id": tool_id, "execution_id": execution.execution_id},
+            )
         if d and d.get("decision") == "approved" and d.get("token"):
             pass  # approved WITH a token: fall through to execute (RUNNING below)
         elif d and d.get("decision") in ("rejected", "expired"):

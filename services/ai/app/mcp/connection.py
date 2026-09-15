@@ -101,6 +101,13 @@ def build_client(config: McpConnectionConfig) -> Any:
     return Client(
         server=server,
         read_timeout_seconds=config.read_timeout_seconds,
+        # Server notifications. Only the three `list_changed` kinds are acted
+        # on, and only by marking the session stale (see `on_list_changed`).
+        message_handler=(
+            _list_changed_handler(config.on_list_changed)
+            if config.on_list_changed is not None
+            else None
+        ),
         # EXPLICIT, and per-client. The SDK defaults to `CacheConfig()` already,
         # but the property that matters here is a security one: the default
         # store is per-client, so one tenant's cached `tools/list` can never be
@@ -120,6 +127,35 @@ def build_client(config: McpConnectionConfig) -> Any:
         # refuses every such request anyway.
         input_required_max_rounds=1,
     )
+
+
+def _list_changed_handler(callback: Any) -> Any:
+    """Turn the SDK's message stream into `callback(kind)` for list changes.
+
+    Everything else — progress, logging, cancellation — is left to the SDK's
+    own default (`checkpoint()`), so this handler changes nothing about how
+    other notifications are treated.
+    """
+    import anyio  # noqa: PLC0415
+    from mcp import types  # noqa: PLC0415
+
+    kinds = (
+        (types.ToolListChangedNotification, "tools"),
+        (types.ResourceListChangedNotification, "resources"),
+        (types.PromptListChangedNotification, "prompts"),
+    )
+
+    async def handler(message: Any) -> None:
+        for cls, kind in kinds:
+            if isinstance(message, cls):
+                try:
+                    callback(kind)
+                except Exception:  # noqa: BLE001 -- a bookkeeping hook must not kill the read loop
+                    log.warning("mcp.list_changed_callback_failed")
+                return
+        await anyio.lowlevel.checkpoint()
+
+    return handler
 
 
 async def open_client(config: McpConnectionConfig, stack: AsyncExitStack) -> Any:

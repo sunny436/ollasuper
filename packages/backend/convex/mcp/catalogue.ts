@@ -1,3 +1,4 @@
+import { internal } from "../_generated/api";
 import { action } from "../_generated/server";
 import { clamp } from "./connections";
 
@@ -98,7 +99,11 @@ export const list = action({
   ): Promise<{ enabled: boolean; servers: McpServerSummary[] } | null> => {
     // See the module docstring: this spends AI_SERVICE_KEY on the caller's
     // behalf, so an anonymous caller is a confused deputy.
-    if ((await ctx.auth.getUserIdentity()) === null) return null;
+    // ACTIVE account, not merely a valid token: an action cannot read the
+    // database, so it asks through the same query every other action gate uses.
+    if ((await ctx.runQuery(internal.accountState.activeCallerId, {})) === null) {
+      return null;
+    }
 
     const payload = await readPlane("/v1/mcp/curated");
     if (payload === null) return null;
@@ -149,7 +154,11 @@ export const local = action({
   handler: async (
     ctx,
   ): Promise<{ enabled: boolean; servers: McpLocalSummary[] } | null> => {
-    if ((await ctx.auth.getUserIdentity()) === null) return null;
+    // ACTIVE account, not merely a valid token: an action cannot read the
+    // database, so it asks through the same query every other action gate uses.
+    if ((await ctx.runQuery(internal.accountState.activeCallerId, {})) === null) {
+      return null;
+    }
 
     const payload = await readPlane("/v1/mcp/local");
     if (payload === null) return null;

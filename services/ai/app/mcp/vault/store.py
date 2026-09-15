@@ -97,16 +97,38 @@ class CredentialStorePort(Protocol):
     """
 
     async def load(
-        self, *, connection_id: str, resource: str, kind: str
+        self,
+        *,
+        connection_id: str,
+        resource: str,
+        kind: str,
+        user_id: str,
+        workspace_id: str,
     ) -> CredentialRecord | None: ...
 
     async def save(self, record: CredentialRecord, *, expected_rev: int) -> bool:
-        """Persist under compare-and-set. False means someone else wrote first."""
+        """Persist under compare-and-set. False means someone else wrote first.
+
+        Raises `CredentialRefused` when the store REFUSED the write — the
+        connection is disconnected, or the row belongs to another tenant. A
+        refusal is not a lost race and must not read as one.
+        """
         ...
 
-    async def mark(self, *, credential_id: str, status: str) -> None: ...
+    async def mark(
+        self,
+        *,
+        credential_id: str,
+        status: str,
+        user_id: str,
+        workspace_id: str,
+        connection_id: str,
+    ) -> None: ...
 
-    async def delete(self, *, credential_id: str) -> None: ...
+    # THERE IS DELIBERATELY NO `delete`. Secret material is removed by the
+    # control plane (`convex/mcp/oauth.ts::disconnect` purges the rows once the
+    # AI plane reports the session discarded), so the ingress key never carries
+    # the authority to delete a credential — audit H-17.
 
     async def load_client(
         self, *, server_name: str, issuer: str
@@ -150,7 +172,11 @@ class CredentialVault:
         instead of recovering it.
         """
         record = await self._store.load(
-            connection_id=connection_id, resource=resource, kind=str(kind)
+            connection_id=connection_id,
+            resource=resource,
+            kind=str(kind),
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         if record is None:
             return None
@@ -220,6 +246,9 @@ class CredentialVault:
             await self._store.mark(
                 credential_id=record.credential_id,
                 status=str(CredentialStatus.UNREADABLE),
+                user_id=user_id,
+                workspace_id=workspace_id,
+                connection_id=connection_id,
             )
             return None
 
@@ -259,7 +288,11 @@ class CredentialVault:
         with a token no later process can read.
         """
         existing = await self._store.load(
-            connection_id=connection_id, resource=resource, kind=str(kind)
+            connection_id=connection_id,
+            resource=resource,
+            kind=str(kind),
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         record_id = credential_id or (
             existing.credential_id if existing else new_credential_id()
@@ -313,31 +346,29 @@ class CredentialVault:
             )
         return record
 
-    async def delete(
-        self, *, connection_id: str, resource: str, kind: AadKind = AadKind.OAUTH_TOKEN
-    ) -> bool:
-        """Remove the secret material. Returns whether a row was there."""
-        record = await self._store.load(
-            connection_id=connection_id, resource=resource, kind=str(kind)
-        )
-        if record is None:
-            return False
-        await self._store.delete(credential_id=record.credential_id)
-        log.info(
-            "mcp.credential_deleted",
-            extra={"credential_id": record.credential_id, "server": record.server_name},
-        )
-        return True
-
     async def mark_revoked(
-        self, *, connection_id: str, resource: str, kind: AadKind = AadKind.OAUTH_TOKEN
+        self,
+        *,
+        user_id: str,
+        workspace_id: str,
+        connection_id: str,
+        resource: str,
+        kind: AadKind = AadKind.OAUTH_TOKEN,
     ) -> None:
         record = await self._store.load(
-            connection_id=connection_id, resource=resource, kind=str(kind)
+            connection_id=connection_id,
+            resource=resource,
+            kind=str(kind),
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         if record is not None:
             await self._store.mark(
-                credential_id=record.credential_id, status=str(CredentialStatus.REVOKED)
+                credential_id=record.credential_id,
+                status=str(CredentialStatus.REVOKED),
+                user_id=user_id,
+                workspace_id=workspace_id,
+                connection_id=connection_id,
             )
 
     # -------------------------------------------------- OAuth client records
@@ -375,10 +406,33 @@ class CredentialVault:
         server_name: str,
         issuer: str,
         registration_mode: str = "dcr",
-    ) -> ClientRecord:
+        replace_preregistered: bool = False,
+    ) -> ClientRecord | None:
+        """Store a client registration. Returns None when the write was REFUSED.
+
+        A PRE-REGISTERED RECORD IS NEVER OVERWRITTEN BY A SERVER RESPONSE. The
+        record is deployment-scoped — one per `(server, issuer)`, shared by every
+        tenant — and it is written from inside the OAuth SDK's flow, i.e. from
+        whatever the server's authorization server answered. An authorization
+        server that replies `invalid_client` and then registers a client of ITS
+        choosing would otherwise replace the operator-seeded GitHub or Slack
+        client with one the attacker holds the secret for, for everyone. Only
+        the operator's seed path (`qa/seed_oauth_client.py`) may replace one,
+        and it says so explicitly with `replace_preregistered=True`.
+        """
         existing = await self._store.load_client(
             server_name=server_name, issuer=issuer
         )
+        if (
+            existing is not None
+            and existing.registration_mode == "preregistered"
+            and not replace_preregistered
+        ):
+            log.warning(
+                "mcp.oauth_client_overwrite_refused",
+                extra={"server": server_name, "mode": registration_mode},
+            )
+            return None
         record_id = (
             existing.client_record_id if existing else new_credential_id("cli")
         )

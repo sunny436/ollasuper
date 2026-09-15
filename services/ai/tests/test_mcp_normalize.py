@@ -187,12 +187,16 @@ def test_silence_about_read_only_is_treated_as_a_write():
     )
 
 
-def test_a_declared_read_runs_unasked_only_on_an_elevated_turn():
-    """The ChatGPT-connector shape: reads flow, writes ask. Under READ_SCOPE an
-    untrusted server's read is still gated by the ceiling, as before."""
+def test_a_declared_read_runs_unasked_only_on_a_trusted_server():
+    """The connector shape: reads flow, writes ask — but ONLY where an operator
+    vouched for the server. `readOnlyHint` is server metadata; an untrusted
+    server's read asks on every scope (audit H-05: an earlier version let the
+    hint alone waive approval on an elevated turn, which is every production
+    turn)."""
     from app.agent.policy import READ_SCOPE, WRITE_SCOPE, PolicyDecision
 
     read = _Tool(name="search", annotations=_Ann(read_only_hint=True))
-    assert _decision(read, UNTRUSTED, WRITE_SCOPE) is PolicyDecision.ALLOW
+    assert _decision(read, UNTRUSTED, WRITE_SCOPE) is PolicyDecision.NEEDS_APPROVAL
     assert _decision(read, UNTRUSTED, READ_SCOPE) is PolicyDecision.NEEDS_APPROVAL
+    assert _decision(read, TRUSTED, WRITE_SCOPE) is PolicyDecision.ALLOW
     assert _decision(read, TRUSTED, READ_SCOPE) is PolicyDecision.ALLOW

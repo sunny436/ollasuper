@@ -529,6 +529,7 @@ async def test_two_servers_exposing_the_same_tool_name_coexist(asgi, monkeypatch
         return real_build(spec_, headers, recorder, **kwargs)
 
     monkeypatch.setattr(session_mod, "build_http_client", routed)
+    monkeypatch.setattr(session_mod, "_WATCH_LIST_CHANGES", False)  # see _park
 
     async with running(app_a), running(app_b), AsyncExitStack() as stack:
         pool = await _pool(stack)

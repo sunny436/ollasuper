@@ -9,6 +9,7 @@ import {
   mutation,
   query,
 } from "../_generated/server";
+import { isActiveUser } from "../accountState";
 import { audit } from "../auditLog";
 import { getUserIdOrNull, requireUserId } from "../chat/authz";
 import { requireMember } from "../orgs";
@@ -267,9 +268,51 @@ export const remove = mutation({
 export const resolveForOperation = internalQuery({
   args: { connectionId: v.id("mcpConnections"), userId: v.id("users") },
   handler: async (ctx, args) => {
+    // THE ACCOUNT GATE FOR EVERY MCP ACTION. The three action entry points
+    // (`runOperation`, `oauth.tenantFor`, `capabilities`) derive `userId` from
+    // the JWT subject, which is a bare cast: a suspended or deleted account
+    // keeps a usable access token until it expires. They all resolve the
+    // connection through here, so this is the one place that turns "the token
+    // is valid" into "the account is entitled to act" (audit H-03).
+    if (!(await isActiveUser(ctx, args.userId))) return null;
     const row = await ctx.db.get(args.connectionId);
     if (!row || row.userId !== args.userId) return null;
     return row;
+  },
+});
+
+/**
+ * The one mutation a confirmed disconnect performs (see `oauth.disconnect`):
+ * purge the secret material, mark the row, write the audit line — atomically.
+ *
+ * `userId` is re-checked against the row even though the action already
+ * resolved the tenant: an internal mutation is reachable by any action in the
+ * deployment, and a disconnect of somebody else's connection must be impossible
+ * by construction, not by every caller remembering to check.
+ */
+export const completeDisconnect = internalMutation({
+  args: {
+    connectionId: v.id("mcpConnections"),
+    userId: v.id("users"),
+    revokedRemotely: v.boolean(),
+  },
+  handler: async (ctx, args): Promise<{ purged: number }> => {
+    const row = await ctx.db.get(args.connectionId);
+    if (!row || row.userId !== args.userId) return { purged: 0 };
+    const purged = await purgeCredentialsForConnection(ctx, args.connectionId);
+    await ctx.db.patch(args.connectionId, {
+      status: "disconnected",
+      lastError: undefined,
+      lastErrorKind: undefined,
+      userActionRequired: undefined,
+    });
+    await audit(ctx, row.workspaceId, row.userId, "mcp.credential_revoked", {
+      serverName: clamp(row.serverName, 200),
+      slug: clamp(row.slug, 200),
+      status: args.revokedRemotely ? "revoked_remotely" : "local_only",
+      purged,
+    });
+    return { purged };
   },
 });
 

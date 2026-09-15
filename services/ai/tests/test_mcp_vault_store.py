@@ -49,8 +49,14 @@ class MemoryStore:
         self.marked: list[tuple[str, str]] = []
         self.fail_next_save = False
 
-    async def load(self, *, connection_id, resource, kind):
-        return self.rows.get((connection_id, resource, kind))
+    async def load(self, *, connection_id, resource, kind, user_id, workspace_id):
+        # The port carries the tenant (H-17); the real store refuses a mismatch.
+        row = self.rows.get((connection_id, resource, kind))
+        if row is None:
+            return None
+        if row.user_id != user_id or row.workspace_id != workspace_id:
+            return None
+        return row
 
     async def save(self, record, *, expected_rev):
         self.save_calls += 1
@@ -65,17 +71,18 @@ class MemoryStore:
         self.rows[key] = record
         return True
 
-    async def mark(self, *, credential_id, status):
+    async def mark(
+        self, *, credential_id, status, user_id, workspace_id, connection_id
+    ):
         self.marked.append((credential_id, status))
         for row in self.rows.values():
-            if row.credential_id == credential_id:
+            if (
+                row.credential_id == credential_id
+                and row.user_id == user_id
+                and row.workspace_id == workspace_id
+                and row.connection_id == connection_id
+            ):
                 row.status = CredentialStatus(status)
-
-    async def delete(self, *, credential_id):
-        self.deleted.append(credential_id)
-        for key, row in list(self.rows.items()):
-            if row.credential_id == credential_id:
-                del self.rows[key]
 
     async def load_client(self, *, server_name, issuer):
         return self.clients.get((server_name, issuer))
@@ -326,30 +333,44 @@ async def test_the_vault_exposes_no_lock_to_be_mistaken_for_serialisation():
     assert not hasattr(vault, "lock_for")
 
 
-# ------------------------------------------------------------------ delete
-async def test_delete_removes_the_secret_material():
-    vault, store = _vault()
-    await vault.put(TOKEN, **TENANT)
-    assert await vault.delete(
-        connection_id=TENANT["connection_id"], resource=TENANT["resource"]
-    )
-    assert store.rows == {}
-    assert await vault.get(**TENANT) is None
+# ------------------------------------------------------------ no delete
+def test_the_vault_has_no_delete_authority():
+    """H-17. Secret material is purged by the control plane once the plane
+    reports a disconnect; this process — and therefore the ingress key it
+    holds — cannot delete a credential row. An earlier version had
+    `vault.delete`; its removal is the control."""
+    from app.mcp.vault.store import CredentialStorePort, CredentialVault
 
-
-async def test_deleting_a_missing_credential_is_not_an_error():
-    vault, _store = _vault()
-    assert not await vault.delete(connection_id="nope", resource="nope")
+    assert not hasattr(CredentialVault, "delete")
+    assert not hasattr(CredentialStorePort, "delete")
 
 
 async def test_mark_revoked_keeps_the_row_but_stops_handing_it_out():
     vault, store = _vault()
     await vault.put(TOKEN, **TENANT)
     await vault.mark_revoked(
-        connection_id=TENANT["connection_id"], resource=TENANT["resource"]
+        user_id=TENANT["user_id"],
+        workspace_id=TENANT["workspace_id"],
+        connection_id=TENANT["connection_id"],
+        resource=TENANT["resource"],
     )
     assert store.rows, "revocation must not delete the audit trail"
     assert await vault.get(**TENANT) is None
+
+
+async def test_a_refused_write_propagates_and_is_not_a_lost_race():
+    """H-04. A refresh landing after a disconnect is REFUSED by the store; the
+    vault must not log it away as a benign compare-and-set loss."""
+    from app.mcp.vault.models import CredentialRefused
+
+    vault, store = _vault()
+
+    async def refuse(record, *, expected_rev):
+        raise CredentialRefused("disconnected")
+
+    store.save = refuse  # type: ignore[method-assign]
+    with pytest.raises(CredentialRefused):
+        await vault.put(TOKEN, **TENANT)
 
 
 # ---------------------------------------------------- deployment-scoped clients
@@ -433,3 +454,54 @@ def test_records_never_render_their_envelope_in_a_repr():
         envelope="v1.1.SECRETNONCE.SECRETCIPHERTEXT", key_version=1,
     )
     assert "SECRETCIPHERTEXT" not in repr(client)
+
+
+async def test_a_server_response_cannot_overwrite_a_preregistered_client():
+    """N-05. The client record is deployment-scoped and written from inside the
+    OAuth SDK's flow — i.e. from whatever the server's authorization server
+    answered. An `invalid_client` followed by a registration of the attacker's
+    choosing must not replace the operator-seeded GitHub/Slack client that every
+    tenant uses. Only the explicit seed path may."""
+    vault, _store = _vault()
+    seeded = await vault.put_client(
+        {"client_id": "operator", "client_secret": "cs-operator"},
+        server_name="s",
+        issuer="i",
+        registration_mode="preregistered",
+    )
+    assert seeded is not None
+
+    refused = await vault.put_client(
+        {"client_id": "attacker", "client_secret": "cs-attacker"},
+        server_name="s",
+        issuer="i",
+        registration_mode="dcr",
+    )
+    assert refused is None
+    assert await vault.get_client(server_name="s", issuer="i") == {
+        "client_id": "operator",
+        "client_secret": "cs-operator",
+    }
+
+    # The operator's own re-seed is the one path that may replace it.
+    replaced = await vault.put_client(
+        {"client_id": "operator-2", "client_secret": "cs-2"},
+        server_name="s",
+        issuer="i",
+        registration_mode="preregistered",
+        replace_preregistered=True,
+    )
+    assert replaced is not None
+    got = await vault.get_client(server_name="s", issuer="i")
+    assert got is not None and got["client_id"] == "operator-2"
+
+
+async def test_a_dcr_record_may_still_be_re_registered():
+    """Re-registration of a DCR client is legitimate (the AS forgot us); the
+    refusal is scoped to operator-seeded records only."""
+    vault, _store = _vault()
+    await vault.put_client({"client_id": "a"}, server_name="s", issuer="i")
+    again = await vault.put_client({"client_id": "b"}, server_name="s", issuer="i")
+    assert again is not None
+    got = await vault.get_client(server_name="s", issuer="i")
+    assert got is not None and got["client_id"] == "b"

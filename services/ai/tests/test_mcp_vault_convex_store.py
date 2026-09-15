@@ -153,7 +153,11 @@ async def test_a_load_round_trips_every_field_convex_returns():
     }
     convex = FakeConvex({"mcp-credential-load": {"credential": row}})
     got = await ConvexCredentialStore(convex).load(
-        connection_id="conn-1", resource="https://acme.test/mcp", kind="oauth_token"
+        connection_id="conn-1",
+        resource="https://acme.test/mcp",
+        kind="oauth_token",
+        user_id="user-a",
+        workspace_id="ws-1",
     )
     assert got is not None
     assert got.credential_id == "cred_1"
@@ -189,7 +193,11 @@ async def test_a_malformed_row_reads_as_none_rather_than_raising(row):
     convex = FakeConvex({"mcp-credential-load": {"credential": row}})
     assert (
         await ConvexCredentialStore(convex).load(
-            connection_id="c", resource="r", kind="oauth_token"
+            connection_id="c",
+            resource="r",
+            kind="oauth_token",
+            user_id="u",
+            workspace_id="w",
         )
         is None
     )
@@ -199,26 +207,73 @@ async def test_a_missing_credential_reads_as_none():
     convex = FakeConvex({"mcp-credential-load": {"credential": None}})
     assert (
         await ConvexCredentialStore(convex).load(
-            connection_id="c", resource="r", kind="oauth_token"
+            connection_id="c",
+            resource="r",
+            kind="oauth_token",
+            user_id="u",
+            workspace_id="w",
         )
         is None
     )
 
 
-async def test_mark_and_delete_address_the_credential_by_id():
-    convex = FakeConvex()
+async def test_every_op_names_the_tenant_and_there_is_no_delete():
+    """H-17. A read or a mark states whose credential it wants — user,
+    workspace AND connection — so Convex can hold the caller to it; the ingress
+    secret alone addresses nothing. And there is no delete op: the control
+    plane purges rows itself after a confirmed disconnect."""
+    convex = FakeConvex({"mcp-credential-load": {"credential": None}})
     store = ConvexCredentialStore(convex)
-    await store.mark(credential_id="cred_1", status="revoked")
-    await store.delete(credential_id="cred_1")
+    await store.load(
+        connection_id="conn-1",
+        resource="r",
+        kind="oauth_token",
+        user_id="user-a",
+        workspace_id="ws-1",
+    )
+    await store.mark(
+        credential_id="cred_1",
+        status="revoked",
+        user_id="user-a",
+        workspace_id="ws-1",
+        connection_id="conn-1",
+    )
+    assert convex.body_for("mcp-credential-load") == {
+        "op": "mcp-credential-load",
+        "connectionId": "conn-1",
+        "resource": "r",
+        "kind": "oauth_token",
+        "userId": "user-a",
+        "workspaceId": "ws-1",
+    }
     assert convex.body_for("mcp-credential-mark") == {
         "op": "mcp-credential-mark",
         "credentialId": "cred_1",
         "status": "revoked",
+        "userId": "user-a",
+        "workspaceId": "ws-1",
+        "connectionId": "conn-1",
     }
-    assert convex.body_for("mcp-credential-delete") == {
-        "op": "mcp-credential-delete",
-        "credentialId": "cred_1",
-    }
+    assert not hasattr(store, "delete")
+
+
+async def test_a_refused_save_raises_rather_than_reading_as_a_lost_race():
+    """H-04. `{refused: true}` is Convex declining the write for this tenant or
+    connection (disconnected, wrong owner). It must surface, not be logged away
+    as a compare-and-set loss that the caller shrugs off."""
+    from app.mcp.vault.models import CredentialRefused
+
+    convex = FakeConvex(
+        {
+            "mcp-credential-save": {
+                "stored": False,
+                "refused": True,
+                "reason": "disconnected",
+            }
+        }
+    )
+    with pytest.raises(CredentialRefused, match="disconnected"):
+        await ConvexCredentialStore(convex).save(_record(), expected_rev=1)
 
 
 async def test_the_client_record_crosses_without_a_tenant():
@@ -245,9 +300,7 @@ async def test_the_client_record_crosses_without_a_tenant():
 async def test_a_client_row_without_an_envelope_reads_as_none():
     convex = FakeConvex({"mcp-oauth-client-load": {"client": {"clientRecordId": "x"}}})
     assert (
-        await ConvexCredentialStore(convex).load_client(
-            server_name="s", issuer="i"
-        )
+        await ConvexCredentialStore(convex).load_client(server_name="s", issuer="i")
         is None
     )
 
@@ -285,9 +338,20 @@ async def _keys_python_sends(op: str) -> set[str]:
     store = ConvexCredentialStore(convex)
     record = _record()
     await store.save(record, expected_rev=1)
-    await store.load(connection_id="c", resource="r", kind="oauth_token")
-    await store.mark(credential_id="cred_1", status="revoked")
-    await store.delete(credential_id="cred_1")
+    await store.load(
+        connection_id="c",
+        resource="r",
+        kind="oauth_token",
+        user_id="u",
+        workspace_id="w",
+    )
+    await store.mark(
+        credential_id="cred_1",
+        status="revoked",
+        user_id="u",
+        workspace_id="w",
+        connection_id="c",
+    )
     await store.load_client(server_name="s", issuer="i")
     await store.save_client(
         ClientRecord(
@@ -307,7 +371,6 @@ async def _keys_python_sends(op: str) -> set[str]:
         "mcp-credential-load",
         "mcp-credential-save",
         "mcp-credential-mark",
-        "mcp-credential-delete",
         "mcp-oauth-client-load",
         "mcp-oauth-client-save",
     ],

@@ -89,6 +89,7 @@ async def _pool_for(app: Any):
 
     original = session_mod.build_http_client
     session_mod.build_http_client = routed  # type: ignore[assignment]
+    session_mod._WATCH_LIST_CHANGES = False  # see _park
     try:
         async with AsyncExitStack() as stack:
             # The sweeper is parked at an hour: a turn-length test must not race
@@ -102,6 +103,7 @@ async def _pool_for(app: Any):
                 await pool.aclose()
     finally:
         session_mod.build_http_client = original  # type: ignore[assignment]
+        session_mod._WATCH_LIST_CHANGES = True
 
 
 def _req(content: str, connections: list[McpConnectionRef]) -> GenerateRequest:

@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import anyio
+from mcp.server.mcpserver.context import Context  # module scope: see `Filter`
 from pydantic import BaseModel
 
 
@@ -112,6 +113,23 @@ def build_mcp_app(
     @server.tool(name="always_fails", description="Raise, to exercise error paths.")
     def always_fails() -> str:
         raise ValueError("deliberate test failure")
+
+    # Declared read-only so it runs unasked on a trusted fixture; its only
+    # effect is a `notifications/tools/list_changed` to the CALLING client —
+    # what a server does when it swaps a tool's contract under a live session.
+    @server.tool(
+        name="bump_tools",
+        description="Notify the client that the tool list changed.",
+        annotations=ToolAnnotations(read_only_hint=True),
+    )
+    async def bump_tools(ctx: Context) -> str:
+        # Both delivery paths a real server has: the 2026-07-28 subscription
+        # bus (what `Client.listen` receives) and the legacy spontaneous
+        # notification (dropped by this SDK when no standalone channel exists,
+        # which is exactly why the pool subscribes).
+        await ctx.notify_tools_changed()
+        await ctx.session.send_tool_list_changed()
+        return "bumped"
 
     @server.tool(name="slow", description="Sleep, so a caller can cancel it.")
     async def slow(seconds: float = 30.0) -> str:
@@ -356,6 +374,11 @@ def patch_transport(monkeypatch: Any, app: Any) -> None:
         return real_build(spec, headers, recorder, **kwargs)
 
     monkeypatch.setattr(session_mod, "build_http_client", fake_build)
+    # A buffered in-process transport cannot carry a long-lived
+    # `subscriptions/listen` stream (see `_SessionActor._park`): the
+    # subscription is skipped here, and its contract is tested against the SDK
+    # in-process instead (test_approval_binding.py).
+    monkeypatch.setattr(session_mod, "_WATCH_LIST_CHANGES", False)
 
 
 def spec(

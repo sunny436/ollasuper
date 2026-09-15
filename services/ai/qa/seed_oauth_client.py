@@ -79,6 +79,9 @@ async def main(slug: str) -> int:
             server_name=row["server_name"],
             issuer=row["endpoint_url"],
             registration_mode="preregistered",
+            # The operator's explicit replacement: the only path allowed to
+            # overwrite a pre-registered record.
+            replace_preregistered=True,
         )
         stored = await vault.get_client(
             server_name=row["server_name"], issuer=row["endpoint_url"]

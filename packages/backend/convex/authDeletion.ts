@@ -241,6 +241,30 @@ async function sweepAccountTables(
     await ctx.db.delete(q0._id);
     did = true;
   }
+
+  // MCP CONNECTOR STATE — the stored OAuth tokens are live credentials for the
+  // user's third-party accounts (Gmail, Slack, GitHub …). Credential rows go
+  // FIRST, by user, so an interrupted sweep cannot leave ciphertext behind that
+  // still names a connection; then the connections. Remote revocation is not
+  // attempted here: the deletion cascade runs with no session to act through,
+  // and a token the plane can no longer read is a token OllaSuper can no
+  // longer use, which is the property the account owner is owed (audit H-03).
+  const credentials = await ctx.db
+    .query("mcpCredentials")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .take(ROWS_PER_SUBQUERY);
+  for (const c of credentials) {
+    await ctx.db.delete(c._id);
+    did = true;
+  }
+  const connections = await ctx.db
+    .query("mcpConnections")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .take(ROWS_PER_SUBQUERY);
+  for (const c of connections) {
+    await ctx.db.delete(c._id);
+    did = true;
+  }
   const codes = await ctx.db
     .query("accountDeletionCodes")
     .withIndex("by_user", (q) => q.eq("userId", userId))

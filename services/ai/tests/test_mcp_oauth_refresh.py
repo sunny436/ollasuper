@@ -39,7 +39,6 @@ import pytest
 from app.mcp.credentials import VaultCredentialResolver
 from app.mcp.errors import leaves
 from app.mcp.exceptions import McpConnectionError, McpErrorKind
-from app.mcp.vault.aad import AadKind
 from tests.fakes.oauth_server import (
     BASE,
     MCP_URL,
@@ -444,22 +443,18 @@ async def test_nothing_stored_means_nothing_to_revoke():
     assert result == "unsupported"
 
 
-async def test_disconnect_deletes_the_secret_material():
+async def test_the_plane_cannot_delete_the_secret_material():
+    """H-17. After a disconnect the CONTROL PLANE purges the rows; this process
+    has no delete at all, so the ingress key it holds cannot remove anybody's
+    credential. (An earlier version of this test asserted `vault.delete`
+    emptied the store — that authority is gone by design.)"""
     async def body(harness: Harness) -> None:
         await _authorize(harness)
 
     harness = await _in_harness(body)
     assert len(harness.store.rows) == 1
-
-    deleted = await harness.vault.delete(
-        connection_id=TENANT["connection_id"],
-        resource=MCP_URL,
-        kind=AadKind.OAUTH_TOKEN,
-    )
-    assert deleted is True
-    assert harness.store.rows == {}
-    # A real delete, not a status change: disconnect must remove the secret.
-    assert harness.store.deleted
+    assert not hasattr(harness.vault, "delete")
+    assert not hasattr(harness.store, "delete")
 
 
 async def test_a_revoked_credential_is_never_handed_out_again():
@@ -468,7 +463,10 @@ async def test_a_revoked_credential_is_never_handed_out_again():
 
     harness = await _in_harness(body)
     await harness.vault.mark_revoked(
-        connection_id=TENANT["connection_id"], resource=MCP_URL
+        user_id=TENANT["user_id"],
+        workspace_id=TENANT["workspace_id"],
+        connection_id=TENANT["connection_id"],
+        resource=MCP_URL,
     )
     found = await harness.vault.get(
         user_id=TENANT["user_id"],
@@ -616,13 +614,9 @@ async def test_a_refused_revocation_reports_false_and_still_deletes_locally():
         _FakeRequest(harness), _FakeBody(), _FakeTarget(), client_factory=refusing
     )
     assert result is False
-
-    # And the local delete still goes through afterwards.
-    assert await harness.vault.delete(
-        connection_id=TENANT["connection_id"],
-        resource=MCP_URL,
-        kind=AadKind.OAUTH_TOKEN,
-    )
+    # The row is untouched here: purging is the control plane's, on the
+    # plane's `session_discarded` report, never a side effect of revocation.
+    assert len(harness.store.rows) == 1
 
 
 async def test_the_revocation_endpoint_is_ssrf_guarded_like_every_other():

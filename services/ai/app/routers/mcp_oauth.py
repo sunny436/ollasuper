@@ -117,12 +117,13 @@ async def oauth_probe(request: Request, body: OAuthBody) -> dict[str, Any]:
     way to fill the auth capability matrix, because the catalogue can never say
     which servers speak OAuth — the registry publishes no auth-scheme field.
     """
-    import httpx2
-
     from app.mcp.oauth.probe import probe_auth
+    from app.mcp.transport import build_guarded_client
 
     target = await _curated_target(request, body.server_name)
-    async with httpx2.AsyncClient(timeout=httpx2.Timeout(15.0)) as client:
+    # THE GUARDED CLIENT, not a bare httpx2 one: discovery follows URLs the
+    # server chooses, and every one of them must pass the egress policy.
+    async with build_guarded_client(15.0) as client:
         shape = await probe_auth(target.endpoint_url, client)
     return shape.as_dict()
 
@@ -248,41 +249,42 @@ async def oauth_status(request: Request, body: OAuthBody) -> dict[str, Any]:
 
 @router.post("/oauth/disconnect")
 async def oauth_disconnect(request: Request, body: OAuthBody) -> dict[str, Any]:
-    """Invalidate the session, revoke where supported, delete the secret.
+    """Invalidate the session and revoke where supported. The SECRET IS DELETED
+    BY THE CONTROL PLANE, not here.
 
-    `revoked_remotely` is reported SEPARATELY from `deleted_locally`, and is
-    `"unsupported"` when the authorization server publishes no revocation
-    endpoint. Claiming a remote revocation that did not happen would tell a user
-    their access was withdrawn when it was not.
+    `session_discarded` is the fact Convex acts on: only once this plane has
+    dropped the live session does `convex/mcp/oauth.ts::disconnect` purge the
+    credential rows and mark the connection disconnected — in one mutation, so
+    a disconnect that the plane never confirmed leaves the row exactly as it
+    was rather than half-closed (audit H-04). And because this plane holds no
+    delete op at all, the ingress key cannot remove anybody's credential
+    (audit H-17).
+
+    `revoked_remotely` is reported SEPARATELY and is `"unsupported"` when the
+    authorization server publishes no revocation endpoint. Claiming a remote
+    revocation that did not happen would tell a user their access was withdrawn
+    when it was not.
     """
-    from app.mcp.vault.aad import AadKind
-
-    vault = _vault(request)
+    _vault(request)  # the deployment guard: 503 when the vault is off
     target = await _curated_target(request, body.server_name)
 
     # Order matters: kill the live session FIRST, so an in-flight tool call
-    # cannot keep using a credential that is about to be deleted.
+    # cannot keep using a credential that is about to be purged.
     pool = getattr(request.app.state, "mcp_pool", None)
     if pool is not None:
         await pool.discard((body.user_id, body.workspace_id, body.connection_id))
 
     revoked = await _revoke_remotely(request, body, target)
-    deleted = await vault.delete(
-        connection_id=body.connection_id,
-        resource=target.endpoint_url,
-        kind=AadKind.OAUTH_TOKEN,
-    )
     log.info(
         "mcp.oauth_disconnected",
         extra={
             "server": target.slug,
             "user_id": body.user_id,
-            "deleted": deleted,
             "revoked": revoked,
         },
     )
     return {
-        "deleted_locally": deleted,
+        "session_discarded": True,
         "revoked_remotely": revoked,
         "auth_state": "NOT_CONNECTED",
     }
@@ -308,9 +310,8 @@ async def _revoke_remotely(
     still runs for real against the URL. Omitted, it builds the production
     client — so nothing about the default path changes.
     """
-    import httpx2
-
     from app.mcp.oauth.probe import probe_auth
+    from app.mcp.transport import build_guarded_client
     from app.mcp.vault.aad import AadKind
 
     found = await _vault(request).get(
@@ -328,7 +329,7 @@ async def _revoke_remotely(
     if not token:
         return "unsupported"
 
-    build = client_factory or (lambda: httpx2.AsyncClient(timeout=httpx2.Timeout(10.0)))
+    build = client_factory or (lambda: build_guarded_client(10.0))
     try:
         async with build() as client:
             shape = await probe_auth(target.endpoint_url, client)

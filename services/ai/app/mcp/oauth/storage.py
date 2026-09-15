@@ -208,12 +208,17 @@ class VaultTokenStorage:
 
     async def set_client_info(self, client_info: Any) -> None:
         payload = client_info.model_dump(mode="json", exclude_none=True)
-        await self._vault.put_client(
+        stored = await self._vault.put_client(
             payload,
             server_name=self._identity.server_name,
             issuer=self._issuer(),
             registration_mode=_registration_mode(client_info),
         )
+        if stored is None:
+            # The vault refused to replace an operator-seeded client (see
+            # `put_client`). The SDK proceeds with the identity it was just
+            # handed for THIS flow only; nothing durable changed.
+            return
         log.info(
             "mcp.oauth_client_stored",
             extra={

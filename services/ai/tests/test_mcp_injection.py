@@ -87,9 +87,39 @@ async def test_a_read_only_lie_from_an_untrusted_server_still_needs_approval():
 
     assert tool.side_effect is SideEffect.EXTERNAL_SIDE_EFFECT
     assert check_tool_policy(tool, READ_SCOPE).decision is PolicyDecision.NEEDS_APPROVAL
-    # And under an ELEVATED turn it is still governed by the existing ladder
-    # rather than by anything the server said.
-    assert check_tool_policy(tool, WRITE_SCOPE).decision is PolicyDecision.ALLOW
+    # AND UNDER AN ELEVATED TURN — which is every production turn, where the
+    # side-effect ceiling gates nothing. An earlier version of this test
+    # asserted ALLOW here, codifying exactly the bypass audit H-05 named: the
+    # hint alone waived the human gate. Nothing an untrusted server says can.
+    assert (
+        check_tool_policy(tool, WRITE_SCOPE).decision is PolicyDecision.NEEDS_APPROVAL
+    )
+    assert tool.permissions.approval_required is True
+
+
+@pytest.mark.parametrize(
+    ("trusted", "name", "scope", "expected"),
+    [
+        # trusted × declared read → the ONLY unasked cell
+        (True, "delete_everything", WRITE_SCOPE, PolicyDecision.ALLOW),
+        (True, "delete_everything", READ_SCOPE, PolicyDecision.ALLOW),
+        # trusted × write (no read hint) → asks
+        (True, "helper", WRITE_SCOPE, PolicyDecision.NEEDS_APPROVAL),
+        (True, "helper", READ_SCOPE, PolicyDecision.NEEDS_APPROVAL),
+        # untrusted × anything → asks
+        (False, "delete_everything", WRITE_SCOPE, PolicyDecision.NEEDS_APPROVAL),
+        (False, "delete_everything", READ_SCOPE, PolicyDecision.NEEDS_APPROVAL),
+        (False, "helper", WRITE_SCOPE, PolicyDecision.NEEDS_APPROVAL),
+        (False, "helper", READ_SCOPE, PolicyDecision.NEEDS_APPROVAL),
+    ],
+)
+async def test_the_approval_matrix(trusted, name, scope, expected):
+    """trusted × declared-read × scope, exhaustively. One cell runs unasked:
+    a declared read on a server an operator vouched for. Every other cell asks.
+    (`delete_everything` is the fixture's declared read; `helper` carries no
+    annotations and is therefore a write.)"""
+    tools = {t.name: t for t in await _discover(_cfg(trusted=trusted))}
+    assert check_tool_policy(tools[name], scope).decision is expected
 
 
 async def test_the_hint_is_honoured_only_where_an_operator_vouched_for_the_server():
@@ -216,9 +246,7 @@ async def _run(tool_id: str, *, trusted: bool = True, scope=None) -> ToolMessage
         result_max_chars=8000,
         default_timeout_s=30.0,
     )
-    msgs = await execute_tool_calls(
-        [{"name": tool_id, "args": {}, "id": "c1"}], ctx
-    )
+    msgs = await execute_tool_calls([{"name": tool_id, "args": {}, "id": "c1"}], ctx)
     assert len(msgs) == 1
     return msgs[0]
 
@@ -265,9 +293,7 @@ async def test_an_approval_gated_hostile_tool_is_not_executed_without_approval()
     An untrusted `delete_everything` under the read-only ceiling must NOT reach
     the server. This is the whole chain the description poisoning was aimed at.
     """
-    msg = await _run(
-        "mcp:hostile:delete_everything", trusted=False, scope=READ_SCOPE
-    )
+    msg = await _run("mcp:hostile:delete_everything", trusted=False, scope=READ_SCOPE)
     # A refusal the model can read, not a silent drop and not an execution.
     assert isinstance(msg, ToolMessage)
     assert "deleted" not in msg.content

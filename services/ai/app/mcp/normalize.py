@@ -160,6 +160,7 @@ def normalize_tool(
     *,
     timeout_s: float = 30.0,
     max_schema_bytes: int = MAX_SCHEMA_BYTES,
+    origin: str = "",
 ) -> ToolDefinition:
     """One `mcp_types.Tool` -> one `ToolDefinition`.
 
@@ -190,18 +191,20 @@ def normalize_tool(
         side_effect=_side_effect(
             getattr(tool, "annotations", None), trusted=identity.trusted
         ),
-        # A WRITE ALWAYS ASKS. The side-effect ceiling gates nothing on an
-        # elevated turn (production runs every turn elevated), so without this
-        # flag a Slack `send_message` or a GitHub `create_issue` ran with no
-        # approval at all — measured on production. Only a tool the server
-        # itself declares read-only runs unasked, and only on an elevated turn;
-        # under READ_SCOPE the ceiling still gates it (`_side_effect` above
-        # never believes an untrusted server). A server lying about
-        # `readOnlyHint` can therefore skip approval for a read-shaped tool on
-        # an elevated turn; it cannot make a declared write run unasked.
+        # EVERYTHING ASKS, EXCEPT A DECLARED READ ON A SERVER THE OPERATOR
+        # VOUCHED FOR. The side-effect ceiling gates nothing on an elevated turn
+        # (production runs every turn elevated), so this flag is the human gate.
+        # The waiver has TWO conditions and both are needed: `readOnlyHint` is
+        # server metadata, and MCP's own spec says clients "should not make
+        # tool use decisions based on ToolAnnotations received from untrusted
+        # servers" — an earlier version honoured the hint alone, so an untrusted
+        # server marking `delete_everything` read-only ran it unasked (audit
+        # H-05). Now the hint lowers nothing unless `trusted`, which only an
+        # operator sets; and even a trusted server's WRITE always asks.
         permissions=ToolPermissions(
-            approval_required=not _declared_read_only(
-                getattr(tool, "annotations", None)
+            approval_required=not (
+                identity.trusted
+                and _declared_read_only(getattr(tool, "annotations", None))
             )
         ),
         timeout=timeout_s,
@@ -218,6 +221,9 @@ def normalize_tool(
         path="",
         required_auth="mcp",
         version="",
+        # `<connection_id>|<endpoint_url>` from the session that discovered it;
+        # part of the approval binding so an approval cannot cross connections.
+        origin=origin,
     )
 
 
@@ -228,6 +234,7 @@ def normalize_tools(
     timeout_s: float = 30.0,
     max_tools: int = MAX_TOOLS_PER_SERVER,
     max_schema_bytes: int = MAX_SCHEMA_BYTES,
+    origin: str = "",
 ) -> list[ToolDefinition]:
     """Normalize a `tools/list` payload. A malformed or oversized entry is
     SKIPPED, not fatal: one bad tool must not cost the user every other tool on
@@ -248,6 +255,7 @@ def normalize_tools(
                     identity,
                     timeout_s=timeout_s,
                     max_schema_bytes=max_schema_bytes,
+                    origin=origin,
                 )
             )
         except (ValueError, TypeError, AttributeError):

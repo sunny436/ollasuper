@@ -9,12 +9,12 @@ the staging force-flag promotes a read-only tool to approval-gated.
 
 from __future__ import annotations
 
-import hashlib
 import json
 
 import httpx
 import pytest
 
+from app.agent.binding import approval_id_for
 from app.agent.executor import execute_tool_calls
 from app.models.tools import SideEffect, ToolPermissions
 from tests.test_agent_executor import _ctx, _events, _read_tool, _tc
@@ -23,8 +23,10 @@ pytestmark = pytest.mark.anyio
 
 
 def _approval_id(tool_id: str, args: dict) -> str:
-    dedup = json.dumps(args, sort_keys=True, default=str)
-    return f"{tool_id}:{hashlib.sha256(dedup.encode()).hexdigest()[:16]}"
+    """The approval's identity is the BINDING (app/agent/binding.py): the tool
+    definition the user reviewed plus the args, not `tool_id + hash(args)`."""
+    assert tool_id == "search_web"
+    return approval_id_for(_high_tool(), args)
 
 
 def _ok_handler(called: dict):

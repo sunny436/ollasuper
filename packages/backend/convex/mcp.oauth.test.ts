@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 
@@ -235,7 +235,18 @@ describe("the credential ingress ops", () => {
         transport: "streamable-http",
         authKind: "oauth",
       });
-    return { ...ids, connectionId };
+    const otherConnectionId: Id<"mcpConnections"> = await t
+      .withIdentity(as(ids.owner))
+      .mutation(api.mcp.connections.create, {
+        workspaceId: ids.ws,
+        serverName: "acme.test/other",
+        slug: "acme-other",
+        version: "1.0.0",
+        versionMode: "latest_at_connect",
+        transport: "streamable-http",
+        authKind: "oauth",
+      });
+    return { ...ids, connectionId, otherConnectionId };
   }
 
   const savePayload = (s: Awaited<ReturnType<typeof seed>>) => ({
@@ -260,7 +271,6 @@ describe("the credential ingress ops", () => {
       "mcp-credential-load",
       "mcp-credential-save",
       "mcp-credential-mark",
-      "mcp-credential-delete",
       "mcp-oauth-client-load",
       "mcp-oauth-client-save",
     ]) {
@@ -287,6 +297,8 @@ describe("the credential ingress ops", () => {
       connectionId: s.connectionId,
       resource: "https://acme.test/mcp",
       kind: "oauth_token",
+      userId: s.owner,
+      workspaceId: s.ws,
     });
     const body = (await loaded.json()) as {
       credential: { envelope: string; rev: number } | null;
@@ -307,6 +319,8 @@ describe("the credential ingress ops", () => {
       connectionId: s.connectionId,
       resource: "https://acme.test/mcp",
       kind: "oauth_token",
+      userId: s.owner,
+      workspaceId: s.ws,
     });
     expect(await res.json()).toEqual({ credential: null });
   });
@@ -322,17 +336,35 @@ describe("the credential ingress ops", () => {
     );
 
     const res = await post(t, { ...savePayload(s), userId: stranger });
-    expect(await res.json()).toEqual({ stored: false });
+    expect(await res.json()).toEqual({
+      stored: false,
+      refused: true,
+      reason: "forbidden",
+    });
     const rows = await t.run(async (ctx) =>
       ctx.db.query("mcpCredentials").collect(),
     );
     expect(rows).toHaveLength(0);
   });
 
-  test("mark and delete reach the same row", async () => {
+  test("a mark names its tenant and connection; the delete op is gone", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     await post(t, savePayload(s));
+
+    // A mark that names the wrong connection is refused.
+    expect(
+      await (
+        await post(t, {
+          op: "mcp-credential-mark",
+          credentialId: "cred_1",
+          status: "revoked",
+          userId: s.owner,
+          workspaceId: s.ws,
+          connectionId: s.otherConnectionId,
+        })
+      ).json(),
+    ).toEqual({ ok: false });
 
     expect(
       await (
@@ -340,6 +372,9 @@ describe("the credential ingress ops", () => {
           op: "mcp-credential-mark",
           credentialId: "cred_1",
           status: "revoked",
+          userId: s.owner,
+          workspaceId: s.ws,
+          connectionId: s.connectionId,
         })
       ).json(),
     ).toEqual({ ok: true });
@@ -349,14 +384,15 @@ describe("the credential ingress ops", () => {
     );
     expect(row?.status).toBe("revoked");
 
-    expect(
-      await (
-        await post(t, { op: "mcp-credential-delete", credentialId: "cred_1" })
-      ).json(),
-    ).toEqual({ deleted: true });
+    // H-17: there is no delete op. The ingress secret cannot remove a row.
+    const gone = await post(t, {
+      op: "mcp-credential-delete",
+      credentialId: "cred_1",
+    });
+    expect(gone.status).toBe(400);
     expect(
       await t.run(async (ctx) => ctx.db.query("mcpCredentials").collect()),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
   });
 
   test("the client record round-trips and is not tenant-scoped", async () => {
@@ -575,13 +611,28 @@ describe("the OAuth actions are the tenancy gate", () => {
     expect(report.detail).toBe("the AI service could not be reached");
   });
 
-  test("disconnect marks the row disconnected even when revocation fails", async () => {
-    // A failed remote revocation must not leave the UI claiming the account is
-    // still connected. `revoked_remotely` is where that nuance lives.
+  test("disconnect purges and marks only once the plane confirms the session is gone", async () => {
+    // H-04. A failed remote revocation is fine (`revoked_remotely: false` is
+    // where that nuance lives); what matters is `session_discarded`: on it, the
+    // credential rows are purged and the row is marked, in one mutation.
     const t = convexTest(schema, modules);
     const s = await seeded(t);
+    await t.mutation(internal.mcp.credentials.saveCredential, {
+      credentialId: "cred_d",
+      userId: s.owner,
+      workspaceId: s.ws,
+      connectionId: s.connectionId,
+      serverName: "acme.test/server",
+      resource: "https://acme.test/mcp",
+      kind: "oauth_token",
+      envelope: "v1.1.AAAAAAAAAAAAAAAA.Y2lwaGVydGV4dA",
+      keyVersion: 1,
+      status: "active",
+      rev: 1,
+      expectedRev: 0,
+    });
     stubPlane({
-      deleted_locally: true,
+      session_discarded: true,
       revoked_remotely: false,
       auth_state: "NOT_CONNECTED",
     });
@@ -589,6 +640,7 @@ describe("the OAuth actions are the tenancy gate", () => {
     const report = await t
       .withIdentity(as(s.owner))
       .action(api.mcp.oauth.disconnect, { connectionId: s.connectionId });
+    expect(report.ok).toBe(true);
     expect(report.revoked_remotely).toBe(false);
     expect(report.deleted_locally).toBe(true);
 
@@ -596,19 +648,69 @@ describe("the OAuth actions are the tenancy gate", () => {
       .withIdentity(as(s.owner))
       .query(api.mcp.connections.get, { connectionId: s.connectionId });
     expect(row?.status).toBe("disconnected");
+    expect(
+      await t.run(async (ctx) => ctx.db.query("mcpCredentials").collect()),
+    ).toHaveLength(0);
+    const actions = (
+      await t.run(async (ctx) => ctx.db.query("auditLogs").collect())
+    ).map((r) => r.action);
+    expect(actions).toContain("mcp.credential_revoked");
   });
 
-  test("disconnect still marks the row when the plane is unreachable", async () => {
+  test("disconnect leaves the row untouched when the plane is unreachable", async () => {
+    // H-04, the fail-closed half. An earlier version marked the row
+    // disconnected whatever the plane said — the half-closed state a late
+    // refresh could resurrect. Now: no confirmation, no change, and the user is
+    // told.
     const t = convexTest(schema, modules);
     const s = await seeded(t);
     fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("down"));
-    await t
+    const report = await t
       .withIdentity(as(s.owner))
       .action(api.mcp.oauth.disconnect, { connectionId: s.connectionId });
+    expect(report.ok).toBe(false);
+    expect(report.auth_state).toBe("ERROR");
     const row = await t
       .withIdentity(as(s.owner))
       .query(api.mcp.connections.get, { connectionId: s.connectionId });
-    expect(row?.status).toBe("disconnected");
+    expect(row?.status).not.toBe("disconnected");
+    const actions = (
+      await t.run(async (ctx) => ctx.db.query("auditLogs").collect())
+    ).map((r) => r.action);
+    expect(actions).not.toContain("mcp.credential_revoked");
+  });
+
+  test("disconnect leaves the row untouched when the plane did not confirm", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seeded(t);
+    stubPlane({ auth_state: "ERROR", detail: "the AI service answered 500" });
+    const report = await t
+      .withIdentity(as(s.owner))
+      .action(api.mcp.oauth.disconnect, { connectionId: s.connectionId });
+    expect(report.ok).toBe(false);
+    const row = await t
+      .withIdentity(as(s.owner))
+      .query(api.mcp.connections.get, { connectionId: s.connectionId });
+    expect(row?.status).not.toBe("disconnected");
+  });
+
+  test("a suspended account cannot start, check or disconnect — nothing reaches the plane", async () => {
+    // H-03. `getUserIdentity` is a bare cast of a still-valid access token; a
+    // suspended user keeps one for up to an hour. Every MCP action resolves the
+    // connection through `resolveForOperation`, which now asks whether the
+    // account is ACTIVE, so the token alone buys nothing.
+    const t = convexTest(schema, modules);
+    const s = await seeded(t);
+    await t.run((ctx) => ctx.db.patch(s.owner, { accountStatus: "suspended" }));
+    const calls = stubPlane({ auth_state: "CONNECTED" });
+    for (const name of ["start", "status", "disconnect"] as const) {
+      await expect(
+        t
+          .withIdentity(as(s.owner))
+          .action(api.mcp.oauth[name], { connectionId: s.connectionId }),
+      ).rejects.toThrow("Not found");
+    }
+    expect(calls).toHaveLength(0);
   });
 
   test("the action contract is credential-free", async () => {

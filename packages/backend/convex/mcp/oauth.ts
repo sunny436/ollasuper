@@ -172,23 +172,34 @@ export const disconnect = action({
     const tenant = await tenantFor(ctx, args.connectionId);
     const report = await callPlane("disconnect", args.connectionId, tenant);
 
-    // The local row is marked disconnected whatever the plane said. A failed
-    // remote revocation must not leave the UI claiming the account is still
-    // connected — `revoked_remotely` in the report is where that nuance lives.
-    await ctx.runMutation(internal.mcp.connections.recordOutcome, {
-      connectionId: args.connectionId,
-      status: "disconnected",
-    });
+    // FAIL CLOSED (audit H-04). Only once the plane has CONFIRMED the live
+    // session is gone does the row change: the credential rows are purged, the
+    // connection is marked disconnected and the audit line is written — in ONE
+    // mutation, so there is no state in which the UI says "disconnected" while
+    // a session is still open and a refresh can still land. An earlier version
+    // marked the row disconnected whatever the plane said, which is exactly the
+    // half-closed state a late refresh resurrected. A plane that could not be
+    // reached leaves the row as it was and tells the user so.
+    if (report.session_discarded !== true) {
+      return {
+        ok: false,
+        auth_state: "ERROR",
+        detail:
+          typeof report.detail === "string"
+            ? report.detail
+            : "the connector could not be disconnected; try again",
+      };
+    }
     // THE most important line in the MCP audit trail: this is the event an
     // incident review reads to establish when OllaSuper's access to somebody's
     // provider account was withdrawn. `revoked_remotely` distinguishes "the
     // provider accepted the revocation" from "we deleted our copy"; both are
     // recorded, because only one of them is under our control.
-    await ctx.runMutation(internal.mcp.audit.record, {
+    await ctx.runMutation(internal.mcp.connections.completeDisconnect, {
       connectionId: args.connectionId,
-      action: "mcp.credential_revoked",
-      status: report.revoked_remotely === true ? "revoked_remotely" : "local_only",
+      userId: tenant.userId,
+      revokedRemotely: report.revoked_remotely === true,
     });
-    return report;
+    return { ...report, ok: true, deleted_locally: true };
   },
 });

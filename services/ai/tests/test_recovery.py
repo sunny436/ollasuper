@@ -8,7 +8,6 @@ run_generation with `approvedPending` and prove the approved tool runs DIRECTLY
 
 from __future__ import annotations
 
-import hashlib
 import json
 
 import httpx
@@ -125,8 +124,13 @@ def _patch_rag(monkeypatch):
 
 
 def _approval_id(tool_id: str, args: dict) -> str:
-    key = json.dumps(args, sort_keys=True, default=str)
-    return f"{tool_id}:{hashlib.sha256(key.encode()).hexdigest()[:16]}"
+    """The approval's identity is the BINDING (app/agent/binding.py): the tool
+    definition the user reviewed plus the args. Convex stores what Python
+    minted, so a resume carries the same binding back."""
+    from app.agent.binding import approval_id_for
+
+    assert tool_id == "search_web"
+    return approval_id_for(_approvable_tool(), args)
 
 
 def _approvable_tool():

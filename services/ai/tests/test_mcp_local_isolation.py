@@ -381,6 +381,7 @@ async def _pool_by_slug(apps: dict[str, Any]):
 
     original = session_mod.build_http_client
     session_mod.build_http_client = routed  # type: ignore[assignment]
+    session_mod._WATCH_LIST_CHANGES = False  # see _park
     try:
         async with AsyncExitStack() as stack:
             pool = await McpSessionPool(PoolLimits(sweep_interval_s=3600.0)).start(
@@ -392,6 +393,7 @@ async def _pool_by_slug(apps: dict[str, Any]):
                 await pool.aclose()
     finally:
         session_mod.build_http_client = original  # type: ignore[assignment]
+        session_mod._WATCH_LIST_CHANGES = True
 
 
 def _req(content: str, refs: list[McpConnectionRef]) -> GenerateRequest:

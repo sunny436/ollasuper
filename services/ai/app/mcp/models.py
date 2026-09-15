@@ -98,6 +98,11 @@ class McpConnectionConfig:
     # Applied to every ToolDefinition this connection produces, so the executor's
     # per-tool `asyncio.wait_for` has a bound even before Phase 3 tuning.
     tool_timeout_s: float = 30.0
+    # Called with "tools" / "resources" / "prompts" when the server notifies
+    # that its list changed. The pool uses it to mark the session STALE: the
+    # tools a turn bound were normalized from the old list, and an approval
+    # given against the old definition must not execute a new one.
+    on_list_changed: Any = None
     _extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def __repr__(self) -> str:  # pragma: no cover - trivial

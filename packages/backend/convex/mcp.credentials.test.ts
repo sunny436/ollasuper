@@ -74,6 +74,44 @@ async function connectionFor(
   });
 }
 
+/** The scoped read the plane performs (H-17): it names whose credential. */
+async function load(
+  t: ReturnType<typeof convexTest>,
+  base: {
+    userId: Id<"users">;
+    workspaceId: Id<"workspaces">;
+    connectionId: Id<"mcpConnections">;
+  },
+  resource = "https://acme.test/mcp",
+) {
+  return t.query(internal.mcp.credentials.loadCredential, {
+    connectionId: base.connectionId,
+    resource,
+    kind: "oauth_token" as const,
+    userId: base.userId,
+    workspaceId: base.workspaceId,
+  });
+}
+
+async function mark(
+  t: ReturnType<typeof convexTest>,
+  base: {
+    userId: Id<"users">;
+    workspaceId: Id<"workspaces">;
+    connectionId: Id<"mcpConnections">;
+  },
+  status: "active" | "expired" | "refresh_failed" | "revoked" | "unreadable",
+  credentialId = "cred_1",
+) {
+  return t.mutation(internal.mcp.credentials.markCredential, {
+    credentialId,
+    status,
+    userId: base.userId,
+    workspaceId: base.workspaceId,
+    connectionId: base.connectionId,
+  });
+}
+
 type SaveOverrides = Partial<{
   credentialId: string;
   userId: Id<"users">;
@@ -144,7 +182,12 @@ describe("ciphertext never reaches a public surface", () => {
     const { owner, ws } = await seed(t);
     const a = await connectionFor(t, owner, ws, "a.test/server");
     const b = await connectionFor(t, owner, ws, "b.test/server");
-    await save(t, { userId: owner, workspaceId: ws, connectionId: a });
+    // The save names the connection's own server (a mismatch is refused).
+    await save(
+      t,
+      { userId: owner, workspaceId: ws, connectionId: a },
+      { serverName: "a.test/server" },
+    );
 
     const rows = await t
       .withIdentity(as(owner))
@@ -331,21 +374,126 @@ describe("a secret does not outlive what it authorizes", () => {
     expect(rows).toHaveLength(1);
   });
 
-  test("deleteCredential removes the row rather than marking it", async () => {
+  test("there is no delete op for the plane at all", async () => {
+    // H-17. `deleteCredential` used to be reachable with the ingress secret,
+    // by credentialId alone. Rows are now purged only by `completeDisconnect`
+    // and `connections.remove`, both owner-authenticated.
+    // `internal.*` is a proxy that names anything; the MODULE is the truth.
+    const credentials = (await import("./mcp/credentials")) as Record<string, unknown>;
+    expect(credentials.deleteCredential).toBeUndefined();
+  });
+});
+
+describe("every op is scoped to (user, workspace, connection) — H-17", () => {
+  test("a read for another user's connection returns nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, peer, ws } = await seed(t);
+    const connectionId = await connectionFor(t, owner, ws);
+    await save(t, { userId: owner, workspaceId: ws, connectionId });
+
+    expect(await load(t, { userId: owner, workspaceId: ws, connectionId })).not.toBeNull();
+    expect(await load(t, { userId: peer, workspaceId: ws, connectionId })).toBeNull();
+  });
+
+  test("a read under another workspace returns nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const other = await t.run(async (ctx) =>
+      ctx.db.insert("workspaces", { name: "Other", ownerId: owner, createdAt: Date.now() }),
+    );
+    const connectionId = await connectionFor(t, owner, ws);
+    await save(t, { userId: owner, workspaceId: ws, connectionId });
+    expect(await load(t, { userId: owner, workspaceId: other, connectionId })).toBeNull();
+  });
+
+  test("a mark by another user, or for another connection, is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, peer, ws } = await seed(t);
+    const connectionId = await connectionFor(t, owner, ws);
+    const otherConnection = await connectionFor(t, owner, ws, "acme.test/other");
+    await save(t, { userId: owner, workspaceId: ws, connectionId });
+
+    expect(await mark(t, { userId: peer, workspaceId: ws, connectionId }, "revoked")).toEqual({ ok: false });
+    expect(
+      await mark(t, { userId: owner, workspaceId: ws, connectionId: otherConnection }, "revoked"),
+    ).toEqual({ ok: false });
+    const row = await t.run(async (ctx) => ctx.db.query("mcpCredentials").first());
+    expect(row?.status).toBe("active");
+
+    expect(await mark(t, { userId: owner, workspaceId: ws, connectionId }, "revoked")).toEqual({ ok: true });
+  });
+
+  test("a save under another workspace or server is refused, not stored", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const other = await t.run(async (ctx) =>
+      ctx.db.insert("workspaces", { name: "Other", ownerId: owner, createdAt: Date.now() }),
+    );
+    const connectionId = await connectionFor(t, owner, ws);
+    expect(await save(t, { userId: owner, workspaceId: other, connectionId })).toMatchObject({
+      stored: false,
+      refused: true,
+      reason: "forbidden",
+    });
+    expect(
+      await save(t, { userId: owner, workspaceId: ws, connectionId }, { serverName: "evil.test/server" }),
+    ).toMatchObject({ stored: false, refused: true, reason: "server_mismatch" });
+    expect(await t.run(async (ctx) => ctx.db.query("mcpCredentials").collect())).toHaveLength(0);
+  });
+
+  test("saves and marks leave an audit line", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seed(t);
+    const connectionId = await connectionFor(t, owner, ws);
+    await save(t, { userId: owner, workspaceId: ws, connectionId });
+    await mark(t, { userId: owner, workspaceId: ws, connectionId }, "revoked");
+    const actions = (await t.run(async (ctx) => ctx.db.query("auditLogs").collect())).map(
+      (r) => r.action,
+    );
+    expect(actions).toContain("mcp.credential_saved");
+    expect(actions).toContain("mcp.credential_marked");
+  });
+});
+
+describe("nothing lands after a disconnect — H-04", () => {
+  test("a save for a disconnected connection is refused and the row stays gone", async () => {
     const t = convexTest(schema, modules);
     const { owner, ws } = await seed(t);
     const connectionId = await connectionFor(t, owner, ws);
     await save(t, { userId: owner, workspaceId: ws, connectionId });
 
-    const first = await t.mutation(internal.mcp.credentials.deleteCredential, {
-      credentialId: "cred_1",
+    const done = await t.mutation(internal.mcp.connections.completeDisconnect, {
+      connectionId,
+      userId: owner,
+      revokedRemotely: false,
     });
-    expect(first.deleted).toBe(true);
-    // Idempotent: a retried disconnect must not fail.
-    const second = await t.mutation(internal.mcp.credentials.deleteCredential, {
-      credentialId: "cred_1",
+    expect(done.purged).toBe(1);
+    expect(await t.run(async (ctx) => ctx.db.query("mcpCredentials").collect())).toHaveLength(0);
+
+    // The late refresh: the token exchange finished after the user clicked
+    // Disconnect. It must not resurrect the credential.
+    const late = await save(t, { userId: owner, workspaceId: ws, connectionId }, { rev: 1, expectedRev: 0 });
+    expect(late).toMatchObject({ stored: false, refused: true, reason: "disconnected" });
+    expect(await t.run(async (ctx) => ctx.db.query("mcpCredentials").collect())).toHaveLength(0);
+    // And nothing can be read or marked through it either.
+    expect(await load(t, { userId: owner, workspaceId: ws, connectionId })).toBeNull();
+    expect(await mark(t, { userId: owner, workspaceId: ws, connectionId }, "active")).toEqual({ ok: false });
+  });
+
+  test("completeDisconnect refuses another user's connection", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, peer, ws } = await seed(t);
+    const connectionId = await connectionFor(t, owner, ws);
+    await save(t, { userId: owner, workspaceId: ws, connectionId });
+    const done = await t.mutation(internal.mcp.connections.completeDisconnect, {
+      connectionId,
+      userId: peer,
+      revokedRemotely: false,
     });
-    expect(second.deleted).toBe(false);
+    expect(done.purged).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.query("mcpCredentials").collect())).toHaveLength(1);
+    const row = await t.run(async (ctx) => ctx.db.get(connectionId));
+    expect(row?.status).not.toBe("disconnected");
   });
 });
 
@@ -375,10 +523,7 @@ describe("status projection", () => {
     const { owner, ws } = await seed(t);
     const connectionId = await connectionFor(t, owner, ws);
     await save(t, { userId: owner, workspaceId: ws, connectionId });
-    await t.mutation(internal.mcp.credentials.markCredential, {
-      credentialId: "cred_1",
-      status: "unreadable",
-    });
+    await mark(t, { userId: owner, workspaceId: ws, connectionId }, "unreadable");
     const status = await t
       .withIdentity(as(owner))
       .query(api.mcp.credentials.statusForConnection, { connectionId });
@@ -394,10 +539,7 @@ describe("status projection", () => {
       { userId: owner, workspaceId: ws, connectionId },
       { expiresAt: Date.now() + 3_600_000 },
     );
-    await t.mutation(internal.mcp.credentials.markCredential, {
-      credentialId: "cred_1",
-      status: "revoked",
-    });
+    await mark(t, { userId: owner, workspaceId: ws, connectionId }, "revoked");
     const status = await t
       .withIdentity(as(owner))
       .query(api.mcp.credentials.statusForConnection, { connectionId });
@@ -409,15 +551,13 @@ describe("status projection", () => {
     expect(row?.revokedAt).toBeGreaterThan(0);
   });
 
-  test("marking a credential that does not exist is a no-op", async () => {
+  test("marking a credential that does not exist is a refused no-op", async () => {
     const t = convexTest(schema, modules);
-    await seed(t);
+    const { owner, ws } = await seed(t);
+    const connectionId = await connectionFor(t, owner, ws);
     await expect(
-      t.mutation(internal.mcp.credentials.markCredential, {
-        credentialId: "nope",
-        status: "revoked",
-      }),
-    ).resolves.toBeNull();
+      mark(t, { userId: owner, workspaceId: ws, connectionId }, "revoked", "nope"),
+    ).resolves.toEqual({ ok: false });
   });
 });
 
@@ -441,16 +581,8 @@ describe("credentials are scoped per resource", () => {
       envelope: "v1.1.DDDDDDDDDDDDDDDD.b3RoZXI",
     });
 
-    const a = await t.query(internal.mcp.credentials.loadCredential, {
-      connectionId,
-      resource: "https://acme.test/mcp",
-      kind: "oauth_token",
-    });
-    const b = await t.query(internal.mcp.credentials.loadCredential, {
-      connectionId,
-      resource: "https://acme.test/other",
-      kind: "oauth_token",
-    });
+    const a = await load(t, base, "https://acme.test/mcp");
+    const b = await load(t, base, "https://acme.test/other");
     expect(a?.credentialId).toBe("cred_a");
     expect(b?.credentialId).toBe("cred_b");
     expect(a?.envelope).not.toBe(b?.envelope);
@@ -462,11 +594,11 @@ describe("credentials are scoped per resource", () => {
     const connectionId = await connectionFor(t, owner, ws);
     await save(t, { userId: owner, workspaceId: ws, connectionId });
 
-    const found = await t.query(internal.mcp.credentials.loadCredential, {
-      connectionId,
-      resource: "https://evil.test/mcp",
-      kind: "oauth_token",
-    });
+    const found = await load(
+      t,
+      { userId: owner, workspaceId: ws, connectionId },
+      "https://evil.test/mcp",
+    );
     expect(found).toBeNull();
   });
 });
@@ -561,7 +693,6 @@ describe("the OAuth client record is deployment-scoped", () => {
       "saveCredential",
       "saveClient",
       "markCredential",
-      "deleteCredential",
       "deleteForConnection",
       "connectionForIngress",
     ]) {

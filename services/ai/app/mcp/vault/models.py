@@ -160,3 +160,14 @@ class ClientRecord:
             f"server={self.server_name!r}, issuer={self.issuer!r}, "
             f"mode={self.registration_mode!r}, key_version={self.key_version})"
         )
+
+
+class CredentialRefused(RuntimeError):
+    """The store REFUSED a credential write: the connection is disconnected or
+    the row is not this tenant's. Distinct from a lost compare-and-set (a
+    benign race) so `CredentialVault.put` can let it propagate — a refresh that
+    lands after a disconnect must fail the call, never resurrect the row."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"credential write refused: {reason}")

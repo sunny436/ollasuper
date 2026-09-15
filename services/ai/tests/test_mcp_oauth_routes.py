@@ -408,9 +408,6 @@ class _Vault:
         )
         return {"access_token": "at-secret", "refresh_token": "rt-secret"}, record
 
-    async def delete(self, **_kwargs):
-        return True
-
 
 async def test_status_projects_scope_and_expiry_but_never_the_envelope(monkeypatch):
     from app.mcp.registry import curated
@@ -482,11 +479,14 @@ async def test_an_expired_token_reads_as_expired_not_as_an_error(monkeypatch):
 
 
 # ---------------------------------------------------------------- disconnect
-async def test_disconnect_kills_the_session_before_deleting_the_credential(
+async def test_disconnect_kills_the_session_and_reports_it_but_deletes_nothing(
     monkeypatch,
 ):
-    """Order matters. Deleting first would leave an in-flight tool call holding
-    a credential that no longer exists, and still using it."""
+    """H-17 / H-04. The plane discards the live session (so an in-flight tool
+    call cannot keep using the credential) and REPORTS that; the control plane
+    purges the rows only on that report. The plane itself holds no delete —
+    an earlier version deleted here, which meant the ingress key could remove
+    any credential and a plane-side failure left the row half-closed."""
     from app.mcp.registry import curated
 
     async def resolve(_engine, _name):
@@ -504,24 +504,22 @@ async def test_disconnect_kills_the_session_before_deleting_the_credential(
         async def get(self, **kwargs):
             return None  # nothing to revoke remotely
 
-        async def delete(self, **_kwargs):
-            order.append("delete")
-            return True
-
     app = _app(db=_CuratedDb(), vault=Vault(), flow=object(), pool=Pool())
     async with _client(app) as c:
         r = await c.post("/v1/mcp/oauth/disconnect", json=BODY, headers=AUTH)
         body = r.json()
 
-    assert order == ["discard:('user-a', 'ws-1', 'conn-1')", "delete"]
-    assert body["deleted_locally"] is True
+    assert order == ["discard:('user-a', 'ws-1', 'conn-1')"]
+    assert body["session_discarded"] is True
+    assert "deleted_locally" not in body
     assert body["auth_state"] == "NOT_CONNECTED"
     # Never claim a remote revocation that did not happen.
     assert body["revoked_remotely"] == "unsupported"
 
 
-async def test_disconnect_without_a_pool_still_deletes(monkeypatch):
-    # A disabled pool must not stop a user removing their credential.
+async def test_disconnect_without_a_pool_still_reports_discarded(monkeypatch):
+    # A disabled pool holds no session to discard; the report is still honest
+    # so the control plane can purge.
     from app.mcp.registry import curated
 
     async def resolve(_engine, _name):
@@ -536,4 +534,4 @@ async def test_disconnect_without_a_pool_still_deletes(monkeypatch):
     app = _app(db=_CuratedDb(), vault=Vault(), flow=object(), pool=None)
     async with _client(app) as c:
         r = await c.post("/v1/mcp/oauth/disconnect", json=BODY, headers=AUTH)
-        assert r.json()["deleted_locally"] is True
+        assert r.json()["session_discarded"] is True

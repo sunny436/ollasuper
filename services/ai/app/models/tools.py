@@ -82,6 +82,13 @@ class ToolDefinition(BaseModel):
     method: str = "post"
     path: str = ""
     required_auth: str = "BearerAuth"
+    # WHERE this definition came from, for anything that must not silently
+    # survive a change of source: for an MCP tool `<connection_id>|<endpoint>`
+    # (stamped by `app/mcp/normalize.py`), empty for a native tool. It is part
+    # of the approval binding (`app/agent/binding.py`), so an approval given to
+    # a tool on one connection/endpoint cannot execute the same-named tool from
+    # another.
+    origin: str = ""
 
 
 class ToolFilters(BaseModel):

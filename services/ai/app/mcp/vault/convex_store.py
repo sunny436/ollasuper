@@ -10,11 +10,14 @@ the loop. So the Python plane must be able to write on its own, and `/ai/ingress
 with `x-ai-key` is the established way it already does that (artifacts, SEO runs,
 scheduled deliveries all use it).
 
-THIS SENDS THE TENANT, AND CONVEX RE-CHECKS IT. `user_id` / `workspace_id` /
-`connection_id` travel in the body, which is only safe because the ingress secret
-is held exclusively by this service and Convex verifies the connection actually
-belongs to that user before writing. Encryption is defence-in-depth behind that
-check, never a replacement for it.
+THIS SENDS THE TENANT ON EVERY OP, AND CONVEX RE-CHECKS IT. `user_id` /
+`workspace_id` / `connection_id` travel in every body — reads and marks too, not
+only saves — and Convex refuses the op unless the connection belongs to exactly
+that user and workspace and is not disconnected. So the ingress secret alone
+names nothing: a request must state whose credential it wants, and Convex holds
+it to that (audit H-17). There is no delete op at all; the control plane purges
+rows itself once the plane reports a disconnect. Encryption is defence-in-depth
+behind those checks, never a replacement for them.
 
 NOTHING HERE CAN SEE A SECRET. Every payload carries an `envelope` string and
 non-secret metadata. There is no code path in this module that could log, echo
@@ -28,7 +31,12 @@ from typing import Any
 
 from app.logging import get_logger
 from app.mcp.vault.aad import AadKind
-from app.mcp.vault.models import ClientRecord, CredentialRecord, CredentialStatus
+from app.mcp.vault.models import (
+    ClientRecord,
+    CredentialRecord,
+    CredentialRefused,
+    CredentialStatus,
+)
 
 log = get_logger(__name__)
 
@@ -39,7 +47,6 @@ __all__ = ["ConvexCredentialStore"]
 _LOAD = "mcp-credential-load"
 _SAVE = "mcp-credential-save"
 _MARK = "mcp-credential-mark"
-_DELETE = "mcp-credential-delete"
 _CLIENT_LOAD = "mcp-oauth-client-load"
 _CLIENT_SAVE = "mcp-oauth-client-save"
 
@@ -52,7 +59,13 @@ class ConvexCredentialStore:
 
     # ------------------------------------------------------------------ read
     async def load(
-        self, *, connection_id: str, resource: str, kind: str
+        self,
+        *,
+        connection_id: str,
+        resource: str,
+        kind: str,
+        user_id: str,
+        workspace_id: str,
     ) -> CredentialRecord | None:
         body = await self._convex.ingress(
             {
@@ -60,6 +73,8 @@ class ConvexCredentialStore:
                 "connectionId": connection_id,
                 "resource": resource,
                 "kind": kind,
+                "userId": user_id,
+                "workspaceId": workspace_id,
             }
         )
         row = body.get("credential") if isinstance(body, dict) else None
@@ -104,6 +119,9 @@ class ConvexCredentialStore:
         )
         if not isinstance(body, dict):
             return False
+        if body.get("refused"):
+            # Not a race: Convex declined the write for this tenant/connection.
+            raise CredentialRefused(str(body.get("reason") or "refused"))
         return bool(body.get("stored"))
 
     async def save_client(self, record: ClientRecord) -> None:
@@ -119,13 +137,25 @@ class ConvexCredentialStore:
             }
         )
 
-    async def mark(self, *, credential_id: str, status: str) -> None:
+    async def mark(
+        self,
+        *,
+        credential_id: str,
+        status: str,
+        user_id: str,
+        workspace_id: str,
+        connection_id: str,
+    ) -> None:
         await self._convex.ingress(
-            {"op": _MARK, "credentialId": credential_id, "status": status}
+            {
+                "op": _MARK,
+                "credentialId": credential_id,
+                "status": status,
+                "userId": user_id,
+                "workspaceId": workspace_id,
+                "connectionId": connection_id,
+            }
         )
-
-    async def delete(self, *, credential_id: str) -> None:
-        await self._convex.ingress({"op": _DELETE, "credentialId": credential_id})
 
 
 # ------------------------------------------------------------------ mapping

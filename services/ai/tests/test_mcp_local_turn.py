@@ -68,6 +68,7 @@ async def _pool_for(app: Any):
 
     original = session_mod.build_http_client
     session_mod.build_http_client = routed  # type: ignore[assignment]
+    session_mod._WATCH_LIST_CHANGES = False  # see _park
     try:
         async with AsyncExitStack() as stack:
             pool = await McpSessionPool(PoolLimits(sweep_interval_s=3600.0)).start(
@@ -79,6 +80,7 @@ async def _pool_for(app: Any):
                 await pool.aclose()
     finally:
         session_mod.build_http_client = original  # type: ignore[assignment]
+        session_mod._WATCH_LIST_CHANGES = True
 
 
 def _settings(**kw):
@@ -210,11 +212,21 @@ async def test_a_local_tool_runs_through_the_ordinary_langgraph_turn(monkeypatch
         )
 
     events = _event_types(convex)
-    assert "TOOL_CALL" in events, events
-    assert "TOOL_RESULT" in events, events
-    assert state["calls"] == 1, "the gateway server was never reached"
-    finals = _ops(convex, "finalize")
-    assert len(finals) == 1 and finals[0]["status"] == "done"
+    # H-05: a local server is NEVER trusted, so its `readOnlyHint` waives
+    # nothing — the call PARKS for approval on the ordinary path (the same
+    # `_park_for_approval` a remote untrusted tool takes), and the gateway is
+    # not reached until a human says yes. An earlier version of this test
+    # asserted the tool ran unasked under WRITE scope; that was the bypass.
+    assert "TOOL_CALL" not in events, events
+    assert state["calls"] == 0, "the gateway server was reached without approval"
+    parked = _ops(convex, "approval")
+    assert len(parked) == 1
+    assert parked[0]["toolId"] == "mcp:gw-fixture:read_file"
+    # The durable WAITING_APPROVAL record precedes the request (executor A4).
+    assert [e["toolId"] for e in _ops(convex, "execution")] == [
+        "mcp:gw-fixture:read_file"
+    ]
+    assert not _ops(convex, "finalize"), "a parked turn is suspended, not finalized"
 
 
 async def test_docker_isolation_does_not_remove_the_approval_requirement(monkeypatch):
