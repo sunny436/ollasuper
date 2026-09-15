@@ -52,6 +52,7 @@ from app.agent.memory import (
 from app.agent.orchestration_tools import FIND_CAPABILITIES_TOOL_SPEC
 from app.agent.personalization import compile_personalization
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE
+from app.agent.taint import source_of_id
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
 from app.clients.ollagraph import OllagraphAdapter
@@ -162,6 +163,8 @@ def reserve_skill_tools(
             added += 1
     candidates.sort(key=lambda c: (c.tool.tool_id not in declared, -c.score))
     return candidates, added
+
+
 # The model PROVIDER refused for capacity/quota reasons, not because anything in
 # this turn was wrong. Distinct from ERR_PROVIDER because the user's action is
 # different and knowable: pick another model, or add capacity. Folding it into
@@ -406,7 +409,6 @@ async def run_generation(
                 (c.contextWindow for c in req.modelCandidates if c.id == model_id),
                 0,
             )
-
 
         # Phase 6: the central per-turn window accounting. Every component below
         # is measured against this so the assembled input never exceeds the model's
@@ -1389,9 +1391,7 @@ async def run_generation(
                     mcp_index=mcp_caps.index if mcp_resources_bound else None,
                     mcp_resource_max_bytes=settings.mcp_resource_max_bytes,
                     data=data_ctx,
-                    conversation=(
-                        None if req.unattended else conversation_state
-                    ),
+                    conversation=(None if req.unattended else conversation_state),
                     approvals={
                         a.approvalId: {"decision": a.decision, "token": a.token}
                         for a in req.approvals
@@ -1704,7 +1704,22 @@ async def run_generation(
                         ct.args, sort_keys=True, default=str
                     )
                     tools_ctx.seen_call_set.add(f"{ct.toolId}:{hash_args(ct.args)}")
+                    # H-06: the taint ledger is per-context, and an approval
+                    # resume is a NEW context. Rebuild it from what already ran,
+                    # or the connector content read before the pause would
+                    # flow freely after it (measured on production: the Drive
+                    # search re-issued after a rejection ran unasked).
+                    tools_ctx.taint.record(
+                        source_of_id(ct.toolId, tools_ctx.registry), ct.resultContent
+                    )
             completed_steps = len(req.completedTools)
+        if tools_ctx is not None:
+            # And the sticky half: a destination the user REJECTED a call to
+            # keeps asking for the rest of the turn, across the resume.
+            for a in req.approvals:
+                dest = source_of_id(a.toolId, tools_ctx.registry)
+                if a.decision == "rejected" and dest:
+                    tools_ctx.taint.flag(dest, {"a rejected call"})
         # Phase 2: side-effecting tools ATTEMPTED with an UNKNOWN outcome (crash /
         # INDETERMINATE). Inject an "outcome unknown; not retried" observation and
         # seed BOTH dedup guards so a re-emit is DEDUPED and never re-executed — the
@@ -2217,6 +2232,3 @@ def _chunk_text(chunk: object) -> str:
 def _is_provider_error(e: Exception) -> bool:
     name = type(e).__name__.lower()
     return any(k in name for k in ("api", "openai", "http", "rate", "connection"))
-
-
-

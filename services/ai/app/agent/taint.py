@@ -48,7 +48,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["TaintLedger", "fingerprint", "leaf_strings"]
+__all__ = ["TaintLedger", "fingerprint", "leaf_strings", "source_of", "source_of_id"]
 
 SHINGLE = 32
 STEP = 16
@@ -59,6 +59,30 @@ MAX_SHINGLES = 200_000
 MAX_TOKENS = 100_000
 
 _WS = re.compile(r"\s+")
+
+
+def source_of(tool: Any) -> str:
+    """The connector key a tool's data belongs to: `mcp:<slug>` for an MCP
+    tool, `web` for an Ollagraph tool (its arguments and results cross to
+    Ollagraph's service), empty for an in-process tool."""
+    provider = str(getattr(tool, "provider", "") or "")
+    if provider.startswith("mcp:"):
+        return provider
+    if provider == "ollagraph":
+        return "web"
+    return ""
+
+
+def source_of_id(tool_id: str, registry: Any = None) -> str:
+    """`source_of` from a tool id, for a resume that has no definition yet in
+    hand: the registry when it knows the tool, else the id's own `mcp:` prefix."""
+    tool = registry.get(tool_id) if registry is not None else None
+    if tool is not None:
+        return source_of(tool)
+    if tool_id.startswith("mcp:"):
+        rest = tool_id[4:]
+        return f"mcp:{rest.split(':', 1)[0]}" if rest else ""
+    return ""
 
 
 def _normalise(text: str) -> str:

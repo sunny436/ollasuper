@@ -50,7 +50,7 @@ from app.agent.orchestration_tools import (
     ORCHESTRATION_BUILTIN_NAMES,
 )
 from app.agent.policy import PolicyScope, check_tool_policy
-from app.agent.taint import TaintLedger
+from app.agent.taint import TaintLedger, source_of
 from app.data.tool import DATA_TOOL_NAMES, DataContext, run_tool
 from app.documents.context import DocumentsContext, run_document_ops
 from app.documents.tool import DOCUMENT_OPS_TOOL_NAME
@@ -452,14 +452,8 @@ def _frame_tool_output(text: str, *, source: str = "", trusted: bool = True) -> 
 
 
 def _source_of(tool: ToolDefinition) -> str:
-    """The connector key a result is attributed to: `mcp:<slug>` for an MCP
-    tool, `web` for Ollagraph's web tools, empty for in-process tools."""
-    provider = str(getattr(tool, "provider", "") or "")
-    if provider.startswith("mcp:"):
-        return provider
-    if provider == "ollagraph":
-        return "web"
-    return ""
+    """The connector key a result is attributed to (`taint.source_of`)."""
+    return source_of(tool)
 
 
 def _leaves_the_box(tool: ToolDefinition) -> bool:

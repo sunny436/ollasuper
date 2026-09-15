@@ -381,3 +381,120 @@ def test_the_ref_defaults_to_not_activated():
 
     ref = McpConnectionRef(connectionId="c", serverName="s", slug="x")
     assert ref.activated is False
+
+
+# --------------------------------------------- the gate survives a resume
+async def test_taint_and_rejections_are_rebuilt_on_an_approval_resume(monkeypatch):
+    """Measured on production: an approval resume is a NEW context, so the
+    ledger built before the pause was gone and the re-issued Drive search ran.
+    On resume the ledger is rebuilt from `completedTools`, and a destination
+    the user REJECTED a call to keeps asking — here the model retries the same
+    destination with fragments and it parks again instead of running."""
+    from langchain_core.messages import AIMessage
+
+    from app.models.chat import ApprovalDecision, CompletedTool
+    from app.runtime.runner import run_generation
+    from app.tools.registry import ToolRegistry
+    from app.tools.selection import ToolSelector
+    from tests.test_durable import FakeLLM, _req
+    from tests.test_idempotency import _settings
+    from tests.test_recovery import _patch_rag
+    from tests.test_writer_events import RecordingConvex
+
+    _patch_rag(monkeypatch)
+    gmail = _mcp("gmail", "read_mail").model_copy(
+        update={"description": "Read mail from the Gmail inbox"}
+    )
+    drive = _mcp("google-drive", "search_files").model_copy(
+        update={"description": "Search files in Google Drive by query"}
+    )
+    # The model, resumed, retries Drive with a FRAGMENT of the secret.
+    retry = {"name": "mcp_google-drive_search_files", "args": {"q": "7781"}, "id": "c9"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain"),
+            [AIMessage(content="", tool_calls=[retry]), AIMessage(content="done")],
+        ),
+    )
+    settings = _settings(ai_agent_enabled=True, ai_agent_side_effect_enabled=True)
+    reg = ToolRegistry()
+    reg.register(gmail)
+    reg.register(drive)
+    stub = _McpStub({drive.tool_id: {"text": "found"}})
+
+    class Pool:  # `mcp_pool` is only consulted when the request carries refs
+        pass
+
+    convex = RecordingConvex()
+    framed = _frame_tool_output(
+        json.dumps({"result": {"text": f"code {SECRET}"}}),
+        source="mcp:gmail",
+        trusted=True,
+    )
+    from app.models.chat import McpConnectionRef
+
+    req = _req(
+        "search files in google drive for the code from the gmail inbox mail",
+        attempt=0,
+        eventSeqBaseline=5,
+        mcpConnections=[
+            McpConnectionRef(connectionId="c-gmail", serverName="s", slug="gmail"),
+            McpConnectionRef(
+                connectionId="c-drive", serverName="s", slug="google-drive"
+            ),
+        ],
+        completedTools=[
+            CompletedTool(
+                toolId=gmail.tool_id, args={"q": "latest"}, resultContent=framed
+            )
+        ],
+        approvals=[
+            ApprovalDecision(
+                approvalId=f"{drive.tool_id}:deadbeef",
+                toolId=drive.tool_id,
+                decision="rejected",
+            )
+        ],
+    )
+    # Route both MCP providers at the stub: the runner binds adapters by provider.
+    monkeypatch.setattr(
+        "app.runtime.runner.mcp_for_turn",
+        _stub_mcp_for_turn(reg, stub, [gmail, drive]),
+    )
+    await run_generation(
+        req,
+        settings,
+        convex,
+        tool_registry=reg,
+        tool_selector=ToolSelector(reg),
+        ollagraph_http=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+        ),
+        mcp_pool=Pool(),
+    )
+    assert stub.calls == [], "the fragment retry ran after a rejection"
+    parked = [c for c in convex.calls if c.get("op") == "approval"]
+    assert parked and "google-drive" in parked[0]["reason"]
+
+
+def _stub_mcp_for_turn(registry, stub, tools):
+    """A `mcp_for_turn` that hands the runner a registry with the MCP tools and
+    the stub adapter for both providers — no pool, no sessions."""
+    from contextlib import asynccontextmanager
+
+    from app.mcp.turn import TurnCapabilities
+
+    class Composed:
+        def __init__(self) -> None:
+            self.registry = registry
+            self.adapters = {t.provider: stub for t in tools}
+            self.tools = list(tools)
+            self.tool_ids = {t.tool_id for t in tools}
+
+    @asynccontextmanager
+    async def fake(pool, connections, **kw):
+        caps = TurnCapabilities(Composed())
+        yield caps
+
+    return fake
