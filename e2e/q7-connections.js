@@ -17,7 +17,7 @@ const errs = [];
 const visible = async (loc) => (await loc.count()) > 0 && (await loc.first().isVisible().catch(() => false));
 
 async function login(page) {
-  await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
+  await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
   await page.waitForURL(/login/, { timeout: 25000 });
   await page.locator('input[type="email"]').first().fill(EMAIL);
   await page.locator('input[type="password"]').first().fill(PASSWORD);
@@ -29,10 +29,10 @@ async function login(page) {
   const b = await chromium.launch({ channel: "chrome", headless: false, slowMo: 20 });
   const page = await b.newPage();
   page.on("console", (m) => m.type() === "error" && errs.push(m.text()));
-  page.on("pageerror", (e) => errs.push("pageerror " + e.message));
+  page.on("pageerror", (e) => errs.push(`pageerror ${e.message}`));
   try {
     await login(page);
-    await page.goto(BASE + "/en/settings/connectors", { waitUntil: "domcontentloaded" });
+    await page.goto(`${BASE}/en/settings/connectors`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(6000);
     const text = await page.locator("body").innerText();
     // Connected cards say "Connected"; print the lines around each.
@@ -46,13 +46,13 @@ async function login(page) {
       }
     }
     console.log("connector states:");
-    for (const o of out) console.log("  " + o);
-    if (!out.length) console.log("  (no state lines matched; first 600 chars)\n" + text.slice(0, 600));
+    for (const o of out) console.log(`  ${o}`);
+    if (!out.length) console.log(`  (no state lines matched; first 600 chars)\n${text.slice(0, 600)}`);
   } finally {
     await b.close();
   }
   const benign = errs.filter((e) => !/favicon|third-party cookie/i.test(e));
   console.log(`console/network errors: ${benign.length}`);
-  for (const e of benign.slice(0, 8)) console.log("  " + e.slice(0, 200));
+  for (const e of benign.slice(0, 8)) console.log(`  ${e.slice(0, 200)}`);
   process.exit(benign.length ? 1 : 0);
 })();
