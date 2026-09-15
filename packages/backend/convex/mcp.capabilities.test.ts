@@ -323,6 +323,9 @@ describe("dispatchPayload carries the user's ready MCP connections", () => {
         serverName: "acme.test/server",
         slug: "acme",
         version: "2.1.0",
+        // H-06: not named in this thread yet, so an UNTRUSTED server would not
+        // compose; a trusted one ignores the flag.
+        activated: false,
       },
     ]);
   });

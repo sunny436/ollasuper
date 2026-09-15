@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { internalMutation } from "../_generated/server";
+import { activateSlugs, slugOfToolId } from "../mcp/activation";
 
 /**
  * Phase 3 — the durable per-execution record (crash-recovery authority).
@@ -133,6 +134,12 @@ export const upsertExecution = internalMutation({
     }
     // Legal forward transition → patch only the provided fields.
     if (LEGAL_TRANSITIONS[existing.state]?.has(a.state)) {
+      if (a.state === "succeeded") {
+        // A connector tool that RAN in this thread (which, for an untrusted
+        // one, means the user approved it) is opted in for the thread (H-06).
+        const slug = slugOfToolId(a.toolId);
+        if (slug) await activateSlugs(ctx, stream.threadId, [slug]);
+      }
       await ctx.db.patch(existing._id, {
         state: a.state,
         attempt: a.attempt,

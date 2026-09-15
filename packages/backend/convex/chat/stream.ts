@@ -642,6 +642,10 @@ export const dispatchPayload = internalQuery({
         serverName: c.serverName,
         slug: c.slug,
         version: c.versionMode === "pinned" ? c.version : null,
+        // H-06: an UNTRUSTED connector composes only when activated for this
+        // thread (named by the user, or already used here). The plane knows
+        // which connectors are trusted; it ignores this flag for those.
+        activated: (thread.mcpActivated ?? []).includes(c.slug),
       }));
 
     // Reconstruct completed tool steps on a crash-resume (attempts > 0) OR an

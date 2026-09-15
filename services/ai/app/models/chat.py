@@ -339,6 +339,11 @@ class McpConnectionRef(BaseModel):
     serverName: str = Field(min_length=1, max_length=400)
     slug: str = Field(min_length=1, max_length=120)
     version: str | None = Field(default=None, max_length=100)
+    # H-06: the user opted this connector into THIS thread (named it, or a tool
+    # of it already ran there — `convex/mcp/activation.ts`). Only consulted for
+    # UNTRUSTED servers; a trusted one composes regardless. Defaults to False,
+    # so a Convex build that does not send it composes no untrusted connector.
+    activated: bool = False
 
 
 class GenerateRequest(BaseModel):

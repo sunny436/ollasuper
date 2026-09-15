@@ -8,6 +8,7 @@ import { internalMutation, mutation, query } from "../_generated/server";
 import { bump } from "../counters";
 import { recordUsage } from "../usage";
 import { deleteArtifactsForMessage } from "./artifacts";
+import { activateMentioned } from "../mcp/activation";
 import { bindAttachments } from "./attachments";
 import { toPublic } from "./public";
 import {
@@ -453,6 +454,8 @@ export const send = mutation({
       createdAt: now,
       updatedAt: now,
     });
+    // Naming an untrusted connector in this thread opts it in (H-06).
+    await activateMentioned(ctx, thread._id, userId, content);
 
     for (const a of attachments) {
       await ctx.db.patch(a._id, {
@@ -672,6 +675,7 @@ export const editUserMessage = mutation({
       createdAt: now,
       updatedAt: now,
     });
+    await activateMentioned(ctx, thread._id, userId, content);
 
     await ctx.db.patch(thread._id, {
       nextSeq: assistantSeq + 1,

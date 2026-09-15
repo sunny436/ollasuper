@@ -57,6 +57,9 @@ class TurnCapabilities:
         self.failures = failures or []
         #: The turn's call counters (`quota.py`); set by `mcp_for_turn`.
         self.quota: TurnQuota | None = None
+        #: Untrusted connectors NOT composed because the user has not opted
+        #: them into this thread (H-06). Reported, never an error.
+        self.inactive: list[str] = []
 
     @property
     def active(self) -> bool:
@@ -81,6 +84,7 @@ class TurnCapabilities:
             "mcp_resources": len(self.index.resources()),
             "mcp_prompts": len(self.index.prompts()),
             "mcp_failures": self.failures,
+            "mcp_inactive": self.inactive,
         }
 
 
@@ -121,6 +125,7 @@ async def mcp_for_turn(
 
     resolve = resolve_target or curated.resolve
     failures: list[str] = []
+    inactive: list[str] = []
     sessions: list[Any] = []
     index = McpCapabilityIndex()
 
@@ -152,6 +157,13 @@ async def mcp_for_turn(
                         # — an operator turning a server off is supposed to stop
                         # it being used.
                         failures.append(slug)
+                        continue
+                    if not target.trusted and not getattr(ref, "activated", False):
+                        # DEFAULT-DENY for an untrusted server (audit H-06): its
+                        # tools and descriptions enter a thread only after the
+                        # user named it there or used it there. Not a failure —
+                        # the user did not ask for it.
+                        inactive.append(slug)
                         continue
 
                     spec = McpConnectionSpec(
@@ -228,6 +240,7 @@ async def mcp_for_turn(
         )
         capabilities = TurnCapabilities(composed, index, failures)
         capabilities.quota = quota
+        capabilities.inactive = inactive
         log.info("mcp.turn_capabilities", extra=capabilities.as_log_fields())
         try:
             yield capabilities

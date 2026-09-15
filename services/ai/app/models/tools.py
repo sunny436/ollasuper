@@ -89,6 +89,11 @@ class ToolDefinition(BaseModel):
     # a tool on one connection/endpoint cannot execute the same-named tool from
     # another.
     origin: str = ""
+    # Whether an OPERATOR vouched for this tool's source. True for native tools
+    # (they are ours) and for MCP servers the operator marked trusted; False
+    # for every other MCP server. Read by the provenance frame around results
+    # and folded into the approval binding.
+    trusted: bool = True
 
 
 class ToolFilters(BaseModel):

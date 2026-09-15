@@ -25,6 +25,7 @@ WHAT IS BOUND, and why each item is there:
     origin        `<connection_id>|<endpoint_url>` for an MCP tool: the SAME
                   slug on a different connection (another user's, or after a
                   reconnect to a re-curated endpoint) is a different approval
+    trusted       the operator's trust flag at discovery
     side_effect   read vs write as classified at discovery
     description   what the approval card told the user the tool does
     input_schema  the contract the args were validated against
@@ -63,6 +64,7 @@ def approval_binding(tool: Any, args: Any, *, sources: Iterable[str] = ()) -> st
         "tool_id": str(getattr(tool, "tool_id", "") or ""),
         "provider": str(getattr(tool, "provider", "") or ""),
         "origin": str(getattr(tool, "origin", "") or ""),
+        "trusted": bool(getattr(tool, "trusted", True)),
         "side_effect": str(getattr(tool, "side_effect", "") or ""),
         "description": _digest(str(getattr(tool, "description", "") or "")),
         "schema": _digest(

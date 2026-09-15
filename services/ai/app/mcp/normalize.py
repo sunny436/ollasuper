@@ -172,15 +172,23 @@ def normalize_tool(
     if not name:
         raise ValueError("MCP tool has no name")
 
+    schema = _schema(getattr(tool, "input_schema", None), max_bytes=max_schema_bytes)
+    if not identity.trusted:
+        # An UNTRUSTED server's schema is sent to the model on every turn, and
+        # a JSON Schema has plenty of free-text corners (`$comment`, `title`,
+        # `examples`, vendor `x-*` keys) that carry instructions as well as a
+        # description does. Keep the keys validation needs; drop the rest, and
+        # shorten every nested description (audit H-06).
+        schema = _prune_schema(schema)
     return ToolDefinition(
         # Namespaced: ToolRegistry._by_id is a flat map that silently overwrites
         # on collision, and `search` exists on half the MCP ecosystem.
         tool_id=identity.tool_id(name),
         name=name,
-        description=(getattr(tool, "description", None) or "")[:1024],
-        input_schema=_schema(
-            getattr(tool, "input_schema", None), max_bytes=max_schema_bytes
-        ),
+        description=(getattr(tool, "description", None) or "")[
+            : 1024 if identity.trusted else UNTRUSTED_DESCRIPTION_CHARS
+        ],
+        input_schema=schema,
         output_schema=getattr(tool, "output_schema", None),
         # Per-SERVER category, so a PolicyScope can allow one connection's tools
         # without naming each tool — `check_tool_policy` already scopes on
@@ -224,7 +232,78 @@ def normalize_tool(
         # `<connection_id>|<endpoint_url>` from the session that discovered it;
         # part of the approval binding so an approval cannot cross connections.
         origin=origin,
+        trusted=identity.trusted,
     )
+
+
+#: The JSON-Schema keys an untrusted server's schema may keep. Everything the
+#: validator (`tools/validate.py`) and `resolve_local_refs` read, nothing that
+#: is only ever prose.
+_SCHEMA_KEEP = frozenset(
+    {
+        "type",
+        "properties",
+        "required",
+        "enum",
+        "const",
+        "items",
+        "prefixItems",
+        "description",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "additionalProperties",
+        "default",
+        "format",
+        "pattern",
+        "anyOf",
+        "oneOf",
+        "allOf",
+        "not",
+        "$ref",
+        "$defs",
+        "definitions",
+        "nullable",
+    }
+)
+UNTRUSTED_DESCRIPTION_CHARS = 1024
+_UNTRUSTED_PROPERTY_DESCRIPTION_CHARS = 256
+
+
+def _prune_schema(node: Any, _depth: int = 0) -> Any:
+    """Keep the allowlisted keys, recursively; shorten nested descriptions."""
+    if _depth > 24:
+        return {}
+    if isinstance(node, dict):
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            if key not in _SCHEMA_KEEP:
+                continue
+            if key == "description":
+                if isinstance(value, str):
+                    out[key] = value[:_UNTRUSTED_PROPERTY_DESCRIPTION_CHARS]
+                continue
+            if key in ("properties", "$defs", "definitions") and isinstance(
+                value, dict
+            ):
+                out[key] = {
+                    str(k): _prune_schema(v, _depth + 1) for k, v in value.items()
+                }
+            elif key in ("anyOf", "oneOf", "allOf", "prefixItems") and isinstance(
+                value, list
+            ):
+                out[key] = [_prune_schema(v, _depth + 1) for v in value]
+            elif isinstance(value, dict):
+                out[key] = _prune_schema(value, _depth + 1)
+            else:
+                out[key] = value
+        return out
+    return node
 
 
 def normalize_tools(

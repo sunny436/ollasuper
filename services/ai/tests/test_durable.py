@@ -490,7 +490,10 @@ async def test_retry_after_longer_than_the_tool_budget_is_not_retried():
     finally:
         await client.aclose()
     assert calls["n"] == 1, "a doomed wait must not burn the remaining attempts"
-    payload = json.loads(out[0].content)
+    # Errors are framed like results since H-06 (provenance): parse the body
+    # out of the frame.
+    content = out[0].content
+    payload = json.loads(content[content.index("{") : content.rindex("}") + 1])
     assert payload["kind"] == "rate_limited"
     assert payload["retry_after_s"] == 999.0
 

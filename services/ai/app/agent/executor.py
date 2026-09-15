@@ -50,6 +50,7 @@ from app.agent.orchestration_tools import (
     ORCHESTRATION_BUILTIN_NAMES,
 )
 from app.agent.policy import PolicyScope, check_tool_policy
+from app.agent.taint import TaintLedger
 from app.data.tool import DATA_TOOL_NAMES, DataContext, run_tool
 from app.documents.context import DocumentsContext, run_document_ops
 from app.documents.tool import DOCUMENT_OPS_TOOL_NAME
@@ -193,6 +194,8 @@ class ToolExecContext:
     # keyed on this set (true at-most-once per (tool,args)), so A(x),A(y),A(x) does
     # NOT re-run the 2nd A(x). Re-seeded alongside seen_calls on resume.
     seen_call_set: set[str] = field(default_factory=set)
+    # H-06: which connector produced which content this turn (`taint.py`).
+    taint: TaintLedger = field(default_factory=TaintLedger)
     # Phase 2: policy — when False (default) an AMBIGUOUS outcome on a
     # non-idempotent side-effecting tool is NOT auto-retried (at-most-once).
     retry_ambiguous_side_effects: bool = False
@@ -430,11 +433,60 @@ _TOOL_OUTPUT_HEADER = (
 )
 
 
-def _frame_tool_output(text: str) -> str:
+def _frame_tool_output(text: str, *, source: str = "", trusted: bool = True) -> str:
     """Wrap an untrusted tool result in the injection frame, zero-width-breaking
-    a closing sentinel so a poisoned result cannot end the frame early."""
+    a closing sentinel so a poisoned result cannot end the frame early.
+
+    PROVENANCE (audit H-06): the frame names where the content came from and
+    whether an operator vouched for that source, as data the model can weigh —
+    "this came from an untrusted connector" is a fact the model should have when
+    the content tells it to do something.
+    """
     safe = text.replace("</tool_output>", "<​/tool_output>")
-    return f"{_TOOL_OUTPUT_HEADER}\n{safe}\n</tool_output>"
+    where = ""
+    if source:
+        where = (
+            f'\n<provenance source="{source}" trusted="{"yes" if trusted else "no"}" />'
+        )
+    return f"{_TOOL_OUTPUT_HEADER}{where}\n{safe}\n</tool_output>"
+
+
+def _source_of(tool: ToolDefinition) -> str:
+    """The connector key a result is attributed to: `mcp:<slug>` for an MCP
+    tool, `web` for Ollagraph's web tools, empty for in-process tools."""
+    provider = str(getattr(tool, "provider", "") or "")
+    if provider.startswith("mcp:"):
+        return provider
+    if provider == "ollagraph":
+        return "web"
+    return ""
+
+
+def _leaves_the_box(tool: ToolDefinition) -> bool:
+    """Does this tool send its arguments to a third party?"""
+    return bool(_source_of(tool))
+
+
+def _flow_sources(ctx: ToolExecContext, tool: ToolDefinition, args: dict) -> set[str]:
+    """Which OTHER connectors' content do these args carry? (H-06)"""
+    if not _leaves_the_box(tool):
+        return set()
+    return ctx.taint.sources_in(args, exclude={_source_of(tool)})
+
+
+def _approval_reason(
+    ctx: ToolExecContext, tool: ToolDefinition, args: dict, policy_reason: str
+) -> str:
+    """The sentence on the approval card: the data flow when there is one,
+    else the policy's own reason."""
+    flow = _flow_sources(ctx, tool, args)
+    if not flow:
+        return policy_reason
+    return (
+        "this call sends data that came from "
+        + ", ".join(sorted(s.removeprefix("mcp:") for s in flow))
+        + f" to {_source_of(tool).removeprefix('mcp:')}"
+    )
 
 
 async def _emit(
@@ -602,12 +654,13 @@ def _fresh_approval_id(tc: dict, ctx: ToolExecContext) -> str | None:
     if tool is None:
         return None
     decision = check_tool_policy(tool, ctx.scope)
-    if not (decision.needs_approval or tool_id in ctx.force_approval_ids):
-        return None
     args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+    flow_from = _flow_sources(ctx, tool, args)
+    if not (decision.needs_approval or tool_id in ctx.force_approval_ids or flow_from):
+        return None
     # BOUND to the current definition (binding.py): a changed schema/description/
     # origin yields a new id, so a stale approval is simply not found.
-    approval_id = approval_id_for(tool, args)
+    approval_id = approval_id_for(tool, args, sources=flow_from)
     d = ctx.approvals.get(approval_id)
     if d and d.get("decision") == "approved" and d.get("token"):
         return None  # already approved — runs normally (approvedPending/_run_one)
@@ -943,18 +996,35 @@ async def _run_one(
 
     decision = check_tool_policy(tool, ctx.scope)
     needs_approval = decision.needs_approval or tool_id in ctx.force_approval_ids
+    # CROSS-CONNECTOR DATA FLOW (audit H-06). If the arguments carry content
+    # that came from a DIFFERENT connector earlier in this turn, this call
+    # moves data between two third parties under the user's authority. That
+    # asks — whatever the side-effect class, whatever the trust of either end —
+    # and the card names the flow.
+    flow_from = _flow_sources(ctx, tool, args)
+    approval_reason = _approval_reason(ctx, tool, args, decision.reason or "")
+    if flow_from:
+        needs_approval = True
+        log.info(
+            "agent.cross_connector_flow",
+            extra={
+                "tool_id": tool_id,
+                "from": sorted(flow_from),
+                "execution_id": execution.execution_id,
+            },
+        )
     if needs_approval:
         # STABLE approval id = tool_id + hash(everything the decision rested on:
         # connection, endpoint, side effect, description, schema, canonical
-        # args — see binding.py). Resume-stable (unlike the model's per-turn
-        # call_id), so a re-emitted request upserts the SAME durable row; and
-        # definition-bound, so an approval given to one definition is NOT found
-        # for a changed one, which parks a fresh request below.
-        approval_id = approval_id_for(tool, args)
+        # args, data sources — see binding.py). Resume-stable (unlike the
+        # model's per-turn call_id), so a re-emitted request upserts the SAME
+        # durable row; and definition-bound, so an approval given to one
+        # definition is NOT found for a changed one, which parks a fresh
+        # request below.
+        approval_id = approval_id_for(tool, args, sources=flow_from)
         d = ctx.approvals.get(approval_id)
         if d is None and any(
-            k.startswith(f"{tool_id}:")
-            and (v or {}).get("decision") == "approved"
+            k.startswith(f"{tool_id}:") and (v or {}).get("decision") == "approved"
             for k, v in ctx.approvals.items()
         ):
             # An approval for this tool exists but its binding no longer
@@ -1001,8 +1071,7 @@ async def _run_one(
                 call_id,
                 {
                     "status": "approval_required_for_unattended_execution",
-                    "reason": decision.reason
-                    or "this tool requires human approval",
+                    "reason": decision.reason or "this tool requires human approval",
                 },
                 status="error",
             )
@@ -1018,7 +1087,7 @@ async def _run_one(
                 tool_id,
                 approval_id,
                 args,
-                decision.reason or "",
+                approval_reason,
                 call_id,
             )
             if outcome == "suspend":
@@ -1188,7 +1257,18 @@ async def _run_one(
             status="error",
             result=err_payload,
         )
-        return _tool_message(call_id, err_payload, status="error")
+        # FRAMED LIKE A RESULT (audit H-06): an error's text is the server's
+        # text too. An earlier version returned it unframed, which made the
+        # error path the one unframed channel a hostile server had.
+        return ToolMessage(
+            content=_frame_tool_output(
+                json.dumps(err_payload, ensure_ascii=False, default=str),
+                source=_source_of(tool),
+                trusted=bool(getattr(tool, "trusted", True)),
+            ),
+            tool_call_id=call_id,
+            status="error",
+        )
 
     # Thread the Ollagraph credit cost (captured by the adapter, previously
     # dropped) into observability. Never in the ToolMessage (keeps reconstruction
@@ -1220,10 +1300,18 @@ async def _run_one(
     # TOOL_RESULT event for the UI; record the framed content so resume
     # reconstruction is consistent with the live turn.
     result_msg = ToolMessage(
-        content=_frame_tool_output(json.dumps(body, ensure_ascii=False, default=str)),
+        content=_frame_tool_output(
+            json.dumps(body, ensure_ascii=False, default=str),
+            source=_source_of(tool),
+            trusted=bool(getattr(tool, "trusted", True)),
+        ),
         tool_call_id=call_id,
         status="error" if reported_error else "success",
     )
+    # TAINT (audit H-06): remember which connector this content came from, so
+    # a later call that carries it to ANOTHER connector asks first.
+    if _source_of(tool):
+        ctx.taint.record(_source_of(tool), body)
     # Phase 3: durably record the terminal outcome + the ToolMessage content that
     # resume injects verbatim (recovery authority).
     await ctx.writer.record_execution(
@@ -2055,13 +2143,12 @@ async def _run_mcp_read_resource(
 
     uri = args.get("uri") if isinstance(args, dict) else None
     result = await read_resource(
-        ctx.mcp_index, uri if isinstance(uri, str) else "",
+        ctx.mcp_index,
+        uri if isinstance(uri, str) else "",
         max_bytes=ctx.mcp_resource_max_bytes,
     )
     body = json.dumps(result, ensure_ascii=False, default=str)
-    return ToolMessage(
-        tool_call_id=call_id, content=body[: ctx.result_max_chars]
-    )
+    return ToolMessage(tool_call_id=call_id, content=body[: ctx.result_max_chars])
 
 
 async def _run_generate_file(
@@ -2525,7 +2612,7 @@ async def _park_all_for_approval(
             tool_id,
             approval_id,
             args,
-            decision.reason or "",
+            _approval_reason(ctx, tool, args, decision.reason or ""),
             call_id,
         )
         if outcome == "suspend":

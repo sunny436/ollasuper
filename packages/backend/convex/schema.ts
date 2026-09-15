@@ -475,6 +475,10 @@ export default defineSchema({
     // the single source of truth for conversation state.
     summary: v.optional(v.string()),
     summaryThroughSeq: v.optional(v.number()),
+    // UNTRUSTED connectors the user has opted into for this thread, by slug
+    // (mcp/activation.ts; audit H-06). Absent = none. Additive: pre-existing
+    // threads simply have no untrusted connector composed until named.
+    mcpActivated: v.optional(v.array(v.string())),
     // Composer follow-up chips for the most recent completed turn. Deliberately
     // NOT a chatMessages row: they are transient composer UI, so they must stay
     // out of the transcript, the search index and the model's context.

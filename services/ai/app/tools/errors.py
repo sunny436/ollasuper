@@ -64,7 +64,10 @@ class ToolError(RuntimeError):
         """Safe, user-facing shape. Never includes provider text/credentials."""
         out = {
             "kind": str(self.kind),
-            "message": self.message,
+            # Bounded: the message can carry a third party's text (an MCP
+            # server's error string), which is the model's to read but not the
+            # server's to fill without limit.
+            "message": (self.message or "")[:512],
             "tool_id": self.tool_id,
             "retryable": self.retryable,
         }
