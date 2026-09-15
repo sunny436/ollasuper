@@ -1,5 +1,5 @@
-import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { convexTest, type TestConvex } from "convex-test";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { activationNeedles, mentionsConnector, slugOfToolId } from "./mcp/activation";
@@ -11,6 +11,34 @@ import schema from "./schema";
  * thread; here is how the flag gets set and how it travels.
  */
 const modules = import.meta.glob(["./**/*.*s", "!./**/*.test.*"]);
+type TestT = TestConvex<typeof schema>;
+
+// send() schedules dispatch (POST /v1/generate). Stub fetch + drain so the
+// scheduled action neither touches the network nor outlives the test
+// transaction (measured: it otherwise surfaces as an unhandled rejection
+// attributed to whichever test runs next).
+const realFetch = globalThis.fetch;
+beforeEach(() => {
+  process.env.AI_BASE_URL = "http://ai.invalid:8000";
+  process.env.AI_SERVICE_KEY = "test-service-key";
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ accepted: true }), {
+      status: 202,
+    })) as typeof fetch;
+});
+afterEach(() => {
+  globalThis.fetch = realFetch;
+  // biome-ignore lint/performance/noDelete: the only way to actually unset an env var
+  delete process.env.AI_BASE_URL;
+  // biome-ignore lint/performance/noDelete: the only way to actually unset an env var
+  delete process.env.AI_SERVICE_KEY;
+});
+async function drain(t: TestT) {
+  for (let i = 0; i < 3; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
 const as = (userId: string) => ({ subject: `${userId}|sess_${userId}` });
 
 describe("matching", () => {
@@ -90,6 +118,7 @@ describe("activation travels with the thread", () => {
       content: "Use Context7 to look up React hooks",
       clientId: "c1",
     });
+    await drain(t);
     const thread = await t.run((ctx) => ctx.db.get(s.threadId));
     expect(thread?.mcpActivated).toEqual(["context7"]);
     const untouched = await t.run((ctx) => ctx.db.get(other));

@@ -13,6 +13,14 @@ const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.QA_EMAIL || "";
 const PASSWORD = process.env.QA_PASSWORD || "";
 const MODE = process.env.MODE || "approvals";
+// The trusted connector the approvals mode drives. Gmail by default; when the
+// QA account has no Gmail (Google blocks automated re-consent), point these at
+// another trusted Google connector, e.g. Drive read + Docs write.
+const READ_PROMPT = process.env.READ_PROMPT || "Look at my Gmail and tell me the names of my Gmail labels.";
+const READ_RE = new RegExp(process.env.READ_RE || "inbox|label|sent|draft|starred|important", "i");
+const WRITE_PROMPT =
+  process.env.WRITE_PROMPT ||
+  "Create a Gmail draft addressed to myself with the subject 'OllaSuper security check' and body 'hello'. Do not send it.";
 const CONNECTED_HINT = "OllaSuper can use this app's tools when a request needs them";
 
 const errs = [];
@@ -85,24 +93,20 @@ async function ask(page, text, { decide = null, waitMs = 150000 } = {}) {
     await step("login", () => login(page));
 
     if (MODE === "approvals") {
-      await step("H-05: a trusted server's declared READ runs with no approval (Gmail labels)", async () => {
-        const { reply, sawApproval } = await ask(page, "Look at my Gmail and tell me the names of my Gmail labels.");
+      await step("H-05: a trusted server's declared READ runs with no approval", async () => {
+        const { reply, sawApproval } = await ask(page, READ_PROMPT);
         if (sawApproval) throw new Error("an approval card appeared for a trusted read");
-        if (!/inbox|label|sent|draft|starred|important/i.test(reply)) throw new Error("no label-shaped answer: " + reply.slice(0, 200));
-        notes.push("gmail read reply: " + reply.replace(/\s+/g, " ").slice(0, 140));
+        if (!READ_RE.test(reply)) throw new Error("no read-shaped answer: " + reply.slice(0, 200));
+        notes.push("trusted read reply: " + reply.replace(/\s+/g, " ").slice(0, 140));
       });
 
-      await step("H-05: a trusted server's WRITE asks, and Reject runs nothing (Gmail draft)", async () => {
-        const { reply, sawApproval } = await ask(
-          page,
-          "Create a Gmail draft addressed to myself with the subject 'OllaSuper security check' and body 'hello'. Do not send it.",
-          { decide: "reject" },
-        );
+      await step("H-05: a trusted server's WRITE asks, and Reject runs nothing", async () => {
+        const { reply, sawApproval } = await ask(page, WRITE_PROMPT, { decide: "reject" });
         if (!sawApproval) throw new Error("no approval card for a write");
         if (/created|saved|done|drafted/i.test(reply) && !/not approved|rejected|declin|didn.t|did not|cancel/i.test(reply)) {
           throw new Error("the reply claims the write happened after a rejection: " + reply.slice(0, 200));
         }
-        notes.push("gmail write after reject: " + reply.replace(/\s+/g, " ").slice(0, 140));
+        notes.push("trusted write after reject: " + reply.replace(/\s+/g, " ").slice(0, 140));
       });
 
       await step("H-05: an UNTRUSTED server's read asks (Context7 docs lookup)", async () => {
