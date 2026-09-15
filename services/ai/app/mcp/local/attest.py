@@ -53,6 +53,12 @@ ATTESTATION_DIR = Path("/run/myos/mcp-local")
 #: An attestation older than this is stale: the launcher rewrites it on every
 #: start, and a container that has outlived its unit is not one we vouch for.
 MAX_AGE_S = 7 * 24 * 3600
+#: The bridge re-stamps `heartbeat_at` every HEARTBEAT_S while it serves. A
+#: bridge that was SIGKILLed (never reached its finally) stops stamping, and
+#: the gate refuses once the stamp is older than MAX_HEARTBEAT_AGE_S — so a
+#: dead bridge is refused within two minutes, not after MAX_AGE_S.
+HEARTBEAT_S = 30.0
+MAX_HEARTBEAT_AGE_S = 120.0
 #: The one mount a container may have: the launcher's scratch tmpfs. (This is
 #: the CONTAINER's /tmp, not a host temp path — the S108 lint is about hosts.)
 TMPFS_MOUNT = "/tmp"  # noqa: S108
@@ -70,6 +76,8 @@ class Attestation:
     container_id: str
     started_at: float
     failed: tuple[str, ...] = ()
+    #: Last time the serving bridge re-stamped this file (0 = never).
+    heartbeat_at: float = 0.0
 
     def as_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -156,6 +164,7 @@ def load(slug: str, base: Path | None = None) -> Attestation | None:
             container_id=str(raw.get("container_id") or ""),
             started_at=float(raw.get("started_at") or 0.0),
             failed=tuple(str(f) for f in raw.get("failed") or ()),
+            heartbeat_at=float(raw.get("heartbeat_at") or 0.0),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -171,4 +180,11 @@ def verified_for(
     if att.image_digest != str(getattr(row, "image_digest", "") or ""):
         return False
     current = time.time() if now is None else now
-    return 0 < att.started_at <= current and current - att.started_at <= MAX_AGE_S
+    if not (0 < att.started_at <= current and current - att.started_at <= MAX_AGE_S):
+        return False
+    # A verified file whose bridge stopped stamping it belongs to a bridge
+    # that is gone without saying so (SIGKILL, OOM, host reset).
+    return (
+        att.heartbeat_at >= att.started_at
+        and current - att.heartbeat_at <= MAX_HEARTBEAT_AGE_S
+    )

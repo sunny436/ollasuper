@@ -181,6 +181,52 @@ def test_every_single_deviation_is_caught(over, failed):
     assert failed in attest.check(_inspect(**over), expected(LocalRow()))
 
 
+def test_the_plane_gate_refuses_a_bridge_that_stopped_heartbeating(tmp_path):
+    """A SIGKILLed bridge never reaches its finally, so its file still says
+    verified. The heartbeat is what makes the gate notice."""
+    row = LocalRow(slug="gw-fixture", image_digest=DIGEST, cpus=0.5, memory_mb=256)
+    base = dict(
+        slug="gw-fixture", verified=True, image_digest=DIGEST, container_id="c" * 64
+    )
+    attest.write(
+        attest.Attestation(**base, started_at=100.0, heartbeat_at=100.0), tmp_path
+    )
+    assert attest.verified_for(row, tmp_path, now=100.0 + attest.MAX_HEARTBEAT_AGE_S)
+    assert not attest.verified_for(
+        row, tmp_path, now=100.0 + attest.MAX_HEARTBEAT_AGE_S + 1
+    ), "a stale heartbeat must refuse"
+    attest.write(
+        attest.Attestation(**base, started_at=100.0, heartbeat_at=1000.0), tmp_path
+    )
+    assert attest.verified_for(row, tmp_path, now=1010.0)
+    # No stamp at all (a file from before the heartbeat, or a failed start).
+    attest.write(attest.Attestation(**base, started_at=100.0), tmp_path)
+    assert not attest.verified_for(row, tmp_path, now=101.0)
+
+
+async def test_the_bridge_restamps_the_attestation_while_serving(tmp_path, monkeypatch):
+    from bridge import mcp_bridge
+
+    monkeypatch.setattr(attest, "ATTESTATION_DIR", tmp_path)
+    att = attest.Attestation(
+        slug="gw-fixture",
+        verified=True,
+        image_digest=DIGEST,
+        container_id="c" * 64,
+        started_at=1.0,
+        heartbeat_at=1.0,
+    )
+    attest.write(att)
+    import asyncio
+
+    task = asyncio.create_task(mcp_bridge._heartbeat(att, interval_s=0.05))
+    await asyncio.sleep(0.3)
+    task.cancel()
+    loaded = attest.load("gw-fixture", tmp_path)
+    assert loaded is not None and loaded.verified and loaded.heartbeat_at > 1.0
+    assert loaded.started_at == 1.0 and loaded.failed == ()
+
+
 def test_the_plane_gate_needs_a_fresh_verified_matching_attestation(tmp_path):
     row = LocalRow()
     now = 1_800_000_000.0
@@ -190,6 +236,7 @@ def test_the_plane_gate_needs_a_fresh_verified_matching_attestation(tmp_path):
         image_digest=DIGEST,
         container_id="c",
         started_at=now - 60,
+        heartbeat_at=now - 10,
     )
     assert attest.verified_for(row, tmp_path, now=now) is False  # nothing written
     attest.write(ok, tmp_path)
@@ -255,6 +302,7 @@ async def test_resolve_local_spec_refuses_without_an_attestation(tmp_path, monke
             image_digest=row.image_digest,
             container_id="c",
             started_at=1.0,
+            heartbeat_at=1.0,
         ),
         tmp_path,
     )

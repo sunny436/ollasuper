@@ -87,6 +87,7 @@ def _attested_fixture_rows(monkeypatch, tmp_path_factory):
                 image_digest=digest,
                 container_id="fixture",
                 started_at=time.time() - 1,
+                heartbeat_at=time.time() - 1,
             ),
             base,
         )

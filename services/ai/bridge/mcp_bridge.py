@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import hmac
 import json
 import os
@@ -157,6 +158,18 @@ async def _attested_run(
             pass
 
 
+async def _heartbeat(att: Any, interval_s: float = attest.HEARTBEAT_S) -> None:
+    """Re-stamp the attestation while serving. The plane's gate refuses a
+    stamp older than `attest.MAX_HEARTBEAT_AGE_S`, so a bridge that dies
+    without reaching its finally (SIGKILL) is refused within minutes."""
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            attest.write(dataclasses.replace(att, heartbeat_at=time.time()))
+        except OSError:
+            log.warning("bridge.heartbeat_failed", extra={"slug": att.slug})
+
+
 async def _wait_for_container(name: str, timeout_s: float = 30.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     while True:
@@ -277,6 +290,7 @@ async def run(slug: str, port: int) -> int:
                 started_at=started,
                 failed=tuple(failed),
             )
+            att = dataclasses.replace(att, heartbeat_at=time.time())
             path = attest.write(att)
             if failed:
                 # FAIL CLOSED: the container is not what the row describes. It
@@ -295,7 +309,11 @@ async def run(slug: str, port: int) -> int:
             config = uvicorn.Config(
                 app, host="127.0.0.1", port=port, log_level="warning"
             )
-            await uvicorn.Server(config).serve()
+            beat = asyncio.create_task(_heartbeat(att))
+            try:
+                await uvicorn.Server(config).serve()
+            finally:
+                beat.cancel()
             return 0
 
     return await _attested_run(session, slug=slug, exp=exp, name=name, started=started)
