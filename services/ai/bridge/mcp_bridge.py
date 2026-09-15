@@ -34,9 +34,11 @@ import asyncio
 import hmac
 import json
 import os
+import signal
 import subprocess  # noqa: S404 -- this process's whole job is to spawn one container
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from starlette.applications import Starlette
@@ -101,6 +103,52 @@ def _ensure_env_file(slug: str) -> str:
     return path
 
 
+def _arm_stop_signals() -> None:
+    """`systemctl stop` MUST reach `run`'s finally. uvicorn captures SIGTERM for
+    its graceful shutdown, then RESTORES the previous handler and re-raises the
+    signal (`Server.capture_signals`, uvicorn 0.52). With Python's default
+    handler that terminates the process on the spot — measured on the host: a
+    stopped unit left `verified: true` on disk, which the plane would honour
+    for MAX_AGE_S. Raising SystemExit instead unwinds through every finally,
+    whether the signal lands before serve (container starting) or after it."""
+
+    def _stop(_sig: int, _frame: Any) -> None:
+        raise SystemExit(0)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _stop)
+
+
+async def _attested_run(
+    body: Callable[[], Awaitable[int]],
+    *,
+    slug: str,
+    exp: Any,
+    name: str,
+    started: float,
+) -> int:
+    """Run `body`; however it ends — return, error, or the stop signal — the
+    container is removed and the attestation says `stopped`, so the plane never
+    dials a server whose bridge is gone."""
+    try:
+        return await body()
+    finally:
+        _remove(name)
+        try:
+            attest.write(
+                attest.Attestation(
+                    slug=slug,
+                    verified=False,
+                    image_digest=exp.image_digest,
+                    container_id="",
+                    started_at=started,
+                    failed=("stopped",),
+                )
+            )
+        except OSError:
+            pass
+
+
 async def _wait_for_container(name: str, timeout_s: float = 30.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     while True:
@@ -162,6 +210,7 @@ def _proxy_app(client: Any, name: str, token: str, host: str, port: int) -> Any:
 
 
 async def run(slug: str, port: int) -> int:
+    _arm_stop_signals()
     settings = get_settings()
     configure(settings.ai_log_level, settings.secrets())
     token = settings.mcp_gateway_auth_token
@@ -200,7 +249,8 @@ async def run(slug: str, port: int) -> int:
 
     params = StdioServerParameters(command=argv[0], args=argv[1:], env={})
     started = time.time()
-    try:
+
+    async def session() -> int:
         # LEGACY HANDSHAKE, deliberately. The containerised servers in the MCP
         # catalogue are built on older SDKs, and the modern `server/discover`
         # probe does not merely go unanswered by them — measured on mcp/time,
@@ -226,7 +276,6 @@ async def run(slug: str, port: int) -> int:
                 log.error(
                     "bridge.attestation_failed", extra={"slug": slug, "failed": failed}
                 )
-                _remove(name)
                 return 1
             log.info(
                 "bridge.attested",
@@ -239,22 +288,9 @@ async def run(slug: str, port: int) -> int:
                 app, host="127.0.0.1", port=port, log_level="warning"
             )
             await uvicorn.Server(config).serve()
-    finally:
-        _remove(name)
-        try:
-            attest.write(
-                attest.Attestation(
-                    slug=slug,
-                    verified=False,
-                    image_digest=exp.image_digest,
-                    container_id="",
-                    started_at=started,
-                    failed=("stopped",),
-                )
-            )
-        except OSError:
-            pass
-    return 0
+            return 0
+
+    return await _attested_run(session, slug=slug, exp=exp, name=name, started=started)
 
 
 def main() -> None:

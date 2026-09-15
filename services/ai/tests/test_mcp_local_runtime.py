@@ -323,6 +323,46 @@ def test_the_local_listing_reports_attestation_per_server():
     assert '"attested": attested' in src
 
 
+async def test_a_stop_signal_still_ends_in_a_stopped_attestation(tmp_path, monkeypatch):
+    """`systemctl stop` sends SIGTERM; uvicorn re-raises it after its own
+    shutdown with the ORIGINAL handler restored. Measured on the host before
+    this: the process died there and the attestation stayed `verified: true`.
+    The bridge's handler must turn the signal into an unwind that removes the
+    container and rewrites the attestation, whichever window it lands in."""
+    import signal
+
+    from bridge import mcp_bridge
+
+    monkeypatch.setattr(attest, "ATTESTATION_DIR", tmp_path)
+    removed: list[str] = []
+    monkeypatch.setattr(mcp_bridge, "_remove", removed.append)
+    row = LocalRow(slug="gw-fixture", image_digest=DIGEST, cpus=0.5, memory_mb=256)
+    exp = expected(row)
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        mcp_bridge._arm_stop_signals()
+
+        async def serve() -> int:
+            signal.raise_signal(signal.SIGTERM)  # uvicorn's re-raise, after serve()
+            return 0  # pragma: no cover - the signal unwinds first
+
+        with pytest.raises(SystemExit):
+            await mcp_bridge._attested_run(
+                serve,
+                slug="gw-fixture",
+                exp=exp,
+                name="myos-mcp-gw-fixture",
+                started=1.0,
+            )
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    att = attest.load("gw-fixture", tmp_path)
+    assert att is not None and att.verified is False and att.failed == ("stopped",)
+    assert removed == ["myos-mcp-gw-fixture"]
+    assert attest.verified_for(row, tmp_path) is False
+
+
 def test_no_module_in_the_mcp_package_spawns_anything_the_bridge_does():
     """The bridge lives OUTSIDE app/mcp; the package stays spawn-free. Code
     identifiers, not prose — a docstring may mention what it refuses."""
