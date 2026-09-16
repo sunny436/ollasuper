@@ -65,6 +65,8 @@ from app.finance.tool import (
     FINANCE_CALC_TOOL_SPEC,
     FINANCE_REFERENCE_TOOL_SPEC,
 )
+from app.humanizer.patterns import analyze, human_voice_score
+from app.humanizer.tool import HUMANIZE_CHECK_TOOL_SPEC
 from app.ingest.retrieve import render_rag_block, retrieve_context
 from app.logging import bind_log_context, get_logger
 from app.marketing.tool import (
@@ -125,6 +127,14 @@ ERR_ATTACHMENT = "attachment_failed"
 ERR_INGRESS = "ingress_unavailable"
 ERR_INTERNAL = "internal"
 ERR_DEADLINE = "deadline_exceeded"  # Phase 7: total execution deadline hit
+
+
+#: Below this a reply is a chat answer, not a written deliverable, and a
+#: writing-quality score for it would be noise.
+_QUALITY_MIN_CHARS = 600
+#: Bound on the measured slice (~a 6,000-word article). The score is a density,
+#: so it is already settled well before here; measuring more only costs CPU.
+_QUALITY_MAX_CHARS = 40_000
 
 
 def reserve_skill_tools(
@@ -503,6 +513,11 @@ async def run_generation(
         # has an uploaded PPTX/PDF to operate on. Off/no document => not registered,
         # byte-identical. Creating a NEW document stays with generate_file.
         documents_as_tool = settings.ai_documents_enabled
+        # Humanizer — bind the deterministic `humanize_check` detector when the
+        # flag is on. Stateless and read-only; the model calls it on a finished
+        # draft before delivering written content. Off => not registered,
+        # byte-identical.
+        humanize_as_tool = settings.ai_humanizer_enabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -634,6 +649,7 @@ async def run_generation(
             # Server-authored by Convex from the thread's Project. None for an
             # ordinary chat, so the prompt is byte-identical to before Projects.
             project_instructions=req.projectInstructions,
+            humanize=settings.ai_humanizer_enabled,
         )
         # THE REQUIREMENT LEDGER. Built deterministically from what the user
         # enumerated, so a ten-part task is tracked by OllaSuper rather than by a
@@ -1285,6 +1301,8 @@ async def run_generation(
             specs.append(MARKETING_REFERENCE_TOOL_SPEC)
         if documents_as_tool:
             specs.append(DOCUMENT_OPS_TOOL_SPEC)
+        if humanize_as_tool:
+            specs.append(HUMANIZE_CHECK_TOOL_SPEC)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -1314,6 +1332,8 @@ async def run_generation(
             reserved_specs.append(MARKETING_REFERENCE_TOOL_SPEC)
         if documents_as_tool:
             reserved_specs.append(DOCUMENT_OPS_TOOL_SPEC)
+        if humanize_as_tool:
+            reserved_specs.append(HUMANIZE_CHECK_TOOL_SPEC)
         # Phase 5: ONE generic resource reader, bound only when a connected server
         # actually advertises resources. A user with no resource-bearing server
         # never sees it, so it costs nothing in the context budget of every turn
@@ -2109,6 +2129,12 @@ async def run_generation(
                     },
                 )
         if status != "suspended":
+            # THE QUALITY MEASUREMENT (Tier C). `writer.text` is the complete
+            # final answer, already buffered, so scoring it costs no tokens and
+            # cannot touch what the user sees. It is MEASUREMENT ONLY — never a
+            # rewrite: by here the text has already streamed. It is what makes
+            # the writing-quality signal exist on EVERY surface, including the
+            # one-shot turns where no in-loop stage can run.
             # shield: the CancelledError that got us here must not also cancel the
             # write that records the cancellation.
             await asyncio.shield(
@@ -2119,6 +2145,18 @@ async def run_generation(
                     error=error,
                 )
             )
+            # THE QUALITY MEASUREMENT (Tier C), AFTER finalize for the same
+            # reason the rolling summary below is: it must not delay the reply.
+            # `writer.text` is the complete final answer, already buffered, so
+            # this costs no tokens and cannot touch what the user saw. It is
+            # measurement ONLY — never a rewrite — and it is what gives the
+            # writing-quality signal on EVERY surface, including the one-shot
+            # turns where no in-loop stage can run.
+            if settings.ai_humanizer_enabled:
+                # OFF THE EVENT LOOP: this is pure CPU (measured ~150ms on a
+                # 50KB article) and the plane runs `--workers 1`, so doing it
+                # inline would stall every other request for that long.
+                await asyncio.to_thread(_log_writing_quality, req.streamId, writer.text)
             # Rolling summary — the compaction half of context management, and
             # the producer that was never built for the `op: "summary"` route
             # that has always existed. AFTER finalize and fire-and-forget, so it
@@ -2232,3 +2270,33 @@ def _chunk_text(chunk: object) -> str:
 def _is_provider_error(e: Exception) -> bool:
     name = type(e).__name__.lower()
     return any(k in name for k in ("api", "openai", "http", "rate", "connection"))
+
+
+def _log_writing_quality(stream_id: str, text: str) -> None:
+    """Score the finished answer and record it. Never raises, never rewrites.
+
+    Only prose is scored: a short reply, a code answer or a tool-only turn is not
+    a written deliverable and a score for it would be noise. Bounded by
+    `_QUALITY_MAX_CHARS` so an enormous answer cannot cost measurable time.
+    """
+    try:
+        if not text or len(text) < _QUALITY_MIN_CHARS:
+            return
+        body = text[:_QUALITY_MAX_CHARS]
+        findings, prof = analyze(body)
+        score = human_voice_score(body, findings=findings, prof=prof)
+        top: dict[str, int] = {}
+        for f in findings:
+            top[f.pattern] = top.get(f.pattern, 0) + 1
+        log.info(
+            "writing.quality",
+            extra={
+                "stream_id": stream_id,
+                "human_voice_score": score,
+                "words": prof.words,
+                "findings": len(findings),
+                "by_pattern": dict(sorted(top.items(), key=lambda kv: -kv[1])[:8]),
+            },
+        )
+    except Exception:  # noqa: BLE001 — a measurement must never fail a turn
+        log.debug("writing.quality_failed", extra={"stream_id": stream_id})

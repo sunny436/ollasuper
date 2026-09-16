@@ -60,6 +60,10 @@ from app.finance.tool import (
     compute_finance_calc,
     run_finance_reference,
 )
+from app.humanizer.tool import (
+    HUMANIZE_CHECK_TOOL_NAME,
+    compute_humanize_check,
+)
 from app.logging import get_logger
 from app.marketing.tool import (
     MARKETING_CALC_TOOL_NAME,
@@ -939,6 +943,16 @@ async def _run_one(
             ctx,
             execution,
             _run_marketing_reference(ctx, call_id, args),
+            side_effect="read_only",
+        )
+
+    # Humanizer: the reserved DETERMINISTIC writing-quality detector (stateless,
+    # read-only, pure). Bound only when the humanizer flag is on.
+    if bound_name == HUMANIZE_CHECK_TOOL_NAME:
+        return await _run_builtin(
+            ctx,
+            execution,
+            _run_humanize_check(ctx, call_id, args),
             side_effect="read_only",
         )
 
@@ -1935,6 +1949,35 @@ async def _run_marketing_calc(
         side_effect="read_only",
     )
     result = compute_marketing_calc(args)
+    err = result.get("error") if isinstance(result, dict) else None
+    await ctx.writer.emit_event(
+        EventType.TOOL_RESULT,
+        call_id=call_id,
+        status="error" if err else "success",
+        result={"error": err} if err else {"ok": True},
+    )
+    return _tool_message(call_id, result, status="error" if err else "success")
+
+
+async def _run_humanize_check(
+    ctx: ToolExecContext, call_id: str, args: dict
+) -> ToolMessage:
+    """Humanizer: the pure detector in `app/humanizer/`, dispatched by `mode`.
+
+    Stateless + read-only; never raises (a bad shape -> {"error": ...}). Only
+    the MODE is emitted as arguments: the draft itself is the user's content and
+    has no business in an event payload.
+    """
+    await ctx.writer.emit_event(
+        EventType.TOOL_CALL,
+        tool_name=HUMANIZE_CHECK_TOOL_NAME,
+        tool_id=HUMANIZE_CHECK_TOOL_NAME,
+        call_id=call_id,
+        arguments={"mode": args.get("mode")},
+        status="running",
+        side_effect="read_only",
+    )
+    result = compute_humanize_check(args)
     err = result.get("error") if isinstance(result, dict) else None
     await ctx.writer.emit_event(
         EventType.TOOL_RESULT,

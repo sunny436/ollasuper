@@ -141,7 +141,11 @@ PRODUCTION_SKILLS: list[SkillManifest] = [
         ),
         methodology=(
             "Lead with the conclusion; support it with evidence; structure with short "
-            "headings or lists; end with clear, actionable next steps."
+            "headings or lists; end with clear, actionable next steps. Before "
+            "delivering, run the internal writing-quality pass on the finished text "
+            "(`humanize_check` detect, then revise-and-verify only if it says "
+            "'revise'); it changes voice, never facts, and is never mentioned in the "
+            "answer."
         ),
     ),
     SkillManifest(
@@ -239,9 +243,7 @@ def build_delegate_spec(settings: Settings | None = None) -> dict:
     )
     role = spec["function"]["parameters"]["properties"]["role"]
     role["enum"] = roles
-    role["description"] = (
-        f"The specialist to delegate to — MUST be one of: {hints}."
-    )
+    role["description"] = f"The specialist to delegate to — MUST be one of: {hints}."
     return spec
 
 

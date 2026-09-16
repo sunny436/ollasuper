@@ -384,6 +384,15 @@ class Settings(BaseSettings):
     # default => neither the skill, its `documents.*` intents, nor `document_ops` are
     # registered, so the runner is byte-identical and every sibling is untouched.
     ai_documents_enabled: bool = False
+    # Humanizer — opt-in gate for the INTERNAL final-writing stage (app/humanizer/):
+    # the `humanize_check` detector + the silent guidance that places it after the
+    # draft and before delivery, on every writing surface (Blog, Report Writing,
+    # Marketing copy, Sales/HR/Operations deliverables, Documents, research). It is
+    # NOT a user-facing skill and never appears in the answer. Adapted from
+    # blader/humanizer v3.0.0 (MIT). OFF by default => neither the tool nor the
+    # guidance is registered, so the system prompt and the bound specs are
+    # byte-identical to today and every skill is untouched.
+    ai_humanizer_enabled: bool = False
     # The faithful PPTX visual-preview + PPTX<->PDF path uses LibreOffice headless
     # (soffice), sandboxed per-conversion (systemd-run scope: PrivateNetwork + MemoryMax
     # + CPUQuota + ProtectSystem + NoNewPrivileges, else unshare -n + prlimit) with a
