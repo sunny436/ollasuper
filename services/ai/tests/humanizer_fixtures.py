@@ -54,3 +54,25 @@ BLOG_TAIL = (
     "## Sources & evidence\n\n"
     "1. Beta cohort report, 2026 — https://example.com/beta-report\n"
 )
+
+
+def in_token_space(rewrite: str, draft: str) -> str:
+    """Express a human-written rewrite the way the real rewriter returns it: every
+    protected span of `draft` that the rewrite kept verbatim becomes its token.
+    Longest spans first, never inside a token already placed (a token like P5
+    contains a digit a later "5" must not match)."""
+    import re
+
+    from app.humanizer import stage
+
+    _, slots = stage.protect(draft)
+    token_rx = re.compile("⟦P" + r"\d+" + "⟧")
+    for token, original in sorted(slots.items(), key=lambda kv: -len(kv[1])):
+        placed = [m.span() for m in token_rx.finditer(rewrite)]
+        for m in re.finditer(re.escape(original), rewrite):
+            s, e = m.span()
+            if any(ts < e and s < te for ts, te in placed):
+                continue
+            rewrite = rewrite[:s] + token + rewrite[e:]
+            break
+    return rewrite

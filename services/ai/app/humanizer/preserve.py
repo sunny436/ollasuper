@@ -66,7 +66,20 @@ _MONTHS = (
 _NUMBER = re.compile(r"[$£€₹]?\d{1,15}(?:[,\d]{0,20})?(?:\.\d{1,6})?%?")
 _URL = re.compile(r"https?://[^\s<>()\[\]\"']{1,2000}")
 _MD_TARGET = re.compile(r"\]\(([^)\s]{1,2000})(?:\s+\"[^\"]{0,200}\")?\)")
-_FENCE = re.compile(r"```[^\n]{0,40}\n(.{0,20000}?)```", re.S)
+_FENCE = re.compile(r"```([^\n]{0,40})\n(.{0,20000}?)```", re.S)
+#: A fence labelled as prose is a copy-paste container for writing, not code:
+#: measured on prod, a launch email arrived entirely inside ```text fences, so
+#: treating it as code protected the whole deliverable from the humanize stage
+#: and every rewrite of it was refused as "lost code".
+_PROSE_FENCE_LANGS = frozenset(
+    {"", "text", "txt", "plain", "plaintext", "markdown", "md", "email"}
+)
+
+
+def _is_prose_fence(m: re.Match[str]) -> bool:
+    return m.group(1).strip().lower() in _PROSE_FENCE_LANGS
+
+
 _INLINE_CODE = re.compile(r"`([^`\n]{1,400})`")
 _HEADING = re.compile(r"^#{1,6}\s+([^\n]{1,200})$", re.M)
 _WORD = re.compile(r"[A-Za-z0-9']+")
@@ -163,7 +176,9 @@ def _urls(text: str) -> set[str]:
 
 
 def _code(text: str) -> set[str]:
-    blocks = {m.group(1).strip() for m in _FENCE.finditer(text)}
+    blocks = {
+        m.group(2).strip() for m in _FENCE.finditer(text) if not _is_prose_fence(m)
+    }
     inline = {m.group(1).strip() for m in _INLINE_CODE.finditer(text)}
     return {c for c in blocks | inline if c}
 
@@ -196,7 +211,47 @@ def _normalise(text: str) -> str:
 
 
 def _quotations(text: str) -> set[str]:
-    return {m.group(1).strip() for m in _QUOTE.finditer(_normalise(text))}
+    # Quote marks are normalised, but a quotation never spans a line: collapsing
+    # newlines FIRST paired a closing mark in one paragraph with an opening mark
+    # in the next and reported text between them as a "lost quotation" (measured
+    # on a production blog: 'stops at the first plausible cause The classic').
+    return {
+        _SPACE.sub(" ", m.group(1)).strip()
+        for m in _QUOTE.finditer(text.translate(_QUOTE_MARKS))
+    }
+
+
+def protected_spans(text: str) -> list[tuple[int, int]]:
+    """Every span this module verifies must survive exactly: figures, dates, URLs
+    and link targets, code, citation markers, internal-link markers, image
+    placeholders, quotations, evidence labels and tags. The humanize stage hides
+    these from the rewriter, so what `verify` checks is protected by construction.
+    Offsets index the ORIGINAL text (quote-mark translation is one-to-one)."""
+    spans: list[tuple[int, int]] = []
+    for m in _FENCE.finditer(text):
+        if _is_prose_fence(m):
+            # Keep the fence lines; the writing inside is the deliverable.
+            spans.append((m.start(), m.start(2)))
+            spans.append((m.end() - 3, m.end()))
+        else:
+            spans.append((m.start(), m.end()))
+    for rx in (
+        _INLINE_CODE,
+        _URL,
+        _DATE,
+        _NUMBER,
+        _REF_MARKER,
+        _INTERNAL_LINK,
+        _IMAGE_PLACEHOLDER,
+        EVIDENCE_LABEL,
+        EVIDENCE_TAG,
+    ):
+        spans.extend((m.start(), m.end()) for m in rx.finditer(text))
+    spans.extend((m.start(1), m.end(1)) for m in _MD_TARGET.finditer(text))
+    spans.extend(
+        (m.start(), m.end()) for m in _QUOTE.finditer(text.translate(_QUOTE_MARKS))
+    )
+    return [(s, e) for s, e in spans if e > s]
 
 
 def _opening_paragraph(text: str) -> str:

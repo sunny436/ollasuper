@@ -32,7 +32,7 @@ from app.models.chat import GenerateRequest, HistoryMessage, ModelCandidate
 from app.runtime.runner import run_generation
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector
-from tests.humanizer_fixtures import BLOG_TAIL, CLEAN, DRAFT, REWRITE
+from tests.humanizer_fixtures import BLOG_TAIL, CLEAN, DRAFT, REWRITE, in_token_space
 from tests.test_agent_runner import (
     RecordingConvex,
     _agent_settings,
@@ -140,12 +140,14 @@ async def _turn(
     *,
     prompt: str = WRITE,
     draft: str = DRAFT,
-    rewrite: Any = REWRITE,
+    rewrite: Any = None,
     humanizer: bool = True,
     convex: RecordingConvex | None = None,
     candidates: list[ModelCandidate] | None = None,
     **flags,
 ) -> tuple[Recorder, RecordingConvex]:
+    if rewrite is None:  # the faithful rewrite, as the real rewriter returns it
+        rewrite = _rw(REWRITE, draft if isinstance(draft, str) else DRAFT)
     rec = Recorder(draft, rewrite)
     monkeypatch.setattr(
         "app.runtime.runner.build_llm",
@@ -191,6 +193,12 @@ async def _turn(
     return rec, convex
 
 
+def _rw(text: str, draft: str = DRAFT) -> str:
+    """A rewrite a person wrote, in the draft's token space (what the rewriter
+    receives and must return)."""
+    return in_token_space(text, draft)
+
+
 def _streamed(convex: RecordingConvex) -> str:
     deltas = [d for c in _ops(convex, "delta") for d in c["deltas"]]
     return "".join(d["text"] for d in sorted(deltas, key=lambda d: d["seq"]))
@@ -222,7 +230,10 @@ async def test_a_machine_shaped_draft_is_never_shown_and_the_rewrite_is_saved(
     assert _final(convex)["text"] == REWRITE
     assert len(rec.rewrite_prompts) == 1
     rewrite_input = str(rec.rewrite_prompts[0][1].content)
-    assert DRAFT.strip() in rewrite_input and "fast-paced" in rewrite_input
+    assert "fast-paced" in rewrite_input
+    # Every figure, date and link reaches the rewriter only as a placeholder.
+    for atom in ("42", "38%", "https://example.com/pulse", "March 3, 2026"):
+        assert atom not in rewrite_input, atom
     d = _decision(caplog)
     assert d["decision"] == "rewritten" and d["score_after"] > d["score_before"]
 
@@ -231,18 +242,18 @@ async def test_a_rewrite_that_loses_a_fact_is_refused_and_the_draft_is_saved(
     monkeypatch, caplog
 ):
     caplog.set_level(logging.INFO)
-    lossy = REWRITE.replace("tracks 42 metrics", "tracks dozens of metrics")
+    lossy = _rw(REWRITE.replace("tracks 42 metrics", "tracks dozens of metrics"))
     _, convex = await _turn(monkeypatch, rewrite=lossy)
 
     assert _final(convex)["text"] == DRAFT, "every fact the draft had is kept"
     d = _decision(caplog)
-    assert d["decision"] == "rejected" and d["reason"] == "not_preserved"
-    assert d["lost"] == {"numbers": 1}
+    # The figure reached the rewriter only as a token; dropping it is refused.
+    assert d["decision"] == "rejected" and d["reason"] == "protected_span_changed"
 
 
 async def test_a_rewrite_that_invents_a_figure_is_refused(monkeypatch, caplog):
     caplog.set_level(logging.INFO)
-    invented = REWRITE.replace("hours back each week", "12 hours back each week")
+    invented = _rw(REWRITE.replace("hours back each week", "12 hours back each week"))
     _, convex = await _turn(monkeypatch, rewrite=invented)
     assert _final(convex)["text"] == DRAFT
     assert _decision(caplog)["added"] == 1
@@ -322,15 +333,6 @@ async def test_with_the_flag_off_writing_streams_exactly_as_before(monkeypatch, 
     assert not [r for r in caplog.records if r.getMessage() == "writing.humanize"]
 
 
-def _echo_tokens(messages) -> str:
-    """A rewriter that keeps every protected-span token, as instructed."""
-    tokens = re.findall("⟦P\\d+⟧", str(messages[1].content))
-    return BLOG_TAIL_FIRST_REWRITE_PREFIX + REWRITE + "\n" + "\n".join(tokens)
-
-
-BLOG_TAIL_FIRST_REWRITE_PREFIX = ""
-
-
 async def test_the_blog_score_block_and_sources_are_never_rewritten(
     monkeypatch, caplog
 ):
@@ -339,7 +341,7 @@ async def test_the_blog_score_block_and_sources_are_never_rewritten(
         monkeypatch,
         prompt="Write a blog post about why analytics dashboards go stale",
         draft=DRAFT + BLOG_TAIL,
-        rewrite=_echo_tokens,
+        rewrite=_rw(REWRITE + BLOG_TAIL, DRAFT + BLOG_TAIL),
     )
     streamed = _streamed(convex)
     assert "⟦" not in streamed, "no token ever reaches the screen"
@@ -348,6 +350,14 @@ async def test_the_blog_score_block_and_sources_are_never_rewritten(
     assert "fast-paced" not in streamed
     assert "Quality Score" not in str(rec.rewrite_prompts[0][1].content)
     assert _decision(caplog)["decision"] == "rewritten"
+
+
+SCORE_FIRST = (
+    "All checks pass. Here is the final article.\n\n"
+    + BLOG_TAIL.lstrip()
+    + "\n"
+    + DRAFT
+)
 
 
 async def test_a_score_block_before_the_article_still_gets_the_article_rewritten(
@@ -359,11 +369,8 @@ async def test_a_score_block_before_the_article_still_gets_the_article_rewritten
     rec, convex = await _turn(
         monkeypatch,
         prompt="Write a blog post about why analytics dashboards go stale",
-        draft="All checks pass. Here is the final article.\n\n"
-        + BLOG_TAIL.lstrip()
-        + "\n"
-        + DRAFT,
-        rewrite=_echo_tokens,
+        draft=SCORE_FIRST,
+        rewrite=_rw(SCORE_FIRST.replace(DRAFT, REWRITE), SCORE_FIRST),
     )
     assert len(rec.rewrite_prompts) == 1
     assert "fast-paced" not in _streamed(convex)
@@ -436,7 +443,7 @@ async def test_a_refused_deliverable_keeps_the_narration_before_it(monkeypatch, 
         "text": NARRATION,
         "tool_calls": [{"name": "search_web", "args": {"q": "pricing"}, "id": "c1"}],
     }
-    lossy = REWRITE.replace("tracks 42 metrics", "tracks dozens of metrics")
+    lossy = _rw(REWRITE.replace("tracks 42 metrics", "tracks dozens of metrics"))
     _, convex = await _turn(
         monkeypatch,
         prompt=f"{WRITE}; search the web for competitor pricing first",
@@ -454,12 +461,10 @@ async def test_a_draft_that_opens_with_its_own_preface_is_not_refused_for_it(
     caplog.set_level(logging.INFO)
     opener = "Here's a launch email for your existing customers.\n\n"
 
-    def keeps_preface_token(messages):
-        token = re.findall("⟦P\\d+⟧", str(messages[1].content))[0]
-        return token + REWRITE
-
     rec, convex = await _turn(
-        monkeypatch, draft=opener + DRAFT, rewrite=keeps_preface_token
+        monkeypatch,
+        draft=opener + DRAFT,
+        rewrite=_rw(opener + REWRITE, opener + DRAFT),
     )
     assert opener.strip() not in str(rec.rewrite_prompts[0][1].content)
     assert _decision(caplog)["decision"] == "rewritten"

@@ -43,6 +43,7 @@ from app.humanizer.patterns import (
     analyze,
     human_voice_score,
 )
+from app.humanizer.preserve import protected_spans as verbatim_spans
 from app.humanizer.preserve import verify
 
 #: Writing skills, and the register each writes in. Reference-style skills are
@@ -95,8 +96,6 @@ _KEYWORD_CUE = re.compile(r"\b(?:keyword|keywords|key phrase|search term)s?\b", 
 _SAMPLE = re.compile(
     r"\b(?:writing|voice|style)\s+sample\s*[:\-]\s*(.{400,8000})", re.I | re.S
 )
-# Direct quotations long enough to be a quote rather than a scare-quoted word.
-_QUOTE_SPAN = re.compile(r'"[^"\n]{12,300}"|“[^”\n]{12,300}”')
 _OPEN, _CLOSE = "⟦", "⟧"
 _TOKEN = re.compile(_OPEN + r"P\d{1,4}" + _CLOSE)
 # A preface ends at the first horizontal rule or paragraph break near the top.
@@ -187,14 +186,20 @@ def _preface_end(text: str) -> int:
 def protect(text: str) -> tuple[str, dict[str, str]]:
     """Replace what must survive verbatim with tokens: the Blog skill's score,
     Sources and score-progression blocks (wherever they sit), a leading chat
-    preface, and direct quotations."""
+    preface, and EVERY atom `preserve.verify` checks (figures, dates, links,
+    code, citation and link markers, quotations, evidence labels and tags).
+
+    Measured on production: with only blocks and quotations protected, a fast
+    rewriter still changed two figures in a report and dropped an inline code
+    span from two emails. The verifier refused all three, correctly, and the
+    user got no humanized text. Protected by construction, those cannot fail."""
     spans: list[tuple[int, int]] = []
     for rx in POST_DRAFT_BLOCKS:
         spans.extend((m.start(), m.end()) for m in rx.finditer(text))
     end = _preface_end(text)
     if end and text[end:].strip():
         spans.append((0, end))
-    spans.extend((m.start(), m.end()) for m in _QUOTE_SPAN.finditer(text))
+    spans.extend(verbatim_spans(text))
     merged: list[tuple[int, int]] = []
     for start, stop in sorted(spans):
         if merged and start < merged[-1][1]:
