@@ -47,6 +47,31 @@ def _clamp_output(requested: int, context_window: int) -> int:
     return max(256, min(requested, context_window // 4))
 
 
+def _with_connect_timeout(
+    timeout: float | httpx.Timeout, settings: Settings
+) -> httpx.Timeout:
+    """Wait minutes for TOKENS, seconds for a CONNECTION.
+
+    A scalar timeout in httpx applies to every phase, so `timeout=180` gave the
+    TCP+TLS handshake 180 seconds — and with `max_retries=2` an unreachable
+    provider spent 540 seconds before raising anything. The generation deadline
+    (300s) fired first, so the user waited five minutes and was told only that
+    the response "took too long"; nothing reached the router's health
+    bookkeeping either, so the next request picked the same dead model.
+    Measured on production 2026-09-16, when api.ollima.com stopped accepting
+    connections while DNS still resolved and the rest of the VM's egress was
+    healthy.
+
+    A caller that already passes an `httpx.Timeout` has made its own decision
+    and is respected unchanged.
+    """
+    if isinstance(timeout, httpx.Timeout):
+        return timeout
+    read = float(timeout)
+    connect = min(float(settings.ai_model_connect_timeout_s), read)
+    return httpx.Timeout(read, connect=connect)
+
+
 def build_llm(
     settings: Settings,
     *,
@@ -93,7 +118,8 @@ def build_llm(
         temperature=temperature,
         # Defaults suit a generation. An INTERACTIVE caller (the scheduling
         # composer blocks a user behind a spinner) passes a much shorter budget.
-        timeout=timeout,
+        # CONNECT IS BUDGETED SEPARATELY: see `_with_connect_timeout`.
+        timeout=_with_connect_timeout(timeout, settings),
         max_retries=max_retries,
         # OpenRouter attribution headers — cosmetic, and meaningless to Ollima,
         # so send them only on the OpenRouter (title/OCR) path.

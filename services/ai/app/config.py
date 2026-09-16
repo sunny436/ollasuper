@@ -393,6 +393,16 @@ class Settings(BaseSettings):
     # guidance is registered, so the system prompt and the bound specs are
     # byte-identical to today and every skill is untouched.
     ai_humanizer_enabled: bool = False
+    # How long a model call may spend ESTABLISHING a connection, as distinct
+    # from waiting for tokens. A generation legitimately takes minutes to
+    # produce output; a TCP+TLS handshake to a healthy host takes under a
+    # second. Sharing one budget between them means an UNREACHABLE provider
+    # burns the whole generation deadline and the user gets a five-minute
+    # spinner and then "the response took too long" — measured on production
+    # 2026-09-16, when api.ollima.com stopped accepting connections. With a
+    # short connect budget the call fails in seconds, the router learns the
+    # model is down, and the user is told what actually happened.
+    ai_model_connect_timeout_s: float = 10.0
     # The faithful PPTX visual-preview + PPTX<->PDF path uses LibreOffice headless
     # (soffice), sandboxed per-conversion (systemd-run scope: PrivateNetwork + MemoryMax
     # + CPUQuota + ProtectSystem + NoNewPrivileges, else unshare -n + prlimit) with a
