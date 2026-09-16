@@ -1,6 +1,10 @@
 // qa-capability-parity.js — the router chooses the brain; the chosen brain answers.
 //
 //   QA_EMAIL=… QA_PASSWORD=… node qa-capability-parity.js
+//   QA_ONLY=easy QA_OUT=out/model-health/quarantine node qa-capability-parity.js
+//
+// QA_ONLY picks turns (comma list) so other steps — e.g. quarantining a model via
+// /v1/models/health — can run between them; QA_OUT names the evidence folder.
 //
 // Three real turns on production, in an order that matters:
 //   1. medium (skill)  — routes to the thread's DEFAULT model. Run first after a
@@ -20,7 +24,8 @@ const { chromium } = require("playwright");
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const EMAIL = process.env.QA_EMAIL || "";
 const PASSWORD = process.env.QA_PASSWORD || "";
-const OUT = path.join(__dirname, "out", "capability-parity");
+const OUT = path.join(__dirname, process.env.QA_OUT || path.join("out", "capability-parity"));
+const ONLY = (process.env.QA_ONLY || "").split(",").filter(Boolean);
 
 const TURNS = [
   {
@@ -32,16 +37,20 @@ const TURNS = [
   },
   { tier: "easy", text: "What is a mutex?" },
   {
+    // Skill (SEO audit) + Ollagraph tools + an MCP connector (Google Maps) in one
+    // request. Which of them the brain actually calls is ITS decision; the logs and
+    // Convex events say what ran.
     tier: "complex",
-    text: "Audit the on-page SEO of https://example.com: check its headings, meta tags and broken links, then give prioritised fixes with evidence.",
+    text: "Audit the on-page SEO of https://example.com (headings, meta tags, broken links), and use Google Maps to find three coffee shops near Koramangala, Bangalore that would compete in local search. Give prioritised fixes with evidence.",
   },
-];
+].filter((t) => !ONLY.length || ONLY.includes(t.tier));
 
 const errs = [];
 const results = [];
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
+  if (!TURNS.length) throw new Error(`QA_ONLY matched no turn: ${ONLY.join(",")}`);
   const b = await chromium.launch({ channel: "chrome", headless: false, slowMo: 20 });
   const page = await (await b.newContext({ viewport: { width: 1440, height: 950 } })).newPage();
   page.on("console", (m) => m.type() === "error" && errs.push(m.text()));

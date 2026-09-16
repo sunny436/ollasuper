@@ -384,15 +384,20 @@ async def test_a_known_refusing_model_is_not_re_called_on_later_steps():
 async def test_the_refusal_belief_expires_so_a_recovered_model_returns():
     """TTL'd on purpose: a weekly quota resets, and nothing should require a
     restart to notice. A non-positive ttl is clamped to a 1s floor by design, so
-    expiry is exercised by ageing the deadline rather than passing a negative."""
+    expiry is exercised by ageing the deadline rather than passing a negative.
+
+    Since the health registry, an expired belief is KEPT as history (the
+    registry reports it) but no longer believed, and the next real success
+    clears it."""
     import time as _t
 
     health = _fresh_health()
     health.mark_exhausted("m", ttl_s=600)
     assert health.is_exhausted("m")
-    health._exhausted["m"] = _t.monotonic() - 1  # deadline already passed
-    assert not health.is_exhausted("m")
-    assert "m" not in health._exhausted, "an expired belief is forgotten, not kept"
+    health._models["m"].retry_at = _t.monotonic() - 1  # deadline already passed
+    assert not health.is_exhausted("m"), "an expired cooldown must let the model back"
+    health.record_success("m")
+    assert health._models["m"].state == health.HEALTHY
 
 
 async def test_a_stream_break_is_latched_without_losing_the_preamble():

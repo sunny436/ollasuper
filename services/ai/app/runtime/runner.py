@@ -40,7 +40,7 @@ from app.agent.filegen_tool import GENERATE_FILE_TOOL_SPEC
 from app.agent.graph import build_graph
 from app.agent.harmony import HarmonyStreamFilter
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
-from app.agent.llm import build_llm, is_quota_error, is_unreachable_error
+from app.agent.llm import build_llm, is_quota_error
 from app.agent.memory import (
     FORGET_TOOL_NAME,
     FORGET_TOOL_SPEC,
@@ -84,7 +84,7 @@ from app.orchestrator.prepare import ProviderReadiness
 from app.research.run_state import build_research_context, render_research_seed
 from app.research.tool import RECORD_RESEARCH_TOOL_NAME, RECORD_RESEARCH_TOOL_SPEC
 from app.routing import Candidate as RouteCandidate
-from app.routing import Decision, RouterConfig
+from app.routing import Decision, RouterConfig, select_failover
 from app.routing import Signals as RouteSignals
 from app.routing import select as route_select
 from app.runtime import compaction, suggestions
@@ -346,7 +346,12 @@ async def run_generation(
         # Any failure returns req.model, so routing can change WHICH model
         # answers but can never stop one from answering.
         route = Decision(req.model, "disabled")
+        router_cfg = RouterConfig(enabled=False)
         ctx_state = req.conversationContext
+        # The health registry learns which models the router can choose, so the
+        # background probe keeps exactly those fresh. Not the thread's default:
+        # old threads carry retired ids that would only waste probes.
+        model_health.observe([c.id for c in req.modelCandidates] or [req.model])
         # The window the CAPABILITY budgets are sized from: the smallest KNOWN
         # window among the models the router could pick. Sized from the routed
         # model's own window, the same turn got a different tool-schema budget and
@@ -414,6 +419,12 @@ async def run_generation(
                         "select_us": round(select_us, 1),
                         "candidates": len(req.modelCandidates),
                         "budget_window": candidates_window,
+                        # What the health registry took out of rotation.
+                        "excluded": [
+                            c.id
+                            for c in req.modelCandidates
+                            if model_health.is_exhausted(c.id)
+                        ],
                     },
                 )
         except Exception as e:  # never let routing fail a turn
@@ -1611,8 +1622,9 @@ async def run_generation(
         system_tokens = tokens(system)
         schema_tokens = spec_tokens(specs)
         latest_tokens = content_tokens(content)
+        prior_all = to_lc_messages(history)
         prior = trim(
-            to_lc_messages(history),
+            prior_all,
             model=req.model,
             n_images=n_images,
             max_output=settings.ai_max_output_tokens,
@@ -1621,19 +1633,52 @@ async def run_generation(
             context_window=req.contextWindow,
             fixed_tokens=system_tokens + schema_tokens + latest_tokens,
         )
+        if len(prior) < len(prior_all):
+            log.info(
+                "agent.history_trimmed",
+                extra={
+                    "stream_id": req.streamId,
+                    "kept": len(prior),
+                    "dropped": len(prior_all) - len(prior),
+                    "fixed_tokens": system_tokens + schema_tokens + latest_tokens,
+                },
+            )
         fit_budget = cb.message_fit_budget(
             system_tokens=system_tokens, schema_tokens=schema_tokens
         )
 
         # CAPACITY FAILOVER. One hop to a different model when the selected one
-        # refuses for quota — the failure that has now taken chat down twice via a
-        # hardcoded default. Off unless `ai_quota_fallback_model` is configured and
-        # differs from the model actually chosen, so the default runtime is
-        # unchanged. Mirrors ai_schedule_model_fallback (routers/schedule.py).
+        # refuses before answering (quota, provider error, unreachable, request
+        # timeout). The target is chosen per turn from the health registry — a
+        # usable model on an INDEPENDENT upstream that still meets the turn's
+        # reasoning floor — not from one configured id, which today shared the
+        # primary's quota and failed for the same reason. `ai_quota_fallback_model`
+        # is only a tie-break preference now.
         quota_fb = None
         quota_fb_tools = None
-        fb_model = settings.ai_quota_fallback_model
-        if fb_model and fb_model != model_id:
+        fb_model = select_failover(
+            cfg=router_cfg,
+            candidates=[
+                RouteCandidate(id=c.id, context_window=c.contextWindow)
+                for c in req.modelCandidates
+            ],
+            primary=model_id,
+            floor=route.floor,
+            upstream_of=model_health.upstream_of,
+            is_available=lambda m: not model_health.is_exhausted(m),
+            preferred=settings.ai_quota_fallback_model,
+        )
+        log.info(
+            "router.failover_candidate",
+            extra={
+                "stream_id": req.streamId,
+                "model": model_id,
+                "model_upstream": model_health.upstream_of(model_id) or None,
+                "failover": fb_model or None,
+                "failover_upstream": model_health.upstream_of(fb_model) or None,
+            },
+        )
+        if fb_model:
             # The FALLBACK's own window, not the primary's. This used to pass
             # req.contextWindow — the window of the model being replaced — so a
             # failover onto a smaller model was budgeted as if it were the
@@ -2056,20 +2101,13 @@ async def run_generation(
         # model. Without this the router learns nothing from a hard provider
         # failure and re-picks the same dead model for the next user. Guarded:
         # health bookkeeping must never mask the original error.
+        #
+        # Recorded against the model that actually RAISED: after a failover every
+        # later call goes to the failover model. Classification decides the state
+        # and cooldown (a 400 marks nothing), and an error the graph already
+        # recorded is not counted twice.
         try:
-            if is_quota_error(e):
-                model_health.mark_exhausted(model_id, settings.ai_model_health_ttl_s)
-            elif is_unreachable_error(e):
-                # The PROVIDER was unreachable, which says nothing about this
-                # model and fixes itself. Believe it briefly so the next request
-                # re-probes instead of inheriting an hour-old network blip.
-                model_health.mark_hard_failure(
-                    model_id, settings.ai_model_health_unreachable_ttl_s
-                )
-            elif _is_provider_error(e):
-                model_health.mark_hard_failure(
-                    model_id, settings.ai_model_health_hard_ttl_s
-                )
+            model_health.record_exception(failover["model"] or model_id, e)
         except Exception as he:  # bookkeeping must never shadow the real failure
             log.warning("router.health_feedback_failed", extra={"error": str(he)[:120]})
         error = error or {
@@ -2093,6 +2131,11 @@ async def run_generation(
         # is the anyio cancel-scope rule the whole session-actor design exists for.
         with contextlib.suppress(Exception):
             await asyncio.shield(mcp_stack.aclose())
+        if status == "done":
+            # A real answer is the strongest health evidence there is, and it
+            # spares the background probe a request.
+            with contextlib.suppress(Exception):
+                model_health.record_success(failover["model"] or model_id)
         log.info(
             "generation_finished",
             extra={

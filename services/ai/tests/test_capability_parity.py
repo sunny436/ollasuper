@@ -403,3 +403,176 @@ async def test_every_routed_model_gets_the_same_capability_layer(monkeypatch, le
     assert a["system"] and a["system"] == b["system"]
     assert a["tools"] == b["tools"]
     assert a["budget_window"] == b["budget_window"] == [131_072]
+
+
+# ---- failover is by health + independence, and only before a token ----------
+
+GEMINI_38 = "gemini-3.8-flash-high"
+UPSTREAMS = {
+    DEFAULT: "ollima-sidecar",
+    FALLBACK: "ollima-sidecar",
+    GEMINI: "antigravity",
+    GEMINI_38: "antigravity",
+}
+
+
+def _provider_error(cls, status: int, text: str):
+    import httpx  # noqa: PLC0415
+
+    req = httpx.Request("POST", "http://gateway.test/v1/chat/completions")
+    return cls(text, response=httpx.Response(status, request=req, text=text), body=None)
+
+
+def _tool_turn_settings(**over):
+    return _agent_settings(ai_router_enabled=True, ai_quota_fallback_model="", **over)
+
+
+async def test_a_pre_stream_provider_error_fails_over_without_latching_the_stream(
+    monkeypatch,
+):
+    import openai  # noqa: PLC0415
+
+    health.set_upstreams(UPSTREAMS)
+
+    def script(model, streaming, n):
+        if model == GEMINI:
+            return _provider_error(openai.InternalServerError, 503, "upstream down")
+        return AIMessage(content="answered by an independent model")
+
+    rec = _patch_models(monkeypatch, script)
+    reg = ToolRegistry()
+    reg.register(_read_tool())
+    http = _ok_http()
+    convex = RecordingConvex()
+    try:
+        await run_generation(
+            _req(
+                "What is a mutex?",
+                [
+                    ModelCandidate(id=GEMINI, contextWindow=0),
+                    ModelCandidate(id=DEFAULT, contextWindow=131_072),
+                ],
+            ),
+            _tool_turn_settings(),
+            convex,
+            tool_registry=reg,
+            tool_selector=ToolSelector(reg),
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+
+    final = _final(convex)
+    assert final["status"] == "done"
+    assert final["model"] == DEFAULT, "answered by the independent failover"
+    assert [m for m, *_ in rec.calls][0] == GEMINI, "the routed model was tried first"
+    assert health._models[GEMINI].state == health.PROVIDER_ERROR
+    assert health.streams_tool_calls_cleanly(GEMINI), "a 5xx is not a stream break"
+    assert not health.is_exhausted(DEFAULT)
+
+
+async def test_a_mid_stream_transport_error_recovers_on_the_same_model(monkeypatch):
+    import httpx  # noqa: PLC0415
+
+    health.set_upstreams(UPSTREAMS)
+
+    def script(model, streaming, n):
+        if streaming:
+            return httpx.RemoteProtocolError("peer closed connection mid-stream")
+        return AIMessage(content="recovered")
+
+    rec = _patch_models(monkeypatch, script)
+    reg = ToolRegistry()
+    reg.register(_read_tool())
+    http = _ok_http()
+    convex = RecordingConvex()
+    try:
+        await run_generation(
+            _req(
+                "search the web for cats",
+                [
+                    ModelCandidate(id=GEMINI, contextWindow=0),
+                    ModelCandidate(id=DEFAULT, contextWindow=131_072),
+                ],
+            ),
+            _tool_turn_settings(),
+            convex,
+            tool_registry=reg,
+            tool_selector=ToolSelector(reg),
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+
+    final = _final(convex)
+    routed = rec.calls[0][0]
+    assert final["status"] == "done"
+    assert {m for m, *_ in rec.calls} == {routed}, "no failover: text may have streamed"
+    assert final["model"] == routed
+    assert health.streams_tool_calls_cleanly(routed), "a transport error is not a latch"
+    assert not health.is_exhausted(routed)
+
+
+async def test_failover_goes_to_an_independent_upstream_and_keeps_discovered_tools(
+    monkeypatch,
+):
+    """Model discovers Tool A -> model fails -> failover. The failover must be on a
+    DIFFERENT upstream (gpt-oss-120b shares deepseek's quota) and must receive and
+    use Tool A."""
+    import openai  # noqa: PLC0415
+
+    health.set_upstreams(UPSTREAMS)
+    find = {
+        "name": "find_capabilities",
+        "args": {"query": "broken links audit"},
+        "id": "c1",
+    }
+    target = {"name": "broken_links_audit", "args": {"q": "x"}, "id": "c2"}
+
+    def script(model, streaming, n):
+        if model == DEFAULT:
+            if n == 1:
+                return AIMessage(content="", tool_calls=[find])
+            return _provider_error(openai.RateLimitError, 429, LIMIT)
+        if model == GEMINI_38:
+            if n == 1:
+                return AIMessage(content="", tool_calls=[target])
+            return AIMessage(content="audited")
+        raise AssertionError(f"{model} shares the refusing model's quota")
+
+    rec = _patch_models(monkeypatch, script)
+    reg = ToolRegistry()
+    reg.register(_read_tool())
+    reg.register(_seo_tool())
+    http = _ok_http()
+    convex = RecordingConvex()
+    try:
+        await run_generation(
+            _req(
+                "search the web for cats",
+                [
+                    ModelCandidate(id=DEFAULT, contextWindow=131_072),
+                    ModelCandidate(id=FALLBACK, contextWindow=0),
+                    ModelCandidate(id=GEMINI_38, contextWindow=0),
+                ],
+            ),
+            _tool_turn_settings(ai_orchestrated_runtime_enabled=True),
+            convex,
+            tool_registry=reg,
+            tool_selector=ToolSelector(reg),
+            ollagraph_http=http,
+        )
+    finally:
+        await http.aclose()
+
+    assert rec.calls[0][0] == DEFAULT, "the router chose deepseek"
+    assert FALLBACK not in {m for m, *_ in rec.calls}
+    failover_binds = [names for m, _, names in rec.calls if m == GEMINI_38]
+    assert failover_binds and all(
+        "broken_links_audit" in (n or []) for n in failover_binds
+    )
+    assert "broken_links_audit" in _tool_call_ids(convex)
+    final = _final(convex)
+    assert final["status"] == "done" and final["model"] == GEMINI_38
+    assert health._models[DEFAULT].state == health.RATE_LIMITED
+    assert not health.is_exhausted(GEMINI_38)

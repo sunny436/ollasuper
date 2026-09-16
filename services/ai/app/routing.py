@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from app.agent import health as model_health
@@ -264,6 +265,9 @@ class Decision:
     model: str
     # Structured, not prose: this is an observability record, not a message.
     reason: str
+    # The turn's reasoning floor (0-2). Carried so a capacity failover can pick
+    # a model that still meets it, instead of re-deriving the classification.
+    floor: int = 0
 
 
 @dataclass(frozen=True)
@@ -505,7 +509,58 @@ def select(
     best = min(capable, key=lambda c: profile(c).ttft_s)
 
     tag = "g" if cls.grounded else "s"
-    return Decision(best.id, f"{cls.work}:{cls.reasoning}{tag}:{est}t")
+    return Decision(best.id, f"{cls.work}:{cls.reasoning}{tag}:{est}t", cls.reasoning)
+
+
+def select_failover(
+    *,
+    cfg: RouterConfig,
+    candidates: list[Candidate],
+    primary: str,
+    floor: int,
+    upstream_of: Callable[[str], str],
+    is_available: Callable[[str], bool],
+    preferred: str = "",
+) -> str:
+    """The model a turn fails over to if `primary` refuses. "" = none worth trying.
+
+    Not a second router: `select()` already chose the brain. This only answers
+    "if that brain is out, which usable model is genuinely INDEPENDENT of it?"
+    A model on the same upstream shares its quota (deepseek-v4-flash and
+    gpt-oss-120b ran out together on `ollima-sidecar`), so it is never offered.
+
+    Order: known-independent upstream first; then models that still meet the
+    turn's reasoning floor, fastest first; otherwise the deepest available. A
+    configured `preferred` model is only a tie-break. Pure — no I/O.
+    """
+    pool = [c.id for c in candidates]
+    if preferred and preferred not in pool:
+        pool.append(preferred)
+    primary_up = upstream_of(primary)
+    eligible = [
+        m
+        for m in dict.fromkeys(pool)
+        if m
+        and m != primary
+        and is_available(m)
+        and not (primary_up and upstream_of(m) == primary_up)
+    ]
+    if not eligible:
+        return ""
+
+    def rank(m: str) -> tuple:
+        p = cfg.profiles.get(m, ModelProfile())
+        independent = bool(primary_up and upstream_of(m))
+        meets = p.reasoning_tier >= floor
+        return (
+            0 if independent else 1,
+            0 if meets else 1,
+            0 if meets else -p.reasoning_tier,
+            0 if m == preferred else 1,
+            p.ttft_s,
+        )
+
+    return min(eligible, key=rank)
 
 
 __all__ = [
@@ -519,6 +574,7 @@ __all__ = [
     "estimate_tokens",
     "replace",
     "select",
+    "select_failover",
     "HEAVY",
     "MODERATE",
     "SIMPLE",

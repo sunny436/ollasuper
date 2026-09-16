@@ -34,6 +34,9 @@ def make_settings(url: str, **overrides) -> Settings:
         # Render in-thread in tests so _render_page monkeypatches apply (the
         # process pool would not see them). Prod uses the pool for crash safety.
         "ai_ocr_render_workers": 0,
+        # The background model-health probe makes real HTTP calls; any test that
+        # runs the lifespan must opt in explicitly.
+        "ai_model_health_probe_enabled": False,
         # Deliberately NOT overriding the flush timings. An earlier version of
         # this fixture pinned the interval to 100ms "so tests are fast", which
         # silently re-introduced the exact policy bug the writer tests exist to

@@ -34,7 +34,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent import health
-from app.agent.llm import build_llm, is_quota_error
+from app.agent.llm import build_llm
 from app.logging import get_logger
 from app.security import require_service_key
 
@@ -394,13 +394,13 @@ async def parse(req: ParseRequest, request: Request) -> ParseResponse:
         try:
             raw, finish = await _invoke(settings, model, payload)
             used_model = model
+            health.record_success(model)
             break
         except Exception as e:  # noqa: BLE001 — degrade to the manual form, never 500
             # A capacity refusal is remembered so the next parse skips this model
             # instead of re-learning it, and so chat and scheduling share one view
             # of what the provider is currently refusing.
-            if is_quota_error(e):
-                health.mark_exhausted(model, settings.ai_model_health_ttl_s)
+            health.record_exception(model, e, base_s=settings.ai_model_health_ttl_s)
             # ERROR, not WARNING: invisible to the user, but it is the state in
             # which the product silently stops understanding anyone.
             log.error(

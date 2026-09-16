@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any
 
 import anyio
@@ -32,6 +32,7 @@ from app.routers import (
     health,
     mcp,
     mcp_oauth,
+    models,
     report,
     schedule,
     tools,
@@ -269,9 +270,24 @@ async def lifespan(app: FastAPI):
     # Best-effort tool discovery — fire-and-forget, gated, self-isolating.
     if settings.ollagraph_enabled:
         asyncio.create_task(_discover_tools_best_effort(app, settings))
+    # Automatic model health: cooldown bases always come from settings; the
+    # background re-checks run only when enabled and there is a key to probe with.
+    from app.agent import health as model_health
+    from app.agent.health_probe import run_health_probe
+
+    model_health.configure(settings)
+    health_task: asyncio.Task | None = None
+    if settings.ai_model_health_probe_enabled and settings.ollima_api_key:
+        health_task = asyncio.create_task(
+            run_health_probe(settings), name="model-health-probe"
+        )
     try:
         yield
     finally:
+        if health_task is not None:
+            health_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await health_task
         # systemd sends SIGINT (see the unit), which triggers uvicorn's graceful
         # shutdown and runs this. Cancelling every task lets each generation's
         # `finally:` finalize as cancelled, instead of leaving messages spinning
@@ -311,6 +327,8 @@ def create_app() -> FastAPI:
     app.include_router(generate.router)
     app.include_router(files.router)
     app.include_router(tools.router)
+    # Model health registry snapshot + operator quarantine (service-key gated).
+    app.include_router(models.router)
     # Scheduled Tasks composer. Parses text into a schedule and returns JSON —
     # it holds no Convex client and can create nothing.
     app.include_router(schedule.router)

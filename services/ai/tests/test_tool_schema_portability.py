@@ -190,3 +190,60 @@ def test_conditional_subschemas_are_made_portable():
     assert props["tags"]["uniqueItems"] is True
     assert len(props["limit"]["oneOf"]) == 2
     assert props["score"]["exclusiveMinimum"] == 0
+
+
+def test_mcp_tool_schemas_are_made_portable_through_the_real_mcp_path():
+    """Dynamic MCP schemas take the same route as Ollagraph ones: an MCP tool is
+    normalised into the per-turn registry and bound through `build_tool_specs`.
+    The schema the MODEL sees loses only what a routed provider refuses; the
+    registry definition the executor VALIDATES calls against keeps everything."""
+    from dataclasses import dataclass
+    from typing import Any
+
+    from app.agent.executor import build_tool_specs
+    from app.mcp.models import McpServerIdentity
+    from app.mcp.normalize import normalize_tool
+    from app.models.tools import ToolCandidate
+    from app.tools.registry import ToolRegistry
+
+    @dataclass
+    class _McpTool:
+        name: str
+        description: str
+        input_schema: Any
+        output_schema: Any = None
+        annotations: Any = None
+
+    raw = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "readOnly": True},
+            "token": {"type": "string", "writeOnly": True},
+            "mode": {
+                "type": "string",
+                "if": {"const": "fast"},
+                "then": {"maxLength": 9},
+                "else": {"minLength": 1},
+            },
+            "tags": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["mode"],
+    }
+    identity = McpServerIdentity(slug="docs", display_name="Docs", trusted=True)
+    definition = normalize_tool(_McpTool("lookup", "Look up a doc.", raw), identity)
+    reg = ToolRegistry()
+    reg.register(definition)
+    specs, _ = build_tool_specs([ToolCandidate(tool=definition, score=1.0)], reg)
+    bound = specs[0]["function"]["parameters"]
+
+    import json
+
+    blob = json.dumps(bound)
+    for key in ('"readOnly"', '"writeOnly"', '"if"', '"then"', '"else"'):
+        assert key not in blob, f"{key} reached the model"
+    assert bound["required"] == ["mode"]
+    assert bound["properties"]["tags"]["items"] == {"type": "string"}
+    # Server-side validation is untouched.
+    kept = reg.get(definition.tool_id).input_schema
+    assert kept["properties"]["id"]["readOnly"] is True
+    assert kept["properties"]["mode"]["if"] == {"const": "fast"}

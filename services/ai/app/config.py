@@ -505,6 +505,15 @@ class Settings(BaseSettings):
     # Short enough that a recovered model returns without a restart; long enough
     # that a turn does not re-learn the same refusal on every step.
     ai_model_health_ttl_s: float = 600.0
+    # Automatic model health (app/agent/health_probe.py). A background task in
+    # this process re-checks models so a quota-limited model leaves rotation and a
+    # recovered one returns without a restart or an .env edit. Cooldowns double
+    # per consecutive failure up to `max_backoff_s`; a model with a real success
+    # (traffic or probe) inside `revalidate_s` is not probed at all.
+    ai_model_health_probe_enabled: bool = True
+    ai_model_health_probe_interval_s: float = 60.0
+    ai_model_health_revalidate_s: float = 1800.0
+    ai_model_health_max_backoff_s: float = 3600.0
     # --- Master Model Router ------------------------------------------
     # OFF ships the whole mechanism with byte-identical behaviour: the runner
     # keeps using the model Convex chose. The flag is Python-side only, so it

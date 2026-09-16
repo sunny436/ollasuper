@@ -38,7 +38,6 @@ from app.agent import health
 from app.agent.budget import fit_messages
 from app.agent.executor import execute_tool_calls
 from app.agent.harmony import recover_into_message
-from app.agent.llm import is_quota_error
 from app.logging import get_logger
 from app.models.events import EventType
 
@@ -148,18 +147,23 @@ def build_graph(
                 return {"messages": [await quota_fallback.ainvoke(state["messages"])]}
             try:
                 response = await llm.ainvoke(state["messages"])
-            except Exception as e:  # noqa: BLE001 — capacity refusal, see below
-                # The provider refused for CAPACITY, not for anything in this
-                # turn. One hop to a different model recovers it; without this
-                # the turn just fails, which is what made a provider-side weekly
-                # quota outage look like an application fault. Anything else
-                # re-raises unchanged.
-                if not is_quota_error(e):
+            except Exception as e:  # noqa: BLE001 — model-level refusal, see below
+                # The provider refused THIS MODEL before answering (quota, provider
+                # error, unreachable, request timeout), not anything in this turn.
+                # One hop to an independent model recovers it; without this the
+                # turn just fails, which is what made a provider-side weekly quota
+                # outage look like an application fault. Anything else — including
+                # a failure that may have streamed text already — re-raises.
+                failure = health.classify(e)
+                if failure is None or not failure.pre_stream:
                     raise
-                health.mark_exhausted(model_name, health_ttl_s)
+                health.record_exception(model_name, e, base_s=health_ttl_s)
                 if quota_fallback is None:
                     raise
-                log.warning("model_quota_fallback", extra={"node": "plain"})
+                log.warning(
+                    "model_quota_fallback",
+                    extra={"node": "plain", "kind": failure.kind},
+                )
                 if on_quota_fallback is not None:
                     await on_quota_fallback()
                 response = await quota_fallback.ainvoke(state["messages"])
@@ -300,18 +304,23 @@ def _build_agent_graph(
         primary = fallback_client if skip_stream else client
         try:
             response = await primary.ainvoke(messages)
-        except Exception as e:  # noqa: BLE001 — two DIFFERENT failures, see below
-            # A CAPACITY refusal is checked first and is a different thing from
+        except Exception as e:  # noqa: BLE001 — DIFFERENT failures, see below
+            # A MODEL-LEVEL refusal is checked first and is a different thing from
             # the accumulator break below: it needs a different MODEL, whereas
-            # the break needs the same model without streaming. Both arrive as a
-            # 502 from this gateway, so they are told apart by message, not type
-            # — collapsing them would send an accumulator bug to another model
-            # and a quota refusal to a client that will refuse identically.
-            if is_quota_error(e):
-                health.mark_exhausted(model_name, health_ttl_s)
+            # the break needs the same model without streaming. Collapsing them
+            # would send an accumulator bug to another model and a quota refusal to
+            # a client that will refuse identically. Only refusals raised BEFORE a
+            # token (status / connect / request timeout) fail over: an error from
+            # stream iteration may follow text the user already saw.
+            failure = health.classify(e)
+            if failure is not None and failure.pre_stream:
+                health.record_exception(model_name, e, base_s=health_ttl_s)
                 if qfb is None:
                     raise
-                log.warning("model_quota_fallback", extra={"node": "agent"})
+                log.warning(
+                    "model_quota_fallback",
+                    extra={"node": "agent", "kind": failure.kind},
+                )
                 if on_quota_fallback is not None:
                     await on_quota_fallback()
                 response = await qfb.ainvoke(messages)
@@ -320,8 +329,11 @@ def _build_agent_graph(
             if fallback_client is None or skip_stream:
                 raise
             # One observation is enough: this model's tool-call deltas cannot be
-            # accumulated, so later steps and later turns skip the attempt.
-            health.mark_stream_broken(model_name)
+            # accumulated, so later steps and later turns skip the attempt. Only an
+            # UNCLASSIFIED error is that break; a recognised transport error takes
+            # the same recovery without latching the model as broken for hours.
+            if failure is None:
+                health.mark_stream_broken(model_name)
             log.warning("model_stream_fallback", extra={"run_id": tools_ctx.run_id})
             # Tag the recovery call NOSTREAM so messages-mode silences the fallback's
             # OWN emit (its content already streamed via the primary above); the node
