@@ -301,3 +301,33 @@ def test_pathological_input_does_not_blow_up():
     ):
         p99 = _p99(lambda text=junk: analyze(text), n=5, rounds=1)
         assert p99 < 1.0, f"pathological input took {p99 * 1000:.0f}ms"
+
+
+def test_a_correct_marketing_block_is_not_treated_as_slop():
+    """Measured against the shipped detector before the fix: the evidence
+    heading was flagged as a decorative heading (D20) and a labelled claim as a
+    one-line closer (A2), so the stage would have told the model to "fix"
+    Marketing's mandatory contract."""
+    block = (
+        "## \U0001f7e2 What the data shows\n\n"
+        "**FACT:** Churn fell to 3.1% in Q3 \U0001f7e2 verified (Stripe export).\n\n"
+        "**ASSUMPTION:** Seasonality is flat \U0001f534 assumed.\n\n"
+        "**RECOMMENDATION:** Extend the onboarding flow to the enterprise tier.\n"
+    )
+    findings, _ = analyze(block)
+    assert not [f for f in findings if f.pattern in {"D20", "A2"}], [
+        (f.pattern, f.excerpt) for f in findings
+    ]
+
+
+def test_prose_inside_a_labelled_claim_is_still_humanized():
+    """Protection covers the label and the tag, not the sentence around them."""
+    text = (
+        "**FACT:** Additionally, the robust funnel seamlessly converts "
+        "\U0001f7e2 verified."
+    )
+    assert "C12" in _ids(text)
+
+
+def test_a_non_evidence_emoji_heading_is_still_decorative():
+    assert "D20" in _ids("## Shipping \U0001f680 faster\n\nBody.\n")

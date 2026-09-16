@@ -217,3 +217,60 @@ async def test_the_measurement_hook_scores_a_finished_answer():
     _log_writing_quality("s1", SLOP_DRAFT * 4)
     _log_writing_quality("s1", "")  # never raises on an empty turn
     _log_writing_quality("s1", "too short to be a deliverable")
+
+
+# ---------------------------------------------------- verify by draft_id (A)
+async def test_verify_by_draft_id_sends_the_draft_once():
+    """Tool-call arguments are OUTPUT tokens (8,192 on prod, 2,048 for a "fast"
+    account). `verify` with `before` + `after` emitted the draft twice in one call
+    and overflowed on long content. By id, the executor supplies `before`."""
+    s = make_settings("http://x", ai_humanizer_enabled=True)
+    ctx = _ctx(DeltaWriter(RecordingConvex({"ok": True}), "s1", s))
+    detected = json.loads(
+        (await _call(ctx, {"mode": "detect", "text": SLOP_DRAFT}, "c1")).content
+    )
+    draft_id = detected["draft_id"]
+    assert ctx.humanize_drafts[draft_id] == SLOP_DRAFT
+
+    verified = json.loads(
+        (
+            await _call(
+                ctx,
+                {"mode": "verify", "draft_id": draft_id, "after": HUMAN_REWRITE},
+                "c2",
+            )
+        ).content
+    )
+    assert verified["ok"] is True, verified["lost"]
+
+
+async def test_an_unknown_draft_id_is_a_clear_error_not_a_silent_pass():
+    s = make_settings("http://x", ai_humanizer_enabled=True)
+    ctx = _ctx(DeltaWriter(RecordingConvex({"ok": True}), "s1", s))
+    msg = await _call(
+        ctx, {"mode": "verify", "draft_id": "d_nope", "after": HUMAN_REWRITE}, "c1"
+    )
+    assert msg.status == "error"
+    assert "detect" in json.loads(msg.content)["error"]
+
+
+async def test_the_per_turn_draft_store_is_bounded():
+    from app.agent.executor import HUMANIZE_MAX_DRAFTS
+
+    s = make_settings("http://x", ai_humanizer_enabled=True)
+    ctx = _ctx(DeltaWriter(RecordingConvex({"ok": True}), "s1", s))
+    for i in range(HUMANIZE_MAX_DRAFTS + 3):
+        await _call(ctx, {"mode": "detect", "text": f"{SLOP_DRAFT} {i}"}, f"c{i}")
+    assert len(ctx.humanize_drafts) == HUMANIZE_MAX_DRAFTS
+    # The most recent survives; the oldest went first.
+    assert list(ctx.humanize_drafts.values())[-1].endswith(
+        f" {HUMANIZE_MAX_DRAFTS + 2}"
+    )
+
+
+async def test_a_new_turn_starts_with_no_drafts():
+    """Per-turn by construction: a draft from one conversation can never be
+    verified against in another."""
+    s = make_settings("http://x", ai_humanizer_enabled=True)
+    ctx = _ctx(DeltaWriter(RecordingConvex({"ok": True}), "s2", s))
+    assert ctx.humanize_drafts == {}

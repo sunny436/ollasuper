@@ -21,6 +21,7 @@ itself until it fits.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -39,6 +40,23 @@ _MAX_PAYLOAD_CHARS = 6500
 _MAX_FINDINGS = 30
 _MAX_EXCERPT = 80
 _MAX_TEXT = 200_000
+
+
+def draft_id_for(text: str) -> str:
+    """A content-derived id for a detected draft.
+
+    WHY IT EXISTS (measured on production): tool-call arguments are OUTPUT
+    tokens, and the output ceiling is 8,192 — 2,048 for a "fast" account.
+    `verify` used to take `before` AND `after`, i.e. the draft emitted TWICE in
+    one call, which overflowed at ~3,000 words by default and ~700 on "fast":
+    truncated JSON, failed call, on exactly the long-form content this stage is
+    for. `detect` now hands back this id, the executor keeps the draft for the
+    turn, and `verify` takes the id plus `after` — one emission instead of two.
+
+    Derived from the text rather than random, so this function stays pure and
+    the same draft always has the same id.
+    """
+    return "d_" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _clean_keywords(value: Any) -> tuple[str, ...]:
@@ -97,6 +115,7 @@ def _detect(args: dict) -> dict[str, Any]:
     ranked = sorted(findings, key=lambda f: (f.severity != "act", f.start))
     payload: dict[str, Any] = {
         "mode": "detect",
+        "draft_id": draft_id_for(text),
         "human_voice_score": score,
         "threshold": gate,
         # THE CONDITIONAL RULE, computed rather than left to judgement: text that
@@ -119,7 +138,10 @@ def _verify_mode(args: dict) -> dict[str, Any]:
     before, after = args.get("before"), args.get("after")
     if not isinstance(before, str) or not isinstance(after, str):
         return {
-            "error": "verify needs `before` and `after` (the draft and the rewrite)"
+            "error": (
+                "verify needs `draft_id` (from detect) or `before`, plus `after` "
+                "(your rewrite)"
+            )
         }
     if len(before) > _MAX_TEXT or len(after) > _MAX_TEXT:
         return {"error": f"text is longer than {_MAX_TEXT} characters"}
@@ -162,8 +184,9 @@ HUMANIZE_CHECK_TOOL_SPEC: dict = {
             "computed human_voice_score plus the exact spans that read as "
             "machine-written. If the verdict is 'ship_as_is', deliver the draft "
             "UNCHANGED — do not rewrite it. If the verdict is 'revise', rewrite "
-            "ONLY the spans it names and then call mode='verify' with the original "
-            "draft as `before` and your rewrite as `after`; restore anything it "
+            "ONLY the spans it names and then call mode='verify' with the "
+            "`draft_id` detect returned and your rewrite as `after` (do NOT resend "
+            "the original — it is already held); restore anything it "
             "reports under `lost` and remove anything under `added_claims` before "
             "delivering. Pass `keywords` when the piece has required terms, "
             "`sample` when the user supplied writing of their own to match, and "
@@ -179,9 +202,18 @@ HUMANIZE_CHECK_TOOL_SPEC: dict = {
                     "type": "string",
                     "description": "detect: the full draft to check.",
                 },
+                "draft_id": {
+                    "type": "string",
+                    "description": (
+                        "verify: the draft_id detect returned. Preferred over "
+                        "`before` — the draft is not sent twice."
+                    ),
+                },
                 "before": {
                     "type": "string",
-                    "description": "verify: the draft as it was before the rewrite.",
+                    "description": (
+                        "verify: the original draft, only if no draft_id is available."
+                    ),
                 },
                 "after": {
                     "type": "string",

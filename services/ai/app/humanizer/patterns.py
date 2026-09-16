@@ -32,6 +32,9 @@ from dataclasses import dataclass
 __all__ = [
     "CATEGORIES",
     "DEFAULT_THRESHOLD",
+    "EVIDENCE_LABEL",
+    "EVIDENCE_TAG",
+    "POST_DRAFT_BLOCKS",
     "Finding",
     "Profile",
     "analyze",
@@ -109,12 +112,37 @@ _PROTECTED: tuple[re.Pattern[str], ...] = (
     re.compile(r"“[^”\n]{1,300}”"),  # curly-quoted passages
 )
 
-#: This product's own markers and output contracts. The Blog skill MANDATES the
-#: score block, its caption and a Sources section; humanizing them would break
-#: the contract the skill is tested against, so they are structure, not prose.
-_PROTECTED_PRODUCT: tuple[re.Pattern[str], ...] = (
+#: This product's markers: the Blog skill's internal-link and image-placeholder
+#: slots. They are content structure the reader's page is built from, not prose.
+_MARKERS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\[internal-link:[^\]\n]{0,300}\]"),
     re.compile(r"!\[alt:[^\]\n]{0,300}\]\(image-placeholder\)"),
+)
+
+#: MARKETING'S EVIDENCE CONTRACT. Every claim is labelled FACT / INFERENCE /
+#: ASSUMPTION / RECOMMENDATION and tagged 🟢 verified / 🟡 estimate / 🔴 assumed
+#: (app/marketing/skill.py). Measured against the shipped detector before this
+#: existed: a CORRECT Marketing block had its evidence heading flagged as a
+#: decorative heading (D20) and a labelled claim flagged as a one-line closer (A2),
+#: so the stage would have told the model to "fix" the contract. The label and the
+#: tag are protected; the prose around them is still humanized normally.
+EVIDENCE_LABEL = re.compile(r"\b(FACT|INFERENCE|ASSUMPTION|RECOMMENDATION)\b")
+EVIDENCE_TAG = re.compile("[\U0001f7e2\U0001f7e1\U0001f534]")
+_EVIDENCE: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\*{0,2}\b(?:FACT|INFERENCE|ASSUMPTION|RECOMMENDATION)\b\*{0,2}:?\*{0,2}"
+    ),
+    re.compile(
+        "[\U0001f7e2\U0001f7e1\U0001f534]\\s{0,2}(?:verified|estimate|assumed)?",
+        re.I,
+    ),
+)
+
+#: Blocks the Blog skill writes AFTER the draft is finished: the Quality Score and
+#: its caption, the Sources section, the score progression. Public because the
+#: finalize-time preservation check masks them on both sides — they are not in
+#: the draft that was checked, so their numbers are not "invented" by a rewrite.
+POST_DRAFT_BLOCKS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"^#{1,6}\s*OllaSuper Blog Quality Score[^\n]{0,200}\n"
         r".{0,4000}?(?=\n#{1,6}\s|\Z)",
@@ -128,14 +156,19 @@ _PROTECTED_PRODUCT: tuple[re.Pattern[str], ...] = (
         r".{0,8000}?(?=\n#{1,6}\s|\Z)",
         re.S | re.M | re.I,
     ),
-    re.compile(r"^#{1,6}\s*Score progression[^\n]{0,200}$", re.M | re.I),
+    # The WHOLE section, not just its heading: its body is "89 -> (fix) -> 94",
+    # numbers the draft never contained.
+    re.compile(
+        r"^#{1,6}\s*Score progression[^\n]{0,200}\n?.{0,2000}?(?=\n#{1,6}\s|\Z)",
+        re.S | re.M | re.I,
+    ),
 )
 
 
 def protected_spans(text: str) -> list[tuple[int, int]]:
     """Merged, sorted ranges that no pattern may flag."""
     spans: list[tuple[int, int]] = []
-    for rx in (*_PROTECTED, *_PROTECTED_PRODUCT):
+    for rx in (*_PROTECTED, *_MARKERS, *_EVIDENCE, *POST_DRAFT_BLOCKS):
         for m in rx.finditer(text):
             spans.append((m.start(), m.end()))
     if not spans:

@@ -24,7 +24,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.humanizer.patterns import human_voice_score
+from app.humanizer.patterns import (
+    EVIDENCE_LABEL,
+    EVIDENCE_TAG,
+    human_voice_score,
+)
 
 __all__ = ["verify"]
 
@@ -67,6 +71,16 @@ _INLINE_CODE = re.compile(r"`([^`\n]{1,400})`")
 _HEADING = re.compile(r"^#{1,6}\s+([^\n]{1,200})$", re.M)
 _WORD = re.compile(r"[A-Za-z0-9']+")
 _REF_MARKER = re.compile(r"\[\^?\d{1,3}\]")
+_INTERNAL_LINK = re.compile(r"\[internal-link:[^\]\n]{0,300}\]")
+_IMAGE_PLACEHOLDER = re.compile(r"!\[alt:[^\]\n]{0,300}\]\(image-placeholder\)")
+#: A quotation worth protecting: long enough to be someone's words rather than a
+#: scare-quoted term. Matched AFTER quote marks are normalised (see _normalise).
+_QUOTE = re.compile(r'"([^"\n]{12,300})"')
+_QUOTE_MARKS = str.maketrans(
+    {"\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2018": "'", "\u2019": "'"}
+)
+_SPACE = re.compile(r"\s+")
+_GREEN = "\U0001f7e2"
 
 #: Structural blocks this product's skills are contractually required to emit.
 _STRUCTURES: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -171,6 +185,60 @@ def _content_words(title: str) -> set[str]:
 _HEADING_KEPT = 0.5
 
 
+def _normalise(text: str) -> str:
+    """Curly quotes and apostrophes as straight ones, whitespace collapsed.
+
+    Load-bearing for the quotation check: the humanizer's own §21 converts curly
+    quotes to straight ones, so a verbatim comparison that did not normalise
+    would reject exactly the edit the stage recommends.
+    """
+    return _SPACE.sub(" ", text.translate(_QUOTE_MARKS))
+
+
+def _quotations(text: str) -> set[str]:
+    return {m.group(1).strip() for m in _QUOTE.finditer(_normalise(text))}
+
+
+def _opening_paragraph(text: str) -> str:
+    """The first block of prose: not a heading, list item, quote, fence or marker."""
+    for block in re.split(r"\n\s*\n", text):
+        body = block.strip()
+        if not body or body.startswith(("#", ">", "```", "~~~", "|", "![", "---")):
+            continue
+        if re.match(r"^(?:[-*+]|\d+[.)])\s", body):
+            continue
+        return body
+    return ""
+
+
+def _first_heading(text: str) -> str:
+    m = _HEADING.search(text)
+    return m.group(1) if m else ""
+
+
+def _placement_losses(before: str, after: str, keywords: list[str]) -> list[str]:
+    """SEO weight sits in the title and the opening paragraph. A keyword that was
+    there must still be there — presence anywhere else does not preserve it."""
+    lost: list[str] = []
+    places = (
+        ("first heading", _first_heading),
+        ("opening paragraph", _opening_paragraph),
+    )
+    for k in keywords:
+        low = k.lower()
+        for label, extract in places:
+            if low in extract(before).lower() and low not in extract(after).lower():
+                lost.append(f"{k} ({label})")
+    return lost
+
+
+def _counts(rx: re.Pattern[str], text: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for m in rx.finditer(text):
+        out[m.group(0)] = out.get(m.group(0), 0) + 1
+    return out
+
+
 def _heading_losses(before: list[str], after: list[str]) -> list[str]:
     """A heading may be re-cased or de-decorated (upstream §20); it may not lose
     its subject. Matched greedily by best content-word overlap."""
@@ -237,6 +305,45 @@ def verify(
     structures_lost = [
         name for name, rx in _STRUCTURES if rx.search(before) and not rx.search(after)
     ]
+    kept_keywords = [
+        k
+        for k in keywords
+        if isinstance(k, str) and k.strip() and k not in keywords_lost
+    ]
+    placement_lost = _placement_losses(before, after, kept_keywords)
+    links_lost = sorted(
+        set(_INTERNAL_LINK.findall(before)) - set(_INTERNAL_LINK.findall(after))
+    )
+    images_lost = sorted(
+        set(_IMAGE_PLACEHOLDER.findall(before)) - set(_IMAGE_PLACEHOLDER.findall(after))
+    )
+    quotes_after = _quotations(after)
+    quotes_lost = sorted(q for q in _quotations(before) if q not in quotes_after)
+
+    # THE EVIDENCE CONTRACT (Marketing). Measured before this check existed: a
+    # rewrite that stripped every label and promoted "🔴 assumed" to "🟢 verified"
+    # passed with ok=true. A label may not disappear, and a tag may neither
+    # disappear nor be UPGRADED — promoting an assumption to "verified" is a
+    # fabrication of evidence, so it is reported with the invented claims.
+    labels_before, labels_after = (
+        _counts(EVIDENCE_LABEL, before),
+        _counts(EVIDENCE_LABEL, after),
+    )
+    tags_before, tags_after = (
+        _counts(EVIDENCE_TAG, before),
+        _counts(EVIDENCE_TAG, after),
+    )
+    labels_lost = sorted(
+        f"{label} x{n - labels_after.get(label, 0)}"
+        for label, n in labels_before.items()
+        if labels_after.get(label, 0) < n
+    )
+    tags_lost = sorted(
+        f"{tag} x{n - tags_after.get(tag, 0)}"
+        for tag, n in tags_before.items()
+        if tags_after.get(tag, 0) < n
+    )
+    greens_added = tags_after.get(_GREEN, 0) - tags_before.get(_GREEN, 0)
 
     if numbers_lost:
         lost["numbers"] = numbers_lost[:40]
@@ -254,6 +361,18 @@ def verify(
         lost["keywords"] = keywords_lost[:40]
     if structures_lost:
         lost["required_blocks"] = structures_lost
+    if placement_lost:
+        lost["keyword_placement"] = placement_lost[:40]
+    if links_lost:
+        lost["internal_links"] = links_lost[:40]
+    if images_lost:
+        lost["image_placeholders"] = images_lost[:40]
+    if quotes_lost:
+        lost["quotations"] = [q[:120] for q in quotes_lost[:20]]
+    if labels_lost:
+        lost["evidence_labels"] = labels_lost
+    if tags_lost:
+        lost["evidence_tags"] = tags_lost
 
     # FABRICATION, checked in the same pass: a figure or source that appears in
     # the rewrite and not in the draft was invented by the rewriter.
@@ -261,6 +380,10 @@ def verify(
         :40
     ]
     added_urls = sorted(urls_after - urls_before)[:40]
+    if greens_added > 0:
+        added_claims.append(
+            f"{_GREEN} verified x{greens_added} (evidence upgraded or new)"
+        )
 
     score_before = human_voice_score(before, register=register)
     score_after = human_voice_score(after, register=register)

@@ -65,7 +65,8 @@ from app.finance.tool import (
     FINANCE_CALC_TOOL_SPEC,
     FINANCE_REFERENCE_TOOL_SPEC,
 )
-from app.humanizer.patterns import analyze, human_voice_score
+from app.humanizer.patterns import POST_DRAFT_BLOCKS, analyze, human_voice_score
+from app.humanizer.preserve import verify as preserve_verify
 from app.humanizer.tool import HUMANIZE_CHECK_TOOL_SPEC
 from app.ingest.retrieve import render_rag_block, retrieve_context
 from app.logging import bind_log_context, get_logger
@@ -2164,6 +2165,19 @@ async def run_generation(
                 # 50KB article) and the plane runs `--workers 1`, so doing it
                 # inline would stall every other request for that long.
                 await asyncio.to_thread(_log_writing_quality, req.streamId, writer.text)
+                # FINAL VALIDATION OF WHAT WAS ACTUALLY DELIVERED. In-loop
+                # `verify` checks the rewrite the model CLAIMS; nothing stopped it
+                # passing a faithful one and then streaming something else. This
+                # compares the last draft `humanize_check` detected with the text
+                # the user received. Measurement only — it has already streamed.
+                drafts = getattr(tools_ctx, "humanize_drafts", None) or {}
+                if drafts:
+                    await asyncio.to_thread(
+                        _log_writing_preservation,
+                        req.streamId,
+                        next(reversed(drafts.values())),
+                        writer.text,
+                    )
             # Rolling summary — the compaction half of context management, and
             # the producer that was never built for the `op: "summary"` route
             # that has always existed. AFTER finalize and fire-and-forget, so it
@@ -2277,6 +2291,49 @@ def _chunk_text(chunk: object) -> str:
 def _is_provider_error(e: Exception) -> bool:
     name = type(e).__name__.lower()
     return any(k in name for k in ("api", "openai", "http", "rate", "connection"))
+
+
+def _mask_post_draft_blocks(text: str) -> str:
+    """Blank out what the Blog skill writes AFTER the draft (score block, caption,
+    Sources, score progression): they were never in the detected draft, so their
+    presence or absence says nothing about whether the rewrite kept the facts."""
+    out = text
+    for rx in POST_DRAFT_BLOCKS:
+        out = rx.sub(" ", out)
+    return out
+
+
+def _log_writing_preservation(stream_id: str, draft: str, delivered: str) -> None:
+    """Did the delivered answer keep every fact the checked draft had?
+
+    LOSSES ONLY. The delivered text legitimately carries things the draft did
+    not — stage narration ("Scoring: 89"), the score block, the Sources list — so
+    an "addition" here is not evidence of fabrication; in-loop `verify` owns that.
+    A LOSS is: the user did not receive a number, date, link, quote, heading,
+    label or tag that the checked draft contained. Never raises, never rewrites.
+    """
+    try:
+        if not draft or not delivered:
+            return
+        report = preserve_verify(
+            _mask_post_draft_blocks(draft)[:_QUALITY_MAX_CHARS],
+            _mask_post_draft_blocks(delivered)[:_QUALITY_MAX_CHARS],
+        )
+        if "error" in report:
+            return
+        lost = report.get("lost") or {}
+        log.info(
+            "writing.preservation",
+            extra={
+                "stream_id": stream_id,
+                "kept_everything": not lost,
+                "lost": {k: len(v) for k, v in lost.items()},
+                "score_draft": report.get("score_before"),
+                "score_delivered": report.get("score_after"),
+            },
+        )
+    except Exception:  # noqa: BLE001 — a measurement must never fail a turn
+        log.debug("writing.preservation_failed", extra={"stream_id": stream_id})
 
 
 def _log_writing_quality(stream_id: str, text: str) -> None:

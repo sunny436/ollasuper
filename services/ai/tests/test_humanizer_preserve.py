@@ -171,3 +171,135 @@ def test_junk_inputs_are_refused_not_crashed():
     assert "error" in verify("x", "")
     assert "error" in verify(None, "x")  # type: ignore[arg-type]
     assert "error" in verify("x", 3)  # type: ignore[arg-type]
+
+
+# ===========================================================================
+# The second deep pass. Each case below was a MEASURED failure of the shipped
+# code before it was fixed — not a hypothetical.
+# ===========================================================================
+SEO_DRAFT = (
+    "# Incident retrospectives that change something\n\n"
+    "Incident retrospectives fail when the action items are nobody's job. We "
+    "reviewed 40 teams in 2026.\n\n"
+    "## What worked\n\n"
+    'As one SRE lead said, "we stopped writing action items nobody owns."\n\n'
+    "[internal-link: action item tracking -> the ownership guide]\n\n"
+    "![alt: a retrospective board with owners](image-placeholder)\n"
+)
+
+
+def test_a_keyword_moved_out_of_the_title_is_a_seo_loss():
+    """Present elsewhere is not preserved: SEO weight sits in the title."""
+    moved = SEO_DRAFT.replace(
+        "# Incident retrospectives that change something",
+        "# Meetings that change something",
+    ).replace("We reviewed", "Incident retrospectives matter. We reviewed")
+    r = verify(SEO_DRAFT, moved, keywords=("incident retrospectives",))
+    assert r["ok"] is False
+    assert "incident retrospectives (first heading)" in r["lost"]["keyword_placement"]
+
+
+def test_a_keyword_moved_out_of_the_opening_paragraph_is_a_seo_loss():
+    moved = SEO_DRAFT.replace(
+        "Incident retrospectives fail when the action items are nobody's job.",
+        "Follow-ups fail when nobody owns them.",
+    ).replace("## What worked\n\n", "## What worked\n\nIncident retrospectives. ")
+    r = verify(SEO_DRAFT, moved, keywords=("incident retrospectives",))
+    assert (
+        "incident retrospectives (opening paragraph)" in r["lost"]["keyword_placement"]
+    )
+
+
+def test_a_dropped_internal_link_marker_is_named():
+    r = verify(
+        SEO_DRAFT,
+        SEO_DRAFT.replace(
+            "[internal-link: action item tracking -> the ownership guide]", ""
+        ),
+    )
+    assert r["ok"] is False and r["lost"]["internal_links"]
+
+
+def test_a_dropped_image_placeholder_is_named():
+    r = verify(
+        SEO_DRAFT,
+        SEO_DRAFT.replace(
+            "![alt: a retrospective board with owners](image-placeholder)", ""
+        ),
+    )
+    assert r["ok"] is False and r["lost"]["image_placeholders"]
+
+
+def test_a_paraphrased_quotation_is_a_fabricated_quote():
+    r = verify(
+        SEO_DRAFT,
+        SEO_DRAFT.replace(
+            "we stopped writing action items nobody owns.",
+            "we no longer write unowned action items.",
+        ),
+    )
+    assert r["ok"] is False and r["lost"]["quotations"]
+
+
+def test_straightening_curly_quotes_is_not_a_lost_quotation():
+    """The humanizer's own §21 converts curly quotes. A verbatim check that did
+    not normalise would reject exactly the edit the stage recommends."""
+    curly = SEO_DRAFT.replace(
+        '"we stopped writing action items nobody owns."',
+        "“we stopped writing action items nobody’s owns.”",
+    )
+    straight = curly.replace("“", '"').replace("”", '"').replace("’", "'")
+    r = verify(curly, straight)
+    assert "quotations" not in r["lost"], r["lost"]
+
+
+def test_the_seo_draft_rewritten_faithfully_passes_every_new_check():
+    faithful = SEO_DRAFT.replace(
+        "We reviewed 40 teams in 2026.", "We looked at 40 teams in 2026."
+    )
+    r = verify(SEO_DRAFT, faithful, keywords=("incident retrospectives",))
+    assert r["ok"] is True, r["lost"]
+
+
+# ------------------------------------------ Marketing's evidence contract
+MARKETING = (
+    "## \U0001f7e2 What the data shows\n\n"
+    "**FACT:** Churn fell to 3.1% in Q3 \U0001f7e2 verified (Stripe export).\n\n"
+    "**INFERENCE:** The drop likely follows the onboarding change "
+    "\U0001f7e1 estimate.\n\n"
+    "**ASSUMPTION:** Seasonality is flat \U0001f534 assumed.\n\n"
+    "**RECOMMENDATION:** Extend the onboarding flow to the enterprise tier.\n"
+)
+
+
+def test_stripping_the_evidence_labels_is_refused():
+    stripped = MARKETING
+    for label in (
+        "**FACT:** ",
+        "**INFERENCE:** ",
+        "**ASSUMPTION:** ",
+        "**RECOMMENDATION:** ",
+    ):
+        stripped = stripped.replace(label, "")
+    r = verify(MARKETING, stripped)
+    assert r["ok"] is False
+    assert len(r["lost"]["evidence_labels"]) == 4
+
+
+def test_upgrading_an_assumption_to_verified_is_fabrication():
+    """Measured before the fix: this passed with ok=true, lost={}. Promoting
+    "assumed" to "verified" invents evidence."""
+    upgraded = MARKETING.replace("\U0001f534 assumed", "\U0001f7e2 verified")
+    r = verify(MARKETING, upgraded)
+    assert r["ok"] is False
+    assert r["lost"]["evidence_tags"] == ["\U0001f534 x1"]
+    assert any("verified" in c for c in r["added_claims"])
+
+
+def test_an_honest_marketing_rewrite_keeps_labels_and_tags_and_passes():
+    honest = MARKETING.replace(
+        "The drop likely follows the onboarding change",
+        "The onboarding change probably drove it",
+    )
+    r = verify(MARKETING, honest)
+    assert r["ok"] is True, (r["lost"], r["added_claims"])
