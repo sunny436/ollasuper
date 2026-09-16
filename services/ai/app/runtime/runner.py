@@ -2016,6 +2016,7 @@ async def run_generation(
                 # From the first long segment on, everything is held so the
                 # answer keeps its order.
                 held_segments.append(segment)
+
         prep_ms = (time.monotonic() - started) * 1000
         async with aclosing(graph.astream(state, stream_mode="messages")) as stream:
             async for chunk, metadata in stream:
@@ -2090,15 +2091,27 @@ async def run_generation(
                 if before:
                     await writer.push(before)
                 shown_before = writer.text
-                answer_model = failover["model"] or model_id
+                # A voice edit needs no reasoning tier: the rewrite goes to the
+                # fastest healthy routed model (prod: the reasoning model spent
+                # 36-83s on it), else the model that wrote the draft.
+                rewrite_model = _fastest_healthy_model(
+                    router_cfg, req.modelCandidates
+                ) or (failover["model"] or model_id)
                 kept, extra_usage = await _deliver_writing(
                     writer,
                     settings,
                     draft=held_segments[pick],
                     register=humanize_register,
                     request=latest.content,
-                    model=answer_model,
-                    context_window=model_window if answer_model == model_id else 0,
+                    model=rewrite_model,
+                    context_window=next(
+                        (
+                            c.contextWindow
+                            for c in req.modelCandidates
+                            if c.id == rewrite_model
+                        ),
+                        0,
+                    ),
                     stream_id=req.streamId,
                 )
                 if extra_usage:
@@ -2449,7 +2462,8 @@ async def _deliver_writing(
     messages = humanize_stage.rewrite_messages(
         assessment, keywords=keywords, sample=sample
     )
-    parts: list[str] = []
+    parts: list[str] = []  # as the model wrote it, protected-span tokens included
+    shown = humanize_stage.PlaceholderStream(assessment.slots)
     usage = [0, 0]
     truncated = False
     try:
@@ -2458,7 +2472,9 @@ async def _deliver_writing(
                 text = _chunk_text(chunk)
                 if text:
                     parts.append(text)
-                    await writer.push(text)
+                    visible = shown.feed(text)
+                    if visible:
+                        await writer.push(visible)
                 meta = getattr(chunk, "usage_metadata", None) or {}
                 usage[0] += meta.get("input_tokens") or 0
                 usage[1] += meta.get("output_tokens") or 0
@@ -2483,11 +2499,10 @@ async def _deliver_writing(
             return None, (usage[0], usage[1])
         return draft, (usage[0], usage[1])
 
+    rest = shown.flush()
+    if rest:
+        await writer.push(rest)
     rewrite = "".join(parts)
-    if assessment.tail:
-        # Score block / Sources / score progression: kept exactly as written.
-        sep = "" if rewrite.endswith("\n") else "\n\n"
-        await writer.push(sep + assessment.tail)
     acceptance = await asyncio.to_thread(
         humanize_stage.accept,
         assessment,
@@ -2506,6 +2521,17 @@ async def _deliver_writing(
     )
     log.info("writing.humanize", extra=record)
     return (None if acceptance.ok else draft), (usage[0], usage[1])
+
+
+def _fastest_healthy_model(cfg: RouterConfig, candidates) -> str:
+    """The profiled candidate with the lowest time-to-first-token that the health
+    registry currently allows, or "" when there is none."""
+    live = [
+        c.id
+        for c in candidates
+        if c.id in cfg.profiles and not model_health.is_exhausted(c.id)
+    ]
+    return min(live, key=lambda m: cfg.profiles[m].ttft_s) if live else ""
 
 
 def _chunk_text(chunk: object) -> str:

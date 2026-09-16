@@ -52,6 +52,7 @@ class Recorder:
         self.draft_prompts: list[list] = []
         self.rewrite_prompts: list[list] = []
         self.bound_tools: list[str] = []
+        self.rewrite_models: list[str] = []
 
 
 class ScriptedChat(BaseChatModel):
@@ -59,6 +60,7 @@ class ScriptedChat(BaseChatModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     rec: Any = None
+    model_id: str = ""
 
     @property
     def _llm_type(self) -> str:
@@ -79,6 +81,9 @@ class ScriptedChat(BaseChatModel):
             first.content
         ):
             self.rec.rewrite_prompts.append(list(messages))
+            self.rec.rewrite_models.append(self.model_id)
+            if callable(self.rec.rewrite):  # a rewriter that echoes protected tokens
+                return self.rec.rewrite(messages)
             return self.rec.rewrite
         # `draft` is one script, or one script PER model call (a multi-step turn).
         call = len(self.rec.draft_prompts)
@@ -138,11 +143,13 @@ async def _turn(
     rewrite: Any = REWRITE,
     humanizer: bool = True,
     convex: RecordingConvex | None = None,
+    candidates: list[ModelCandidate] | None = None,
     **flags,
 ) -> tuple[Recorder, RecordingConvex]:
     rec = Recorder(draft, rewrite)
     monkeypatch.setattr(
-        "app.runtime.runner.build_llm", lambda *a, **k: ScriptedChat(rec=rec)
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: ScriptedChat(rec=rec, model_id=k.get("model", "")),
     )
     settings = _agent_settings(
         **{
@@ -169,9 +176,8 @@ async def _turn(
                 workspaceId="w1",
                 model="deepseek-v4-flash",
                 contextWindow=131_072,
-                modelCandidates=[
-                    ModelCandidate(id="deepseek-v4-flash", contextWindow=131_072)
-                ],
+                modelCandidates=candidates
+                or [ModelCandidate(id="deepseek-v4-flash", contextWindow=131_072)],
                 history=[HistoryMessage(role="user", content=prompt, seq=1)],
             ),
             settings,
@@ -316,16 +322,52 @@ async def test_with_the_flag_off_writing_streams_exactly_as_before(monkeypatch, 
     assert not [r for r in caplog.records if r.getMessage() == "writing.humanize"]
 
 
-async def test_the_blog_score_block_and_sources_are_never_rewritten(monkeypatch):
+def _echo_tokens(messages) -> str:
+    """A rewriter that keeps every protected-span token, as instructed."""
+    tokens = re.findall("⟦P\\d+⟧", str(messages[1].content))
+    return BLOG_TAIL_FIRST_REWRITE_PREFIX + REWRITE + "\n" + "\n".join(tokens)
+
+
+BLOG_TAIL_FIRST_REWRITE_PREFIX = ""
+
+
+async def test_the_blog_score_block_and_sources_are_never_rewritten(
+    monkeypatch, caplog
+):
+    caplog.set_level(logging.INFO)
     rec, convex = await _turn(
         monkeypatch,
         prompt="Write a blog post about why analytics dashboards go stale",
         draft=DRAFT + BLOG_TAIL,
+        rewrite=_echo_tokens,
     )
-    final = _final(convex)["text"] or _streamed(convex)
-    assert final.endswith(BLOG_TAIL)
-    assert "fast-paced" not in final
+    streamed = _streamed(convex)
+    assert "⟦" not in streamed, "no token ever reaches the screen"
+    assert "## OllaSuper Blog Quality Score: 91/100" in streamed
+    assert "https://example.com/beta-report" in streamed
+    assert "fast-paced" not in streamed
     assert "Quality Score" not in str(rec.rewrite_prompts[0][1].content)
+    assert _decision(caplog)["decision"] == "rewritten"
+
+
+async def test_a_score_block_before_the_article_still_gets_the_article_rewritten(
+    monkeypatch, caplog
+):
+    """Prod: the Blog skill wrote its score block FIRST and the stage judged only
+    the 9-word sentence before it."""
+    caplog.set_level(logging.INFO)
+    rec, convex = await _turn(
+        monkeypatch,
+        prompt="Write a blog post about why analytics dashboards go stale",
+        draft="All checks pass. Here is the final article.\n\n"
+        + BLOG_TAIL.lstrip()
+        + "\n"
+        + DRAFT,
+        rewrite=_echo_tokens,
+    )
+    assert len(rec.rewrite_prompts) == 1
+    assert "fast-paced" not in _streamed(convex)
+    assert "## OllaSuper Blog Quality Score: 91/100" in _streamed(convex)
 
 
 async def test_nothing_the_model_sees_mentions_humanization(monkeypatch):
@@ -411,9 +453,17 @@ async def test_a_draft_that_opens_with_its_own_preface_is_not_refused_for_it(
     the model's own "Here's a launch email..." opener."""
     caplog.set_level(logging.INFO)
     opener = "Here's a launch email for your existing customers.\n\n"
-    _, convex = await _turn(monkeypatch, draft=opener + DRAFT, rewrite=opener + REWRITE)
+
+    def keeps_preface_token(messages):
+        token = re.findall("⟦P\\d+⟧", str(messages[1].content))[0]
+        return token + REWRITE
+
+    rec, convex = await _turn(
+        monkeypatch, draft=opener + DRAFT, rewrite=keeps_preface_token
+    )
+    assert opener.strip() not in str(rec.rewrite_prompts[0][1].content)
     assert _decision(caplog)["decision"] == "rewritten"
-    assert _final(convex)["text"] == opener + REWRITE
+    assert _streamed(convex) == opener + REWRITE
 
 
 async def test_a_writing_request_no_skill_claims_still_gets_the_stage(
@@ -439,3 +489,26 @@ async def test_a_code_request_is_never_held_back(monkeypatch, caplog):
     assert _streamed(convex) == DRAFT
     assert rec.rewrite_prompts == []
     assert not [r for r in caplog.records if r.getMessage() == "writing.humanize"]
+
+
+async def test_the_rewrite_goes_to_the_fastest_healthy_model(monkeypatch, caplog):
+    """Prod: the reasoning model spent 36-83s on a voice edit. The router still
+    picks the DRAFT's brain; the rewrite goes to the fastest healthy routed model."""
+    caplog.set_level(logging.INFO)
+    both = [
+        ModelCandidate(id="deepseek-v4-flash", contextWindow=131_072),
+        ModelCandidate(id="gemini-3.7-flash-high", contextWindow=0),
+    ]
+    rec, _ = await _turn(monkeypatch, candidates=both)
+    assert rec.rewrite_models == ["gemini-3.7-flash-high"]
+    assert _decision(caplog)["model"] == "gemini-3.7-flash-high"
+
+
+async def test_an_unavailable_fast_model_is_skipped_for_the_rewrite(monkeypatch):
+    both = [
+        ModelCandidate(id="deepseek-v4-flash", contextWindow=131_072),
+        ModelCandidate(id="gemini-3.7-flash-high", contextWindow=0),
+    ]
+    health.mark_exhausted("gemini-3.7-flash-high", 600)
+    rec, _ = await _turn(monkeypatch, candidates=both)
+    assert rec.rewrite_models == ["deepseek-v4-flash"]

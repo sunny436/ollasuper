@@ -6,13 +6,23 @@ model called it on 0 of 2 deliverables: a stage that depends on the model
 remembering to run it does not run. So the runner now owns the order:
 
     draft (buffered, not shown)
+      -> protect what must survive verbatim (see `protect`)
       -> detect + score the draft (pure, no tokens)
       -> clean or too short to judge: deliver the draft unchanged
       -> otherwise ONE rewrite call, streamed to the user as it is written
       -> verify the rewrite against the draft (facts, figures, dates, links,
          quotations, headings, evidence labels, required keywords; nothing added)
-      -> any loss, any addition, a truncated or chat-wrapped rewrite, or a lower
-         score => the DRAFT is what gets saved
+      -> any loss, any addition, a truncated or chat-wrapped rewrite, or no
+         improvement => the DRAFT is what gets saved
+
+WHY PLACEHOLDERS. Measured on production, three rewrites were refused for text
+the rewrite was never meant to touch: a blog's score block written BEFORE the
+article (a head/tail split put the whole article in the untouched tail), a
+quoted testimonial the model reworded despite being told not to, and the draft's
+own "Here's a launch email at roughly 200 words" preface. An instruction is not
+a guarantee; text the rewriter never sees cannot be changed. So protected spans
+are swapped for tokens before the call and restored — on the stream, as it is
+written — afterwards.
 
 Everything here is pure except the prompt text; the runner does the I/O.
 Nothing in the user-visible answer ever names this stage or its score.
@@ -85,12 +95,20 @@ _KEYWORD_CUE = re.compile(r"\b(?:keyword|keywords|key phrase|search term)s?\b", 
 _SAMPLE = re.compile(
     r"\b(?:writing|voice|style)\s+sample\s*[:\-]\s*(.{400,8000})", re.I | re.S
 )
+# Direct quotations long enough to be a quote rather than a scare-quoted word.
+_QUOTE_SPAN = re.compile(r'"[^"\n]{12,300}"|“[^”\n]{12,300}”')
+_OPEN, _CLOSE = "⟦", "⟧"
+_TOKEN = re.compile(_OPEN + r"P\d{1,4}" + _CLOSE)
+# A preface ends at the first horizontal rule or paragraph break near the top.
+_PREFACE_RULE = re.compile(r"\n\s{0,3}(?:---|\*\*\*|___)\s*\n")
+_PREFACE_MAX_CHARS = 800
 
 
 @dataclass(frozen=True)
 class Assessment:
-    body: str
-    tail: str
+    body: str  # the draft, exactly as written
+    masked: str  # the draft with protected spans replaced by tokens
+    slots: dict[str, str]  # token -> the protected text it stands for
     words: int
     score: int
     findings: list[Finding] = field(default_factory=list)
@@ -138,16 +156,6 @@ def register_for(skill_ids) -> str | None:
     return "prose" if "prose" in registers else "technical"
 
 
-def split_post_draft(text: str) -> tuple[str, str]:
-    """Body to humanize, and the post-draft blocks (score, sources, progression)
-    that are kept exactly as written."""
-    starts = [m.start() for rx in POST_DRAFT_BLOCKS if (m := rx.search(text))]
-    if not starts:
-        return text, ""
-    cut = min(starts)
-    return text[:cut], text[cut:]
-
-
 def writing_sample(request: str) -> str | None:
     """A sample the user explicitly supplied ("writing sample: …") — the voice
     reference upstream humanizer honours over its own patterns."""
@@ -163,20 +171,99 @@ def required_keywords(request: str) -> list[str]:
     return list(dict.fromkeys(q.strip() for q in _QUOTED.findall(request) if q.strip()))
 
 
+# ------------------------------------------------------------------ protection
+def _preface_end(text: str) -> int:
+    """End offset of a chat preface ("Here's a launch email for…") or 0."""
+    if not _CHAT_WRAPPER.match(text):
+        return 0
+    head = text[:_PREFACE_MAX_CHARS]
+    rule = _PREFACE_RULE.search(head)
+    if rule:
+        return rule.end()
+    brk = head.find("\n\n")
+    return brk + 2 if brk > 0 else 0
+
+
+def protect(text: str) -> tuple[str, dict[str, str]]:
+    """Replace what must survive verbatim with tokens: the Blog skill's score,
+    Sources and score-progression blocks (wherever they sit), a leading chat
+    preface, and direct quotations."""
+    spans: list[tuple[int, int]] = []
+    for rx in POST_DRAFT_BLOCKS:
+        spans.extend((m.start(), m.end()) for m in rx.finditer(text))
+    end = _preface_end(text)
+    if end and text[end:].strip():
+        spans.append((0, end))
+    spans.extend((m.start(), m.end()) for m in _QUOTE_SPAN.finditer(text))
+    merged: list[tuple[int, int]] = []
+    for start, stop in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], stop))
+        else:
+            merged.append((start, stop))
+    slots: dict[str, str] = {}
+    out: list[str] = []
+    pos = 0
+    for i, (start, stop) in enumerate(merged, 1):
+        token = f"{_OPEN}P{i}{_CLOSE}"
+        slots[token] = text[start:stop]
+        out.append(text[pos:start])
+        out.append(token)
+        pos = stop
+    out.append(text[pos:])
+    return "".join(out), slots
+
+
+def restore(text: str, slots: dict[str, str]) -> str:
+    for token, original in slots.items():
+        text = text.replace(token, original)
+    return text
+
+
+class PlaceholderStream:
+    """Restores tokens on a streamed rewrite, holding back a token split across
+    chunks so the user never sees `⟦P3` on screen."""
+
+    _MAX_HELD = 16
+
+    def __init__(self, slots: dict[str, str]) -> None:
+        self._slots = slots
+        self._held = ""
+
+    def feed(self, chunk: str) -> str:
+        buf = self._held + chunk
+        cut = buf.rfind(_OPEN)
+        if cut != -1 and _CLOSE not in buf[cut:] and len(buf) - cut <= self._MAX_HELD:
+            self._held, buf = buf[cut:], buf[:cut]
+        else:
+            self._held = ""
+        return restore(buf, self._slots)
+
+    def flush(self) -> str:
+        out, self._held = restore(self._held, self._slots), ""
+        return out
+
+
+def _scored_text(masked: str) -> str:
+    return _TOKEN.sub(" ", masked)
+
+
+# ------------------------------------------------------------------ the stage
 def assess(draft: str, *, register: str, sample: str | None = None) -> Assessment:
-    body, tail = split_post_draft(draft)
-    findings, prof = analyze(body, sample=sample, register=register)
+    masked, slots = protect(draft)
+    scored = _scored_text(masked)
+    findings, prof = analyze(scored, sample=sample, register=register)
     score = human_voice_score(
-        body, sample=sample, register=register, findings=findings, prof=prof
+        scored, sample=sample, register=register, findings=findings, prof=prof
     )
-    words = len(_WORD.findall(body))
+    words = word_count(scored)
     if words < _MIN_DENSITY_WORDS:
         decision = "short"
     elif score >= DEFAULT_THRESHOLD or not findings:
         decision = "clean"
     else:
         decision = "revise"
-    return Assessment(body, tail, words, score, findings, register, decision)
+    return Assessment(draft, masked, slots, words, score, findings, register, decision)
 
 
 _INSTRUCTIONS = (
@@ -189,13 +276,13 @@ _INSTRUCTIONS = (
     "generic AI vocabulary, filler, decorative bold, leftover chat phrasing). "
     "Leave sentences that are already plain and natural exactly as they are.\n"
     "Preserve EXACTLY: every factual claim; every number, percentage, amount and "
-    "date; names; every URL and markdown link; citation markers; direct "
-    "quotations (text inside quotation marks is copied character for character); "
-    "code; tables and lists; every heading with its level, order and "
-    "meaning (never add, remove or reorder a heading); internal-link markers and "
-    "image placeholders; evidence labels FACT / INFERENCE / ASSUMPTION / "
-    "RECOMMENDATION and every 🟢 🟡 🔴 tag (never change one); the call to "
-    "action; and everything the user asked for.\n"
+    "date; names; every URL and markdown link; citation markers; code; tables and "
+    "lists; every heading with its level, order and meaning (never add, remove or "
+    "reorder a heading); internal-link markers and image placeholders; evidence "
+    "labels FACT / INFERENCE / ASSUMPTION / RECOMMENDATION and every 🟢 🟡 🔴 tag "
+    "(never change one); the call to action; and everything the user asked for.\n"
+    f"Tokens like {_OPEN}P1{_CLOSE} stand for protected text. Copy every token "
+    "exactly once, unchanged, in the same place relative to the text around it.\n"
     "Never add a fact, figure, example, source, promise or claim that is not in "
     "the draft. Do not make it casual or chatty; keep the same register, "
     "formatting and roughly the same length.\n"
@@ -233,7 +320,7 @@ def rewrite_messages(
             "The user's own writing sample — match THIS voice and rhythm, "
             f"including how often it uses dashes:\n{sample[:4000]}"
         )
-    parts.append(f"DRAFT:\n{assessment.body}")
+    parts.append(f"DRAFT:\n{assessment.masked}")
     return [
         SystemMessage(content=_INSTRUCTIONS),
         HumanMessage(content="\n\n".join(parts)),
@@ -248,24 +335,26 @@ def accept(
     sample: str | None = None,
     truncated: bool = False,
 ) -> Acceptance:
-    """Is the rewrite safe to deliver instead of the draft?"""
+    """Is the rewrite (as the model wrote it, tokens included) safe to deliver?"""
     if truncated:
         return Acceptance(False, "truncated")
     text = rewrite.strip()
     if not text:
         return Acceptance(False, "empty")
-    # Only a wrapper the REWRITE added: a draft that itself opens "Here's a
-    # launch email..." keeps that line (measured on prod: two faithful rewrites
-    # were refused for preserving the model's own opener).
-    if _CHAT_WRAPPER.match(text) and not _CHAT_WRAPPER.match(assessment.body):
+    if any(text.count(token) != 1 for token in assessment.slots):
+        return Acceptance(False, "protected_span_changed")
+    if len(_TOKEN.findall(text)) != len(assessment.slots):
+        return Acceptance(False, "protected_span_changed")
+    # Only a wrapper the REWRITE added: the draft's own preface is protected.
+    if _CHAT_WRAPPER.match(text) and not _CHAT_WRAPPER.match(assessment.masked):
         return Acceptance(False, "chat_wrapper")
-    words = len(_WORD.findall(text))
-    ratio = words / max(assessment.words, 1)
+    scored = _scored_text(text)
+    ratio = word_count(scored) / max(assessment.words, 1)
     if not _MIN_LENGTH_RATIO <= ratio <= _MAX_LENGTH_RATIO:
         return Acceptance(False, f"length_ratio_{ratio:.2f}")
     report = verify(
         assessment.body,
-        text,
+        restore(text, assessment.slots),
         keywords=tuple(keywords or ()),
         register=assessment.register,
     )
@@ -276,10 +365,10 @@ def accept(
         report.get("added_urls") or []
     )
     findings_after, prof_after = analyze(
-        text, sample=sample, register=assessment.register
+        scored, sample=sample, register=assessment.register
     )
     after = human_voice_score(
-        text,
+        scored,
         sample=sample,
         register=assessment.register,
         findings=findings_after,

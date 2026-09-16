@@ -26,13 +26,63 @@ def test_a_machine_shaped_draft_is_revised_a_human_one_ships_and_short_text_is_l
     assert stage.assess("Thanks! Sent.", register="prose").decision == "short"
 
 
-def test_post_draft_blocks_are_split_off_and_never_scored_or_rewritten():
+def _tokens(text: str) -> list[str]:
+    import re
+
+    return re.findall("⟦P\\d+⟧", text)
+
+
+def test_post_draft_blocks_are_protected_and_never_scored_or_rewritten():
     a = stage.assess(DRAFT + BLOG_TAIL, register="prose")
-    assert "Quality Score" not in a.body and "Sources" not in a.body
-    assert a.tail.startswith("## OllaSuper Blog Quality Score")
-    assert "https://example.com/beta-report" in a.tail
+    assert "Quality Score" not in a.masked and "beta-report" not in a.masked
+    assert "".join(a.slots.values()).count("OllaSuper Blog Quality Score") == 1
     prompt = "".join(str(m.content) for m in stage.rewrite_messages(a))
     assert "Quality Score" not in prompt and "beta-report" not in prompt
+    assert a.decision == "revise"
+
+
+def test_a_score_block_written_before_the_article_does_not_hide_the_article():
+    """Prod: the Blog skill emitted its score block FIRST; a head/tail split put the
+    whole article in the untouched tail and judged a 9-word sentence."""
+    a = stage.assess(BLOG_TAIL.lstrip() + "\n\n" + DRAFT, register="prose")
+    assert a.decision == "revise" and a.words > 120
+    assert "fast-paced" in a.masked
+
+
+def test_the_preface_and_quotations_are_protected_verbatim():
+    """Prod: a rewrite dropped the draft's own "roughly 200 words" preface (a lost
+    figure) and another reworded a quoted testimonial."""
+    quote = '"Stillwater is the first app my head actually stayed quiet for."'
+    draft = (
+        "Here's a launch email at roughly 200 words.\n\n---\n\n"
+        + DRAFT
+        + f"\nOne beta user said {quote}\n"
+    )
+    a = stage.assess(draft, register="prose")
+    protected = "".join(a.slots.values())
+    assert "roughly 200 words" in protected and quote in protected
+    assert "roughly 200 words" not in a.masked and quote not in a.masked
+    rewrite = "".join(_tokens(a.masked)[:1]) + REWRITE + " " + _tokens(a.masked)[-1]
+    assert stage.accept(a, rewrite).ok
+    assert stage.restore(rewrite, a.slots).startswith("Here's a launch email")
+
+
+def test_a_lost_or_duplicated_token_is_refused():
+    a = stage.assess(DRAFT + BLOG_TAIL, register="prose")
+    tokens = _tokens(a.masked)
+    assert stage.accept(a, REWRITE).reason == "protected_span_changed"
+    doubled = REWRITE + "".join(tokens) + tokens[0]
+    assert stage.accept(a, doubled).reason == "protected_span_changed"
+    assert stage.accept(a, REWRITE + "\n" + "\n".join(tokens)).ok
+
+
+def test_tokens_split_across_stream_chunks_never_reach_the_screen():
+    slots = {"⟦P1⟧": '"a quoted line that must stay"'}
+    stream = stage.PlaceholderStream(slots)
+    shown = stream.feed("Before ⟦") + stream.feed("P1") + stream.feed("⟧ after")
+    shown += stream.flush()
+    assert shown == 'Before "a quoted line that must stay" after'
+    assert "⟦" not in shown
 
 
 def test_density_habits_count_only_above_their_ceiling():
@@ -173,6 +223,8 @@ def test_the_gate_holds_writing_and_never_code_or_analysis():
 def test_a_preface_the_draft_already_had_is_not_a_chat_wrapper():
     opener = "Here's a launch email for your existing customers.\n\n"
     a = stage.assess(opener + DRAFT, register="prose")
-    assert stage.accept(a, opener + REWRITE).ok
-    # ...but one the rewrite INTRODUCED still is.
+    # The draft's own preface is protected: the rewriter only ever sees a token.
+    assert opener.strip() in "".join(a.slots.values())
+    assert stage.accept(a, _tokens(a.masked)[0] + REWRITE).ok
+    # ...but a preface the rewrite INTRODUCED is still refused.
     assert stage.accept(_a(), opener + REWRITE).reason == "chat_wrapper"
