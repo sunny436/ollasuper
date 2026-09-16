@@ -44,11 +44,25 @@ _CHART = {
     },
     "required": ["type"],
 }
+# A table cell is text OR a number. Declared explicitly because GEMINI REJECTS
+# an array with no `items` — `{"type": "array", "items": {"type": "array"}}` came
+# back `400 ...rows.items.items: missing field`, and since this spec is bound on
+# every agentic turn, EVERY Gemini turn failed before producing a token (measured
+# 2026-09-16, the day the router moved simple and complex work onto Gemini).
+# OpenAI-compatible providers had been tolerating the omission silently.
+#
+# `anyOf` rather than `"type": "string"`: probed on the live gateway, all three
+# routed models accept it, and it lets the model emit REAL numbers (deepseek sent
+# `1.5` rather than `"$1.50"`), which the xlsx renderer keeps numeric so native
+# charts still plot. Forcing strings would have fixed Gemini and broken charts.
+_CELL = {"anyOf": [{"type": "string"}, {"type": "number"}]}
+_ROWS = {"type": "array", "items": {"type": "array", "items": _CELL}}
+
 _TABLE = {
     "type": "object",
     "properties": {
         "columns": {"type": "array", "items": {"type": "string"}},
-        "rows": {"type": "array", "items": {"type": "array"}},
+        "rows": _ROWS,
     },
 }
 
@@ -127,7 +141,7 @@ GENERATE_FILE_TOOL_SPEC: dict = {
                         "properties": {
                             "name": {"type": "string"},
                             "columns": {"type": "array", "items": {"type": "string"}},
-                            "rows": {"type": "array", "items": {"type": "array"}},
+                            "rows": _ROWS,
                             "chart": _CHART,
                         },
                     },
