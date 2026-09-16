@@ -1992,11 +1992,30 @@ async def run_generation(
         # BUFFERED instead of streamed; once the graph finishes, the stage
         # detects, streams a rewrite if the draft needs one, and verifies it.
         humanize_register = (
-            humanize_stage.register_for(active_skill_ids)
+            humanize_stage.gate(active_skill_ids, latest.content)
             if settings.ai_humanizer_enabled and route.work == "produce"
             else None
         )
+        # One model call = one segment. The deliverable is the largest; short
+        # text before it is narration between tool steps and is shown as soon
+        # as its step ends (measured on prod: a 19-step blog turn sent its
+        # SERP narration to the rewrite, which changed quoted search terms).
         draft_parts: list[str] = []
+        held_segments: list[str] = []
+        draft_step: object = None
+
+        async def _close_draft_segment() -> None:
+            segment = "".join(draft_parts)
+            draft_parts.clear()
+            if (
+                not held_segments
+                and humanize_stage.word_count(segment) < humanize_stage.MIN_WORDS
+            ):
+                await writer.push(segment)
+            else:
+                # From the first long segment on, everything is held so the
+                # answer keeps its order.
+                held_segments.append(segment)
         prep_ms = (time.monotonic() - started) * 1000
         async with aclosing(graph.astream(state, stream_mode="messages")) as stream:
             async for chunk, metadata in stream:
@@ -2013,6 +2032,10 @@ async def run_generation(
                 if raw:
                     text = harmony_filter.feed(raw)
                     if text and humanize_register is not None:
+                        step = metadata.get("langgraph_step")
+                        if step != draft_step and draft_parts:
+                            await _close_draft_segment()
+                        draft_step = step
                         draft_parts.append(text)
                         _extend_deadline()  # a hidden draft is still progress
                     elif text:
@@ -2052,17 +2075,26 @@ async def run_generation(
         elif tail:
             await writer.push(tail)
         if humanize_register is not None:
-            draft = "".join(draft_parts)
-            if writer.suspended or not draft.strip():
+            held_segments.append("".join(draft_parts))  # the last call is held
+            draft_parts.clear()
+            if writer.suspended or not any(s.strip() for s in held_segments):
                 # Parked on an approval (the turn resumes later) or nothing
                 # was written: deliver what exists, unchanged.
-                await writer.push(draft)
+                await writer.push("".join(held_segments))
             else:
+                pick = max(
+                    range(len(held_segments)), key=lambda k: len(held_segments[k])
+                )
+                before = "".join(held_segments[:pick])
+                after = "".join(held_segments[pick + 1 :])
+                if before:
+                    await writer.push(before)
+                shown_before = writer.text
                 answer_model = failover["model"] or model_id
-                humanized["final_text"], extra_usage = await _deliver_writing(
+                kept, extra_usage = await _deliver_writing(
                     writer,
                     settings,
-                    draft=draft,
+                    draft=held_segments[pick],
                     register=humanize_register,
                     request=latest.content,
                     model=answer_model,
@@ -2076,6 +2108,10 @@ async def run_generation(
                 if writer.cancel_requested:
                     status = "cancelled"
                     return
+                if after:
+                    await writer.push(after)
+                if kept is not None:
+                    humanized["final_text"] = shown_before + kept + after
         await writer.flush(force=True)
         # Phase 8: a tool parked awaiting approval routed the graph to END. The
         # durable approval + suspend is already recorded in Convex; do NOT

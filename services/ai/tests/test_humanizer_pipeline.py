@@ -16,6 +16,7 @@ Convex received) and what was SAVED (the finalize text), separately:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -79,7 +80,11 @@ class ScriptedChat(BaseChatModel):
         ):
             self.rec.rewrite_prompts.append(list(messages))
             return self.rec.rewrite
+        # `draft` is one script, or one script PER model call (a multi-step turn).
+        call = len(self.rec.draft_prompts)
         self.rec.draft_prompts.append(list(messages))
+        if isinstance(self.rec.draft, tuple):
+            return self.rec.draft[min(call, len(self.rec.draft) - 1)]
         return self.rec.draft
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
@@ -95,6 +100,22 @@ class ScriptedChat(BaseChatModel):
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
         out = self._script(messages)
+        if isinstance(out, dict):  # narration + a tool call, one model call
+            for tok in _TOKENS.findall(out["text"]):
+                yield ChatGenerationChunk(message=AIMessageChunk(content=tok))
+            chunks = [
+                {
+                    "name": c["name"],
+                    "args": json.dumps(c["args"]),
+                    "id": c["id"],
+                    "index": i,
+                }
+                for i, c in enumerate(out["tool_calls"])
+            ]
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(content="", tool_call_chunks=chunks)
+            )
+            return
         for piece in out if isinstance(out, list) else [out]:
             if isinstance(piece, Exception):
                 raise piece
@@ -124,13 +145,15 @@ async def _turn(
         "app.runtime.runner.build_llm", lambda *a, **k: ScriptedChat(rec=rec)
     )
     settings = _agent_settings(
-        ai_orchestrated_runtime_enabled=True,
-        ai_router_enabled=True,
-        ai_quota_fallback_model="",
-        ai_marketing_enabled=True,
-        ai_blog_enabled=True,
-        ai_humanizer_enabled=humanizer,
-        **flags,
+        **{
+            "ai_orchestrated_runtime_enabled": True,
+            "ai_router_enabled": True,
+            "ai_quota_fallback_model": "",
+            "ai_marketing_enabled": True,
+            "ai_blog_enabled": True,
+            "ai_humanizer_enabled": humanizer,
+            **flags,
+        }
     )
     reg = ToolRegistry()
     reg.register(_read_tool())
@@ -333,3 +356,86 @@ async def test_required_keywords_from_the_request_reach_the_rewrite(monkeypatch)
     )
     assert "Required keywords" in str(rec.rewrite_prompts[0][1].content)
     assert "Pulse Analytics" in str(rec.rewrite_prompts[0][1].content)
+
+
+# ------------------------------------------------------------------ prod-found cases
+NARRATION = 'Researching competitor pricing for "analytics dashboards" first.'
+
+
+async def test_narration_between_tool_steps_shows_and_only_the_deliverable_is_rewritten(
+    monkeypatch, caplog
+):
+    """Prod: a 19-step blog turn sent its SERP narration to the rewrite, which changed
+    the quoted search terms and got the whole rewrite refused."""
+    caplog.set_level(logging.INFO)
+    step1 = {
+        "text": NARRATION,
+        "tool_calls": [{"name": "search_web", "args": {"q": "pricing"}, "id": "c1"}],
+    }
+    rec, convex = await _turn(
+        monkeypatch,
+        prompt=f"{WRITE}; search the web for competitor pricing first",
+        draft=(step1, DRAFT),
+    )
+    streamed = _streamed(convex)
+    assert streamed.startswith(NARRATION), "narration is shown, not hidden or rewritten"
+    assert streamed == NARRATION + REWRITE
+    assert "fast-paced" not in streamed
+    rewrite_input = str(rec.rewrite_prompts[0][1].content)
+    assert (
+        NARRATION not in rewrite_input and "analytics dashboards" not in rewrite_input
+    )
+    assert _decision(caplog)["decision"] == "rewritten"
+
+
+async def test_a_refused_deliverable_keeps_the_narration_before_it(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    step1 = {
+        "text": NARRATION,
+        "tool_calls": [{"name": "search_web", "args": {"q": "pricing"}, "id": "c1"}],
+    }
+    lossy = REWRITE.replace("tracks 42 metrics", "tracks dozens of metrics")
+    _, convex = await _turn(
+        monkeypatch,
+        prompt=f"{WRITE}; search the web for competitor pricing first",
+        draft=(step1, DRAFT),
+        rewrite=lossy,
+    )
+    assert _final(convex)["text"] == NARRATION + DRAFT
+
+
+async def test_a_draft_that_opens_with_its_own_preface_is_not_refused_for_it(
+    monkeypatch, caplog
+):
+    """Prod: two faithful rewrites were refused as `chat_wrapper` because they kept
+    the model's own "Here's a launch email..." opener."""
+    caplog.set_level(logging.INFO)
+    opener = "Here's a launch email for your existing customers.\n\n"
+    _, convex = await _turn(monkeypatch, draft=opener + DRAFT, rewrite=opener + REWRITE)
+    assert _decision(caplog)["decision"] == "rewritten"
+    assert _final(convex)["text"] == opener + REWRITE
+
+
+async def test_a_writing_request_no_skill_claims_still_gets_the_stage(
+    monkeypatch, caplog
+):
+    """Prod: landing copy matched no skill and the stage never ran."""
+    caplog.set_level(logging.INFO)
+    rec, _ = await _turn(
+        monkeypatch,
+        prompt="Create landing page copy for a meditation app called Stillwater",
+        ai_marketing_enabled=False,
+        ai_blog_enabled=False,
+    )
+    assert len(rec.rewrite_prompts) == 1
+    assert _decision(caplog)["register"] == "prose"
+
+
+async def test_a_code_request_is_never_held_back(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    rec, convex = await _turn(
+        monkeypatch, prompt="Write a Python function that formats a launch email"
+    )
+    assert _streamed(convex) == DRAFT
+    assert rec.rewrite_prompts == []
+    assert not [r for r in caplog.records if r.getMessage() == "writing.humanize"]

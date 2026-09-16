@@ -35,14 +35,39 @@ from app.humanizer.patterns import (
 )
 from app.humanizer.preserve import verify
 
-#: Writing skills whose deliverables get the stage, and the register each writes
-#: in. Report Writing is reference-style text: its voice-flavour patterns are
-#: dropped so it stays neutral rather than being made conversational.
+#: Writing skills, and the register each writes in. Reference-style skills are
+#: "technical": their voice-flavour patterns are dropped so the text stays
+#: neutral rather than being made conversational.
 WRITING_SKILLS: dict[str, str] = {
     "blog-assist": "prose",
     "marketing": "prose",
+    "sales": "prose",
+    "hr": "prose",
     "report-writing": "technical",
+    "operations": "technical",
+    "documents": "technical",
 }
+#: Skills whose output is analysis, numbers or code, not prose. With no writing
+#: skill beside them, a turn they claim is left alone.
+NON_WRITING_SKILLS = frozenset(
+    {"software-engineering", "data-analysis", "finance", "equity-research", "seo-audit"}
+)
+#: Below this many words a text is not judged (and, between tool steps, is
+#: narration rather than the deliverable).
+MIN_WORDS = _MIN_DENSITY_WORDS
+# The router files code under the same work type as prose ("write a Python
+# function" is `produce`), and skill discovery does not separate them either
+# (measured on prod: a React component matched `documents`, unit tests matched
+# `finance`). Hiding a code answer's stream would buy nothing, so a request
+# that names a programming artifact is never held back.
+_CODE_REQUEST = re.compile(
+    r"```|\b(?:python|javascript|typescript|java|golang|rust|kotlin|swift|php|"
+    r"ruby|c\+\+|c#|sql|regex|regular expression|bash|shell script|powershell|"
+    r"dockerfile|terraform|yaml|json|html|css|react|vue|angular|django|flask|"
+    r"fastapi|node\.?js|unit tests?|test cases?|code|snippet|function|method|"
+    r"class|component|endpoint|algorithm|program|script to|stack trace|bug)\b",
+    re.I,
+)
 
 _MAX_FINDINGS_IN_PROMPT = 40
 # A rewrite this far from the draft's length is not a voice edit: it was cut off
@@ -84,6 +109,24 @@ class Acceptance:
     score_after: int | None = None
     lost: dict = field(default_factory=dict)
     added: list = field(default_factory=list)
+
+
+def gate(skill_ids, request: str) -> str | None:
+    """The register to write in if this `produce` turn is a writing deliverable,
+    else None. Writing skills decide first; a writing request no skill claimed
+    (landing copy, a cover letter, a newsletter) is prose; code never is."""
+    if _CODE_REQUEST.search(request or ""):
+        return None
+    register = register_for(skill_ids)
+    if register is not None:
+        return register
+    if NON_WRITING_SKILLS.intersection(skill_ids):
+        return None
+    return "prose"
+
+
+def word_count(text: str) -> int:
+    return len(_WORD.findall(text or ""))
 
 
 def register_for(skill_ids) -> str | None:
@@ -147,7 +190,8 @@ _INSTRUCTIONS = (
     "Leave sentences that are already plain and natural exactly as they are.\n"
     "Preserve EXACTLY: every factual claim; every number, percentage, amount and "
     "date; names; every URL and markdown link; citation markers; direct "
-    "quotations; code; tables and lists; every heading with its level, order and "
+    "quotations (text inside quotation marks is copied character for character); "
+    "code; tables and lists; every heading with its level, order and "
     "meaning (never add, remove or reorder a heading); internal-link markers and "
     "image placeholders; evidence labels FACT / INFERENCE / ASSUMPTION / "
     "RECOMMENDATION and every 🟢 🟡 🔴 tag (never change one); the call to "
@@ -210,7 +254,10 @@ def accept(
     text = rewrite.strip()
     if not text:
         return Acceptance(False, "empty")
-    if _CHAT_WRAPPER.match(text):
+    # Only a wrapper the REWRITE added: a draft that itself opens "Here's a
+    # launch email..." keeps that line (measured on prod: two faithful rewrites
+    # were refused for preserving the model's own opener).
+    if _CHAT_WRAPPER.match(text) and not _CHAT_WRAPPER.match(assessment.body):
         return Acceptance(False, "chat_wrapper")
     words = len(_WORD.findall(text))
     ratio = words / max(assessment.words, 1)

@@ -14,7 +14,8 @@ def test_only_writing_skills_turn_the_stage_on():
     assert stage.register_for(["blog-assist"]) == "prose"
     assert stage.register_for(["report-writing"]) == "technical"
     assert stage.register_for(["report-writing", "marketing"]) == "prose"
-    assert stage.register_for(["sales", "hr", "seo-audit"]) is None
+    assert stage.register_for(["sales", "hr"]) == "prose"
+    assert stage.register_for(["seo-audit", "finance"]) is None
     assert stage.register_for([]) is None
 
 
@@ -146,3 +147,32 @@ def test_a_rewrite_that_is_not_better_is_refused():
     )
     assert stage.accept(a, worse).reason == "score_not_improved"
     assert stage.accept(a, DRAFT).reason == "score_not_improved"
+
+
+# ------------------------------------------------------------------ prod-found cases
+def test_the_gate_holds_writing_and_never_code_or_analysis():
+    assert stage.gate([], "Create landing page copy for a meditation app") == "prose"
+    assert stage.gate([], "Write a cover letter for a data analyst role") == "prose"
+    assert stage.gate(["sales", "documents"], "Draft a customer newsletter") == "prose"
+    assert (
+        stage.gate(["hr"], "Write a job description for a backend engineer") == "prose"
+    )
+    assert (
+        stage.gate(["operations"], "Write an SOP for invoice approval") == "technical"
+    )
+    # Code, whatever skill discovery matched (prod: React -> documents).
+    assert stage.gate([], "Write a Python function to parse a CSV file") is None
+    assert (
+        stage.gate(["documents"], "Create a React component for a login form") is None
+    )
+    assert stage.gate(["finance"], "Write unit tests for this function") is None
+    # Analysis with no writing skill beside it.
+    assert stage.gate(["finance"], "Build a DCF model for Tesla") is None
+
+
+def test_a_preface_the_draft_already_had_is_not_a_chat_wrapper():
+    opener = "Here's a launch email for your existing customers.\n\n"
+    a = stage.assess(opener + DRAFT, register="prose")
+    assert stage.accept(a, opener + REWRITE).ok
+    # ...but one the rewrite INTRODUCED still is.
+    assert stage.accept(_a(), opener + REWRITE).reason == "chat_wrapper"
