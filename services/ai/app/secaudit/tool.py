@@ -204,10 +204,15 @@ async def _tracked(state: SecurityTurn, name: str, root: str) -> set[str]:
 
 
 async def _root(state: SecurityTurn, name: str) -> str:
+    if not name:
+        # A malformed call, not an access attempt: never recorded as a target.
+        raise local.LocalError(
+            "invalid_input", "`repo` (a local repository name) is required"
+        )
     try:
         root = state.local.resolve(state.user_id, name)
     except local.LocalError as e:
-        state.local_access[str(name)[:64] or "(unnamed)"] = e.code
+        state.local_access[str(name)[:64]] = e.code
         raise
     if name not in state.local_heads:
         state.local_heads[name] = await local.head(root)

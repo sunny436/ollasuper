@@ -3,6 +3,7 @@
 //   QA_EMAIL=… QA_PASSWORD=… node qa-security-audit.js
 //   QA_ONLY=fixture,fix-approve node qa-security-audit.js
 //
+// (Checks match the RENDERED text: markdown backticks/bold are not in innerText.)
 // What the UI must show, per turn (the server-side evidence — routed model, the
 // secaudit.report verdict, file hashes on the VM — is collected from the journal
 // and over ssh alongside this run, not from here):
@@ -51,7 +52,7 @@ const TURNS = [
       "and submit the report.",
     report: true,
     verdict: /Verdict: (FINDINGS|INCOMPLETE)/,
-    must: ["`local:fixture` — access **verified**", "Secrets detected"],
+    must: ["local:fixture — access verified", "Secrets detected"],
   },
   {
     slug: "ollasuper",
@@ -61,7 +62,7 @@ const TURNS = [
       "then submit the report.",
     report: true,
     verdict: /Verdict: /,
-    must: ["`local:ollasuper` — access **verified**"],
+    must: ["local:ollasuper — access verified"],
   },
   {
     slug: "github",
@@ -97,7 +98,7 @@ const TURNS = [
     decide: "approve",
     report: true,
     verdict: /Verdict: /,
-    must: ["Fix retest: **passed**"],
+    must: ["Fix retest: passed"],
   },
 ].filter((t) => !ONLY.length || ONLY.includes(t.slug));
 
@@ -116,9 +117,58 @@ async function visible(loc) {
   return (await loc.count()) > 0 && (await loc.first().isVisible().catch(() => false));
 }
 
+// QA_LOGIN=google: "Sign in with Google" as the Google test account from the
+// gitignored ../mcp_servers_creds.txt ("google auth details for testing"). Never
+// printed. Same steps as q5-google-mcp.js, on the main page instead of a popup.
+async function googleLogin(page) {
+  const lines = fs
+    .readFileSync(path.join(__dirname, "..", "mcp_servers_creds.txt"), "utf8")
+    .split(/\r?\n/);
+  const at = lines.findIndex((l) => /google auth details for testing/i.test(l));
+  const [gEmail, gPassword] = lines.slice(at + 1).map((l) => l.trim()).filter(Boolean);
+  if (at < 0 || !gEmail || !gPassword) throw new Error("google test account not found");
+  await page.getByRole("button", { name: "Google" }).click();
+  const deadline = Date.now() + 240000;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(2500);
+    const host = new URL(page.url()).host;
+    if (host === new URL(BASE).host && !/login/.test(page.url())) return;
+    if (host !== "accounts.google.com") continue;
+    const text = (await page.locator("body").innerText().catch(() => "")) || "";
+    if (/browser or app may not be secure|Couldn.t sign you in/i.test(text)) {
+      throw new Error("Google refused the automated browser");
+    }
+    if (/2-Step Verification|Verify it.s you|confirm it.s you|Check your phone/i.test(text)) {
+      throw new Error("Google asked for extra verification");
+    }
+    const chooser = page.locator(`[data-identifier="${gEmail}"]`);
+    const email = page.locator('input[type="email"]');
+    const password = page.locator('input[type="password"]');
+    if (await visible(chooser)) await chooser.first().click();
+    else if (await visible(email)) {
+      await email.first().fill(gEmail);
+      await page.locator("#identifierNext, button:has-text('Next')").first().click();
+    } else if (await visible(password)) {
+      await password.first().fill(gPassword);
+      await page.locator("#passwordNext, button:has-text('Next')").first().click();
+    } else {
+      const go = page.getByRole("button", { name: /^(Continue|Allow)$/i });
+      if (await visible(go)) await go.first().click();
+    }
+  }
+  throw new Error("Google sign-in did not finish");
+}
+
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
-  const b = await chromium.launch({ channel: "chrome", headless: false, slowMo: 10 });
+  const b = await chromium.launch({
+    channel: "chrome",
+    headless: false,
+    slowMo: 10,
+    // Google refuses an obviously automated browser at sign-in.
+    args: ["--disable-blink-features=AutomationControlled"],
+    ignoreDefaultArgs: ["--enable-automation"],
+  });
   const page = await (await b.newContext({ viewport: { width: 1440, height: 950 } })).newPage();
   page.on("console", (m) => m.type() === "error" && errs.push(m.text()));
   page.on("pageerror", (e) => errs.push(`pageerror ${e.message}`));
@@ -126,10 +176,13 @@ async function visible(loc) {
   try {
     await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
     await page.waitForURL(/login/, { timeout: 20000 });
-    await page.locator('input[type="email"]').first().fill(EMAIL);
-    await page.locator('input[type="password"]').first().fill(PASSWORD);
-    await page.click('button[type="submit"]');
-    await page.waitForTimeout(4000);
+    if (process.env.QA_LOGIN === "google") await googleLogin(page);
+    else {
+      await page.locator('input[type="email"]').first().fill(EMAIL);
+      await page.locator('input[type="password"]').first().fill(PASSWORD);
+      await page.click('button[type="submit"]');
+      await page.waitForTimeout(4000);
+    }
 
     for (const t of TURNS) {
       const sent = Date.now();
@@ -172,7 +225,11 @@ async function visible(loc) {
       if (t.verdict && !t.verdict.test(finalText)) problems.push("verdict mismatch");
       for (const m of t.must || []) if (!finalText.includes(m)) problems.push(`missing: ${m}`);
       if (t.decide && approvals === 0) problems.push("no approval card appeared");
-      if (/\bthe (code|repository|repo) is secure\b/i.test(finalText)) problems.push("claims secure");
+      // The report's own disclaimer ("not a statement that the code is secure") is
+      // the opposite of a claim; anything else saying so is.
+      if (/(?<!statement that )\bthe (code|repository|repo) is secure\b/i.test(finalText)) {
+        problems.push("claims secure");
+      }
       if (/had a problem|could not complete/i.test(finalText)) problems.push("turn failed");
       const ok = problems.length === 0 && finalText.length > 20;
       const verdict = (finalText.match(/Verdict: ([A-Z ]+)/) || [])[1] || "-";

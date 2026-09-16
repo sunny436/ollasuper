@@ -370,3 +370,49 @@ async def test_retest_passes_only_when_the_flagged_code_is_gone(tmp_path):
     out = await retest()
     assert out["status"] == "passed"
     assert state.retests[("fixture", "app.py")]["status"] == "passed"
+
+
+async def test_an_approval_resume_restores_local_reads_scans_and_the_report(tmp_path):
+    """Prod: a turn paused for a fix approval resumed with 23 restored steps, but
+    only GitHub results were re-seeded, so the verdict read BLOCKED."""
+    repo = tmp_path / "fixture"
+    build(repo)
+
+    class S:
+        ai_security_local_roots = json.dumps({"fixture": str(repo)})
+        ai_security_local_user_ids = "u1"
+
+    access = LocalAccess.from_settings(S())
+    first = _state(local=access, read_only=False)
+    calls = [
+        ("security_repo", {"repo": "fixture", "op": "read", "path": "app.py"}),
+        ("security_scan", {"repo": "fixture", "op": "secrets"}),
+        (
+            "security_report",
+            {
+                "source": {"kind": "local", "repo": "fixture"},
+                "findings": [_finding()],
+            },
+        ),
+    ]
+    completed = []
+    for name, args in calls:
+        msg = await run_security_tool(first, "c", name, args, 8000)
+        completed.append(
+            SimpleNamespace(toolId=name, args=args, resultContent=msg.content)
+        )
+    resumed = _state(local=access, read_only=False)
+    resumed.seed_from_completed(completed)
+    assert resumed.local_access == {"fixture": "verified"} and resumed.resumed
+    assert resumed.stages["secret_scan"]["status"] == "ran"
+    assert {h["rule"] for h in resumed.secret_hits} >= {"github-token"}
+    [f] = resumed.findings
+    assert f["status"] == "confirmed" and f["line_verified"]
+    assert resumed.verdict(deadline=False)[0] == "FINDINGS"
+
+
+async def test_a_call_without_a_repo_name_is_not_recorded_as_an_access_target():
+    state = _state()
+    msg = await run_security_tool(state, "c", "security_repo", {"op": "tree"}, 8000)
+    assert json.loads(msg.content)["code"] == "invalid_input"
+    assert state.local_access == {}

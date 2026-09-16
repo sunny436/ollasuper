@@ -280,7 +280,13 @@ class SecurityTurn:
         )
 
     def seed_from_completed(self, completed: list[Any]) -> None:
-        """Approval/crash resume: earlier tools come back as recorded results."""
+        """Approval/crash resume: earlier tools come back as recorded results.
+
+        Every security tool's recorded result is restored — GitHub reads, local
+        reads/scans (access, commit, shown lines, stages, secret hits) and the last
+        submitted report — so a resumed turn's verdict covers the WHOLE turn, not
+        only what ran after the pause."""
+        reports: list[dict] = []
         for ct in completed or []:
             tool_id = str(getattr(ct, "toolId", "") or "")
             args = getattr(ct, "args", {}) or {}
@@ -300,9 +306,82 @@ class SecurityTurn:
                 )
             elif tool_id in ("security_repo", "security_scan", "security_report"):
                 self.resumed = True
-                self.stages.setdefault("resumed_tools", {"status": "ran", "count": 0})[
-                    "count"
-                ] += 1
+                data = _decode_recorded(content)
+                if isinstance(data, dict) and data.get("status") != "error":
+                    if tool_id == "security_report":
+                        reports.append(args)
+                    else:
+                        self._seed_local(tool_id, args, data)
+        # A report submitted before the pause is re-validated against the reads
+        # restored above (a later report in this attempt replaces it).
+        for args in reports[-1:]:
+            self.validate(
+                args.get("source") or {},
+                str(args.get("scope_summary") or ""),
+                args.get("findings") or [],
+            )
+
+    def _seed_local(self, tool_id: str, args: dict, data: dict) -> None:
+        """Restore one recorded local-repository result (security_repo / _scan)."""
+        repo = str(args.get("repo") or data.get("repo") or "")
+        if not repo:
+            return
+        self.local_access.setdefault(repo, "verified")
+        if data.get("commit"):
+            self.local_heads.setdefault(repo, str(data["commit"]))
+        op = str(args.get("op") or "")
+        if tool_id == "security_repo":
+            if op == "read" and data.get("path"):
+                lines: dict[int, str] = {}
+                for row in str(data.get("content") or "").splitlines():
+                    m = re.match(r"^(\d+): ?(.*)$", row)
+                    if m:
+                        lines[int(m.group(1))] = m.group(2)
+                if lines:
+                    top = max(lines)
+                    self.add_read(
+                        Read(
+                            source="local",
+                            repo=repo,
+                            path=str(data["path"]),
+                            text="\n".join(lines.get(i, "") for i in range(1, top + 1)),
+                            shown=[(min(lines), top)],
+                            truncated=data.get("next_line") is not None,
+                        )
+                    )
+            elif op in ("tree", "grep", "log", "diff"):
+                self.add_read(
+                    Read(
+                        source="local",
+                        repo=repo,
+                        path="",
+                        text=json.dumps(data)[:200_000],
+                    )
+                )
+            return
+        status = str(data.get("status") or "")
+        if op == "secrets" and status:
+            self.note_secret_hits("local", repo, "", data.get("hits") or [])
+            self.set_stage(
+                "secret_scan", status, repo=repo, files=data.get("files_scanned"),
+                truncated=data.get("truncated") or None,
+            )  # fmt: skip
+        elif op == "dependencies" and status:
+            self.dep_vulns = data.get("vulnerable") or self.dep_vulns
+            self.set_stage(
+                "dependency_audit", status, repo=repo,
+                packages=data.get("packages_checked"),
+                vulnerable=len(data.get("vulnerable") or []) or None,
+            )  # fmt: skip
+        elif op == "scanners":
+            for name, r in data.items():
+                if isinstance(r, dict) and r.get("status"):
+                    self.set_stage(f"sast:{name}", str(r["status"]))
+        elif op == "retest" and data.get("path"):
+            self.retests[(repo, str(data["path"]))] = {
+                "status": status or "not_run",
+                "detail": str(data.get("detail") or ""),
+            }
 
     # ------------------------------------------------------------ hard guards
     def refuse(self, tool: Any) -> str | None:
