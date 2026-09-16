@@ -57,3 +57,47 @@ def test_the_built_client_carries_the_split_timeout():
     assert isinstance(timeout, httpx.Timeout)
     assert timeout.connect == s.ai_model_connect_timeout_s
     assert timeout.read and timeout.read > timeout.connect
+
+
+# ------------------------------------------------- how long we believe it
+def test_unreachable_is_classified_apart_from_a_provider_error():
+    """An expired credential does not fix itself; a network outage does. They
+    are remembered for very different lengths of time, so they must be told
+    apart first."""
+    import httpx
+    import openai
+
+    from app.agent.llm import is_quota_error, is_unreachable_error
+
+    unreachable = [
+        openai.APIConnectionError(
+            request=httpx.Request("POST", "https://api.test/v1/chat/completions")
+        ),
+        httpx.ConnectError("All connection attempts failed"),
+        httpx.ConnectTimeout("timed out"),
+        RuntimeError("Connection refused"),
+        RuntimeError("Name or service not known"),
+    ]
+    for exc in unreachable:
+        assert is_unreachable_error(exc), type(exc).__name__
+
+    # A refusal is not an absence: these say the provider ANSWERED.
+    for exc in (
+        RuntimeError("Error 429 Too Many Requests: rate limit"),
+        RuntimeError("insufficient_quota: you have reached your usage limit"),
+        RuntimeError("APIStatusError 500 internal server error"),
+        RuntimeError("invalid_api_key"),
+    ):
+        assert not is_unreachable_error(exc), str(exc)
+
+    quota = RuntimeError("Error 429 Too Many Requests: rate limit")
+    assert is_quota_error(quota) and not is_unreachable_error(quota)
+
+
+def test_an_unreachable_provider_is_believed_briefly_not_for_an_hour():
+    """The recovery half of the production bug: every model on the dead host was
+    blacklisted for the HARD ttl (3600s), so the outage would have kept costing
+    users for an hour after the host came back."""
+    s = make_settings("http://x")
+    assert s.ai_model_health_unreachable_ttl_s <= 120
+    assert s.ai_model_health_unreachable_ttl_s < s.ai_model_health_hard_ttl_s

@@ -373,7 +373,7 @@ class GenerateRequest(BaseModel):
     # Was ModelId.OPUS — an OpenRouter id this deployment no longer serves since
     # chat moved to Ollima. A default nothing can answer is worse than no
     # default, so it names the model Convex actually falls back to.
-    model: str = Field(default="qwen3.5", min_length=1, max_length=200)
+    model: str = Field(default="deepseek-v4-flash", min_length=1, max_length=200)
     # Context window for `model`, supplied by Convex from the cached
     # catalogue. 0/absent means unknown and the caller falls back to the
     # conservative default in CONTEXT_WINDOW.
@@ -504,9 +504,7 @@ class GenerateRequest(BaseModel):
     # Bounded at 30 because that is the curated set's size; a user cannot connect
     # to more than the deployment curated, and a larger list would mean a bug or
     # an attempt to make the turn open dozens of sessions.
-    mcpConnections: list[McpConnectionRef] = Field(
-        default_factory=list, max_length=30
-    )
+    mcpConnections: list[McpConnectionRef] = Field(default_factory=list, max_length=30)
 
 
 class GenerateAccepted(BaseModel):

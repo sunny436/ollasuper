@@ -35,7 +35,15 @@ import { DEFAULT_MODEL } from "./authz";
  * internally, so any future `tensorzero::` id round-trips intact too).
  */
 
-const OLLIMA_MODELS_URL = "https://api.ollima.com/v1/models";
+/** Liveness probe only — the CURATED list below is what actually ships. Unset
+ *  skips the probe entirely; it is deliberately NOT a hardcoded host, because
+ *  the last one outlived the endpoint it named by an unknown number of weeks.
+ *
+ *  Read PER CALL, like deniedPrefixes() below: a module-scope read is fixed at
+ *  import and cannot be changed by configuration or exercised by a test. */
+function modelsProbeUrl(): string {
+  return process.env.OLLIMA_MODELS_URL ?? "";
+}
 
 /**
  * The models we actually offer.
@@ -65,55 +73,65 @@ const CURATED_SPECS: readonly {
    */
   contextLength?: number;
 }[] = [
-  {
-    modelId: "qwen3.5",
-    name: "Qwen 3.5",
-    description: "Multilingual generalist. The default for everyday work.",
-    // FIRST deliberately: this array is BOTH the display order and where the
-    // default sits, and it now leads on the axis a chat product is judged on —
-    // fastest measured time-to-first-token in the catalogue (0.72s on a real
-    // question). See DEFAULT_MODEL in chat/authz.ts.
-  },
+  // --- THE ROUTABLE THREE ---------------------------------------------
+  // One model per reasoning class. The router (services/ai/app/routing.py)
+  // holds a profile for exactly these three and picks the cheapest that meets
+  // the turn's capability floor, so the tier mapping is:
+  //   simple -> gemini-3.7-flash-high, moderate -> deepseek-v4-flash,
+  //   heavy  -> gemini-3.8-flash-high.
+  // Plain ids, NOT `tensorzero::model_name::` — the endpoint this deployment
+  // now talks to serves the plain form (probed 2026-09-16: all three answer
+  // 200 at /v1/chat/completions; 42 of its 48 advertised models do).
   {
     modelId: "deepseek-v4-flash",
     name: "DeepSeek V4 Flash",
-    description: "Fastest raw generator, but slow to start (heavy reasoning).",
+    description: "Balanced speed and reasoning. The default for everyday work.",
+    // FIRST deliberately: this array is BOTH the display order and where the
+    // default sits (see DEFAULT_MODEL in chat/authz.ts). It is the middle tier
+    // because the default is what runs when the ROUTER cannot — a competent
+    // middle is a better failure mode than the fastest or the deepest.
+    //
     // Verified 2026-09-03 by needle-in-haystack: 133,371 prompt tokens accepted
     // and the needle placed at the very START returned verbatim, so the context
-    // is genuinely used rather than silently truncated. The others are left
-    // unmeasured (0) while the account is out of quota — an unverified number
-    // here is exactly the guess this field exists to remove.
+    // is genuinely used rather than silently truncated.
     contextLength: 131_072,
   },
   {
-    modelId: "deepseek-v4-pro",
-    name: "DeepSeek V4 Pro",
-    description: "Deeper reasoning for harder problems.",
+    modelId: "gemini-3.7-flash-high",
+    name: "Gemini 3.7 Flash",
+    description: "Fastest to first token. Handles simple, direct questions.",
+    // The vendor advertises 1,048,576 input tokens. NOT recorded: this field is
+    // measured-only by contract, and an unmeasured 0 is read as "unknown",
+    // which never disqualifies a candidate. Claiming the number would be a
+    // guess that could silently filter the model out of a large turn.
   },
   {
-    modelId: "glm-5.2",
-    name: "GLM 5.2",
-    description: "Strong all-rounder for coding and agentic work.",
+    modelId: "gemini-3.8-flash-high",
+    name: "Gemini 3.8 Flash",
+    description: "Deepest reasoning, for analysis and multi-step problems.",
   },
-  {
-    modelId: "glm-5.1",
-    name: "GLM 5.1",
-    description: "The previous GLM generation.",
-  },
+
+  // --- EMERGENCY ONLY, never routed ------------------------------------
+  // These carry NO entry in ai_router_profiles, and that absence is the whole
+  // mechanism: routing.select() falls back to ModelProfile() = ttft 99s,
+  // reasoning_tier 0, so they lose every comparison at floor 0 and are excluded
+  // at floors 1-2. They become reachable only through select()'s "nothing meets
+  // the floor" branch — i.e. when all three routable models are filtered out as
+  // unhealthy. Without them, a simultaneous outage across the three would leave
+  // nothing to dispatch at all.
+  //
+  // Chosen for FAMILY DIVERSITY (the three above are 2x Gemini + 1x DeepSeek)
+  // and because both answered cleanly when every model was probed on
+  // 2026-09-16: gpt-oss-120b in 422ms, grok-4.3 in 1490ms.
   {
     modelId: "gpt-oss-120b",
     name: "GPT-OSS 120B",
-    description: "Open-weight, 120B parameters.",
+    description: "Open-weight fallback, used only if the primaries are down.",
   },
   {
-    modelId: "tensorzero::model_name::grok-4.5",
-    name: "Grok 4.5",
-    description: "Conversational reasoning.",
-  },
-  {
-    modelId: "tensorzero::model_name::gemini-3.7-flash-high",
-    name: "Gemini 3.7 Flash",
-    description: "Fast, with a long context window.",
+    modelId: "grok-4.3",
+    name: "Grok 4.3",
+    description: "Conversational fallback, used only if the primaries are down.",
   },
 ];
 
@@ -213,15 +231,46 @@ function toEntry(m: OllimaModel): CatalogueEntry | null {
 /** Fetch + filter. Exported for the write mutation; never returns the key. */
 export const refresh = internalAction({
   args: {},
-  handler: async (ctx): Promise<{ fetched: number; kept: number; applied: boolean }> => {
-    // No credentials: this endpoint is public, and keeping it that way is what
-    // lets the key stay on the inference plane only.
-    const res = await fetch(OLLIMA_MODELS_URL);
-    if (!res.ok) {
-      throw new Error(`Ollima /v1/models responded ${res.status}`);
+  handler: async (
+    ctx,
+  ): Promise<{
+    fetched: number;
+    kept: number;
+    applied: boolean;
+    probe: string;
+  }> => {
+    // THE PROBE IS ADVISORY, and that is a correction, not a loosening.
+    //
+    // It used to `throw` on a bad response, which meant a probe that
+    // contributes NOTHING to the result could block a catalogue write that does
+    // not depend on it. Measured 2026-09-16, it blocked exactly that: the old
+    // host stopped accepting TCP entirely, AND the endpoint this deployment
+    // moved to answers `401 Missing API key` on /v1/models. Every 6-hourly run
+    // failed, so the table could never pick up a new roster. Liveness belongs
+    // to the plane that actually dials the provider (it has model-health
+    // bookkeeping and a connect timeout); this action's job is to publish the
+    // hand-probed list.
+    //
+    // Still no credentials: keeping the key on the inference plane only is
+    // worth more than a liveness signal we get better elsewhere.
+    let raw: OllimaModel[] = [];
+    let probe = "skipped";
+    const probeUrl = modelsProbeUrl();
+    if (probeUrl) {
+      try {
+        const res = await fetch(probeUrl);
+        if (res.ok) {
+          const body = (await res.json()) as { data?: OllimaModel[] };
+          raw = Array.isArray(body.data) ? body.data : [];
+          probe = "ok";
+        } else {
+          probe = `http_${res.status}`;
+        }
+      } catch (e) {
+        probe = `unreachable:${String(e).slice(0, 60)}`;
+      }
+      if (probe !== "ok") console.warn(`ollima model probe: ${probe}`);
     }
-    const body = (await res.json()) as { data?: OllimaModel[] };
-    const raw = Array.isArray(body.data) ? body.data : [];
     // The CURATED list wins outright; the fetch is kept only so a refresh
     // still fails loudly if the provider is unreachable.
     //
@@ -239,7 +288,7 @@ export const refresh = internalAction({
       internal.chat.models.apply,
       { entries },
     );
-    return { fetched: raw.length, kept: entries.length, applied };
+    return { fetched: raw.length, kept: entries.length, applied, probe };
   },
 });
 

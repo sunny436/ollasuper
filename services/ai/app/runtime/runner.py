@@ -40,7 +40,7 @@ from app.agent.filegen_tool import GENERATE_FILE_TOOL_SPEC
 from app.agent.graph import build_graph
 from app.agent.harmony import HarmonyStreamFilter
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
-from app.agent.llm import build_llm, is_quota_error
+from app.agent.llm import build_llm, is_quota_error, is_unreachable_error
 from app.agent.memory import (
     FORGET_TOOL_NAME,
     FORGET_TOOL_SPEC,
@@ -2026,6 +2026,13 @@ async def run_generation(
         try:
             if is_quota_error(e):
                 model_health.mark_exhausted(model_id, settings.ai_model_health_ttl_s)
+            elif is_unreachable_error(e):
+                # The PROVIDER was unreachable, which says nothing about this
+                # model and fixes itself. Believe it briefly so the next request
+                # re-probes instead of inheriting an hour-old network blip.
+                model_health.mark_hard_failure(
+                    model_id, settings.ai_model_health_unreachable_ttl_s
+                )
             elif _is_provider_error(e):
                 model_health.mark_hard_failure(
                     model_id, settings.ai_model_health_hard_ttl_s

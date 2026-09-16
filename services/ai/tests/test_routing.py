@@ -378,3 +378,171 @@ def test_cost_does_not_grow_with_input_size(cfg):
     short = _p99(lambda: _route(cfg, "do a ultra deep audit"), n=1000)
     huge = _p99(lambda: _route(cfg, "audit this " + ("token " * 9000)), n=1000)
     assert huge < short * 20, f"short={short * 1e6:.0f}us huge={huge * 1e6:.0f}us"
+
+
+# ===========================================================================
+# THE SHIPPED CONFIGURATION
+#
+# Everything above tests the ALGORITHM against a synthetic fixture, and
+# deliberately asserts on tiers rather than model ids so re-benchmarking cannot
+# break it. This block does the opposite job: it pins the roster that actually
+# ships, because the tier->model mapping is a product decision ("simple goes to
+# gemini-3.7") and nothing else in the suite would notice if a profile edit
+# silently inverted it.
+#
+# The profiles used to live only in the VM's .env, where no test could reach
+# them and they drifted out of step with the Convex catalogue unseen. They are
+# now a default in app/config.py, and this is what binds them to the rules.
+# ===========================================================================
+SIMPLE_MODEL = "gemini-3.7-flash-high"
+MODERATE_MODEL = "deepseek-v4-flash"
+HEAVY_MODEL = "gemini-3.8-flash-high"
+SHIPPED = [
+    Candidate(SIMPLE_MODEL, 0),
+    Candidate(MODERATE_MODEL, 131_072),
+    Candidate(HEAVY_MODEL, 0),
+]
+
+
+@pytest.fixture
+def shipped() -> RouterConfig:
+    """The real profiles, parsed exactly as production parses them."""
+    from app.config import Settings
+
+    cfg = RouterConfig.from_settings(True, Settings().ai_router_profiles)
+    assert cfg.enabled, "the shipped profiles must parse"
+    return cfg
+
+
+def _ship(shipped, text, candidates=None, **kw):
+    return select(
+        cfg=shipped,
+        candidates=SHIPPED if candidates is None else candidates,
+        fallback=MODERATE_MODEL,
+        signals=Signals(text=text, **kw),
+    ).model
+
+
+def test_the_shipped_roster_is_exactly_three_models_one_per_tier(shipped):
+    assert set(shipped.profiles) == {SIMPLE_MODEL, MODERATE_MODEL, HEAVY_MODEL}
+    assert shipped.profiles[SIMPLE_MODEL].reasoning_tier == SIMPLE
+    assert shipped.profiles[MODERATE_MODEL].reasoning_tier == MODERATE
+    assert shipped.profiles[HEAVY_MODEL].reasoning_tier == HEAVY
+
+
+def test_the_ttft_ordering_is_what_makes_the_tie_break_correct(shipped):
+    """select() takes the lowest TTFT among models meeting the floor, so the
+    tier->model mapping below only holds while TTFT rises with tier. Measured
+    2026-09-16 it does (2.97 / 3.68 / 5.23). If a re-benchmark ever inverts it,
+    this fails HERE with the reason, rather than silently routing simple work to
+    the deep model."""
+    ttft = {m: p.ttft_s for m, p in shipped.profiles.items()}
+    assert ttft[SIMPLE_MODEL] < ttft[MODERATE_MODEL] < ttft[HEAVY_MODEL]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "what is a connection pool",
+        "who wrote the raft paper",
+        "translate this to french: the build is broken",
+        "summarize the release notes",
+    ],
+)
+def test_simple_work_routes_to_the_speed_first_model(shipped, text):
+    assert _ship(shipped, text) == SIMPLE_MODEL
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "write a onboarding email for new customers",
+        "draft a changelog entry for the caching work",
+        "build me a regex that matches semver",
+    ],
+)
+def test_moderate_work_routes_to_the_balanced_model(shipped, text):
+    assert _ship(shipped, text) == MODERATE_MODEL
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "do a ultra deep audit",
+        "why does the nightly job keep dying",
+        "compare postgres and mysql for our workload and recommend one",
+        "walk me through the risks of this migration",
+        "figure out what is making checkout slow",
+    ],
+)
+def test_deep_work_routes_to_the_quality_first_model(shipped, text):
+    assert _ship(shipped, text) == HEAVY_MODEL
+
+
+def test_structural_signals_promote_without_any_keyword(shipped):
+    """An attachment or a stack of open loops is evidence no paraphrase can
+    remove, so it must lift a bland request off the fast model."""
+    # A bland phrase with no action verb in it at all — "have a look at this"
+    # would NOT do, because it matches the analytic taxonomy and is already
+    # heavy before any structural signal is added.
+    bland = "here are the notes"
+    assert _ship(shipped, bland) == SIMPLE_MODEL
+    assert _ship(shipped, bland, has_document=True) == MODERATE_MODEL
+    assert _ship(shipped, bland, open_loops=2) == MODERATE_MODEL
+    assert _ship(shipped, bland, has_image=True) == MODERATE_MODEL
+
+
+def test_the_speed_preference_leans_but_never_overrides(shipped):
+    """responseSpeed controls answer LENGTH by contract, so it may nudge a tier
+    and must not redefine capability."""
+    assert (
+        _ship(shipped, "do a ultra deep audit", response_speed="fast") == MODERATE_MODEL
+    )
+    assert (
+        _ship(shipped, "what is a mutex", response_speed="thorough") == MODERATE_MODEL
+    )
+
+
+# ---------------------------------------------------- the emergency models
+#
+# The catalogue also carries two UNPROFILED models. Their absence from the
+# profiles IS the mechanism: select() falls back to ModelProfile() — ttft 99s,
+# tier 0 — so they lose at floor 0 and are excluded above it, and become
+# reachable only through the "nothing meets the floor" branch.
+EMERGENCY = [Candidate("gpt-oss-120b", 0), Candidate("grok-4.3", 0)]
+
+
+def test_an_unprofiled_model_never_wins_while_a_primary_is_healthy(shipped):
+    everything = SHIPPED + EMERGENCY
+    for text in ("what is a mutex", "write a changelog", "do a ultra deep audit"):
+        assert _ship(shipped, text, candidates=everything) in {
+            SIMPLE_MODEL,
+            MODERATE_MODEL,
+            HEAVY_MODEL,
+        }
+
+
+def test_an_unprofiled_model_answers_when_every_primary_is_down(shipped):
+    """The reason they are in the catalogue at all: three simultaneous outages
+    would otherwise leave nothing to dispatch."""
+    for m in (SIMPLE_MODEL, MODERATE_MODEL, HEAVY_MODEL):
+        health.mark_exhausted(m, 600)
+    chosen = _ship(shipped, "do a ultra deep audit", candidates=SHIPPED + EMERGENCY)
+    assert chosen in {"gpt-oss-120b", "grok-4.3"}
+
+
+def test_a_turn_too_large_for_the_balanced_model_moves_up_not_down(shipped):
+    """deepseek-v4-flash has a MEASURED 131k window; the Geminis are unmeasured
+    (0 = unknown, never disqualifying). A turn past 131k must not fall back to
+    the fast model — capability before speed."""
+    huge = "x" * (140_000 * 4)
+    assert _ship(shipped, huge) == HEAVY_MODEL
+
+
+def test_the_python_default_model_is_one_of_the_shipped_three():
+    """It is the fallback when routing is off or errors, and what Convex's
+    DEFAULT_MODEL must agree with; a default outside the catalogue dispatches a
+    model the provider no longer serves."""
+    from app.config import Settings
+
+    assert Settings().ai_default_model == MODERATE_MODEL

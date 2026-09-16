@@ -36,25 +36,26 @@ function serve(ids: string[]) {
 afterEach(() => {
   globalThis.fetch = realFetch;
   unsetEnv("MODEL_DENY_PREFIXES");
+  unsetEnv("OLLIMA_MODELS_URL");
 });
 
 type T = ReturnType<typeof convexTest>;
 const rowsIn = (t: T) =>
   t.run(async (ctx) => ctx.db.query("chatModels").collect());
 
-const ALL_CURATED = [
+// Three ROUTABLE models (one per reasoning tier, profiled in
+// services/ai/app/config.py) plus two EMERGENCY entries that carry no profile
+// and are therefore only reachable when all three primaries are unhealthy.
+const ROUTABLE = [
   "deepseek-v4-flash",
-  "deepseek-v4-pro",
-  "glm-5.2",
-  "glm-5.1",
-  "qwen3.5",
-  "gpt-oss-120b",
-  "tensorzero::model_name::grok-4.5",
-  "tensorzero::model_name::gemini-3.7-flash-high",
+  "gemini-3.7-flash-high",
+  "gemini-3.8-flash-high",
 ];
+const EMERGENCY = ["gpt-oss-120b", "grok-4.3"];
+const ALL_CURATED = [...ROUTABLE, ...EMERGENCY];
 
 describe("the model catalogue is a curated shortlist", () => {
-  test("exactly the eight curated models are offered", async () => {
+  test("exactly the five curated models are offered", async () => {
     const t = convexTest(schema, modules);
     // The provider advertises far more; only the curated ones survive.
     serve([...ALL_CURATED, "gpt-5.6-luna", "claude-haiku-4.5", "some-other-id"]);
@@ -83,33 +84,81 @@ describe("the model catalogue is a curated shortlist", () => {
   // guards is not the id but the INVARIANT: the default must be a real curated
   // entry and must lead the picker, because a default that is not in the list
   // is what broke chat both times.
-  test("the default is Qwen 3.5 and it leads the list", async () => {
-    // Was deepseek-v4-flash, which had been chosen for AVAILABILITY during a
-    // weekly-quota outage when it was the only model answering. Once that
-    // cleared it was the wrong default on the axis users actually feel: it is
-    // the SLOWEST catalogue model to start answering a real question (4.88s to
-    // first token, ~80% of its output being hidden reasoning) despite being the
-    // fastest raw generator. qwen3.5 measured 0.72s on the same prompt.
+  test("the default is the BALANCED model and it leads the list", async () => {
+    // The default is what runs when the Master Model Router is off, when it
+    // errors, and on rollback — and with no model picker in the UI, it is what
+    // every new thread gets. So it is deliberately the MIDDLE tier rather than
+    // the fastest (gemini-3.7, 2.97s) or the deepest (gemini-3.8, 5.23s): a
+    // competent answer is the better failure mode in both directions.
     //
-    // This matters more now than it did: with the model picker removed, this
-    // constant is what every new thread gets whenever the Master Model Router
-    // is off, including on rollback.
+    // It is also where retired ids land. assertAllowedModel(explicit:false)
+    // re-homes a thread carrying an id no longer in the catalogue, so every
+    // conversation still on qwen3.5 or glm-5.2 heals itself onto this one.
     const t = convexTest(schema, modules);
-    expect(DEFAULT_MODEL).toBe("qwen3.5");
+    expect(DEFAULT_MODEL).toBe("deepseek-v4-flash");
     serve(ALL_CURATED);
     await t.action(internal.chat.models.refresh, {});
     const listed = await t.query(api.chat.models.list, {});
     // The invariant that actually broke chat twice: the default must be IN the
     // catalogue, and it leads the list.
     expect(listed[0].modelId).toBe(DEFAULT_MODEL);
-    expect(listed[0].name).toBe("Qwen 3.5");
+    expect(listed[0].name).toBe("DeepSeek V4 Flash");
+  });
+
+  test("the routable three are all present and carry plain ids", async () => {
+    // The endpoint this deployment moved to serves PLAIN ids; the old
+    // `tensorzero::model_name::` forms belong to the endpoint that is gone.
+    // Probed 2026-09-16: all three answer 200 at /v1/chat/completions.
+    const t = convexTest(schema, modules);
+    serve(ALL_CURATED);
+    await t.action(internal.chat.models.refresh, {});
+    const ids = (await rowsIn(t)).map((m) => m.modelId);
+    for (const id of ROUTABLE) expect(ids).toContain(id);
+    expect(ids.some((id) => id.startsWith("tensorzero::"))).toBe(false);
+  });
+
+  test("no probe host configured means no probe, and the catalogue still ships", async () => {
+    // The URL is env-driven and unset by default: the previous hardcoded host
+    // outlived the endpoint it named, and nothing noticed because the failure
+    // looked like a cron error rather than a stale catalogue.
+    const t = convexTest(schema, modules);
+    const res = await t.action(internal.chat.models.refresh, {});
+    expect(res.probe).toBe("skipped");
+    expect(res.applied).toBe(true);
+  });
+
+  test("a failed /v1/models probe still publishes the catalogue", async () => {
+    process.env.OLLIMA_MODELS_URL = "http://probe.invalid/v1/models";
+    // It used to throw, which let a probe that contributes NOTHING block a
+    // write that does not depend on it. Measured 2026-09-16: the old host
+    // stopped accepting TCP and the new one answers 401 on /v1/models, so every
+    // 6-hourly run failed and the table could never pick up a new roster.
+    const t = convexTest(schema, modules);
+    globalThis.fetch = (async () =>
+      new Response("nope", { status: 401 })) as typeof fetch;
+    const res = await t.action(internal.chat.models.refresh, {});
+    expect(res.applied).toBe(true);
+    expect(res.probe).not.toBe("ok");
+    const ids = (await rowsIn(t)).map((m) => m.modelId).sort();
+    expect(ids).toEqual([...ALL_CURATED].sort());
+  });
+
+  test("an unreachable probe host does not break the refresh either", async () => {
+    process.env.OLLIMA_MODELS_URL = "http://probe.invalid/v1/models";
+    const t = convexTest(schema, modules);
+    globalThis.fetch = (async () => {
+      throw new Error("connect ECONNREFUSED");
+    }) as typeof fetch;
+    const res = await t.action(internal.chat.models.refresh, {});
+    expect(res.applied).toBe(true);
+    expect(res.probe).toContain("unreachable");
   });
 
   test("the curated list does not depend on what /v1/models advertises", async () => {
-    // The endpoint is not a reliable inventory: it lists neither grok-4.5 nor
-    // gemini-3.7-flash-high, both of which answer 200 under their tensorzero::
-    // ids, while advertising the whole gpt-5* family, none of which can serve.
-    // Intersecting with it dropped two working models and kept nine dead ones.
+    // The endpoint is not a reliable inventory: it advertises the whole gpt-5*
+    // family, none of which can serve a request, and omits models that answer
+    // 200 at /chat/completions. Intersecting with it dropped working models and
+    // kept dead ones, so the hand-probed CURATED list wins outright.
     const t = convexTest(schema, modules);
     serve([]);
     const res = await t.action(internal.chat.models.refresh, {});
@@ -118,22 +167,40 @@ describe("the model catalogue is a curated shortlist", () => {
     expect(ids).toEqual([...ALL_CURATED].sort());
   });
 
-  test("the tensorzero-prefixed models survive a refresh", async () => {
-    // The two the intersection used to eat.
+  test("a namespaced id round-trips through apply without being mangled", async () => {
+    // The catalogue no longer carries any `tensorzero::model_name::` id — the
+    // endpoint that served those is gone, and the current one uses plain ids.
+    // The PROPERTY those models were guarding is still worth keeping: an id
+    // with separators in it must survive the write verbatim, or a future
+    // namespaced model would be silently unroutable. Asserted on the write path
+    // directly rather than by keeping two dead models in the shortlist.
     const t = convexTest(schema, modules);
-    serve(["glm-5.2"]);
-    await t.action(internal.chat.models.refresh, {});
-    const ids = (await rowsIn(t)).map((m) => m.modelId);
-    expect(ids).toContain("tensorzero::model_name::grok-4.5");
-    expect(ids).toContain("tensorzero::model_name::gemini-3.7-flash-high");
+    const weird = "tensorzero::model_name::some-future-model";
+    await t.mutation(internal.chat.models.apply, {
+      entries: [
+        {
+          modelId: weird,
+          name: "Future",
+          description: "A namespaced id.",
+          contextLength: 0,
+          promptPrice: "",
+          completionPrice: "",
+          vision: true,
+        },
+      ],
+    });
+    expect((await rowsIn(t)).map((m) => m.modelId)).toContain(weird);
   });
 
   test("the denylist still applies on top", async () => {
     const t = convexTest(schema, modules);
-    process.env.MODEL_DENY_PREFIXES = "qwen";
+    process.env.MODEL_DENY_PREFIXES = "gemini";
     serve(ALL_CURATED);
     await t.action(internal.chat.models.refresh, {});
-    expect((await rowsIn(t)).map((m) => m.modelId)).not.toContain("qwen3.5");
+    const ids = (await rowsIn(t)).map((m) => m.modelId);
+    expect(ids).not.toContain("gemini-3.7-flash-high");
+    expect(ids).not.toContain("gemini-3.8-flash-high");
+    expect(ids).toContain("deepseek-v4-flash");
   });
 
   test("the app keeps NO copy of the model default to drift from", async () => {

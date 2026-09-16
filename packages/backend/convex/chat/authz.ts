@@ -200,7 +200,7 @@ export function timingSafeEqualStr(
 // is what every new thread gets whenever the Master Model Router is off —
 // including on rollback. The router (services/ai/app/routing.py) is the durable
 // fix the paragraph above anticipated; this is the floor beneath it.
-export const DEFAULT_MODEL = "qwen3.5";
+export const DEFAULT_MODEL = "deepseek-v4-flash";
 
 /**
  * Validate a model against the cached OpenRouter catalogue.

@@ -490,7 +490,7 @@ class Settings(BaseSettings):
     # the scheduling parser, and production had it set to a model id the
     # provider does not accept at all, so every parse silently degraded to the
     # manual form.
-    ai_default_model: str = "glm-5.2"
+    ai_default_model: str = "deepseek-v4-flash"
     # Model a CHAT turn is re-routed to when the selected model refuses for
     # capacity. Empty (the default) disables it and the runtime is unchanged.
     #
@@ -513,10 +513,44 @@ class Settings(BaseSettings):
     # router-OFF is the experience every user gets on rollback.
     ai_router_enabled: bool = False
     # JSON: {"<model-id>": {"ttft_s": 0.7, "tok_per_s": 122, "reasoning_tier": 0}}
-    # Config, not a constant, because the seeding benchmark was n=1 per model —
-    # re-measuring must never require a deploy. Empty or malformed disables the
-    # router rather than failing turns.
-    ai_router_profiles: str = ""
+    # Still config rather than a constant — re-measuring must never require a
+    # deploy — but it now SHIPS WITH A DEFAULT instead of being empty. It lived
+    # only in the VM's .env, where nothing could test it and it drifted out of
+    # step with the catalogue unseen. Here, `test_routing` binds the shipped
+    # profiles to the routing rules, so the two cannot diverge silently.
+    #
+    # THE THREE-TIER ROSTER. One model per reasoning class, and the tier→model
+    # mapping is produced by the EXISTING rule in routing.select() — "the
+    # cheapest model that meets the capability floor":
+    #
+    #   floor 0 (simple)   all three qualify      -> lowest ttft  -> gemini-3.7
+    #   floor 1 (moderate) deepseek + gemini-3.8  -> lowest ttft  -> deepseek
+    #   floor 2 (heavy)    only gemini-3.8        ->                 gemini-3.8
+    #
+    # That only works because the measured TTFT ordering matches the tier
+    # ordering, which was checked rather than assumed (medians of 3 streamed
+    # samples against the live endpoint, 2026-09-16):
+    #
+    #   gemini-3.7-flash-high  2.97s  [2.92 2.97 3.42]  529 tok/s
+    #   deepseek-v4-flash      3.68s  [2.89 3.68 4.46]  159 tok/s
+    #   gemini-3.8-flash-high  5.23s  [4.88 5.23 5.64]  571 tok/s
+    #
+    # The samples OVERLAP (deepseek's best beat gemini-3.7's median), so these
+    # are medians, not guarantees. Routing reads these static numbers, which is
+    # what makes the mapping deterministic per turn instead of a race.
+    #
+    # A catalogue model that is ABSENT here is emergency-only by construction:
+    # select() falls back to ModelProfile() = ttft 99s, tier 0, so it loses
+    # every comparison at floor 0 and is excluded at floors 1-2 — reachable only
+    # when all three profiled models are filtered out as unhealthy.
+    ai_router_profiles: str = (
+        '{"gemini-3.7-flash-high": {"ttft_s": 2.97, "tok_per_s": 529,'
+        ' "reasoning_tier": 0},'
+        ' "deepseek-v4-flash": {"ttft_s": 3.68, "tok_per_s": 159,'
+        ' "reasoning_tier": 1},'
+        ' "gemini-3.8-flash-high": {"ttft_s": 5.23, "tok_per_s": 571,'
+        ' "reasoning_tier": 2}}'
+    )
     # Estimated prompt+history tokens at or above which a turn routes to the
     # deepest reasoner instead of the fastest model.
     ai_router_heavy_tokens: int = 1200
@@ -524,6 +558,12 @@ class Settings(BaseSettings):
     # refusal: a model returning 502 because its upstream credential expired is
     # not going to recover in the 600s a weekly-quota reset might.
     ai_model_health_hard_ttl_s: float = 3600.0
+    # How long a model is believed DOWN after we could not reach the provider at
+    # all (connect refused/timed out, DNS gone). Deliberately short: unlike an
+    # expired credential, a network outage recovers on its own, and believing it
+    # for the hard TTL means the outage keeps costing users long after it ended.
+    # One cheap re-probe a minute is the right trade.
+    ai_model_health_unreachable_ttl_s: float = 60.0
     # The scheduling-intent parser's model, pinned SEPARATELY from the chat
     # default so a future change to chat cannot silently degrade parsing into
     # the fabricating manual-form fallback. Empty = follow ai_default_model.
@@ -535,8 +575,14 @@ class Settings(BaseSettings):
     # Must not equal `ai_default_model`, which is what `schedule_model` falls back
     # to when `ai_schedule_model` is unset: both were "glm-5.2", so a box with no
     # explicit parser model had a "fallback" identical to its primary and
-    # therefore no second attempt at all.
-    ai_schedule_model_fallback: str = "deepseek-v4-flash"
+    # therefore no second attempt at all. `test_schedule_parse` guards it, and
+    # caught exactly that collision again when ai_default_model moved onto
+    # deepseek-v4-flash with the three-model router.
+    #
+    # Also a DIFFERENT FAMILY from the primary on purpose: the failure this
+    # exists for is a provider-side fault, and a fallback sharing the primary's
+    # upstream shares its outage.
+    ai_schedule_model_fallback: str = "gemini-3.7-flash-high"
     # ONE extra model call, only when the parser came back with no usable
     # instruction — an empty `prompt`, or a `prompt` that is just the user's own
     # sentence echoed back. Without it the composer hands that failure to the

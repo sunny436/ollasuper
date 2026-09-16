@@ -40,6 +40,40 @@ def is_quota_error(e: BaseException) -> bool:
     return any(m in text for m in _QUOTA_MARKERS)
 
 
+#: The host could not be REACHED — nothing was refused, because nothing was
+#: answered. Distinct from a 5xx or an expired credential: those say something
+#: about the model, this says something about the network between us and it.
+_UNREACHABLE_MARKERS = (
+    "apiconnectionerror",
+    "connecterror",
+    "connecttimeout",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "network is unreachable",
+    "timed out",
+)
+
+
+def is_unreachable_error(e: BaseException) -> bool:
+    """Could not reach the provider at all.
+
+    Kept apart from `_is_provider_error` because the two deserve very different
+    memories. An expired upstream credential does not fix itself, so believing
+    it for an hour saves every later user from re-learning it. An unreachable
+    host usually DOES fix itself, and believing that for an hour means the
+    outage keeps costing users long after it ended (measured 2026-09-16:
+    api.ollima.com refused TCP for minutes, and every model it serves was
+    blacklisted for 3600s on the way out).
+    """
+    text = f"{type(e).__name__} {e}".lower()
+    if any(m in text for m in _QUOTA_MARKERS):
+        return False
+    return any(m in text for m in _UNREACHABLE_MARKERS)
+
+
 def _clamp_output(requested: int, context_window: int) -> int:
     """Cap the output request so it cannot exceed what the window can hold."""
     if context_window <= 0:
