@@ -391,6 +391,22 @@ class Settings(BaseSettings):
     # and verified (facts, figures, links, headings, labels) before it is kept.
     # OFF => every turn streams exactly as before.
     ai_humanizer_enabled: bool = False
+    # Security audits (app/secaudit, adapted from openai/codex-security). A turn
+    # the router classifies as a security AUDIT gets the audit skill, the read-only
+    # security tools and a system-validated report; audits are read-only unless the
+    # user explicitly asks for a fix (approval-gated). OFF => no security tools or
+    # report (security queries still route to the complex model — that is the
+    # router's rule, not this flag's).
+    ai_security_enabled: bool = False
+    # JSON {name: absolute path} of LOCAL git repositories the audit may read.
+    # Empty (the default) = local repositories are unavailable to everyone.
+    ai_security_local_roots: str = ""
+    # Comma-separated authenticated user ids allowed to use those roots.
+    ai_security_local_user_ids: str = ""
+    # Per installed SARIF scanner (semgrep/gitleaks/...) wall-clock limit.
+    ai_security_scanner_timeout_s: float = 300.0
+    # Dependency audit: send lockfile package names/versions to api.osv.dev.
+    ai_security_osv_enabled: bool = True
     # How long a model call may spend ESTABLISHING a connection, as distinct
     # from waiting for tokens. A generation legitimately takes minutes to
     # produce output; a TCP+TLS handshake to a healthy host takes under a

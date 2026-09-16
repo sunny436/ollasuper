@@ -47,6 +47,7 @@ from app.research.capabilities import research_intent_map
 from app.research.skill import RESEARCH_SKILL
 from app.sales.capabilities import sales_intent_map
 from app.sales.skill import SALES_SKILL
+from app.secaudit.skill import SECURITY_SKILL
 from app.seo.capabilities import seo_intent_map
 from app.seo.skill import SEO_SKILL
 from app.skills.manifest import SkillManifest
@@ -209,6 +210,9 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     # inline preview); composes with the siblings, steers generate_file + document_ops.
     if settings is not None and getattr(settings, "ai_documents_enabled", False):
         skills.append(DOCUMENTS_SKILL)
+    # Security Audit = ONE flag-gated skill; its tools bind only on an audit turn.
+    if settings is not None and getattr(settings, "ai_security_enabled", False):
+        skills.append(SECURITY_SKILL)
     return skills
 
 

@@ -88,6 +88,8 @@ from app.runtime.context_tool import (
 )
 from app.runtime.writer import DeltaWriter
 from app.sales.tool import SALES_FORECAST_TOOL_NAME, compute_forecast
+from app.secaudit import secrets as sec_secrets
+from app.secaudit.tool import SECURITY_TOOL_NAMES, run_security_tool
 from app.tools.errors import ToolError, ToolErrorKind
 from app.tools.registry import ToolRegistry
 
@@ -121,6 +123,7 @@ _RESERVED_BUILTINS = frozenset(
         MARKETING_REFERENCE_TOOL_NAME,
     }
     | DATA_TOOL_NAMES
+    | SECURITY_TOOL_NAMES
     | ORCHESTRATION_BUILTIN_NAMES
 )
 
@@ -296,6 +299,10 @@ class ToolExecContext:
     doc_soffice_enabled: bool = False
     doc_soffice_timeout_s: float = 45.0
     doc_soffice_concurrency: int = 1
+    # Security audit (app/secaudit): the turn's recorded state. Set ONLY on a
+    # security audit turn; it turns on result redaction, the read-only and
+    # GitHub-write guards, and the security built-ins. None ⇒ byte-identical.
+    security: Any = None
 
 
 # --- OpenAI function-spec construction (runner-side) ----------------------
@@ -711,8 +718,10 @@ def _fresh_approval_id(tc: dict, ctx: ToolExecContext) -> str | None:
     tool = ctx.registry.get(tool_id)
     if tool is None:
         return None
-    decision = check_tool_policy(tool, ctx.scope)
     args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+    if ctx.security is not None and ctx.security.refuse_args(tool, args):
+        return None  # refused outright in _run_one; never parked for approval
+    decision = check_tool_policy(tool, ctx.scope)
     flow_from = _flow_sources(ctx, tool, args)
     if not (decision.needs_approval or tool_id in ctx.force_approval_ids or flow_from):
         return None
@@ -781,6 +790,11 @@ async def _run_builtin(
     _advance(execution, ExecutionState.RUNNING)
     await ctx.writer.record_execution(execution, side_effect=side_effect)
     msg = await coro
+    if ctx.security is not None and isinstance(msg.content, str):
+        # A security turn: secrets in ANY built-in's result (an MCP resource
+        # read, a knowledge hit) are redacted before the durable record, the
+        # model and the report ever see them.
+        msg.content, _ = sec_secrets.redact_text(msg.content)
     ok = msg.status == "success"
     _advance(execution, ExecutionState.SUCCEEDED if ok else ExecutionState.FAILED)
     await ctx.writer.record_execution(
@@ -950,6 +964,17 @@ async def _run_one(
             side_effect="external_side_effect",
         )
 
+    # Security audit: the read-only local-repository, scan and report built-ins.
+    if ctx.security is not None and bound_name in SECURITY_TOOL_NAMES:
+        return await _run_builtin(
+            ctx,
+            execution,
+            run_security_tool(
+                ctx.security, call_id, bound_name, args, ctx.result_max_chars
+            ),
+            side_effect="read_only",
+        )
+
     # Sales: the reserved DETERMINISTIC forecast tool (stateless, read-only). Routed
     # before registry.get; bound only when the sales flag is on.
     if bound_name == SALES_FORECAST_TOOL_NAME:
@@ -1052,6 +1077,29 @@ async def _run_one(
     ctx.seen_calls[tool_id] = dedup_key
     ctx.seen_call_set.add(set_key)
 
+    if ctx.security is not None:
+        # Security turn: deterministic refusals BEFORE approval. An audit is
+        # read-only (a write that reached the bound set mid-turn is refused, not
+        # offered for approval), and a GitHub fix never merges/deletes or writes
+        # outside a branch created this turn.
+        refusal = ctx.security.refuse_args(tool, args)
+        if refusal:
+            ctx.security.denied_calls.append({"tool": tool.name, "reason": refusal})
+            _advance(execution, ExecutionState.FAILED)
+            denied = {"status": "denied", "reason": refusal}
+            await _emit(
+                ctx,
+                execution,
+                EventType.TOOL_RESULT,
+                call_id=call_id,
+                status="error",
+                result=denied,
+            )
+            log.info(
+                "secaudit.tool_denied",
+                extra={"tool_id": tool_id, "execution_id": execution.execution_id},
+            )
+            return _tool_message(call_id, denied, status="error")
     decision = check_tool_policy(tool, ctx.scope)
     needs_approval = decision.needs_approval or tool_id in ctx.force_approval_ids
     # CROSS-CONNECTOR DATA FLOW (audit H-06). If the arguments carry content
@@ -1302,6 +1350,11 @@ async def _run_one(
             )
 
     if result is None:
+        if ctx.security is not None:
+            err_payload, _ = sec_secrets.redact_obj(err_payload)
+            ctx.security.observe_registry(
+                tool_id, tool.name, args, None, error=err_payload
+            )
         execution.error = err_payload
         _advance(execution, _failure_state(err_payload, tool.side_effect))
         await ctx.writer.record_execution(
@@ -1341,7 +1394,12 @@ async def _run_one(
                 "execution_id": execution.execution_id,
             },
         )
-    body, truncated = _bounded(result.get("data"), ctx.result_max_chars)
+    _data = result.get("data")
+    if ctx.security is not None:
+        # BEFORE bounding: a cut through the middle of a secret would leave a
+        # prefix no rule can recognise.
+        _data, _ = sec_secrets.redact_obj(_data)
+    body, truncated = _bounded(_data, ctx.result_max_chars)
     execution.result = body
     _advance(execution, ExecutionState.SUCCEEDED)
     # A TOOL-REPORTED FAILURE IS NOT PROGRESS (audit H-09). An MCP server may
@@ -1353,6 +1411,15 @@ async def _run_one(
     # `_bounded` wraps the adapter's data under "result".
     _inner = body.get("result") if isinstance(body, dict) else None
     reported_error = isinstance(_inner, dict) and _inner.get("is_error") is True
+    if ctx.security is not None:
+        ctx.security.observe_registry(
+            tool_id,
+            tool.name,
+            args,
+            _data,
+            is_error=reported_error,
+            truncated=truncated,
+        )
     # Phase 5: the MODEL-facing content is injection-framed (untrusted web/tool
     # output is DATA, never instructions). The structured `body` still rides the
     # TOOL_RESULT event for the UI; record the framed content so resume

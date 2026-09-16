@@ -49,7 +49,10 @@ from app.agent.memory import (
     REMEMBER_TOOL_NAME,
     REMEMBER_TOOL_SPEC,
 )
-from app.agent.orchestration_tools import FIND_CAPABILITIES_TOOL_SPEC
+from app.agent.orchestration_tools import (
+    DELEGATE_TOOL_NAME,
+    FIND_CAPABILITIES_TOOL_SPEC,
+)
 from app.agent.personalization import compile_personalization
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE
 from app.agent.taint import REJECTED_EARLIER, source_of_id
@@ -106,6 +109,19 @@ from app.runtime.roster import (
 )
 from app.runtime.writer import DeltaWriter
 from app.sales.tool import SALES_FORECAST_TOOL_SPEC
+from app.secaudit import intent as sec_intent
+from app.secaudit.local import LocalAccess
+from app.secaudit.report import GITHUB_PROVIDER, SecurityTurn
+from app.secaudit.skill import SECURITY_SKILL
+from app.secaudit.tool import (
+    FIX_PROVIDER,
+    FIX_TOOL_ID,
+    SECURITY_TOOL_NAMES,
+    SECURITY_TOOL_SPECS,
+    SecurityFixAdapter,
+    fix_tool_definition,
+    layered_registry,
+)
 from app.seo.mutations import (
     SeoWriteAdapter,
     StubSeoWriteProvider,
@@ -292,6 +308,8 @@ async def run_generation(
     # rewrite that already streamed failed verification. None = the text
     # the user watched stream is the text that is kept.
     humanized: dict = {"final_text": None}
+    # Security audit: the turn's recorded state (None on every other turn).
+    sec_state: SecurityTurn | None = None
     # Phase 5: MCP sessions live for the whole turn. Entered here and closed in
     # the `finally` below — the same task both ways, which is the anyio rule that
     # makes every pooled session an actor in `app/mcp/session.py`.
@@ -875,6 +893,17 @@ async def run_generation(
         # silently grant the same elevated scope to unattended scheduled runs,
         # which have nobody to approve anything. Background jobs stay read-only.
         elevated = settings.ai_agent_side_effect_enabled and not req.unattended
+        # Security audit: classified from the same text the router read. An
+        # audit WITHOUT an explicit fix request is READ-ONLY by construction: the
+        # read scope + read-only ceiling mean no write tool is even bound (the
+        # executor's guard refuses one that arrives mid-turn).
+        sec = (
+            sec_intent.detect(latest.content if latest else "")
+            if settings.ai_security_enabled
+            else sec_intent.NONE
+        )
+        if sec.audit and not sec.fix:
+            elevated = False
         agent_scope = replace(
             WRITE_SCOPE if elevated else READ_SCOPE,
             user_id=req.userId,
@@ -981,6 +1010,73 @@ async def run_generation(
             if mcp_caps.registry is not None:
                 tool_registry = mcp_caps.registry
                 tool_selector = ToolSelector(tool_registry)
+
+        # Security audit: the per-turn state every security tool, guard and the
+        # final report are written from. Seeded from `completedTools`, so an
+        # approval resume keeps what the first attempt read.
+        sec_reserved: set[str] = set()
+        if sec.audit:
+            _sec_access = LocalAccess.from_settings(settings)
+            _gh_tools = [
+                t
+                for t in (tool_registry.list() if tool_registry is not None else [])
+                if t.provider == GITHUB_PROVIDER
+            ]
+            sec_state = SecurityTurn(
+                intent=sec,
+                user_id=req.userId,
+                local=_sec_access,
+                read_only=not sec.fix,
+                user_text=latest.content if latest else "",
+                github_connected=bool(_gh_tools),
+                github_connection_failed=not _gh_tools
+                and any(c.slug == "github" for c in req.mcpConnections),
+                model=model_id,
+                route_reason=route.reason,
+                osv_enabled=settings.ai_security_osv_enabled,
+                scanner_timeout_s=settings.ai_security_scanner_timeout_s,
+            )
+            sec_state.seed_from_completed(req.completedTools)
+            # The GitHub connection's declared READS are guaranteed a binding;
+            # on a fix request, the branch/file/PR writes too (approval-gated, and
+            # the executor refuses a write outside a branch made this turn).
+            _gh_fix = {
+                "create_branch",
+                "create_or_update_file",
+                "push_files",
+                "create_pull_request",
+            }
+            sec_reserved = {
+                t.tool_id
+                for t in _gh_tools
+                if t.side_effect is SideEffect.READ_ONLY
+                or (sec.fix and t.name in _gh_fix)
+            }
+            if (
+                sec.fix
+                and elevated
+                and not req.unattended
+                and _sec_access.names_for(req.userId)
+            ):
+                # Per-request registry: the shared catalogue is never mutated.
+                tool_registry = layered_registry(tool_registry, [fix_tool_definition()])
+                tool_selector = ToolSelector(tool_registry)
+                sec_reserved.add(FIX_TOOL_ID)
+            log.info(
+                "secaudit.turn",
+                extra={
+                    "stream_id": req.streamId,
+                    "read_only": not sec.fix,
+                    "fix": sec.fix,
+                    "diff": sec.diff,
+                    "model": model_id,
+                    "local_roots": len(_sec_access.names_for(req.userId)),
+                    "github_connected": bool(_gh_tools),
+                    "github_reserved": len(sec_reserved - {FIX_TOOL_ID}),
+                    "fix_tool": FIX_TOOL_ID in sec_reserved,
+                    "resumed_tools": len(req.completedTools),
+                },
+            )
 
         # Skill ids that actually reached the prompt this turn (both runtime
         # paths). The humanize stage keys on the writing skills among them.
@@ -1176,6 +1272,7 @@ async def run_generation(
                     *_bound.tool_ids,
                     *_user_bound.tool_ids,
                     *_approved_ids,
+                    *sec_reserved,
                 }
                 if _resolved:
                     candidates, _added = reserve_skill_tools(
@@ -1216,6 +1313,7 @@ async def run_generation(
                         FORGET_TOOL_NAME,
                         RECORD_RESEARCH_TOOL_NAME,
                         *DATA_TOOL_NAMES,
+                        *SECURITY_TOOL_NAMES,
                     }
                     web_specs, name_to_id = build_tool_specs(
                         candidates, tool_registry, reserved=_reserved
@@ -1320,6 +1418,8 @@ async def run_generation(
             specs.append(MARKETING_REFERENCE_TOOL_SPEC)
         if documents_as_tool:
             specs.append(DOCUMENT_OPS_TOOL_SPEC)
+        if sec_state is not None:
+            specs.extend(SECURITY_TOOL_SPECS)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -1349,6 +1449,8 @@ async def run_generation(
             reserved_specs.append(MARKETING_REFERENCE_TOOL_SPEC)
         if documents_as_tool:
             reserved_specs.append(DOCUMENT_OPS_TOOL_SPEC)
+        if sec_state is not None:
+            reserved_specs.extend(SECURITY_TOOL_SPECS)
         # Phase 5: ONE generic resource reader, bound only when a connected server
         # actually advertises resources. A user with no resource-bearing server
         # never sees it, so it costs nothing in the context budget of every turn
@@ -1387,6 +1489,8 @@ async def run_generation(
             # `mcp:<slug>` — exactly what `ctx.adapters.get(tool.provider)`
             # already reads, so the executor needs no change at all.
             connector_adapters.update(mcp_caps.adapters)
+            if sec_state is not None:
+                connector_adapters[FIX_PROVIDER] = SecurityFixAdapter(sec_state)
             # Phase 7: register the SEO write provider + its adapter (keyed by provider
             # "seo_write" for the executor dispatch map). The real site-write is an
             # injected seam — StubSeoWriteProvider until a GSC/CMS provider is dropped
@@ -1458,6 +1562,14 @@ async def run_generation(
                     doc_soffice_timeout_s=settings.ai_documents_soffice_timeout_s,
                     doc_soffice_concurrency=settings.ai_documents_soffice_concurrency,
                 )
+                if sec_state is not None:
+                    # Redaction, the read-only/GitHub guards and the security
+                    # built-ins all key on this being set.
+                    tools_ctx.security = sec_state
+                    if FIX_TOOL_ID in sec_reserved:
+                        tools_ctx.force_approval_ids = (
+                            tools_ctx.force_approval_ids | frozenset({FIX_TOOL_ID})
+                        )
                 # Phase 12b (Stage 1): attach DYNAMIC CAPABILITY DISCOVERY to the
                 # live agent path. The model gains `find_capabilities` to reach ANY
                 # registered tool (no Top-K reachability ceiling); matches are
@@ -1578,6 +1690,45 @@ async def run_generation(
                                 capabilities=resolver,
                             )
                         )
+
+        # Security audit: no delegation (a sub-agent's context carries neither the
+        # redaction nor the read-only guard), and the audit method + sources are
+        # stated deterministically rather than left to lexical skill discovery.
+        if sec_state is not None:
+            if tools_ctx is not None:
+                tools_ctx.delegator = None
+            specs[:] = [
+                sp
+                for sp in specs
+                if (sp.get("function") or {}).get("name") != DELEGATE_TOOL_NAME
+            ]
+            if SECURITY_SKILL.skill_id not in active_skill_ids:
+                system = f"{system}\n\n{SECURITY_SKILL.render()}"
+                active_skill_ids.add(SECURITY_SKILL.skill_id)
+            _roots = sec_state.local.names_for(req.userId)
+            system = (
+                f"{system}\n\n<security_audit>\n"
+                + (
+                    "Mode: FIX REQUESTED - each change is shown to the user and "
+                    "runs only after they approve it.\n"
+                    if sec.fix
+                    else "Mode: READ-ONLY audit - nothing may be modified.\n"
+                )
+                + "Local repositories (security_repo): "
+                + (
+                    ", ".join(_roots)
+                    if _roots
+                    else "none - local repositories are not enabled for this account"
+                )
+                + "\nGitHub: "
+                + (
+                    "connected - use its read tools for GitHub repositories"
+                    if sec_state.github_connected
+                    else "not connected - a GitHub repository cannot be audited "
+                    "until the user connects GitHub"
+                )
+                + "\n</security_audit>"
+            )
 
         # Phase 4 (Custom Skills): the user's OWN guidance, composed LAST.
         #
@@ -1903,6 +2054,7 @@ async def run_generation(
             settings.ai_runtime_v2_enabled
             and orchestrator_v2 is not None
             and tools_ctx is not None
+            and sec_state is None
         ):
             tools_ctx.delegator = orchestrator_v2.make_delegator(
                 build_live_agent_env(
@@ -2293,6 +2445,37 @@ async def run_generation(
                         "tools_truncated": ledger.tools_truncated,
                         "output_truncated": ledger.output_truncated,
                         "reported": bool(report),
+                    },
+                )
+        if sec_state is not None and (status == "done" or _deadline_hit):
+            with contextlib.suppress(Exception):  # never fail a finished turn
+                _answered = failover["model"] or model_id
+                _profile = router_cfg.profiles.get(_answered)
+                await writer.push(
+                    sec_state.render(
+                        deadline=_deadline_hit,
+                        answered_by=_answered,
+                        tier=_profile.reasoning_tier if _profile else None,
+                    )
+                )
+                _verdict, _why = sec_state.verdict(deadline=_deadline_hit)
+                log.info(
+                    "secaudit.report",
+                    extra={
+                        "stream_id": req.streamId,
+                        "verdict": _verdict,
+                        "why": _why[:5],
+                        "model": _answered,
+                        "local_access": sec_state.local_access,
+                        "github_access": sec_state.github_access,
+                        "files_read": sum(1 for r in sec_state.reads if r.path),
+                        "stages": {
+                            k: v.get("status") for k, v in sec_state.stages.items()
+                        },
+                        "findings": len(sec_state.findings),
+                        "secrets": len(sec_state.secret_hits),
+                        "denied": len(sec_state.denied_calls),
+                        "fixes": [f.get("status") for f in sec_state.fixes],
                     },
                 )
         if status != "suspended":

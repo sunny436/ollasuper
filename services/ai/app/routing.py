@@ -173,6 +173,36 @@ _RETRIEVAL_INTENT = (
     r"this\s+(?:website|site|page|url|domain|repo)"
 )
 
+# --- security intent: checked BEFORE the taxonomy, and it wins ----------
+# A security question is never "simple" and never "fast": a shallow answer to
+# "is this endpoint exploitable" is the expensive error. So this is a hard floor,
+# immune to the definitional demotion and the `fast` preference. The vocabulary is
+# SECURITY-SPECIFIC on purpose (no bare "secure", "exploit", "attack"): "exploit
+# this market" and "security deposit" must stay on their normal path.
+_SECURITY = (
+    r"vulnerab\w*|pen(?:etration)?[\s-]?test\w*|threat[\s-]?model\w*|"
+    r"attack\s+(?:surface|path|vector|chain)s?|exploitab\w*|"
+    r"exploit\s+(?:chain|code|poc|payload)|(?:working|poc|proof[\s-]of[\s-]concept)\s+exploit|"
+    r"\bcve-\d{4}-\d+|\bcwe-\d+|\bowasp\b|"
+    r"\b(?:idor|bola|ssrf|xss|csrf|xxe|rce|lfi|sqli)\b|"
+    r"(?:sql|command|code|prompt|template|nosql|ldap)\s+injection|"
+    r"(?:path|directory)\s+traversal|insecure\s+deserialization|"
+    r"privilege\s+escalation|auth(?:entication|orization|n|z)?\s+bypass|"
+    r"(?:hard[\s-]?coded|leak(?:ed|ing)|exposed|committed|plain[\s-]?text)\s+"
+    r"(?:secrets?|credentials?|passwords?|api[\s_-]?keys?|tokens?)|"
+    r"secrets?\s+(?:scan\w*|leak\w*|detection)|"
+    r"security\s+(?:audit|review|scan|assessment|analysis|hardening|fix|patch|"
+    r"regression|test(?:ing)?|issues?|bugs?|flaws?|holes?|findings?|posture|checks?|risks?)|"
+    r"\b(?:is|are)\s+(?:this|these|it|my|our|the)\s+(?:[\w.-]+\s+){0,3}?"
+    r"(?:secure|vulnerable|exploitable)\b"
+)
+# A WRITING deliverable about a security topic is writing work ("write a blog
+# about XSS"), not a security query — its head verb produces or transforms prose.
+_WRITING_OBJECT = (
+    r"\b(?:blog|article|post|newsletter|e-?mail|essay|tweet|thread|linkedin|deck|"
+    r"slides?|presentation|poem|story|caption|press\s+release|landing\s+page)\b"
+)
+
 _C = re.IGNORECASE
 
 # ONE pass over the body, not three. Three unanchored alternations across a
@@ -204,6 +234,19 @@ _WORK_LEVEL = {
 }
 _RE_INTENSITY = re.compile(_INTENSITY, _C)
 _RE_URL = re.compile(_URL, _C)
+# Case-SENSITIVE over a lowercased window: IGNORECASE made this alternation
+# ~2.5x slower (measured 234us vs 94us on the worst-case window).
+_RE_SECURITY = re.compile(_SECURITY)
+# Every `_SECURITY` branch contains one of these (lowercase). A cheap prefilter,
+# never a decision: the regex above still decides.
+_SECURITY_STEMS = (
+    "vulnerab", "pentest", "pen test", "pen-test", "penetration", "threat",
+    "attack", "exploit", "cve-", "cwe-", "owasp", "idor", "bola", "ssrf", "xss",
+    "csrf", "xxe", "rce", "lfi", "sqli", "injection", "traversal", "deserializ",
+    "privilege", "bypass", "hard", "leak", "exposed", "committed", "plain",
+    "secret", "secur",
+)  # fmt: skip
+_RE_WRITING_OBJECT = re.compile(_WRITING_OBJECT)
 _RE_RETRIEVAL = re.compile(_RETRIEVAL_INTENT, _C)
 
 # A definitional opener is a strong DEMOTER: "what does audit mean" contains an
@@ -321,6 +364,44 @@ class Classification:
     work: str
 
 
+def _edges(text: str) -> str:
+    """The request's head and tail — where intent and constraints live."""
+    return (
+        text[:_EDGE_CHARS] + " " + text[-_EDGE_CHARS:]
+        if len(text) > 2 * _EDGE_CHARS
+        else text
+    )
+
+
+def security_intent(text: str) -> bool:
+    """Is this turn a security query? Pure, bounded, sub-millisecond.
+
+    Read over the head plus both edges (a pasted file with "is this vulnerable?"
+    at the end still counts). A writing deliverable ABOUT security is excluded:
+    its head action produces or transforms prose.
+    """
+    head = text[:_HEAD_CHARS]
+    # The head plus the tail, ONE window. A 25-branch case-insensitive alternation
+    # costs ~1us per character in `re`, so it only runs when a stem is present:
+    # the substring prefilter is C-speed and rejects almost every turn.
+    window = (
+        text
+        if len(text) <= _HEAD_CHARS + _EDGE_CHARS
+        else head + " " + text[-_EDGE_CHARS:]
+    )
+    low = window.lower()
+    if not any(stem in low for stem in _SECURITY_STEMS):
+        return False
+    if not _RE_SECURITY.search(low):
+        return False
+    # The writing-deliverable exclusion: the cheap object check first, the
+    # work-type scan only when a writing object is actually named.
+    if not _RE_WRITING_OBJECT.search(low[:_HEAD_CHARS]):
+        return True
+    first = _RE_WORK.search(head)
+    return not (first is not None and first.lastgroup in ("produce", "transform"))
+
+
 def classify(sig: Signals, heavy_token_threshold: int = 1200) -> Classification:
     """Work type and grounding for one turn. Pure, bounded, no I/O.
 
@@ -331,11 +412,7 @@ def classify(sig: Signals, heavy_token_threshold: int = 1200) -> Classification:
     head = sig.text[:_HEAD_CHARS]
     # Edges only: a request states its intent at the start and its constraints
     # at the end; the middle of a long turn is pasted material, not instruction.
-    body = (
-        sig.text[:_EDGE_CHARS] + " " + sig.text[-_EDGE_CHARS:]
-        if len(sig.text) > 2 * _EDGE_CHARS
-        else sig.text
-    )
+    body = _edges(sig.text)
 
     # --- grounding: does the turn need data it does not already hold? ------
     # One pass, exiting as soon as both flags are known.
@@ -355,6 +432,12 @@ def classify(sig: Signals, heavy_token_threshold: int = 1200) -> Classification:
     # THIS turn asks for data it does not hold: a URL, an explicit retrieval, or
     # a document attached to this message.
     grounded = bool(saw_url or saw_retrieval or sig.has_document)
+
+    # --- security intent: BEFORE the taxonomy, and final -------------------
+    # Security work always gets the deepest reasoning on offer. Returned here so
+    # no later demotion (definitional opener, `fast` preference) can touch it.
+    if security_intent(sig.text):
+        return Classification(reasoning=HEAVY, grounded=grounded, work="security")
 
     # --- Tier B: the work type, decided by the EARLIEST action in the head -
     #
@@ -513,6 +596,10 @@ def select(
     best = min(capable, key=lambda c: profile(c).ttft_s)
 
     tag = "g" if cls.grounded else "s"
+    if profile(best).reasoning_tier < cls.reasoning:
+        # Capability was unavailable (e.g. every tier-2 model unhealthy): the best
+        # on offer answers, and the shortfall is recorded, never hidden.
+        tag += "|floor_unmet"
     return Decision(
         best.id, f"{cls.work}:{cls.reasoning}{tag}:{est}t", cls.reasoning, cls.work
     )
@@ -581,6 +668,7 @@ __all__ = [
     "replace",
     "select",
     "select_failover",
+    "security_intent",
     "HEAVY",
     "MODERATE",
     "SIMPLE",

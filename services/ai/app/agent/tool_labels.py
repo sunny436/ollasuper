@@ -97,6 +97,11 @@ _CURATED: dict[str, str] = {
     "remember": "Saving to memory",
     "forget": "Updating memory",
     "generate_file": "Generating a file",
+    # security audit
+    "security_repo": "Reading the repository",
+    "security_scan": "Running security checks",
+    "security_report": "Validating security findings",
+    "security_apply_fix": "Applying the approved security fix",
     "find_capabilities": "Finding the right tools",
     "delegate_to_agent": "Delegating to a specialist",
     "request_clarification": "Asking a follow-up",

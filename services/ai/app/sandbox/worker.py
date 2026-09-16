@@ -50,6 +50,14 @@ def main() -> int:
             text = ops.extract_pdf_text(payload)
             _emit({"ok": True}, text.encode("utf-8"))
             return 0
+        if op == "secret_sweep":
+            # Security audit: rule-based secret scan over a repository's tracked
+            # files. Runs HERE so a 16MB regex pass never holds the plane's GIL.
+            from app.secaudit.scanners import sweep_files
+
+            result = sweep_files(json.loads(payload.decode("utf-8")))
+            _emit({"ok": True}, json.dumps(result).encode("utf-8"))
+            return 0
         _emit({"ok": False, "error": f"unknown op {op!r}"})
         return 2
     except ops.DecodeError as e:
