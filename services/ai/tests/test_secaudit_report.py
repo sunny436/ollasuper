@@ -410,6 +410,22 @@ async def test_an_approval_resume_restores_local_reads_scans_and_the_report(tmp_
     assert f["status"] == "confirmed" and f["line_verified"]
     assert resumed.verdict(deadline=False)[0] == "FINDINGS"
 
+    # PROD SHAPE: built-in executions are recorded WITHOUT args. The resume must
+    # still restore the reads, the scan and the validated findings.
+    bare = [
+        SimpleNamespace(toolId=c.toolId, args={}, resultContent=c.resultContent)
+        for c in completed
+    ]
+    again = _state(local=access, read_only=False)
+    again.seed_from_completed(bare)
+    assert any(r.path == "app.py" for r in again.reads)
+    assert again.stages["secret_scan"]["status"] == "ran"
+    [g] = again.findings
+    assert g["status"] == "confirmed" and g["fingerprint"] == f["fingerprint"]
+    text = again.render()
+    assert "Content read this turn: 1 file(s)" in text
+    assert again.verdict(deadline=False)[0] == "FINDINGS"
+
 
 async def test_a_call_without_a_repo_name_is_not_recorded_as_an_access_target():
     state = _state()

@@ -83,6 +83,69 @@ def _decode_recorded(content: str) -> Any:
     return content.replace("\\n", "\n").replace('\\"', '"')
 
 
+def _infer_op(tool_id: str, data: dict) -> str:
+    """Which op produced a recorded result. Built-in executions are stored without
+    their args, so a resume must read the operation off the result's shape."""
+    if data.get("op"):
+        return str(data["op"])
+    if tool_id == "security_repo":
+        for key, op in (
+            ("content", "read"),
+            ("matches", "grep"),
+            ("files", "tree"),
+            ("log", "log"),
+            ("diff", "diff"),
+        ):
+            if key in data:
+                return op
+        return "head"
+    if "files_scanned" in data:
+        return "secrets"
+    if (
+        "packages_checked" in data
+        or "lockfiles" in data
+        or data.get("op") == "dependencies"
+    ):
+        return "dependencies"
+    if "detail" in data and "path" in data:
+        return "retest"
+    if data and all(isinstance(v, dict) and "status" in v for v in data.values()):
+        return "scanners"
+    return ""
+
+
+def _restored_finding(v: dict) -> dict:
+    """A validated finding restored from the summary `security_report` returned."""
+    return {
+        "fingerprint": str(v.get("fingerprint") or ""),
+        "title": str(v.get("title") or "Untitled finding"),
+        "status": str(v.get("status") or "needs_validation"),
+        "reasons": list(v.get("reasons") or []),
+        "severity": str(v.get("severity") or "low"),
+        "claimed_severity": "",
+        "repo": "",
+        "commit": "",
+        "path": "",
+        "start_line": 0,
+        "line_verified": False,
+        "vulnerability_class": "",
+        "cwe": [],
+        "owasp": [],
+        "source_to_sink": "",
+        "control": "",
+        "reachability": "",
+        "attacker": "",
+        "preconditions": "",
+        "impact": "unknown",
+        "likelihood": "unknown",
+        "severity_rationale": "",
+        "exploitability": "",
+        "remediation": "",
+        "counterevidence": "",
+        "regression": {"status": "not_run", "detail": "restored from before the pause"},
+    }
+
+
 def fingerprint(repo: str, klass: str, path: str, anchor: str) -> str:
     raw = f"{repo}|{klass.lower()}|{path}|{_norm(anchor).lower()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -309,17 +372,25 @@ class SecurityTurn:
                 data = _decode_recorded(content)
                 if isinstance(data, dict) and data.get("status") != "error":
                     if tool_id == "security_report":
-                        reports.append(args)
+                        reports.append((args, data))
                     else:
                         self._seed_local(tool_id, args, data)
         # A report submitted before the pause is re-validated against the reads
-        # restored above (a later report in this attempt replaces it).
-        for args in reports[-1:]:
-            self.validate(
-                args.get("source") or {},
-                str(args.get("scope_summary") or ""),
-                args.get("findings") or [],
-            )
+        # restored above (a later report in this attempt replaces it). Built-in
+        # executions are recorded WITHOUT their args, so when the findings are not
+        # available the validated summary the tool returned is restored as-is.
+        for args, data in reports[-1:]:
+            if args.get("findings"):
+                self.validate(
+                    args.get("source") or {},
+                    str(args.get("scope_summary") or ""),
+                    args.get("findings") or [],
+                )
+            else:
+                self.submitted = True
+                self.findings = [
+                    _restored_finding(v) for v in data.get("validated") or []
+                ]
 
     def _seed_local(self, tool_id: str, args: dict, data: dict) -> None:
         """Restore one recorded local-repository result (security_repo / _scan)."""
@@ -329,7 +400,7 @@ class SecurityTurn:
         self.local_access.setdefault(repo, "verified")
         if data.get("commit"):
             self.local_heads.setdefault(repo, str(data["commit"]))
-        op = str(args.get("op") or "")
+        op = str(args.get("op") or "") or _infer_op(tool_id, data)
         if tool_id == "security_repo":
             if op == "read" and data.get("path"):
                 lines: dict[int, str] = {}
@@ -363,16 +434,21 @@ class SecurityTurn:
         if op == "secrets" and status:
             self.note_secret_hits("local", repo, "", data.get("hits") or [])
             self.set_stage(
-                "secret_scan", status, repo=repo, files=data.get("files_scanned"),
+                "secret_scan",
+                status,
+                repo=repo,
+                files=data.get("files_scanned"),
                 truncated=data.get("truncated") or None,
-            )  # fmt: skip
+            )
         elif op == "dependencies" and status:
             self.dep_vulns = data.get("vulnerable") or self.dep_vulns
             self.set_stage(
-                "dependency_audit", status, repo=repo,
+                "dependency_audit",
+                status,
+                repo=repo,
                 packages=data.get("packages_checked"),
                 vulnerable=len(data.get("vulnerable") or []) or None,
-            )  # fmt: skip
+            )
         elif op == "scanners":
             for name, r in data.items():
                 if isinstance(r, dict) and r.get("status"):

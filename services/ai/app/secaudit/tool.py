@@ -255,10 +255,14 @@ async def run_security_tool(
             )
         repo = str(args.get("repo") or "")
         root = await _root(state, repo)
+        # Every result names its repo and op: built-in executions are recorded
+        # WITHOUT args, and an approval resume rebuilds state from results alone.
+        tag = {"repo": repo, "op": str(args.get("op") or "")}
         if name == REPO_TOOL_NAME:
-            return _msg(call_id, await _repo_op(state, repo, root, args, max_chars))
+            out = await _repo_op(state, repo, root, args, max_chars)
+            return _msg(call_id, {**tag, **out})
         if name == SCAN_TOOL_NAME:
-            return _msg(call_id, await _scan_op(state, repo, root, args))
+            return _msg(call_id, {**tag, **await _scan_op(state, repo, root, args)})
         return _msg(call_id, {"error": f"unknown security tool {name}"}, ok=False)
     except local.LocalError as e:
         return _msg(
