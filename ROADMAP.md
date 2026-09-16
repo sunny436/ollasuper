@@ -31,6 +31,33 @@ One finding is verified by unit test only, and deliberately so:
   on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
   surface is built, add the prod check with it.
 
+## Security audits (Codex Security adaptation) — LIVE, prod-verified 2026-09-16
+
+`services/ai/app/secaudit/`, adapted from openai/codex-security (Apache-2.0: method +
+contracts only, not its Codex-host workbench/MCP app). Flag `AI_SECURITY_ENABLED` (on).
+
+- **Routing:** `routing.security_intent` runs before the taxonomy → work `security`,
+  tier 2, immune to definitional/`fast` demotion; writing ABOUT security is excluded;
+  a missing tier-2 model is disclosed (`floor_unmet`). Router P99 unchanged (A/B).
+- **Audit turns:** `security_repo` (allowlisted local git roots, tracked files only,
+  hardened git), `security_scan` (secret sweep in the sandbox child, OSV dependency
+  audit, installed SARIF scanners), `security_report` (validation), GitHub MCP read
+  tools reserved. Read-only by construction (read scope + executor refusal).
+- **Fixes:** `security_apply_fix` registry tool behind the existing approval card
+  (before/after preview), one exact replacement, never committed, auto post-fix check.
+  GitHub fixes: never merge/delete, writes only to a branch created in the turn.
+- **Honesty:** report written from recorded executions (incl. `completedTools` on
+  resume); findings confirm only on evidence actually read; codex severity policy;
+  BLOCKED / INCOMPLETE / FINDINGS / NO CONFIRMED FINDINGS IN SCANNED SCOPE — never
+  "secure". All tool results redacted before events, ledger, model and report.
+- **Ops:** `deploy/65-secaudit.sh` (clone + fixture + `ReadWritePaths` drop-in);
+  `AI_SECURITY_LOCAL_ROOTS`, `AI_SECURITY_LOCAL_USER_IDS` (empty = off).
+- **Open:** no SAST/secret binaries installed on the VM (`not_installed`); GitHub MCP
+  `tools/call` hangs for some repos inside the GitHub server (reproduce with
+  `qa/secaudit_github_probe.py`); a turn is bounded by the 300s deadline; the model
+  sometimes stalls after an approval resume without submitting findings (verdict
+  INCOMPLETE, fix still retested); secret rules flag test fixtures (66 hits on the repo).
+
 ## Agentic runtime program (Phases 0–12) — architecture built + test-proven
 
 A separate 0–12 program (distinct from the product "Phase N" sections below) built an all-rounder agentic
