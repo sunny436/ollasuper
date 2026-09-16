@@ -29,11 +29,10 @@ const ONLY = (process.env.QA_ONLY || "").split(",").filter(Boolean);
 
 const TURNS = [
   {
-    // Worded so the tool it needs (readability) is NOT in the initial working set
-    // (checked on the live registry): if the routed model fails over, the failover
-    // must discover it via find_capabilities and still be able to call it.
+    // A skill request: activates Marketing (and Blog) on prod, logged as
+    // agent.skills_active, and routes to the middle tier.
     tier: "medium",
-    text: "Write a product launch email for our analytics dashboard and objectively score how easy it is to read before sending it back.",
+    text: "Write a LinkedIn launch post for our new analytics dashboard feature.",
   },
   { tier: "easy", text: "What is a mutex?" },
   {

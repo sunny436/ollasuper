@@ -217,6 +217,8 @@ async def test_timeout_unreachable_5xx_and_unknown_model_are_distinct(clock):
         "gone": [httpx.ConnectError("connection refused")],
         "down": [503],
         "removed": [(502, '{"error":{"message":"unknown provider for model x"}}', {})],
+        # Prod, grok-4.3 with its xai upstream down: the gateway answered 408.
+        "stalled": [408],
     }
     health.observe(list(gw.script))
     async with gw.client() as client:
@@ -226,6 +228,7 @@ async def test_timeout_unreachable_5xx_and_unknown_model_are_distinct(clock):
         "gone": health.UNREACHABLE,
         "down": health.PROVIDER_ERROR,
         "removed": health.PROVIDER_ERROR,
+        "stalled": health.TIMEOUT,
     }
     assert all(health.is_exhausted(m) for m in gw.script)
     # Transient classes come back far sooner than a provider failure.

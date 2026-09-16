@@ -189,6 +189,10 @@ def classify_status(status: int, text: str = "") -> str | None:
     low = text.lower()
     if status == 429 or (status >= 500 and any(p in low for p in _QUOTA_PHRASES)):
         return RATE_LIMITED
+    if status in (408, 504):
+        # The gateway gave up waiting on the upstream (seen on prod for grok-4.3
+        # while its provider was down): slow or unavailable, never "bad request".
+        return TIMEOUT
     if status >= 500 or status in (401, 403, 404):
         # 502 is also what this gateway answers for an unknown/removed model id.
         return PROVIDER_ERROR
