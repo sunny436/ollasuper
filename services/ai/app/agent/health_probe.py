@@ -32,6 +32,10 @@ log = get_logger(__name__)
 _MAX_PROBES_PER_TICK = 2
 _PROBE_TIMEOUT_S = 20.0
 _PROBE_MAX_TOKENS = 8
+# The upstream map costs no model quota, and failover independence depends on it,
+# so it loads shortly after start instead of after a whole probe interval (prod:
+# the first turns after a restart chose a failover with no upstream known).
+_FIRST_UPSTREAMS_DELAY_S = 5.0
 
 
 def seed_models(settings) -> list[str]:
@@ -148,6 +152,18 @@ async def run_health_probe(
     state: dict = {}
     log.info("model_health.worker_started", extra={"interval_s": interval})
     try:
+        await asyncio.sleep(min(_FIRST_UPSTREAMS_DELAY_S, interval))
+        try:
+            n = await refresh_upstreams(client, settings)
+            log.info("model_health.upstreams", extra={"models": n})
+            state["upstreams_due"] = (
+                asyncio.get_running_loop().time()
+                + settings.ai_model_health_revalidate_s
+            )
+        except Exception as e:  # noqa: BLE001 — the first tick retries it
+            log.warning(
+                "model_health.upstreams_failed", extra={"error": type(e).__name__}
+            )
         while True:
             await asyncio.sleep(interval * random.uniform(0.9, 1.1))  # noqa: S311
             try:

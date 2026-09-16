@@ -393,6 +393,37 @@ async def test_a_failing_worker_never_stops_itself_or_chat(clock, monkeypatch):
         await client.aclose()
 
 
+async def test_upstreams_load_right_after_start_before_any_probe(clock, monkeypatch):
+    """Failover independence needs the upstream map; it must not wait a whole
+    probe interval after a restart, and loading it spends no model quota."""
+    gw = Gateway()
+    health.observe(["deepseek-v4-flash"])
+    sleeps: list[float] = []
+    parked = asyncio.Event()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) > 1:  # park at the first probe interval
+            parked.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(health_probe.asyncio, "sleep", fake_sleep)
+    client = gw.client()
+    worker = asyncio.create_task(
+        health_probe.run_health_probe(_settings(), client=client)
+    )
+    try:
+        await asyncio.wait_for(parked.wait(), timeout=5)
+        assert sleeps[0] == health_probe._FIRST_UPSTREAMS_DELAY_S
+        assert health.upstream_of("deepseek-v4-flash") == "ollima-sidecar"
+        assert gw.calls == [], "no model was probed to learn upstreams"
+    finally:
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+        await client.aclose()
+
+
 async def test_lifespan_starts_and_cancels_the_worker_without_network():
     settings = _settings(
         ai_model_health_probe_enabled=True, ai_model_health_probe_interval_s=3600
