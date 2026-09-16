@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from app.agent.orchestration_tools import DELEGATE_TOOL_SPEC
@@ -37,7 +36,6 @@ from app.finance.equity import EQUITY_SKILL
 from app.finance.skill import FINANCE_SKILL
 from app.hr.capabilities import hr_intent_map
 from app.hr.skill import HR_SKILL
-from app.humanizer.guidance import BLOG_STAGE, MARKETING_STAGE, REPORT_STAGE
 from app.marketing.capabilities import marketing_intent_map
 from app.marketing.skill import MARKETING_SKILL
 from app.operations.capabilities import operations_intent_map
@@ -171,31 +169,6 @@ def effective_agents(settings: Settings | None = None) -> list[AgentSpec]:
     return list(PRODUCTION_AGENTS)
 
 
-def _with_humanizer_stage(
-    skills: list[SkillManifest], settings: Settings | None
-) -> list[SkillManifest]:
-    """Append each writing skill's humanize stage — only when the flag is on.
-
-    OFF returns the list untouched, so no skill ever instructs the model to call
-    a tool that is not bound (which is what the static text did, before this).
-    """
-    if settings is None or not getattr(settings, "ai_humanizer_enabled", False):
-        return skills
-    out: list[SkillManifest] = []
-    for skill in skills:
-        if skill.skill_id == "blog-assist":
-            skill = replace(skill, instructions=f"{skill.instructions}\n{BLOG_STAGE}")
-        elif skill.skill_id == "marketing":
-            skill = replace(
-                skill,
-                output_expectations=f"{skill.output_expectations}\n{MARKETING_STAGE}",
-            )
-        elif skill.skill_id == "report-writing":
-            skill = replace(skill, methodology=f"{skill.methodology} {REPORT_STAGE}")
-        out.append(skill)
-    return out
-
-
 def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     """The live skill roster for these settings — the static roster plus any
     flag-gated skills. `ai_seo_enabled` appends the ONE SEO skill; OFF (or no
@@ -236,7 +209,7 @@ def effective_skills(settings: Settings | None = None) -> list[SkillManifest]:
     # inline preview); composes with the siblings, steers generate_file + document_ops.
     if settings is not None and getattr(settings, "ai_documents_enabled", False):
         skills.append(DOCUMENTS_SKILL)
-    return _with_humanizer_stage(skills, settings)
+    return skills
 
 
 def build_delegate_spec(settings: Settings | None = None) -> dict:

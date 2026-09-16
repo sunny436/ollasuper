@@ -22,7 +22,6 @@ from langchain_core.messages import (
 )
 from langchain_core.messages.utils import count_tokens_approximately
 
-from app.humanizer.guidance import HUMANIZER_GUIDANCE
 from app.models.chat import CONTEXT_WINDOW, IMAGE_TOKENS, HistoryMessage
 
 # Runtime backstop for the Project instruction block. Mirrors the skill
@@ -125,7 +124,6 @@ def build_system_prompt(
     rag: str | None = None,
     agentic: bool = False,
     project_instructions: str | None = None,
-    humanize: bool = False,
 ) -> str:
     # SYSTEM_BASE IS UNCONDITIONAL.
     #
@@ -145,11 +143,6 @@ def build_system_prompt(
         if agentic
         else [SYSTEM_BASE]
     )
-    # The humanize stage rides the same seam as CHART_GUIDANCE: one block, every
-    # writing surface, no per-skill code. Gated, and only on an agentic turn —
-    # the stage runs THROUGH `humanize_check`, and a turn with no tools has none.
-    if agentic and humanize:
-        parts.insert(3, HUMANIZER_GUIDANCE)
     if custom and custom.strip():
         parts.append("<user_persona>\n" + custom.strip() + "\n</user_persona>")
     if about and about.strip():

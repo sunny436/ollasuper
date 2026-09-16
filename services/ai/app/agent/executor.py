@@ -60,10 +60,6 @@ from app.finance.tool import (
     compute_finance_calc,
     run_finance_reference,
 )
-from app.humanizer.tool import (
-    HUMANIZE_CHECK_TOOL_NAME,
-    compute_humanize_check,
-)
 from app.logging import get_logger
 from app.marketing.tool import (
     MARKETING_CALC_TOOL_NAME,
@@ -94,10 +90,6 @@ from app.runtime.writer import DeltaWriter
 from app.sales.tool import SALES_FORECAST_TOOL_NAME, compute_forecast
 from app.tools.errors import ToolError, ToolErrorKind
 from app.tools.registry import ToolRegistry
-
-#: Drafts one turn keeps for `verify` by id. A Blog turn detects the finished
-#: draft once, maybe again after a fix cycle; four is generous and bounds memory.
-HUMANIZE_MAX_DRAFTS = 4
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
@@ -204,12 +196,6 @@ class ToolExecContext:
     seen_call_set: set[str] = field(default_factory=set)
     # H-06: which connector produced which content this turn (`taint.py`).
     taint: TaintLedger = field(default_factory=TaintLedger)
-    # Humanizer: drafts `humanize_check` detected this turn, by content-derived
-    # id, so `verify` can take the id instead of the draft emitted a second time
-    # (see `humanizer/tool.py::draft_id_for`). Also read at finalize to check the
-    # DELIVERED text against the last detected draft. Bounded: a turn keeps its
-    # most recent `HUMANIZE_MAX_DRAFTS`, each capped by the tool's own text limit.
-    humanize_drafts: dict[str, str] = field(default_factory=dict)
     # Phase 2: policy — when False (default) an AMBIGUOUS outcome on a
     # non-idempotent side-effecting tool is NOT auto-retried (at-most-once).
     retry_ambiguous_side_effects: bool = False
@@ -1005,16 +991,6 @@ async def _run_one(
             ctx,
             execution,
             _run_marketing_reference(ctx, call_id, args),
-            side_effect="read_only",
-        )
-
-    # Humanizer: the reserved DETERMINISTIC writing-quality detector (stateless,
-    # read-only, pure). Bound only when the humanizer flag is on.
-    if bound_name == HUMANIZE_CHECK_TOOL_NAME:
-        return await _run_builtin(
-            ctx,
-            execution,
-            _run_humanize_check(ctx, call_id, args),
             side_effect="read_only",
         )
 
@@ -2012,59 +1988,6 @@ async def _run_marketing_calc(
     )
     result = compute_marketing_calc(args)
     err = result.get("error") if isinstance(result, dict) else None
-    await ctx.writer.emit_event(
-        EventType.TOOL_RESULT,
-        call_id=call_id,
-        status="error" if err else "success",
-        result={"error": err} if err else {"ok": True},
-    )
-    return _tool_message(call_id, result, status="error" if err else "success")
-
-
-async def _run_humanize_check(
-    ctx: ToolExecContext, call_id: str, args: dict
-) -> ToolMessage:
-    """Humanizer: the pure detector in `app/humanizer/`, dispatched by `mode`.
-
-    Stateless + read-only; never raises (a bad shape -> {"error": ...}). Only
-    the MODE is emitted as arguments: the draft itself is the user's content and
-    has no business in an event payload.
-    """
-    await ctx.writer.emit_event(
-        EventType.TOOL_CALL,
-        tool_name=HUMANIZE_CHECK_TOOL_NAME,
-        tool_id=HUMANIZE_CHECK_TOOL_NAME,
-        call_id=call_id,
-        arguments={"mode": args.get("mode")},
-        status="running",
-        side_effect="read_only",
-    )
-    call_args = dict(args) if isinstance(args, dict) else {}
-    mode = str(call_args.get("mode") or "").strip().lower()
-    if mode == "verify" and not isinstance(call_args.get("before"), str):
-        draft = ctx.humanize_drafts.get(str(call_args.get("draft_id") or ""))
-        if draft is not None:
-            call_args["before"] = draft
-    result = compute_humanize_check(call_args)
-    err = result.get("error") if isinstance(result, dict) else None
-    if (
-        mode == "verify"
-        and err
-        and call_args.get("draft_id")
-        and not call_args.get("before")
-    ):
-        result = {
-            "error": "unknown draft_id for this turn: call detect on the draft first"
-        }
-        err = result["error"]
-    if mode == "detect" and not err:
-        text = call_args.get("text")
-        draft_id = result.get("draft_id")
-        if isinstance(text, str) and isinstance(draft_id, str):
-            ctx.humanize_drafts.pop(draft_id, None)
-            ctx.humanize_drafts[draft_id] = text  # re-insert = most recent
-            while len(ctx.humanize_drafts) > HUMANIZE_MAX_DRAFTS:
-                ctx.humanize_drafts.pop(next(iter(ctx.humanize_drafts)))
     await ctx.writer.emit_event(
         EventType.TOOL_RESULT,
         call_id=call_id,

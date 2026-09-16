@@ -35,8 +35,6 @@ def _slug(s: str) -> str:
 # reserved built-ins. Keyed on the normalized slug. Any tool can be given a
 # precise phrase by adding one entry; everything else falls through to derivation.
 _CURATED: dict[str, str] = {
-    # writing
-    "humanize_check": "Polishing the writing",
     # web / scraping
     "search": "Searching the web",
     "serp_search": "Searching the web",

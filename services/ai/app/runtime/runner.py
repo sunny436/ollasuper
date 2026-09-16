@@ -65,9 +65,7 @@ from app.finance.tool import (
     FINANCE_CALC_TOOL_SPEC,
     FINANCE_REFERENCE_TOOL_SPEC,
 )
-from app.humanizer.patterns import POST_DRAFT_BLOCKS, analyze, human_voice_score
-from app.humanizer.preserve import verify as preserve_verify
-from app.humanizer.tool import HUMANIZE_CHECK_TOOL_SPEC
+from app.humanizer import stage as humanize_stage
 from app.ingest.retrieve import render_rag_block, retrieve_context
 from app.logging import bind_log_context, get_logger
 from app.marketing.tool import (
@@ -128,14 +126,6 @@ ERR_ATTACHMENT = "attachment_failed"
 ERR_INGRESS = "ingress_unavailable"
 ERR_INTERNAL = "internal"
 ERR_DEADLINE = "deadline_exceeded"  # Phase 7: total execution deadline hit
-
-
-#: Below this a reply is a chat answer, not a written deliverable, and a
-#: writing-quality score for it would be noise.
-_QUALITY_MIN_CHARS = 600
-#: Bound on the measured slice (~a 6,000-word article). The score is a density,
-#: so it is already settled well before here; measuring more only costs CPU.
-_QUALITY_MAX_CHARS = 40_000
 
 
 def reserve_skill_tools(
@@ -298,6 +288,10 @@ async def run_generation(
     # The capacity failover that ANSWERED, when one did — so the turn records the
     # brain that produced the answer, not the routed one that refused.
     failover: dict = {"model": None}
+    # The humanize stage's verdict on what gets SAVED: the draft, when a
+    # rewrite that already streamed failed verification. None = the text
+    # the user watched stream is the text that is kept.
+    humanized: dict = {"final_text": None}
     # Phase 5: MCP sessions live for the whole turn. Entered here and closed in
     # the `finally` below — the same task both ways, which is the anyio rule that
     # makes every pooled session an actor in `app/mcp/session.py`.
@@ -540,11 +534,6 @@ async def run_generation(
         # has an uploaded PPTX/PDF to operate on. Off/no document => not registered,
         # byte-identical. Creating a NEW document stays with generate_file.
         documents_as_tool = settings.ai_documents_enabled
-        # Humanizer — bind the deterministic `humanize_check` detector when the
-        # flag is on. Stateless and read-only; the model calls it on a finished
-        # draft before delivering written content. Off => not registered,
-        # byte-identical.
-        humanize_as_tool = settings.ai_humanizer_enabled
 
         # Account-knowledge retrieval, launched concurrently so its embedding +
         # DB round-trip mostly hides behind the attachment work below. Gated by
@@ -676,7 +665,6 @@ async def run_generation(
             # Server-authored by Convex from the thread's Project. None for an
             # ordinary chat, so the prompt is byte-identical to before Projects.
             project_instructions=req.projectInstructions,
-            humanize=settings.ai_humanizer_enabled,
         )
         # THE REQUIREMENT LEDGER. Built deterministically from what the user
         # enumerated, so a ten-part task is tracked by OllaSuper rather than by a
@@ -994,6 +982,9 @@ async def run_generation(
                 tool_registry = mcp_caps.registry
                 tool_selector = ToolSelector(tool_registry)
 
+        # Skill ids that actually reached the prompt this turn (both runtime
+        # paths). The humanize stage keys on the writing skills among them.
+        active_skill_ids: set[str] = set()
         candidates: list = []
         prepared_v2 = None
         orchestrator_v2 = None
@@ -1027,6 +1018,7 @@ async def run_generation(
                         "skills": [r["id"] for r in prepared_v2.skill_records],
                     },
                 )
+                active_skill_ids.update(r["id"] for r in prepared_v2.skill_records)
         web_active = (
             settings.agent_enabled
             and tool_registry is not None
@@ -1328,8 +1320,6 @@ async def run_generation(
             specs.append(MARKETING_REFERENCE_TOOL_SPEC)
         if documents_as_tool:
             specs.append(DOCUMENT_OPS_TOOL_SPEC)
-        if humanize_as_tool:
-            specs.append(HUMANIZE_CHECK_TOOL_SPEC)
 
         # The reserved (non-Ollagraph) specs, used to keep RAG/memory alive if a
         # bad web spec breaks the combined bind.
@@ -1359,8 +1349,6 @@ async def run_generation(
             reserved_specs.append(MARKETING_REFERENCE_TOOL_SPEC)
         if documents_as_tool:
             reserved_specs.append(DOCUMENT_OPS_TOOL_SPEC)
-        if humanize_as_tool:
-            reserved_specs.append(HUMANIZE_CHECK_TOOL_SPEC)
         # Phase 5: ONE generic resource reader, bound only when a connected server
         # actually advertises resources. A user with no resource-bearing server
         # never sees it, so it costs nothing in the context budget of every turn
@@ -1545,6 +1533,9 @@ async def run_generation(
                                         tools_ctx.force_approval_ids
                                         | frozenset(skill_approvals)
                                     )
+                                active_skill_ids.update(
+                                    a.manifest.skill_id for a in included
+                                )
                                 log.info(
                                     "agent.skills_active",
                                     extra={
@@ -1995,6 +1986,17 @@ async def run_generation(
         # filter is a pass-through until a `to=functions.`/`multi_tool_use.parallel`
         # marker appears, so normal text streams byte-for-byte with no added latency.
         harmony_filter = HarmonyStreamFilter()
+        # HUMANIZER (app/humanizer/stage.py) — run by code, not by the model.
+        # On a writing deliverable (the router classified the turn as `produce`
+        # and a writing skill reached the prompt) the model's draft is
+        # BUFFERED instead of streamed; once the graph finishes, the stage
+        # detects, streams a rewrite if the draft needs one, and verifies it.
+        humanize_register = (
+            humanize_stage.register_for(active_skill_ids)
+            if settings.ai_humanizer_enabled and route.work == "produce"
+            else None
+        )
+        draft_parts: list[str] = []
         prep_ms = (time.monotonic() - started) * 1000
         async with aclosing(graph.astream(state, stream_mode="messages")) as stream:
             async for chunk, metadata in stream:
@@ -2010,7 +2012,10 @@ async def run_generation(
                 raw = _chunk_text(chunk)
                 if raw:
                     text = harmony_filter.feed(raw)
-                    if text:
+                    if text and humanize_register is not None:
+                        draft_parts.append(text)
+                        _extend_deadline()  # a hidden draft is still progress
+                    elif text:
                         await writer.push(text)
 
                 # Sum token usage ACROSS the multi-step loop (each model call
@@ -2042,8 +2047,35 @@ async def run_generation(
         # Release any text the harmony filter was holding (an unterminated marker
         # at the very end resolves to nothing; real trailing prose is emitted).
         tail = harmony_filter.flush()
-        if tail:
+        if tail and humanize_register is not None:
+            draft_parts.append(tail)
+        elif tail:
             await writer.push(tail)
+        if humanize_register is not None:
+            draft = "".join(draft_parts)
+            if writer.suspended or not draft.strip():
+                # Parked on an approval (the turn resumes later) or nothing
+                # was written: deliver what exists, unchanged.
+                await writer.push(draft)
+            else:
+                answer_model = failover["model"] or model_id
+                humanized["final_text"], extra_usage = await _deliver_writing(
+                    writer,
+                    settings,
+                    draft=draft,
+                    register=humanize_register,
+                    request=latest.content,
+                    model=answer_model,
+                    context_window=model_window if answer_model == model_id else 0,
+                    stream_id=req.streamId,
+                )
+                if extra_usage:
+                    usage = usage or {"promptTokens": 0, "completionTokens": 0}
+                    usage["promptTokens"] += extra_usage[0]
+                    usage["completionTokens"] += extra_usage[1]
+                if writer.cancel_requested:
+                    status = "cancelled"
+                    return
         await writer.flush(force=True)
         # Phase 8: a tool parked awaiting approval routed the graph to END. The
         # durable approval + suspend is already recorded in Convex; do NOT
@@ -2215,12 +2247,6 @@ async def run_generation(
                     },
                 )
         if status != "suspended":
-            # THE QUALITY MEASUREMENT (Tier C). `writer.text` is the complete
-            # final answer, already buffered, so scoring it costs no tokens and
-            # cannot touch what the user sees. It is MEASUREMENT ONLY — never a
-            # rewrite: by here the text has already streamed. It is what makes
-            # the writing-quality signal exist on EVERY surface, including the
-            # one-shot turns where no in-loop stage can run.
             # shield: the CancelledError that got us here must not also cancel the
             # write that records the cancellation.
             await asyncio.shield(
@@ -2229,33 +2255,10 @@ async def run_generation(
                     usage=usage,
                     finish_reason=finish_reason,
                     error=error,
+                    # The humanize stage's rejected rewrite: save the draft.
+                    text=humanized["final_text"],
                 )
             )
-            # THE QUALITY MEASUREMENT (Tier C), AFTER finalize for the same
-            # reason the rolling summary below is: it must not delay the reply.
-            # `writer.text` is the complete final answer, already buffered, so
-            # this costs no tokens and cannot touch what the user saw. It is
-            # measurement ONLY — never a rewrite — and it is what gives the
-            # writing-quality signal on EVERY surface, including the one-shot
-            # turns where no in-loop stage can run.
-            if settings.ai_humanizer_enabled:
-                # OFF THE EVENT LOOP: this is pure CPU (measured ~150ms on a
-                # 50KB article) and the plane runs `--workers 1`, so doing it
-                # inline would stall every other request for that long.
-                await asyncio.to_thread(_log_writing_quality, req.streamId, writer.text)
-                # FINAL VALIDATION OF WHAT WAS ACTUALLY DELIVERED. In-loop
-                # `verify` checks the rewrite the model CLAIMS; nothing stopped it
-                # passing a faithful one and then streaming something else. This
-                # compares the last draft `humanize_check` detected with the text
-                # the user received. Measurement only — it has already streamed.
-                drafts = getattr(tools_ctx, "humanize_drafts", None) or {}
-                if drafts:
-                    await asyncio.to_thread(
-                        _log_writing_preservation,
-                        req.streamId,
-                        next(reversed(drafts.values())),
-                        writer.text,
-                    )
             # Rolling summary — the compaction half of context management, and
             # the producer that was never built for the `op: "summary"` route
             # that has always existed. AFTER finalize and fire-and-forget, so it
@@ -2345,6 +2348,130 @@ async def run_generation(
                 )
 
 
+async def _deliver_writing(
+    writer: DeltaWriter,
+    settings: Settings,
+    *,
+    draft: str,
+    register: str,
+    request: str,
+    model: str,
+    context_window: int,
+    stream_id: str,
+) -> tuple[str | None, tuple[int, int] | None]:
+    """Run the humanize stage on a buffered writing deliverable and stream the
+    result. Returns (text to SAVE instead of the stream, or None; rewrite usage).
+
+    The user always receives an answer: every failure path delivers the draft.
+    """
+    t0 = time.monotonic()
+    record: dict = {"stream_id": stream_id, "model": model, "register": register}
+    sample = humanize_stage.writing_sample(request)
+    keywords = humanize_stage.required_keywords(request)
+    try:
+        assessment = await asyncio.to_thread(
+            humanize_stage.assess, draft, register=register, sample=sample
+        )
+    except Exception as e:  # noqa: BLE001 — never lose the answer to a measurement
+        record.update(decision="assess_failed", error=type(e).__name__)
+        log.warning("writing.humanize", extra=record)
+        await writer.push(draft)
+        return None, None
+    record.update(
+        decision=assessment.decision,
+        words=assessment.words,
+        score_before=assessment.score,
+        findings=len(assessment.findings),
+        keywords=len(keywords),
+        sample=bool(sample),
+    )
+    # A rewrite must fit the output ceiling or it is cut off mid-article.
+    budget = int(settings.ai_max_output_tokens)
+    if assessment.revise and assessment.words * 1.5 > budget * 0.8:
+        record["decision"] = "too_long"
+    if record["decision"] != "revise":
+        await writer.push(draft)
+        log.info("writing.humanize", extra=record)
+        return None, None
+    # Nothing has streamed during the hidden draft, so a Stop pressed then is only
+    # learned from a heartbeat. Ask once before paying for a rewrite.
+    with contextlib.suppress(Exception):
+        await writer.heartbeat()
+    if writer.cancel_requested:
+        record["decision"] = "cancelled"
+        log.info("writing.humanize", extra=record)
+        return None, None
+
+    rewriter = build_llm(
+        settings,
+        model=model,
+        context_window=context_window,
+        max_tokens=budget,
+        base_url=settings.ollima_base_url,
+        api_key=settings.ollima_api_key,
+    )
+    messages = humanize_stage.rewrite_messages(
+        assessment, keywords=keywords, sample=sample
+    )
+    parts: list[str] = []
+    usage = [0, 0]
+    truncated = False
+    try:
+        async with aclosing(rewriter.astream(messages)) as stream:
+            async for chunk in stream:
+                text = _chunk_text(chunk)
+                if text:
+                    parts.append(text)
+                    await writer.push(text)
+                meta = getattr(chunk, "usage_metadata", None) or {}
+                usage[0] += meta.get("input_tokens") or 0
+                usage[1] += meta.get("output_tokens") or 0
+                resp = getattr(chunk, "response_metadata", None) or {}
+                if resp.get("finish_reason") == "length":
+                    truncated = True
+                if writer.cancel_requested:
+                    record["decision"] = "cancelled"
+                    log.info("writing.humanize", extra=record)
+                    return None, (usage[0], usage[1])
+    except Exception as e:  # noqa: BLE001 — the draft is always deliverable
+        with contextlib.suppress(Exception):
+            model_health.record_exception(model, e)
+        record.update(
+            decision="rewrite_failed",
+            error=type(e).__name__,
+            rewrite_ms=round((time.monotonic() - t0) * 1000),
+        )
+        log.warning("writing.humanize", extra=record)
+        if not parts:
+            await writer.push(draft)
+            return None, (usage[0], usage[1])
+        return draft, (usage[0], usage[1])
+
+    rewrite = "".join(parts)
+    if assessment.tail:
+        # Score block / Sources / score progression: kept exactly as written.
+        sep = "" if rewrite.endswith("\n") else "\n\n"
+        await writer.push(sep + assessment.tail)
+    acceptance = await asyncio.to_thread(
+        humanize_stage.accept,
+        assessment,
+        rewrite,
+        keywords=keywords,
+        sample=sample,
+        truncated=truncated,
+    )
+    record.update(
+        decision="rewritten" if acceptance.ok else "rejected",
+        reason=acceptance.reason,
+        score_after=acceptance.score_after,
+        lost={k: len(v) for k, v in acceptance.lost.items()},
+        added=len(acceptance.added),
+        rewrite_ms=round((time.monotonic() - t0) * 1000),
+    )
+    log.info("writing.humanize", extra=record)
+    return (None if acceptance.ok else draft), (usage[0], usage[1])
+
+
 def _chunk_text(chunk: object) -> str:
     """Extract text from an AIMessageChunk.
 
@@ -2369,76 +2496,3 @@ def _chunk_text(chunk: object) -> str:
 def _is_provider_error(e: Exception) -> bool:
     name = type(e).__name__.lower()
     return any(k in name for k in ("api", "openai", "http", "rate", "connection"))
-
-
-def _mask_post_draft_blocks(text: str) -> str:
-    """Blank out what the Blog skill writes AFTER the draft (score block, caption,
-    Sources, score progression): they were never in the detected draft, so their
-    presence or absence says nothing about whether the rewrite kept the facts."""
-    out = text
-    for rx in POST_DRAFT_BLOCKS:
-        out = rx.sub(" ", out)
-    return out
-
-
-def _log_writing_preservation(stream_id: str, draft: str, delivered: str) -> None:
-    """Did the delivered answer keep every fact the checked draft had?
-
-    LOSSES ONLY. The delivered text legitimately carries things the draft did
-    not — stage narration ("Scoring: 89"), the score block, the Sources list — so
-    an "addition" here is not evidence of fabrication; in-loop `verify` owns that.
-    A LOSS is: the user did not receive a number, date, link, quote, heading,
-    label or tag that the checked draft contained. Never raises, never rewrites.
-    """
-    try:
-        if not draft or not delivered:
-            return
-        report = preserve_verify(
-            _mask_post_draft_blocks(draft)[:_QUALITY_MAX_CHARS],
-            _mask_post_draft_blocks(delivered)[:_QUALITY_MAX_CHARS],
-        )
-        if "error" in report:
-            return
-        lost = report.get("lost") or {}
-        log.info(
-            "writing.preservation",
-            extra={
-                "stream_id": stream_id,
-                "kept_everything": not lost,
-                "lost": {k: len(v) for k, v in lost.items()},
-                "score_draft": report.get("score_before"),
-                "score_delivered": report.get("score_after"),
-            },
-        )
-    except Exception:  # noqa: BLE001 — a measurement must never fail a turn
-        log.debug("writing.preservation_failed", extra={"stream_id": stream_id})
-
-
-def _log_writing_quality(stream_id: str, text: str) -> None:
-    """Score the finished answer and record it. Never raises, never rewrites.
-
-    Only prose is scored: a short reply, a code answer or a tool-only turn is not
-    a written deliverable and a score for it would be noise. Bounded by
-    `_QUALITY_MAX_CHARS` so an enormous answer cannot cost measurable time.
-    """
-    try:
-        if not text or len(text) < _QUALITY_MIN_CHARS:
-            return
-        body = text[:_QUALITY_MAX_CHARS]
-        findings, prof = analyze(body)
-        score = human_voice_score(body, findings=findings, prof=prof)
-        top: dict[str, int] = {}
-        for f in findings:
-            top[f.pattern] = top.get(f.pattern, 0) + 1
-        log.info(
-            "writing.quality",
-            extra={
-                "stream_id": stream_id,
-                "human_voice_score": score,
-                "words": prof.words,
-                "findings": len(findings),
-                "by_pattern": dict(sorted(top.items(), key=lambda kv: -kv[1])[:8]),
-            },
-        )
-    except Exception:  # noqa: BLE001 — a measurement must never fail a turn
-        log.debug("writing.quality_failed", extra={"stream_id": stream_id})

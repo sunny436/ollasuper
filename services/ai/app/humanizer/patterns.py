@@ -475,6 +475,13 @@ _MAX_BOLD_LABELS_PER_1K = 6.0
 #: this, a single legitimate em-dash in one sentence was flagged.)
 _MIN_DENSITY_WORDS = 120
 _MIN_DENSITY_HITS = 3
+#: pattern -> (Profile attribute, ceiling): scored on the excess only.
+_DENSITY_CEILINGS = {
+    "B8": ("dashes_per_1k", _MAX_DASHES_PER_1K),
+    "B6": ("triads_per_1k", _MAX_TRIADS_PER_1K),
+    "B10": ("hyphen_pairs_per_1k", _MAX_HYPHEN_PAIRS_PER_1K),
+    "D19": ("bold_labels_per_1k", _MAX_BOLD_LABELS_PER_1K),
+}
 
 
 def _count_words(text: str) -> int:
@@ -797,6 +804,24 @@ def human_voice_score(
         prof = profile(text)
     if not findings:
         return 100
-    weight = sum(_ACT_WEIGHT if f.severity == _ACT else _WEAK_WEIGHT for f in findings)
+    # A DENSITY tell (dashes, triads, hyphen pairs, bold labels) is a habit, not a
+    # sighting: the writer is allowed its ceiling, so only occurrences ABOVE the
+    # ceiling count. Counting every occurrence once over it saturated real model
+    # output at 0 (one blog: 39-49 dash findings for ONE habit), so the score
+    # could not tell a slightly heavy draft from slop.
+    ref = profile(sample) if isinstance(sample, str) and sample.strip() else None
+    weight = 0.0
+    habits: dict[str, list[Finding]] = {}
+    for f in findings:
+        if f.pattern in _DENSITY_CEILINGS:
+            habits.setdefault(f.pattern, []).append(f)
+        else:
+            weight += _ACT_WEIGHT if f.severity == _ACT else _WEAK_WEIGHT
+    for pid, hits in habits.items():
+        attr, ceiling = _DENSITY_CEILINGS[pid]
+        if ref is not None:
+            ceiling = max(ceiling, getattr(ref, attr))
+        excess = max(0.0, len(hits) - ceiling * prof.words / 1000.0)
+        weight += excess * (_ACT_WEIGHT if hits[0].severity == _ACT else _WEAK_WEIGHT)
     density = weight * 1000.0 / max(prof.words, 1)
     return max(0, min(100, round(100 - density * _DENSITY_TO_POINTS)))

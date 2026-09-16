@@ -268,6 +268,10 @@ class Decision:
     # The turn's reasoning floor (0-2). Carried so a capacity failover can pick
     # a model that still meets it, instead of re-deriving the classification.
     floor: int = 0
+    # The turn's work type ("produce", "analyze", ...). The humanize stage
+    # runs on writing work only, so this reuses the router's classification
+    # instead of a second classifier.
+    work: str = ""
 
 
 @dataclass(frozen=True)
@@ -509,7 +513,9 @@ def select(
     best = min(capable, key=lambda c: profile(c).ttft_s)
 
     tag = "g" if cls.grounded else "s"
-    return Decision(best.id, f"{cls.work}:{cls.reasoning}{tag}:{est}t", cls.reasoning)
+    return Decision(
+        best.id, f"{cls.work}:{cls.reasoning}{tag}:{est}t", cls.reasoning, cls.work
+    )
 
 
 def select_failover(
