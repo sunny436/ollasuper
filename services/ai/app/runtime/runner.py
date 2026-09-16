@@ -295,6 +295,9 @@ async def run_generation(
     # the last tool call. That is what killed long deliverables mid-generation.
     writer.on_progress = _extend_deadline
     tools_ctx: ToolExecContext | None = None  # defined pre-try for the finally
+    # The capacity failover that ANSWERED, when one did — so the turn records the
+    # brain that produced the answer, not the routed one that refused.
+    failover: dict = {"model": None}
     # Phase 5: MCP sessions live for the whole turn. Entered here and closed in
     # the `finally` below — the same task both ways, which is the anyio rule that
     # makes every pooled session an actor in `app/mcp/session.py`.
@@ -1673,11 +1676,18 @@ async def run_generation(
             if notified["done"]:
                 return
             notified["done"] = True
+            failover["model"] = fb_model
             log.warning(
                 "generation_quota_fallback",
                 extra={"stream_id": req.streamId, "from": model_id, "to": fb_model},
             )
             with contextlib.suppress(Exception):  # never break a recovering turn
+                # chatMessages.model must name the model that answered; it
+                # named the refusing one, so a failover turn was credited to
+                # a model that produced none of it.
+                writer.set_routed_model(
+                    fb_model, f"{route.reason}|quota_fallback_from:{model_id}"
+                )
                 await writer.push(
                     f"_{model_id} is out of capacity — answered with "
                     f"{fb_model} instead._\n\n"
@@ -2093,7 +2103,10 @@ async def run_generation(
                 # This line is the per-turn telemetry every latency question is
                 # answered from, so reporting req.model here made per-model
                 # analysis quietly wrong once the router could move off it.
-                "model": model_id,
+                # On a capacity failover that is the failover model;
+                # `routed_model` keeps the router's choice.
+                "model": failover["model"] or model_id,
+                "routed_model": model_id,
                 "requested_model": req.model,
                 "routed_reason": route.reason,
                 "status": status,

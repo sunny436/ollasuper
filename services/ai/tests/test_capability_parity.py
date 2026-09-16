@@ -304,8 +304,14 @@ async def test_capacity_failover_is_bound_with_dynamically_discovered_tools(
         f"failover lost the discovered tool: {fallback_binds}"
     )
     assert "broken_links_audit" in _tool_call_ids(convex)
-    assert _final(convex)["status"] == "done"
+    final = _final(convex)
+    assert final["status"] == "done"
+    # the turn is credited to the model that ANSWERED, and says why
+    assert final["model"] == FALLBACK
+    assert f"quota_fallback_from:{GEMINI}" in final["routedReason"]
+    # health blames the model that refused, and only that one
     assert health.is_exhausted(GEMINI) and not health.is_exhausted(DEFAULT)
+    assert not health.is_exhausted(FALLBACK)
 
 
 # ---- the layer itself: identical whichever brain the router picks -------------
