@@ -927,6 +927,28 @@ class SecurityTurn:
                     f"- {s['tool']} `{s['rule']}` {s['path']}:{s['line']} — "
                     f"{s['message']}"
                 )
+        if self.fixes:
+            L += ["", f"### Fixes — {len(self.fixes)}"]
+            for fx in self.fixes[:20]:
+                if fx.get("status") == "applied":
+                    rt = (
+                        fx.get("retest")
+                        or self.retests.get((fx.get("repo"), fx.get("path")))
+                        or {"status": "not_run"}
+                    )
+                    latest = self.retests.get((fx.get("repo"), fx.get("path"))) or rt
+                    where = f"`{fx.get('repo')}:{fx.get('path')}`"
+                    L.append(
+                        f"- {where} — applied after approval "
+                        f"({fx.get('changed_lines')} changed lines, not committed) · "
+                        f"Fix retest: {latest.get('status')} — "
+                        f"{latest.get('detail', '')}"
+                    )
+                else:
+                    L.append(
+                        f"- `{fx.get('repo')}:{fx.get('path')}` — not applied "
+                        f"({fx.get('reason') or fx.get('status')})"
+                    )
         if self.denied_calls:
             L += ["", "### Blocked actions"]
             for d in self.denied_calls[:10]:

@@ -570,6 +570,55 @@ def layered_registry(
     return registry
 
 
+async def _post_fix_check(
+    state: SecurityTurn, repo: str, root: str, path: str, old: str
+) -> dict:
+    """The retest every applied fix gets, whether or not the model asks for one:
+    the replaced code is gone and the patch introduced no secret pattern. The
+    model's own `security_scan retest` (with its flagged evidence) still runs
+    later and replaces this when it does."""
+    try:
+        text = await local.read_text(root, path, set(await local.tracked(root)))
+    except local.LocalError as e:
+        result = {"status": "failed", "detail": f"patched file unreadable: {e.code}"}
+        state.retests[(repo, path)] = result
+        return result
+    red, hits = secrets.redact_text(text)
+    prior = {h["fp"] for h in state.secret_hits if h["repo"] == repo}
+    introduced = [h.rule for h in hits if h.fingerprint not in prior]
+    still = bool(old.strip()) and " ".join(old.split()) in " ".join(red.split())
+    if still or introduced:
+        detail = "; ".join(
+            filter(
+                None,
+                [
+                    "replaced code still present" if still else "",
+                    f"patch introduced a secret pattern ({', '.join(introduced)})"
+                    if introduced
+                    else "",
+                ],
+            )
+        )
+        result = {"status": "failed", "detail": f"automatic post-fix check: {detail}"}
+    else:
+        result = {
+            "status": "passed",
+            "detail": "automatic post-fix check: replaced code absent, no secret "
+            "pattern introduced",
+        }
+    state.retests[(repo, path)] = result
+    state.add_read(
+        Read(
+            source="local",
+            repo=repo,
+            path=path,
+            text=red,
+            shown=[(1, red.count("\n") + 1)],
+        )
+    )
+    return result
+
+
 class SecurityFixAdapter:
     """Executes an APPROVED fix; builds the preview shown on the approval card."""
 
@@ -638,12 +687,16 @@ class SecurityFixAdapter:
                 tool_id=tool.tool_id,
             ) from None
         state.tracked_cache.pop(repo, None)
+        retest = await _post_fix_check(
+            state, repo, root, res["path"], str(payload.get("old") or "")
+        )
         state.fixes.append(
             {
                 "repo": repo,
                 "path": res["path"],
                 "status": "applied",
                 "changed_lines": res["changed_lines"],
+                "retest": retest,
             }
         )
         diff, _ = secrets.redact_text(res["diff"])

@@ -454,3 +454,54 @@ def test_evidence_read_before_a_fix_still_validates_after_the_file_changes():
     [f] = s.validate({"kind": "local", "repo": "fixture"}, "", [_finding()])
     assert f["status"] == "confirmed" and f["line_verified"]
     assert "Content read this turn: 1 file(s)" in s.render()
+
+
+async def test_an_applied_fix_is_retested_even_if_the_model_never_asks(tmp_path):
+    """Prod: after an approved fix the resumed model stalled without calling
+    retest, so the report could not show the regression result."""
+    from app.models.tools import ToolDefinition
+    from app.secaudit.tool import SecurityFixAdapter, fix_tool_definition
+
+    repo = tmp_path / "fixture"
+    build(repo)
+
+    class S:
+        ai_security_local_roots = json.dumps({"fixture": str(repo)})
+        ai_security_local_user_ids = "u1"
+
+    state = _state(local=LocalAccess.from_settings(S()), read_only=False)
+    tool: ToolDefinition = fix_tool_definition()
+    old = "return requests.get(url, timeout=5).text"
+    out = await SecurityFixAdapter(state).call_tool(
+        tool,
+        {
+            "repo": "fixture",
+            "path": "app.py",
+            "old": old,
+            "new": "return fetch_allowlisted(url)",
+            "finding_title": "SSRF",
+            "explanation": "allowlist",
+        },
+        user_id="u1",
+    )
+    assert out["data"]["status"] == "applied" and out["data"]["committed"] is False
+    assert state.retests[("fixture", "app.py")]["status"] == "passed"
+    text = state.render()
+    assert "### Fixes — 1" in text and "Fix retest: passed" in text
+
+    # A patch that introduces a secret fails the automatic check.
+    leak = planted("introduced")["github_token"]
+    await SecurityFixAdapter(state).call_tool(
+        tool,
+        {
+            "repo": "fixture",
+            "path": "app.py",
+            "old": "return fetch_allowlisted(url)",
+            "new": f'return fetch_allowlisted(url, token="{leak}")',
+            "finding_title": "x",
+            "explanation": "x",
+        },
+        user_id="u1",
+    )
+    assert state.retests[("fixture", "app.py")]["status"] == "failed"
+    assert leak not in state.render()
