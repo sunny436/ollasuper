@@ -432,3 +432,25 @@ async def test_a_call_without_a_repo_name_is_not_recorded_as_an_access_target():
     msg = await run_security_tool(state, "c", "security_repo", {"op": "tree"}, 8000)
     assert json.loads(msg.content)["code"] == "invalid_input"
     assert state.local_access == {}
+
+
+def test_evidence_read_before_a_fix_still_validates_after_the_file_changes():
+    """Prod: after an approved fix, the retest re-read app.py and replaced the
+    content the finding's evidence came from, so a confirmed SSRF read
+    `needs_validation — evidence not found`."""
+    from qa.secaudit_fixture import APP_PY
+
+    s = _state(read_only=False)
+    _app_read(s)
+    s.add_read(
+        Read(
+            source="local",
+            repo="fixture",
+            path="app.py",
+            text=APP_PY.replace(SQLI, "query = safe_query(name)"),
+            shown=[(1, 40)],
+        )
+    )
+    [f] = s.validate({"kind": "local", "repo": "fixture"}, "", [_finding()])
+    assert f["status"] == "confirmed" and f["line_verified"]
+    assert "Content read this turn: 1 file(s)" in s.render()

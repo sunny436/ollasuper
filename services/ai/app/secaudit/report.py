@@ -211,16 +211,17 @@ class SecurityTurn:
             read.truncated = True
         read.seq = self._next()
         self.read_bytes += len(read.text)
-        # One entry per (source, repo, path, ref); line ranges accumulate.
+        # One entry per (source, repo, path, ref) AND content version: line ranges
+        # of the same content accumulate, but a changed file (re-read after a
+        # fix) is a NEW version — evidence read before the change must still
+        # validate against what was actually read then.
         for r in self.reads:
             if (r.source, r.repo, r.path, r.ref) == (
                 read.source,
                 read.repo,
                 read.path,
                 read.ref,
-            ):
-                if read.text:
-                    r.text = read.text
+            ) and (not read.text or read.text == r.text):
                 r.shown.extend(read.shown)
                 r.truncated = r.truncated or read.truncated
                 r.seq = read.seq
@@ -760,7 +761,8 @@ class SecurityTurn:
             )
         if self.scope_summary:
             L.append(f"- Declared scope: {self.scope_summary}")
-        files = [r for r in self.reads if r.path and r.source != "inline"]
+        versions = [r for r in self.reads if r.path and r.source != "inline"]
+        files = list({(r.source, r.repo, r.path): r for r in versions}.values())
         partial = [r for r in files if r.truncated]
         L.append(
             f"- Content read this turn: {len(files)} file(s)"
