@@ -366,6 +366,48 @@ def _deref_schema(
     return schema
 
 
+#: JSON-Schema keywords Gemini refuses in a function declaration. MEASURED, not
+#: guessed (2026-09-16, probing the live gateway one keyword at a time with a
+#: nested property — the shape OpenAPI component schemas use): both routed Gemini
+#: models return `400 Invalid JSON payload received. Unknown name "readOnly"` for
+#: exactly these two, and accept the other sixteen tried (additionalProperties,
+#: $schema, examples, title, default, format, pattern, min/maxLength, const,
+#: nullable, deprecated, $comment, $id, x-*). DeepSeek accepts all of them.
+#:
+#: Why it mattered: the router moved simple and complex work onto Gemini, and an
+#: externally supplied tool schema carrying `readOnly` failed EVERY Gemini turn
+#: for a real user before a single token — the same failure mode as the
+#: generate_file schema, but on a dynamic tool no static scan can see.
+_UNPORTABLE_SCHEMA_KEYS = frozenset({"readOnly", "writeOnly"})
+#: Maps whose KEYS are names chosen by the schema author, not keywords — a
+#: parameter literally called "readOnly" is a real parameter and must survive.
+_SCHEMA_NAME_MAPS = frozenset(
+    {"properties", "patternProperties", "$defs", "definitions"}
+)
+#: Keywords whose VALUE is data, not schema — never walked, so an example or a
+#: default that happens to contain a "readOnly" key is left exactly as written.
+_SCHEMA_DATA_KEYS = frozenset({"enum", "const", "default", "example", "examples"})
+
+
+def _portable_schema(node: object) -> object:
+    """The same schema minus the keywords a routed provider refuses."""
+    if isinstance(node, list):
+        return [_portable_schema(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict = {}
+    for key, value in node.items():
+        if key in _UNPORTABLE_SCHEMA_KEYS:
+            continue
+        if key in _SCHEMA_DATA_KEYS:
+            out[key] = value
+        elif key in _SCHEMA_NAME_MAPS and isinstance(value, dict):
+            out[key] = {name: _portable_schema(sub) for name, sub in value.items()}
+        else:
+            out[key] = _portable_schema(value)
+    return out
+
+
 def build_tool_specs(
     candidates: list[ToolCandidate],
     registry: ToolRegistry,
@@ -393,6 +435,7 @@ def build_tool_specs(
             )
         except Exception:  # noqa: BLE001
             resolved = {"type": "object"}
+        resolved = _portable_schema(resolved)
         if not isinstance(resolved, dict) or resolved.get("type") != "object":
             resolved = {"type": "object", "properties": {}}
         specs.append(

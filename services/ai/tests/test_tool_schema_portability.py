@@ -67,3 +67,74 @@ def test_table_cells_still_allow_real_numbers():
     cell = sheets["items"]["properties"]["rows"]["items"]["items"]
     types = {branch["type"] for branch in cell["anyOf"]}
     assert types == {"string", "number"}
+
+
+# ------------------------------------------ dynamic (registry) tool schemas
+#
+# The static scan above cannot see these: Ollagraph and MCP tools arrive with
+# their schemas at runtime. Measured on production after the Gemini router
+# change: a tool schema carrying `readOnly` failed every Gemini turn for a real
+# user with `400 Unknown name "readOnly"`. Probing the live gateway keyword by
+# keyword found Gemini rejects exactly `readOnly` and `writeOnly`.
+def test_registry_tool_schemas_are_made_portable():
+    from app.agent.executor import build_tool_specs
+    from app.models.tools import SideEffect, ToolCandidate, ToolDefinition
+    from app.tools.registry import ToolRegistry
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "urls": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "format": "uri"},
+                        "id": {"type": "string", "readOnly": True},
+                        "secret": {"type": "string", "writeOnly": True},
+                        # A PARAMETER literally named readOnly is real input.
+                        "readOnly": {"type": "boolean", "description": "flag"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["a", "b"],
+                # Data, not schema: must survive untouched.
+                "default": "a",
+                "examples": [{"readOnly": True}],
+            },
+        },
+        "required": ["urls"],
+    }
+    tool = ToolDefinition(
+        tool_id="crawl_endpoint_v1_crawl_post",
+        name="crawl",
+        description="Crawl.",
+        provider="ollagraph",
+        input_schema=schema,
+        side_effect=SideEffect.READ_ONLY,
+    )
+    reg = ToolRegistry()
+    reg.register(tool)
+    specs, _ = build_tool_specs([ToolCandidate(tool=tool, score=1.0)], reg)
+    params = specs[0]["function"]["parameters"]
+
+    import json
+
+    blob = json.dumps(params)
+    item = params["properties"]["urls"]["items"]
+    assert "readOnly" not in item["properties"]["id"], "keyword not stripped"
+    assert "writeOnly" not in item["properties"]["secret"], "keyword not stripped"
+    assert "readOnly" in item["properties"], "a parameter NAMED readOnly was deleted"
+    assert item["properties"]["url"]["format"] == "uri", "a portable keyword was lost"
+    assert item["additionalProperties"] is False
+    assert params["properties"]["mode"]["examples"] == [{"readOnly": True}], (
+        "example DATA was rewritten"
+    )
+    assert params["properties"]["mode"]["default"] == "a"
+    assert params["required"] == ["urls"]
+    assert '"readOnly": true' not in blob.replace(
+        '"examples": [{"readOnly": true}]', ""
+    )
