@@ -344,6 +344,17 @@ async def run_generation(
         # answers but can never stop one from answering.
         route = Decision(req.model, "disabled")
         ctx_state = req.conversationContext
+        # The window the CAPABILITY budgets are sized from: the smallest KNOWN
+        # window among the models the router could pick. Sized from the routed
+        # model's own window, the same turn got a different tool-schema budget and
+        # compacted tool evidence sooner or later depending on which brain won
+        # (131k measured vs the 200k unknown-window default). One window for every
+        # candidate keeps the capability layer identical, and it is safe for the
+        # smallest. 0 = none known. Output tokens stay per model (build_llm).
+        candidates_window = min(
+            (c.contextWindow for c in req.modelCandidates if c.contextWindow > 0),
+            default=0,
+        )
         try:
             router_cfg = RouterConfig.from_settings(
                 settings.ai_router_enabled, settings.ai_router_profiles
@@ -399,6 +410,7 @@ async def run_generation(
                         "reason": route.reason,
                         "select_us": round(select_us, 1),
                         "candidates": len(req.modelCandidates),
+                        "budget_window": candidates_window,
                     },
                 )
         except Exception as e:  # never let routing fail a turn
@@ -426,7 +438,7 @@ async def run_generation(
         # REAL window (req.contextWindow from Convex).
         cb = ContextBudget(
             model=model_id,
-            context_window=model_window,
+            context_window=candidates_window or model_window,
             max_output=settings.ai_max_output_tokens,
             safety_factor=settings.ai_token_safety_factor,
             base_history_budget=settings.ai_context_budget_tokens,
@@ -1640,12 +1652,17 @@ async def run_generation(
                 else build_llm(
                     settings,
                     model=fb_model,
-                    context_window=req.contextWindow,
+                    context_window=fb_window,
                     streaming=False,
                     base_url=settings.ollima_base_url,
                     api_key=settings.ollima_api_key,
                 )
             )
+            # Dynamic capability loading re-binds the primary every step; the
+            # failover must re-bind the same way or it answers without the tools
+            # the turn has already loaded.
+            if tools_ctx is not None and tools_ctx.rebind is not None:
+                tools_ctx.rebind_quota_fallback = quota_fb.bind_tools
 
         # NOT silent. A user whose answer came from a different model than the one
         # in their picker must be told, or the picker is lying to them. One line,
@@ -1658,11 +1675,11 @@ async def run_generation(
             notified["done"] = True
             log.warning(
                 "generation_quota_fallback",
-                extra={"stream_id": req.streamId, "from": req.model, "to": fb_model},
+                extra={"stream_id": req.streamId, "from": model_id, "to": fb_model},
             )
             with contextlib.suppress(Exception):  # never break a recovering turn
                 await writer.push(
-                    f"_{req.model} is out of capacity — answered with "
+                    f"_{model_id} is out of capacity — answered with "
                     f"{fb_model} instead._\n\n"
                 )
 
@@ -1672,12 +1689,17 @@ async def run_generation(
         # user reported. One cheap check turns that into an immediate, honest
         # message. `is_exhausted` self-expires, so a recovered provider is
         # retried without a restart.
-        if model_health.is_exhausted(req.model) and (
+        #
+        # Health is keyed on the ROUTED model, never req.model (the thread's
+        # default). Keyed on the default, one model's quota refusal refused turns
+        # the router had sent to a healthy model — prod, 6 turns routed to
+        # deepseek-v4-flash refused as "deepseek-v4-pro has no capacity".
+        if model_health.is_exhausted(model_id) and (
             quota_fb is None or model_health.is_exhausted(fb_model)
         ):
             log.warning(
                 "generation_no_capacity",
-                extra={"stream_id": req.streamId, "model": req.model},
+                extra={"stream_id": req.streamId, "model": model_id},
             )
             status = "error"
             error = {
@@ -1695,7 +1717,7 @@ async def run_generation(
             quota_fallback=quota_fb,
             quota_fallback_tools=quota_fb_tools,
             on_quota_fallback=_note_quota_fallback,
-            model_name=req.model,
+            model_name=model_id,
             health_ttl_s=settings.ai_model_health_ttl_s,
         )
 

@@ -138,3 +138,55 @@ def test_registry_tool_schemas_are_made_portable():
     assert '"readOnly": true' not in blob.replace(
         '"examples": [{"readOnly": true}]', ""
     )
+
+
+def test_conditional_subschemas_are_made_portable():
+    """Measured the same way (2026-09-16): both routed Gemini models refuse a
+    declaration carrying `if`/`then`; the constructs MCP servers commonly emit
+    alongside it (type arrays, oneOf, allOf, $ref/$defs, uniqueItems,
+    propertyNames, exclusiveMinimum) are accepted and must be kept."""
+    from app.agent.executor import build_tool_specs
+    from app.models.tools import SideEffect, ToolCandidate, ToolDefinition
+    from app.tools.registry import ToolRegistry
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "kind": {"type": ["string", "null"]},
+            "value": {
+                "type": "string",
+                "if": {"minLength": 1},
+                "then": {"maxLength": 9},
+                "else": {"const": ""},
+            },
+            "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
+            "limit": {"oneOf": [{"type": "integer"}, {"type": "string"}]},
+            "score": {"type": "number", "exclusiveMinimum": 0},
+            # Parameters literally NAMED if/then/else are real input.
+            "if": {"type": "string"},
+            "then": {"type": "string"},
+            "else": {"type": "string"},
+        },
+    }
+    tool = ToolDefinition(
+        tool_id="conditional_tool",
+        name="conditional",
+        description="Conditional schema.",
+        provider="mcp",
+        input_schema=schema,
+        side_effect=SideEffect.READ_ONLY,
+    )
+    reg = ToolRegistry()
+    reg.register(tool)
+    specs, _ = build_tool_specs([ToolCandidate(tool=tool, score=1.0)], reg)
+    props = specs[0]["function"]["parameters"]["properties"]
+
+    assert not {"if", "then", "else"} & set(props["value"]), "keyword not stripped"
+    assert props["value"]["type"] == "string"
+    assert {"if", "then", "else"} <= set(props), (
+        "a parameter NAMED if/then/else was deleted"
+    )
+    assert props["kind"]["type"] == ["string", "null"]
+    assert props["tags"]["uniqueItems"] is True
+    assert len(props["limit"]["oneOf"]) == 2
+    assert props["score"]["exclusiveMinimum"] == 0

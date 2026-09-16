@@ -30,7 +30,10 @@ from langchain_core.messages import (
 )
 from langchain_core.messages.utils import count_tokens_approximately
 
+from app.logging import get_logger
 from app.models.chat import CONTEXT_WINDOW, IMAGE_TOKENS
+
+log = get_logger(__name__)
 
 # Headroom (tokens) for tokenizer drift + request-envelope overhead, on top of
 # the per-component `safety_factor`.
@@ -187,6 +190,8 @@ def fit_messages(messages: list[AnyMessage], budget_tokens: int) -> list[AnyMess
     if total <= budget_tokens:
         return list(messages)
     out = list(messages)
+    before = total
+    compacted = 0
     # Oldest-first: keep the most recent (most relevant) results full.
     for i, m in enumerate(out):
         if total <= budget_tokens:
@@ -195,6 +200,19 @@ def fit_messages(messages: list[AnyMessage], budget_tokens: int) -> list[AnyMess
             new = _compact(m)
             total -= per[i] - count_tokens_approximately([new])
             out[i] = new
+            compacted += 1
+    if compacted:
+        # Visible, because it changes what evidence the model reasons over — and
+        # was the one budget effect that could not be audited from the logs.
+        log.info(
+            "agent.context_compacted",
+            extra={
+                "compacted": compacted,
+                "tokens_before": before,
+                "tokens_after": total,
+                "budget_tokens": budget_tokens,
+            },
+        )
     return out
 
 

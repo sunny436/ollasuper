@@ -246,12 +246,18 @@ def _build_agent_graph(
         # messages-mode emit path re-pushes (duplicates) the preamble. When budget is
         # exhausted / no tools, both clients are the plain streaming `llm` (no tools),
         # so the try always succeeds → byte-identical to the pre-streaming behaviour.
+        quota_tools = quota_fallback_tools
         if tools_ctx.capabilities is not None and tools_ctx.rebind is not None:
             specs = state.get("bound_specs") or []
             use_tools = has_budget and bool(specs)
             client = tools_ctx.rebind(specs) if use_tools else llm
             fb = tools_ctx.rebind_fallback
             fallback_client = fb(specs) if (use_tools and fb is not None) else None
+            # The capacity failover sees the SAME working set as the primary,
+            # including tools find_capabilities loaded on earlier steps.
+            qrb = tools_ctx.rebind_quota_fallback
+            if use_tools and qrb is not None:
+                quota_tools = qrb(specs)
         else:
             use_tools = has_budget
             client = llm_tools if use_tools else llm
@@ -267,7 +273,7 @@ def _build_agent_graph(
         )
         t0 = time.monotonic()
         stream_broke = False
-        qfb = quota_fallback_tools if use_tools else quota_fallback
+        qfb = quota_tools if use_tools else quota_fallback
 
         # KNOWN REFUSING: skip the doomed call. Without this every step of a
         # multi-step turn re-pays it, and each payment is three attempts inside

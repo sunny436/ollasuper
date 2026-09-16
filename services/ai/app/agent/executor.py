@@ -285,6 +285,10 @@ class ToolExecContext:
     # model's proper tool-call DELTAS break the streaming accumulator. None ⇒ no
     # fallback (non-agent / delegated paths), byte-identical.
     rebind_fallback: object | None = None
+    # The CAPACITY failover's re-bind (a different model). Bound once before the
+    # loop, the failover could not see tools `find_capabilities` had loaded — so a
+    # turn that failed over mid-workflow lost the capabilities it was using.
+    rebind_quota_fallback: object | None = None
     pending_capabilities: list[dict] = field(default_factory=list)
     clarification: str | None = None
     # File Generation System — set when `generate_file` is bound (flag on). All
@@ -378,7 +382,12 @@ def _deref_schema(
 #: externally supplied tool schema carrying `readOnly` failed EVERY Gemini turn
 #: for a real user before a single token — the same failure mode as the
 #: generate_file schema, but on a dynamic tool no static scan can see.
-_UNPORTABLE_SCHEMA_KEYS = frozenset({"readOnly", "writeOnly"})
+#:
+#: `if`/`then`/`else` (conditional subschemas): measured the same way — both
+#: Gemini models refuse a declaration carrying them; type arrays, oneOf, allOf,
+#: $ref/$defs, uniqueItems, propertyNames and exclusiveMinimum were accepted.
+#: Dropping them only loosens a client-side hint; the tool server still validates.
+_UNPORTABLE_SCHEMA_KEYS = frozenset({"readOnly", "writeOnly", "if", "then", "else"})
 #: Maps whose KEYS are names chosen by the schema author, not keywords — a
 #: parameter literally called "readOnly" is a real parameter and must survive.
 _SCHEMA_NAME_MAPS = frozenset(
