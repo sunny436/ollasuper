@@ -122,7 +122,13 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             }
           >
             <div
-              className={`pointer-events-auto mx-auto flex w-full flex-col items-center gap-5 ${centred ? "max-w-[58rem] [@media(pointer:coarse)]:h-full" : "max-w-3xl"}`}
+              // Filling the height on touch (below) makes this column cover the
+              // header, and it carries pointer-events-auto — which swallowed taps
+              // on Open conversations and Notifications (caught by
+              // e2e/qa-responsive.js on every touch viewport). So on touch the
+              // column is transparent to pointers and its two children take the
+              // events back.
+              className={`pointer-events-auto mx-auto flex w-full flex-col items-center gap-5 ${centred ? "max-w-[58rem] [@media(pointer:coarse)]:h-full [@media(pointer:coarse)]:pointer-events-none" : "max-w-3xl"}`}
             >
               <AnimatePresence mode="popLayout">
                 {centred && (
@@ -140,7 +146,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                     // my-auto: with the column filling the height on touch, this
                     // keeps the greeting exactly where it was while the composer
                     // moves to the bottom.
-                    className="w-full [@media(pointer:coarse)]:my-auto"
+                    className="w-full [@media(pointer:coarse)]:pointer-events-auto [@media(pointer:coarse)]:my-auto"
                   >
                     <EmptyHero />
                   </m.div>
@@ -152,7 +158,11 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                 this subtree must persist across the transition or the textarea
                 remounts and the draft disappears mid-send.
               */}
-              <m.div layout transition={ITEM_SPRING} className="w-full">
+              <m.div
+                layout
+                transition={ITEM_SPRING}
+                className="w-full [@media(pointer:coarse)]:pointer-events-auto"
+              >
                 <ChatInput onExploreOpenChange={setExploreOpen} />
               </m.div>
 

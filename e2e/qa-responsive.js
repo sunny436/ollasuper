@@ -438,7 +438,11 @@ async function unbreakablePart(type, touch, page, info, results) {
           '<li><a href="#">https://www2.example.com/us/en/insights/topics/technology-management/tech-trends-2025-artificial-intelligence-adoption-enterprise-survey-report.html</a></li>' +
           `<li><a href="#">https://example.com/${"a".repeat(120)}</a></li>` +
           `<li>plain ${"b".repeat(140)}</li></ul>` +
-          `<span class="katex-display"><span class="katex"><span class="katex-html">${"x_{i}+alpha ".repeat(60)}</span></span></span>`;
+          // white-space:nowrap inline: KaTeX's own stylesheet sets it on
+          // `.katex-display > .katex`, but that sheet only loads for a message that
+          // actually contains math, so without this the probe wraps and asserts
+          // nothing.
+          `<span class="katex-display"><span class="katex" style="white-space:nowrap"><span class="katex-html">${"x_{i}+alpha ".repeat(60)}</span></span></span>`;
         host.appendChild(probe);
         const vw = document.documentElement.clientWidth;
         const scroller = document.querySelector('[aria-label="Conversation"]');
@@ -465,8 +469,13 @@ async function unbreakablePart(type, touch, page, info, results) {
       if (r.docOverflowPx > 1) fail(where, `page scrolls horizontally by ${r.docOverflowPx}px`);
       if (r.scrollerOverflowPx > 1) fail(where, `transcript scrolls horizontally by ${r.scrollerOverflowPx}px`);
       if (r.widestRight > r.vw + 1) fail(where, `content reaches ${r.widestRight}px on a ${r.vw}px viewport`);
-      if (r.codeScrollsInternally === false) fail(where, "code block no longer scrolls inside its wrapper");
-      if (r.tableScrollsInternally === false) fail(where, "table no longer scrolls inside its wrapper");
+      if (r.mathScrollsInternally === false) fail(where, "display math does not scroll inside its own box");
+      // Only where the seeded code/table are genuinely wider than the viewport —
+      // at 1280 they fit, and "does not scroll" is then correct, not a regression.
+      if (r.vw < 768) {
+        if (r.codeScrollsInternally === false) fail(where, "code block no longer scrolls inside its wrapper");
+        if (r.tableScrollsInternally === false) fail(where, "table no longer scrolls inside its wrapper");
+      }
     } catch (e) {
       fail(where, `error ${e.message.slice(0, 120)}`);
     }
