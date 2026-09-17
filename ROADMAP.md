@@ -61,12 +61,25 @@ contracts only, not its Codex-host workbench/MCP app). Flag `AI_SECURITY_ENABLED
   fresh processes for ~1h; the next day the same calls, sequences and a chat audit
   of the same repo all succeeded. Not reproducible, so treated as upstream; audits
   report it (`timeout`, BLOCKED). Capture with `PROBE_WIRE=1 qa/secaudit_github_probe.py`.
-- **Open:** no SAST/secret binaries installed on the VM (`not_installed`); a turn is
-  bounded by the 300s deadline; the model sometimes stalls after an approval resume
-  without submitting findings (verdict INCOMPLETE, fix still retested); a passed
-  retest means the flagged snippet is gone, not a semantic proof; secret rules flag
-  test fixtures (66 hits on the repo); timed-out MCP reads are retried by the shared
-  tool policy (~90s per call when a server hangs).
+- **Reliability (2026-09-17, prod-verified):** on a security turn a GitHub MCP timeout
+  is not retried (was 3 × 30s), and after 2 consecutive timeouts further GitHub calls
+  in the turn are refused and reported (`timeout`, BLOCKED); any answer resets it.
+  An audit that did work but ended without `security_report` gets ONE checkpoint step
+  (`secaudit.checkpoint`); if it still does not submit, the verdict stays INCOMPLETE.
+  Fix retests are labelled "covers the flagged code only, not a re-audit".
+- **Scanners (2026-09-17, prod-verified):** `deploy/65-secaudit.sh` installs pinned,
+  sha256-verified OpenGrep v1.30.0 + Gitleaks v8.30.1 into `/opt/secaudit/bin`
+  (`AI_SECURITY_SCANNER_BIN_DIR`), run through the existing SARIF wrapper: no network,
+  RLIMIT_AS (GOMEMLIMIT for Go), 64MB fsize (384MB for OpenGrep, which unpacks a 159MB
+  engine into `$HOME/.cache` on first use — SIGXFSZ otherwise), private TMPDIR, one at
+  a time, 120s. OpenGrep uses first-party rules (`app/secaudit/rules/ollasuper.yaml`;
+  community rules carry a Commons Clause); Gitleaks its pinned default config, repo
+  allow/ignore files disabled. OSV stays the existing `dependencies` stage.
+- **Open:** a turn is bounded by the 300s deadline; the first-party OpenGrep ruleset is
+  narrow (14 Python/JS rules); a passed retest means the flagged snippet is gone, not
+  a semantic proof; secret rules flag test fixtures (66 hits on the repo); the timeout
+  breaker is unit-tested, not observed against a live hang; after a Reject the model
+  may re-propose variants of a fix (9 cards once, ended by the stall detector).
 
 ## Agentic runtime program (Phases 0–12) — architecture built + test-proven
 
