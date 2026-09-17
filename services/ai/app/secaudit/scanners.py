@@ -271,9 +271,13 @@ DEFAULT_RULES = Path(__file__).parent / "rules" / "ollasuper.yaml"
 # Address-space cap for a scanner child. Go binaries (gitleaks) reserve large
 # virtual ranges and panic under RLIMIT_AS, so they get Go's own soft memory
 # limit instead (measured on the VM: gitleaks panics with --as, runs in 84MB
-# without it; opengrep peaks at 274MB on the whole repository).
+# without it; opengrep peaks at 274MB on the whole repository). The file-size cap
+# is 64MB, except for opengrep: its single-file build unpacks a 159MB engine into
+# $HOME/.cache on first use and is killed by SIGXFSZ under 64MB.
 _DEFAULT_AS_BYTES = 2_500_000_000
+_DEFAULT_FSIZE_BYTES = 67_108_864
 _SCANNER_LIMITS: dict[str, dict] = {
+    "opengrep": {"fsize_bytes": 402_653_184},
     "gitleaks": {"as_bytes": 0, "env": {"GOMEMLIMIT": "1GiB", "GOMAXPROCS": "2"}},
 }
 # One scanner run at a time across the plane: the service shares one cgroup.
@@ -325,7 +329,8 @@ def _isolation(name: str) -> tuple[list[str], dict[str, str]]:
             prefix += ["unshare", "-rn", "--"]
         if shutil.which("prlimit"):
             as_bytes = limits.get("as_bytes", _DEFAULT_AS_BYTES)
-            prefix += ["prlimit", "--nofile=2048", "--fsize=67108864"]
+            fsize = limits.get("fsize_bytes", _DEFAULT_FSIZE_BYTES)
+            prefix += ["prlimit", "--nofile=2048", f"--fsize={fsize}"]
             prefix += [f"--as={as_bytes}"] if as_bytes else []
             prefix += ["--"]
         if shutil.which("nice"):
@@ -373,7 +378,13 @@ async def run_sarif_scanners(
                 results[name] = {"status": "failed", "reason": missing}
                 continue
             prefix, env = _isolation(name)
-            with tempfile.TemporaryDirectory(prefix="secaudit-noignore-") as noignore:
+            # A scanner's scratch files (opengrep leaves one rules file per run)
+            # go to a private TMPDIR removed afterwards, so runs never accumulate.
+            with (
+                tempfile.TemporaryDirectory(prefix="secaudit-noignore-") as noignore,
+                tempfile.TemporaryDirectory(prefix="secaudit-tmp-") as scratch,
+            ):
+                env = {**env, "TMPDIR": scratch}
                 subs = {
                     "{rules}": rules_path,
                     "{gitleaks_config}": gitleaks_config,

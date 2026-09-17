@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import anyio
 import pytest
 
 from app.secaudit import scanners
@@ -48,19 +49,21 @@ def _sarif(tool: str, rule: str, path: str, line: int, text: str) -> dict:
 
 
 def _fake(bindir: Path, name: str, *, out: str = "", code: int = 0) -> Path:
-    """A fake scanner that records its argv and prints `out`."""
+    """A fake scanner that records its argv + TMPDIR and prints `out`."""
     payload = bindir / f"{name}.out"
     payload.write_text(out)
     argv_file = bindir / f"{name}.argv"
     if sys.platform == "win32":
         exe = bindir / f"{name}.bat"
         exe.write_text(
-            f'@echo off\necho %* > "{argv_file}"\ntype "{payload}"\nexit /b {code}\n'
+            f'@echo off\necho %* TMPDIR=%TMPDIR% > "{argv_file}"\n'
+            f'type "{payload}"\nexit /b {code}\n'
         )
     else:
         exe = bindir / name
         exe.write_text(
-            f"#!/bin/sh\necho \"$@\" > '{argv_file}'\ncat '{payload}'\nexit {code}\n"
+            f"#!/bin/sh\necho \"$@ TMPDIR=$TMPDIR\" > '{argv_file}'\n"
+            f"cat '{payload}'\nexit {code}\n"
         )
         exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
     return argv_file
@@ -119,6 +122,9 @@ async def test_configured_scanners_run_with_pinned_rules_and_config(bindir, tmp_
     gl = gl_argv.read_text()
     assert str(bindir / "gitleaks.toml") in gl and "--ignore-gitleaks-allow" in gl
     assert "--redact" in gl and "--gitleaks-ignore-path" in gl
+    # Scratch files go to a private TMPDIR that is removed after the run.
+    scratch = og.rsplit("TMPDIR=", 1)[1].strip()
+    assert "secaudit-tmp-" in scratch and not await anyio.Path(scratch).exists()
     assert token not in json.dumps(res)  # SARIF messages are redacted too
     # Only CONFIGURED scanners are attempted.
     only = await scanners.run_sarif_scanners(
