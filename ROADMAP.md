@@ -52,11 +52,21 @@ contracts only, not its Codex-host workbench/MCP app). Flag `AI_SECURITY_ENABLED
   "secure". All tool results redacted before events, ledger, model and report.
 - **Ops:** `deploy/65-secaudit.sh` (clone + fixture + `ReadWritePaths` drop-in);
   `AI_SECURITY_LOCAL_ROOTS`, `AI_SECURITY_LOCAL_USER_IDS` (empty = off).
-- **Open:** no SAST/secret binaries installed on the VM (`not_installed`); GitHub MCP
-  `tools/call` hangs for some repos inside the GitHub server (reproduce with
-  `qa/secaudit_github_probe.py`); a turn is bounded by the 300s deadline; the model
-  sometimes stalls after an approval resume without submitting findings (verdict
-  INCOMPLETE, fix still retested); secret rules flag test fixtures (66 hits on the repo).
+- **GitHub fix flow verified on prod (2026-09-17):** disposable private repo
+  `sunny436/ollasuper-secaudit-disposable` — 3 approval cards → branch
+  `fix-ssrf-preview`, `app.py` updated on it, PR #1 open and unmerged; `main`
+  untouched (checked on GitHub). Asked to commit to `main`, the model declined by
+  policy, so the executor's default-branch refusal is still test-verified only.
+- **GitHub MCP hangs (2026-09-16):** `tools/call` timed out for some repos across
+  fresh processes for ~1h; the next day the same calls, sequences and a chat audit
+  of the same repo all succeeded. Not reproducible, so treated as upstream; audits
+  report it (`timeout`, BLOCKED). Capture with `PROBE_WIRE=1 qa/secaudit_github_probe.py`.
+- **Open:** no SAST/secret binaries installed on the VM (`not_installed`); a turn is
+  bounded by the 300s deadline; the model sometimes stalls after an approval resume
+  without submitting findings (verdict INCOMPLETE, fix still retested); a passed
+  retest means the flagged snippet is gone, not a semantic proof; secret rules flag
+  test fixtures (66 hits on the repo); timed-out MCP reads are retried by the shared
+  tool policy (~90s per call when a server hangs).
 
 ## Agentic runtime program (Phases 0–12) — architecture built + test-proven
 

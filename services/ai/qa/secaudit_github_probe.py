@@ -109,6 +109,7 @@ async def main(connection_id: str, user_id: str, workspace_id: str) -> None:
                         by_name[name], args, user_id=user_id, workspace_id=workspace_id
                     )
                     print("OK", name, "bytes:", len(str(out)), flush=True)
+                    print("RESULT", redact_text(json.dumps(out, default=str))[:400], flush=True)
                 except Exception as e:  # noqa: BLE001
                     chain = []
                     cur: BaseException | None = e
