@@ -20,15 +20,19 @@ describe("summarize", () => {
 });
 
 describe("frame budget", () => {
-  test("60 Hz and 120 Hz", () => {
-    expect(frameBudget(16.6)).toBeCloseTo(16.67, 1);
-    expect(frameBudget(8.3)).toBeCloseTo(8.33, 1);
+  test("follows the measured refresh interval", () => {
+    expect(frameBudget(16.7)).toBeCloseTo(16.7, 1);
+    expect(frameBudget(8.3)).toBeCloseTo(8.3, 1);
+    expect(frameBudget(6.9)).toBeCloseTo(6.9, 1); // 144 Hz desktop
+    expect(frameBudget(1)).toBe(4);
+    expect(frameBudget(80)).toBe(34);
     expect(frameBudget(Number.POSITIVE_INFINITY)).toBeCloseTo(16.67, 1);
   });
   test("dropped means at least one missed frame", () => {
-    expect(isDropped(17, 1000 / 60)).toBe(false);
-    expect(isDropped(34, 1000 / 60)).toBe(true);
-    expect(isDropped(17, 1000 / 120)).toBe(true);
+    expect(isDropped(17, 16.7)).toBe(false);
+    expect(isDropped(34, 16.7)).toBe(true);
+    expect(isDropped(13.9, 6.9)).toBe(true); // every other 144 Hz vsync
+    expect(isDropped(8.4, 8.3)).toBe(false);
   });
 });
 

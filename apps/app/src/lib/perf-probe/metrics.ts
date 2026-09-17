@@ -21,17 +21,17 @@ export function summarize(samples: readonly number[]): Stat | null {
 }
 
 /**
- * The display's frame budget, inferred from the shortest frame deltas seen.
- * rAF runs at 60 Hz on most phones and at 120 Hz on ProMotion/high-refresh
- * displays; a fixed 16.7 ms budget would count every 120 Hz frame as "on time"
- * and miss real drops there.
+ * The display's frame interval, inferred from the typical (10th-percentile) rAF
+ * delta rather than assumed: phones run at 60, 90 or 120 Hz and desktops at up to
+ * 240 Hz, so any fixed budget either hides real drops or invents them. Clamped to
+ * 4–34 ms (240 Hz … 30 Hz); falls back to 60 Hz without samples.
  */
-export function frameBudget(shortestDeltaMs: number): number {
-  if (!Number.isFinite(shortestDeltaMs) || shortestDeltaMs <= 0) return 1000 / 60;
-  return shortestDeltaMs < 12 ? 1000 / 120 : 1000 / 60;
+export function frameBudget(typicalDeltaMs: number): number {
+  if (!Number.isFinite(typicalDeltaMs) || typicalDeltaMs <= 0) return 1000 / 60;
+  return Math.min(34, Math.max(4, typicalDeltaMs));
 }
 
-/** A frame is dropped when it took more than 1.5 budgets (at least one frame missed). */
+/** A frame is dropped when it took more than 1.5 intervals (at least one frame missed). */
 export function isDropped(deltaMs: number, budgetMs: number): boolean {
   return deltaMs > budgetMs * 1.5;
 }

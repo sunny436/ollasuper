@@ -55,6 +55,8 @@ type StepData = {
 
 const SEL_STOP = 'button[aria-label="Stop generating"]';
 const SEL_SEND = 'button[aria-label="Send message"]';
+/** The streaming assistant text (StreamingText sets aria-busy only while streaming). */
+const SEL_STREAM_TEXT = '[aria-live="polite"][aria-busy="true"]';
 const SEL_OPENED =
   '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[aria-modal="true"],nav[aria-label="Conversations"]';
 
@@ -88,6 +90,9 @@ export function startProbe(): void {
   w.__ollasuperPerfProbe = true;
 
   const startedAt = performance.now();
+  // "App usable" is measured from THIS document's navigation start; the path says
+  // which page that was (a client-side navigation afterwards does not reset it).
+  const loadPath = scrubPath(location.pathname);
   let stepIndex = 0;
   const steps: StepData[] = [newStep(STEPS[0])];
   const current = () => steps[steps.length - 1] as StepData;
@@ -194,6 +199,10 @@ export function startProbe(): void {
   // Recent frame deltas; the budget comes from their 10th percentile, not the
   // single shortest one, so one stray short frame cannot flip 60 Hz to 120 Hz.
   const recent: number[] = [];
+  // The refresh interval does not change within a session, so keep the best
+  // (shortest) typical interval seen — a page janky from the start must not
+  // calibrate its own slow frames as "normal".
+  let refreshMs = Number.POSITIVE_INFINITY;
   let streaming = false;
   let pendingSend: Send | null = null;
   let lastTapAt = Number.NEGATIVE_INFINITY;
@@ -207,13 +216,15 @@ export function startProbe(): void {
       recent.push(delta);
       if (recent.length > 60) recent.shift();
       const sorted = [...recent].sort((a, b) => a - b);
-      const typical = sorted[Math.floor(sorted.length * 0.1)] ?? delta;
+      if (sorted.length >= 20) {
+        refreshMs = Math.min(refreshMs, sorted[Math.floor(sorted.length * 0.1)] ?? delta);
+      }
       streaming = document.querySelector(SEL_STOP) !== null;
       const step = current();
       const win =
         now - lastScrollAt < 200 ? step.scroll : streaming ? step.streaming : step.other;
       win.frames++;
-      if (isDropped(delta, frameBudget(typical))) win.dropped++;
+      if (isDropped(delta, frameBudget(refreshMs))) win.dropped++;
       if (delta > 50) win.stalls.push(delta);
     }
     if (pendingSend && pendingSend.firstTokenMs !== null && !streaming) {
@@ -248,7 +259,7 @@ export function startProbe(): void {
       if (t) {
         pendingSend = { at: e.timeStamp, firstTokenMs: null, completeMs: null };
         step.sends.push(pendingSend);
-        liveBefore = new Set(document.querySelectorAll('[aria-live="polite"]'));
+        liveBefore = new Set(document.querySelectorAll(SEL_STREAM_TEXT));
         wake(120000);
       }
     },
@@ -278,18 +289,29 @@ export function startProbe(): void {
     for (const r of records) {
       for (const n of r.addedNodes) {
         if (!(n instanceof Element) || root.contains(n)) continue;
-        if (n.matches(SEL_OPENED) || n.querySelector(SEL_OPENED)) {
-          if (now - lastTapAt < 3000) current().menus.push(now - lastTapAt);
-          lastTapAt = Number.NEGATIVE_INFINITY;
+        const opened = n.matches(SEL_OPENED) ? n : n.querySelector(SEL_OPENED);
+        if (opened && now - lastTapAt < 3000) {
+          // Count it only once it is actually on screen, timed at that frame —
+          // components mount hidden dialogs/listboxes that no tap opened.
+          const tapAt = lastTapAt;
+          const step = current();
+          requestAnimationFrame(() => {
+            const r = opened.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0 && getComputedStyle(opened).visibility !== "hidden") {
+              step.menus.push(performance.now() - tapAt);
+              lastTapAt = Number.NEGATIVE_INFINITY;
+            }
+          });
         }
         if (n.matches(SEL_STOP) || n.querySelector(SEL_STOP)) wake();
       }
     }
     if (pendingSend && pendingSend.firstTokenMs === null) {
-      const lives = document.querySelectorAll('[aria-live="polite"]');
-      const last = lives[lives.length - 1];
-      if (last && !liveBefore.has(last) && (last.textContent ?? "").trim().length > 0) {
-        pendingSend.firstTokenMs = Math.round(now - pendingSend.at);
+      for (const el of document.querySelectorAll(SEL_STREAM_TEXT)) {
+        if (!liveBefore.has(el) && (el.textContent ?? "").trim().length > 0) {
+          pendingSend.firstTokenMs = Math.round(now - pendingSend.at);
+          break;
+        }
       }
     }
   });
@@ -375,6 +397,7 @@ export function startProbe(): void {
         : null,
       path: scrubPath(location.pathname),
       load: {
+        loadPath,
         appUsableMs,
         appUsableUpperBound,
         probeLoadedMs: Math.round(startedAt),
@@ -396,6 +419,7 @@ export function startProbe(): void {
           streamingFrames: windowReport(s.streaming),
           otherFrames: windowReport(s.other),
         })),
+      refreshMs: Number.isFinite(refreshMs) ? Math.round(refreshMs * 10) / 10 : null,
       memory: {
         heapMB: memory.some((m) => m.heapMB !== null)
           ? { first: memory[0]?.heapMB ?? null, max: Math.max(...memory.map((m) => m.heapMB ?? 0)), last: memory[memory.length - 1]?.heapMB ?? null }
