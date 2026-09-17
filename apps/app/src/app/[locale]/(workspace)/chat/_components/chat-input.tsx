@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { useAttachments } from "../_hooks/use-attachments";
 import { useChatSession } from "../_hooks/use-chat-session";
 import { useComposer } from "../_hooks/use-composer";
+import { useConnectionStatus } from "../_hooks/use-connection-status";
 import { useDictation } from "../_hooks/use-dictation";
 import { useMediaQuery } from "../_hooks/use-media-query";
 import { useSendMessage } from "../_hooks/use-send-message";
@@ -113,6 +114,7 @@ export function ChatInput({
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { registerTextarea } = useComposer();
   const { send, sending, canSend } = useSendMessage(threadId);
+  const connection = useConnectionStatus();
   const attachments = useAttachments(threadId);
   const fileInput = useRef<HTMLInputElement | null>(null);
   // The composer's horizontal extent — what the Skills panel is centred on and
@@ -334,6 +336,15 @@ export function ChatInput({
         <div className="pointer-events-none absolute inset-2 z-20 grid place-items-center rounded-xl border-2 border-dashed border-brand bg-brand/10 backdrop-blur-[1px]">
           <span className="text-sm font-medium text-brand-ink">Drop to attach</span>
         </div>
+      )}
+      {/* A send while disconnected is queued by Convex and goes out on reconnect;
+          without this line nothing on screen said so (see use-connection-status). */}
+      {connection !== "online" && (
+        <p role="status" className="mb-2 text-center text-xs text-primary/60">
+          {connection === "offline"
+            ? "You're offline — messages will send when you're back online."
+            : "Reconnecting…"}
+        </p>
       )}
       <div
         ref={composerShell}
