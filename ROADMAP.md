@@ -31,6 +31,50 @@ One finding is verified by unit test only, and deliberately so:
   on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
   surface is built, add the prod check with it.
 
+## Mobile + tablet performance and responsive — LIVE 2026-09-17, NOT production-ready
+
+Report: phones (iPhone and Android) 5–10 s to respond, lag in everything. Frontend only;
+no Convex/Python change. Harnesses: `e2e/qa-mobile-perf.js` (perf / network / memory /
+battery / longthread / gates), `e2e/qa-responsive.js` (25 routes × 14 viewports, dialog
+states, axe), `e2e/qa-mobile-smoke.js`; real-device overlay `?perf=1` + `e2e/perf-checklist.md`.
+
+- **Root causes (measured by A/B, not assumed):** Chromium re-filtered every glass
+  `backdrop-filter` surface on each keystroke/caret blink/scroll (typing compositor −74%
+  without it); WebKit re-rasterized the 140–190px `filter: blur` glow orbs on each repaint
+  (typing p50 258→114 ms without them); the auth WebGL orb drew continuously (login idle
+  main thread 57%); autosize forced a full reflow per key; shiki preloaded 15 grammars at
+  the first code block; the send transition animated `filter: blur`.
+- **Fixes:** `@media (pointer: coarse)` drops backdrop-filter and swaps orb blur for a
+  radial gradient (desktop unchanged); orb pauses while typing / idle 8 s on touch;
+  autosize collapses only when text shrank; grammars load on demand (engine stays
+  Oniguruma — shiki's JS engine mis-tokenizes TypeScript in WebKit); no blur in the touch
+  hero exit; container-query composer (textarea 43→226 px at 320); popovers bounded to
+  the viewport; 44 px targets and always-visible actions on touch; offline/reconnecting
+  line above the composer; lazy renderers retry after a failed chunk; focus trap +
+  return in the hand-built dialogs; keyboard-scrollable transcript/tables.
+- **Prod, emulated (before → after):** Pixel 7 4× cold usable 4292→3367 ms, TBT 497→207;
+  typing compositor 1283→341 ms; WebKit iPhone 13 typing p90 411→180 ms; tablet idle CPU
+  25.6→0.2%; popovers outside viewport 8→0; hover-hidden controls on touch 1592→80 (the 80 are the
+  aria-hidden scroll-to-bottom button, a harness false positive since excluded);
+  offline feedback none→shown; memory flat over 20-cycle loops (0 detached, 1 socket).
+- **Gates (prod, emulated):** 9 PASS, 4 FAIL (G1 landing p90 +4 ms, G5, G6, G8), each
+  re-decided by alternating local A/B (`E2E_BASE_URL` against baseline 86b9114 and
+  current `next start` builds on prod Convex, 6 runs each): typing p90 33→28 / 32→25 ms,
+  compositor −71% / −65%, desktop flat, first code block unchanged (highlighter
+  micro-A/B n=10: long tasks 739→732 ms, JS 1936→941 KB), streaming inconclusive (n=2).
+- **Regression kept (measured, cause NOT isolated):** cold-load TBT on Pixel 7 4× rose
+  127→215 ms (n=10) while time-to-usable composer is unchanged (2969 vs 2961 ms). Not the
+  new `useMediaQuery` (gap persists with it forced off); about half is touch-only; the
+  bisect at n=6–8 could not resolve it against run-to-run noise (baseline medians swing
+  122–178 ms). Next step: bisect 86b9114..7f44c62 with ≥15 runs per build.
+- **NOT verified:** no physical Android, no older iPhone, no iPhone before/after numbers
+  (overlay shipped; user run pending); hidden-tab throttling not observable in automation.
+- **Open:** image attachments are routed to text-only deepseek-v4-flash → 400 "Something
+  went wrong" (pre-existing backend routing bug, fix not approved yet); axe color-contrast
+  409 nodes (design), landmark-one-main 16, page-has-heading-one 6, one unlabeled
+  dashboard nav on /files; offline send on a NEW chat shows no optimistic bubble; React DOM
+  leaves an unhandled `Event` rejection when a lazily-added stylesheet fails offline.
+
 ## Security audits (Codex Security adaptation) — LIVE, prod-verified 2026-09-16
 
 `services/ai/app/secaudit/`, adapted from openai/codex-security (Apache-2.0: method +
