@@ -453,7 +453,22 @@ async function unbreakablePart(type, touch, page, info, results) {
           vw,
           docOverflowPx: document.documentElement.scrollWidth - vw,
           scrollerOverflowPx: scroller ? scroller.scrollWidth - scroller.clientWidth : null,
-          widestRight: Math.max(...[...probe.querySelectorAll("*")].map((e) => Math.round(e.getBoundingClientRect().right))),
+          // Content inside a scroll container is allowed to be wider than the
+          // viewport — that is what "scrolls internally" means, and the math and
+          // code inside their boxes legitimately are. Only unclipped content counts.
+          widestRight: Math.max(
+            ...[...probe.querySelectorAll("*")]
+              .filter((e) => {
+                // Stop at the transcript scroller: it is an ancestor of everything
+                // here and is itself asserted above, so walking past it would
+                // filter out every element and assert nothing.
+                for (let n = e.parentElement; n && !n.matches('[aria-label="Conversation"]'); n = n.parentElement) {
+                  if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(n).overflowX)) return false;
+                }
+                return true;
+              })
+              .map((e) => Math.round(e.getBoundingClientRect().right)),
+          ),
           mathScrollsInternally: kd ? kd.scrollWidth > kd.clientWidth + 1 : null,
           codeScrollsInternally: codeWrap ? codeWrap.scrollWidth > codeWrap.clientWidth + 1 : null,
           tableScrollsInternally: tableWrap ? tableWrap.scrollWidth > tableWrap.clientWidth + 1 : null,
