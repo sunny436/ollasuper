@@ -181,7 +181,8 @@ const AUDIT = ({ touch, shell }) => {
     if (!inView) continue;
     if (touch && Math.min(r.width, r.height) < 44) small.push(`${desc(el)} ${Math.round(r.width)}x${Math.round(r.height)}`);
     if (touch && effectiveOpacity(el) < 0.05) hoverHidden.push(desc(el));
-    if (modalOpen || style(el).pointerEvents === "none" || effectiveOpacity(el) < 0.05) continue;
+    // Visually hidden controls (sr-only file inputs under their label) are meant to sit under something.
+    if (modalOpen || style(el).pointerEvents === "none" || effectiveOpacity(el) < 0.05 || r.width <= 2 || r.height <= 2) continue;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
     const hit = document.elementFromPoint(cx, cy);
@@ -345,11 +346,11 @@ async function statesPart(type, touch, page, info, results) {
   const vps = touch ? [["375", 375, 667], ["844L", 844, 390]] : [["1280", 1280, 800]];
   const plan = [
     ["/en/chat", ["Skills", "Notifications", "Ambience", touch ? "Open conversations" : null]],
-    ["/en/chat", touch ? ["Open conversations>Account menu", "Open conversations>Conversation actions"] : ["Account menu", "Conversation actions"]],
-    [info.longThread && `/en/chat/${info.longThread}`, ["Share conversation", "Instructions for this chat", "Share response", "Move chat to a project"]],
-    ["/en/projects", ["New project"]],
+    ["/en/chat", touch ? ["Open conversations>Account menu", "Open conversations>Conversation actions", "Open conversations>Conversation actions>Move to project", "Open conversations>Conversation actions>Chat instructions"] : ["Account menu", "Conversation actions", "Conversation actions>Move to project", "Conversation actions>Chat instructions"]],
+    [info.longThread && `/en/chat/${info.longThread}`, ["Share conversation", "Share response"]],
+    ["/en/projects", ["New"]],
     [info.routes.find(([r]) => /\/projects\/[a-z0-9]{10,}/.test(r))?.[0], ["Project settings", "Project actions"]],
-    ["/en/scheduled", ["Schedule a task", "Task actions"]],
+    ["/en/scheduled", ["Task actions"]],
     ["/en/files", ["Open menu"]],
     ["/en/settings", ["Open settings menu"]],
     ["/en/settings/connectors", ["Filter by category"]],
@@ -437,6 +438,7 @@ async function a11yPart(type, touch, page, info, results) {
       const invisibleFocus = [];
       for (let i = 0; i < 40; i++) {
         await page.keyboard.press("Tab");
+        await page.waitForTimeout(250); // focus:opacity-100 transitions in
         const f = await page.evaluate(() => {
           const el = document.activeElement;
           if (!el || el === document.body) return null;
@@ -544,7 +546,7 @@ async function motionPart(type, touch, results, info) {
     await browser.close();
   }
 
-  const benign = errs.filter((e) => !/favicon|third-party cookie/i.test(e));
+  const benign = errs.filter((e) => !/favicon|third-party cookie/i.test(e) && !/this-route-does-not-exist.*status of 404/.test(e));
   for (const e of benign) fail("console", e);
   // Summaries.
   const axeAgg = {};

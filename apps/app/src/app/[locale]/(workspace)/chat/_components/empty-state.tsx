@@ -23,7 +23,9 @@ function AnimatedHeadline({ text }: { text: string }) {
   const { colors } = useAmbience();
   return (
     <h1
-      className="greeting-sweep inline-block whitespace-nowrap pb-3 text-2xl font-medium leading-[1.35] sm:text-4xl"
+      // Wraps (balanced) below sm: nowrap clipped long greetings — "What would you like
+      // to accomplish?", or any greeting carrying a long name — off a 375 px screen.
+      className="greeting-sweep inline-block max-w-full whitespace-normal pb-3 text-2xl font-medium leading-[1.35] [text-wrap:balance] sm:whitespace-nowrap sm:text-4xl"
       style={{ "--greeting-ink": colors.text } as CSSProperties}
     >
       {text}

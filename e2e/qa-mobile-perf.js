@@ -723,19 +723,26 @@ async function memoryMode() {
   results.detachedAfterCycles = await heapSnapshotDetached(cdp);
   // Send / regenerate (bounded: generations are rate-limited), still in-app.
   const gens = Number(arg("gens", 5));
-  await toPath('a[href="/chat"], button:has-text("New chat")', /\/chat$/).catch(() => {});
-  const before = await sample("send-regenerate-start");
-  for (let i = 0; i < gens; i++) {
-    await send(page, SHORT_PROMPT);
-    await waitDone(page, 120000);
-    const regen = page.getByRole("button", { name: "Regenerate" }).last();
-    if (await regen.count()) {
-      await regen.click({ force: true });
-      await waitDone(page, 120000);
+  try {
+    if (await openDrawer()) {
+      await page.locator('nav[aria-label="Conversations"].fixed').getByRole("button", { name: "New chat" }).first().click({ timeout: 10000 });
     }
+    await page.waitForSelector("#chat-composer:not([disabled])", { timeout: 60000 });
+    const before = await sample("send-regenerate-start");
+    for (let i = 0; i < gens; i++) {
+      await send(page, SHORT_PROMPT);
+      await waitDone(page, 120000);
+      const regen = page.getByRole("button", { name: "Regenerate" }).last();
+      if (await regen.count()) {
+        await regen.click({ force: true, timeout: 10000 });
+        await waitDone(page, 120000);
+      }
+    }
+    const after = await sample("send-regenerate-end");
+    results.sendRegenerate = { cycles: gens, before, after, heapGrowthPct: Math.round(((after.heapMB - before.heapMB) / before.heapMB) * 1000) / 10 };
+  } catch (e) {
+    results.sendRegenerate = { error: e.message.slice(0, 160) };
   }
-  const after = await sample("send-regenerate-end");
-  results.sendRegenerate = { cycles: gens, before, after, heapGrowthPct: Math.round(((after.heapMB - before.heapMB) / before.heapMB) * 1000) / 10 };
   results.detachedEnd = await heapSnapshotDetached(cdp);
   results.fullReloadsDuringCycles = reloads - reloadsBefore;
   log(`  sendRegenerate: ${JSON.stringify(results.sendRegenerate)}  detached after cycles ${results.detachedAfterCycles}, end ${results.detachedEnd}, reloads ${results.fullReloadsDuringCycles}`);
@@ -782,6 +789,9 @@ async function longThreadMode() {
     await page.waitForFunction(() => document.querySelectorAll("div.my-5").length >= 20, null, { timeout: 120000 });
     const firstPageMs = Date.now() - t0;
     const pageTimes = [];
+    // The cached transcript fills the first rows instantly; the button only
+    // appears once the live first page has loaded.
+    await loadEarlier.waitFor({ timeout: 20000 }).catch(() => {});
     for (let i = 0; i < 12 && (await loadEarlier.count()); i++) {
       const before = await rows();
       const tp = Date.now();
