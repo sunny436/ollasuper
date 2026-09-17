@@ -531,8 +531,13 @@ async function networkMode() {
   await page.waitForTimeout(3000);
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForTimeout(8000);
-  const copies = await page.evaluate((m) => document.body.innerText.split(m).length - 1, marker);
-  results.sendWhileOffline = { optimisticBubbleShown: bubbleWhileOffline, feedbackShown: feedbackSend, completedAfterReconnect: done2, userMessageCopiesAfterReload: copies };
+  // Counted in the transcript, not the whole page: the rail titles a new thread with its
+  // first message, so a page-wide count reads 2 for a message sent exactly once.
+  const copies = await page.evaluate((m) => {
+    const count = (el) => (el ? el.innerText.split(m).length - 1 : null);
+    return { transcript: count(document.querySelector('[role="region"][aria-label="Conversation"]')), page: count(document.body) };
+  }, marker);
+  results.sendWhileOffline = { optimisticBubbleShown: bubbleWhileOffline, feedbackShown: feedbackSend, completedAfterReconnect: done2, userMessageCopiesInTranscript: copies.transcript, markerCopiesOnPage: copies.page };
   log(`  sendWhileOffline: ${JSON.stringify(results.sendWhileOffline)}`);
   // Offline mid-stream, and a network "switch" (profile change + 2 s drop) mid-stream.
   for (const [name, drop] of [["offlineMidStream10s", 10000], ["networkSwitchMidStream", 2000]]) {
