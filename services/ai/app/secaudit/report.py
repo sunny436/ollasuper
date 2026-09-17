@@ -288,6 +288,9 @@ class SecurityTurn:
             t,
         ):
             return "denied"
+        if re.search(r"timed out|timeout", t):
+            # The server did not answer in time: not a permission verdict.
+            return "timeout"
         return "error"
 
     def observe_registry(
@@ -317,13 +320,37 @@ class SecurityTurn:
         name = tool_name
         if name == "create_branch" and repo and args.get("branch"):
             self.created_branches.add((repo, str(args["branch"])))
+            self.github_writes.append(
+                {
+                    "kind": "branch",
+                    "repo": repo,
+                    "branch": str(args["branch"]),
+                    "path": "",
+                    "seq": self._next(),
+                }
+            )
             return
         if name in _GITHUB_FILE_WRITES and repo:
             self.github_writes.append(
                 {
+                    "kind": "file",
                     "repo": repo,
                     "branch": str(args.get("branch") or ""),
                     "path": str(args.get("path") or ""),
+                    "seq": self._next(),
+                }
+            )
+            return
+        if name == "create_pull_request" and repo:
+            pr = re.search(r"/pull/(\d+)", self._text_leaves(data))
+            self.github_writes.append(
+                {
+                    "kind": "pull_request",
+                    "repo": repo,
+                    "branch": str(args.get("head") or ""),
+                    "base": str(args.get("base") or ""),
+                    "path": "",
+                    "number": pr.group(1) if pr else "",
                     "seq": self._next(),
                 }
             )
@@ -649,7 +676,9 @@ class SecurityTurn:
         writes = [
             w
             for w in self.github_writes
-            if w["repo"] == repo.lower() and (not w["path"] or w["path"] == path)
+            if w["repo"] == repo.lower()
+            and w.get("kind", "file") == "file"
+            and w["path"] == path
         ]
         if not writes:
             return None
@@ -949,6 +978,20 @@ class SecurityTurn:
                         f"- `{fx.get('repo')}:{fx.get('path')}` — not applied "
                         f"({fx.get('reason') or fx.get('status')})"
                     )
+        if self.github_writes:
+            L += ["", "### GitHub changes (each approved by the user)"]
+            for w in self.github_writes[:20]:
+                kind, repo = w.get("kind", "file"), w["repo"]
+                if kind == "branch":
+                    L.append(f"- `{repo}` — branch `{w['branch']}` created")
+                elif kind == "pull_request":
+                    num = f" #{w['number']}" if w.get("number") else ""
+                    L.append(
+                        f"- `{repo}` — pull request{num} opened: "
+                        f"`{w['branch']}` → `{w.get('base')}` (not merged)"
+                    )
+                else:
+                    L.append(f"- `{repo}` — `{w['path']}` updated on `{w['branch']}`")
         if self.denied_calls:
             L += ["", "### Blocked actions"]
             for d in self.denied_calls[:10]:

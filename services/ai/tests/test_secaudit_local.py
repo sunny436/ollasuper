@@ -268,3 +268,23 @@ def test_a_fix_must_be_minimal():
     with pytest.raises(LocalError) as e:
         local.plan_fix(text, text, text.replace("line", "LINE"))
     assert e.value.code == "fix_too_large"
+
+
+def test_unquoted_env_secrets_and_bot_tokens_are_redacted():
+    """Prod: a GitHub repo's committed `.env` reached the audit; the quoted-only
+    assignment rule would have missed `KEY=value` lines."""
+    p = planted("env")
+    bot = "71" + "23456789:AA" + "Bc" * 16 + "d"
+    env = (
+        f"TELEGRAM_BOT_TOKEN={bot}\nexport DB_PASSWORD={p['db_password']}\nDEBUG=true\n"
+    )
+    red, hits = secrets.redact_text(env)
+    assert bot not in red and p["db_password"] not in red
+    assert {h.rule for h in hits} >= {"telegram-bot-token", "env-secret-assignment"}
+    assert "DEBUG=true" in red
+    # The same file inside a JSON-encoded tool result (literal \n separators).
+    as_json = json.dumps({"content": env})
+    red_json, _ = secrets.redact_text(as_json)
+    assert bot not in red_json and p["db_password"] not in red_json
+    # Low-entropy / placeholder values are left alone.
+    assert secrets.scan("API_KEY=changeme123\nTOKEN=aaaaaaaaaaaa\n") == []

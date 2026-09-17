@@ -505,3 +505,38 @@ async def test_an_applied_fix_is_retested_even_if_the_model_never_asks(tmp_path)
     )
     assert state.retests[("fixture", "app.py")]["status"] == "failed"
     assert leak not in state.render()
+
+
+def test_github_timeouts_and_approved_github_writes_are_reported_as_such():
+    s = _state(github_connected=True, read_only=False)
+    s.observe_registry(
+        "mcp:github:get_file_contents",
+        "get_file_contents",
+        {"owner": "acme", "repo": "slow"},
+        None,
+        error={"error": "[github] Request 'tools/call' timed out"},
+    )
+    assert s.github_access["acme/slow"] == "timeout"
+    args = {"owner": "acme", "repo": "app"}
+    s.observe_registry(
+        "mcp:github:create_branch",
+        "create_branch",
+        {**args, "branch": "fix/ssrf"},
+        "created",
+    )
+    s.observe_registry(
+        "mcp:github:create_or_update_file",
+        "create_or_update_file",
+        {**args, "branch": "fix/ssrf", "path": "app.py"},
+        "ok",
+    )
+    s.observe_registry(
+        "mcp:github:create_pull_request",
+        "create_pull_request",
+        {**args, "head": "fix/ssrf", "base": "main"},
+        {"html_url": "https://github.com/acme/app/pull/7"},
+    )
+    text = s.render()
+    assert "branch `fix/ssrf` created" in text
+    assert "`app.py` updated on `fix/ssrf`" in text
+    assert "pull request #7 opened: `fix/ssrf` → `main` (not merged)" in text

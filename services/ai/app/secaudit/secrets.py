@@ -60,6 +60,18 @@ _RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"\\?[\"']?\s*(?::=|=>|[:=])\s*\\?[\"'](?P<v>[^\s\"'\\]{8,256})\\?[\"']"
         ),
     ),
+    (
+        # A `.env`-style line: UNQUOTED value (the quoted rule above misses it).
+        # Line start is a real newline or, inside a JSON-encoded tool result, a
+        # literal `\n`.
+        "env-secret-assignment",
+        re.compile(
+            r"(?im)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+)?[A-Z0-9_]*(?:TOKEN|SECRET|"
+            r"PASSWORD|PASSWD|PWD|API_?KEY|APIKEY|PRIVATE_?KEY|ACCESS_?KEY)[A-Z0-9_]*"
+            r"[ \t]*=[ \t]*(?P<v>[^\s\"'#\\]{8,256})"
+        ),
+    ),
+    ("telegram-bot-token", re.compile(r"\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b")),
 )
 
 # A value that is obviously not a real credential. Kept narrow: a false negative
@@ -107,7 +119,7 @@ def scan(text: str) -> list[Hit]:
             value = text[s:e]
             if value.startswith(_MARKER) or _PLACEHOLDER.search(value):
                 continue
-            if rule == "generic-secret-assignment" and _entropy(value) < 3.0:
+            if rule.endswith("-secret-assignment") and _entropy(value) < 3.0:
                 continue
             if any(ts < e and s < te for ts, te in taken):
                 continue
