@@ -67,6 +67,21 @@ states, axe), `e2e/qa-mobile-smoke.js`; real-device overlay `?perf=1` + `e2e/per
   new `useMediaQuery` (gap persists with it forced off); about half is touch-only; the
   bisect at n=6–8 could not resolve it against run-to-run noise (baseline medians swing
   122–178 ms). Next step: bisect 86b9114..7f44c62 with ≥15 runs per build.
+- **Composer + overflow (2026-09-17, deployed 47c4d71):** the new-chat composer was the
+  desktop pill at phone sizes (142 px tall, centred with 201–283 px of dead space below);
+  every enlargement now starts at the 32rem container breakpoint and on a coarse pointer it
+  sits at the foot of the screen — 142→112 px, docked 118→106, textarea slightly wider, taps
+  44 px, desktop byte-identical. Horizontal overflow had two causes, both measured at 390 px:
+  `overflow-wrap` is inherited and only markdown's `p` set it, so a bare URL link inside a
+  list item scrolled the transcript to 892 px (WebKit); and KaTeX display math is
+  `white-space: nowrap` with no overflow rule (document 6056 px). Fixed by one inherited
+  declaration on the transcript, `overflow-wrap:anywhere` on links, and a scroll box for
+  `.katex-display` (restating KaTeX's own `display:block`, since that sheet is lazy).
+  Two self-inflicted regressions caught by the matrix and fixed: the full-height landing
+  column swallowed taps on Open conversations/Notifications, and the compact icon buttons
+  fell to 40 px. `qa-responsive.js --part unbreakable` is the regression test that was
+  missing — no seeded route renders a bare URL or display math, which is why the matrix
+  reported zero overflow while this was live.
 - **NOT verified:** no physical Android, no older iPhone, no iPhone before/after numbers
   (overlay shipped; user run pending); hidden-tab throttling not observable in automation.
 - **Open:** image attachments are routed to text-only deepseek-v4-flash → 400 "Something
