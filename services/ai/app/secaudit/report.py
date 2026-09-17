@@ -30,6 +30,17 @@ FINGERPRINT_ALGO = "ollasuper-secaudit/v1"
 _MAX_READ_CACHE = 8 * 1024 * 1024
 _MAX_RENDERED_FINDINGS = 30
 GITHUB_PROVIDER = "mcp:github"
+# Consecutive GitHub timeouts after which a security turn stops calling GitHub.
+GITHUB_TIMEOUT_BREAKER = 2
+
+# The finalization checkpoint's instruction (see SecurityTurn.checkpoint_due).
+CHECKPOINT_PROMPT = (
+    "SECURITY AUDIT CHECKPOINT: this audit has not submitted its findings. Call "
+    "`security_report` now, exactly once, with only the findings supported by code "
+    "you actually read in this conversation — an empty `findings` list is correct if "
+    "you validated none. Do not call any other tool and do not invent evidence. If "
+    "you cannot submit, reply in one sentence that the audit is incomplete."
+)
 
 _IMPACTS = ("critical", "high", "medium", "low", "unknown")
 _LIKELIHOODS = ("high", "medium", "low", "unknown")
@@ -177,6 +188,9 @@ class SecurityTurn:
     resumed: bool = False
     osv_enabled: bool = True
     scanner_timeout_s: float = 300.0
+    scanners: tuple[str, ...] = ("opengrep", "gitleaks")
+    scanner_bin_dir: str = ""
+    opengrep_rules: str = ""
     # -- recorded state --------------------------------------------------------
     reads: list[Read] = field(default_factory=list)
     read_bytes: int = 0
@@ -197,6 +211,8 @@ class SecurityTurn:
     fixes: list[dict] = field(default_factory=list)
     retests: dict[tuple[str, str], dict] = field(default_factory=dict)
     denied_calls: list[dict] = field(default_factory=list)
+    github_timeouts: int = 0
+    checkpoint_used: bool = False
     tracked_cache: dict[str, set[str]] = field(default_factory=dict)
     _seq: int = 0
 
@@ -310,6 +326,9 @@ class SecurityTurn:
         repo = self._repo_of(args)
         ok = error is None and not is_error
         text = self._text_leaves(data if ok else (data if data is not None else error))
+        timed_out = not ok and self._access_from_error(text) == "timeout"
+        # CONSECUTIVE GitHub timeouts: any answer from GitHub resets the count.
+        self.github_timeouts = self.github_timeouts + 1 if timed_out else 0
         if repo:
             status = "verified" if ok else self._access_from_error(text)
             prior = self.github_access.get(repo)
@@ -506,12 +525,54 @@ class SecurityTurn:
             )
         return None
 
+    def checkpoint_due(self) -> bool:
+        """Should the graph give the model ONE more step to submit its findings?
+
+        Only on an audit that actually did work (read code, ran a stage, applied
+        a fix) and has not called `security_report`, and only once per attempt.
+        Prod: after an approval resume the model stalled into a text answer with
+        no tools bound and the audit ended INCOMPLETE though the scan was done.
+        The checkpoint never writes findings itself — if the model still does not
+        submit, the verdict stays INCOMPLETE."""
+        if not self.intent.audit or self.submitted or self.checkpoint_used:
+            return False
+        did_work = bool(
+            any(r.path for r in self.reads)
+            or self.fixes
+            or self.github_writes
+            or any(s.get("status") == "ran" for s in self.stages.values())
+        )
+        return did_work
+
+    @staticmethod
+    def retry_allowed(tool_id: str, err_payload: dict) -> bool:
+        """May the executor retry this failed call? A GitHub call that TIMED OUT
+        is not retried on a security turn: a server that did not answer in the
+        per-call timeout is, measured on prod, still not answering a few seconds
+        later, and each retry cost another full timeout (3 attempts = ~90s)."""
+        if not tool_id.startswith(GITHUB_PROVIDER + ":"):
+            return True
+        kind = str(err_payload.get("kind") or err_payload.get("error") or "")
+        text = json.dumps(err_payload, default=str).lower()
+        return not (kind == "timeout" or "timed out" in text)
+
     def refuse_args(self, tool: Any, args: dict) -> str | None:
         reason = self.refuse(tool)
         if reason:
             return reason
         tool_id = str(getattr(tool, "tool_id", "") or "")
         name = str(getattr(tool, "name", "") or "")
+        if (
+            tool_id.startswith(GITHUB_PROVIDER + ":")
+            and self.github_timeouts >= GITHUB_TIMEOUT_BREAKER
+        ):
+            # A hanging upstream: stop spending the turn on it. Refusing a call
+            # grants nothing, so this cannot weaken access control.
+            return (
+                f"GitHub did not respond ({self.github_timeouts} calls in a row timed "
+                "out); further GitHub calls this turn are skipped and the audit "
+                "reports the repository as timed out"
+            )
         if tool_id.startswith(GITHUB_PROVIDER + ":") and name in _GITHUB_FILE_WRITES:
             key = (self._repo_of(args), str(args.get("branch") or ""))
             if key not in self.created_branches:
@@ -702,7 +763,8 @@ class SecurityTurn:
         )
         return {
             "status": "passed" if gone else "failed",
-            "detail": "flagged evidence absent after the fix"
+            "detail": "flagged evidence absent after the fix (covers the flagged "
+            "code only, not a re-audit)"
             if gone
             else "flagged evidence still present",
         }
@@ -1022,10 +1084,14 @@ class SecurityTurn:
                 + ", ".join(sorted(not_inst))
                 + "."
             )
-        if any(f["regression"].get("status") == "passed" for f in self.findings):
+        if any(f["regression"].get("status") == "passed" for f in self.findings) or any(
+            (fx.get("retest") or {}).get("status") == "passed" for fx in self.fixes
+        ):
             lim.append(
-                "A passed fix retest means the flagged code and secret patterns "
-                "are gone; the project's own test suite was not run."
+                "A passed fix retest shows only that the flagged code changed and "
+                "no secret pattern was introduced. It is not a re-audit: it does not "
+                "mean the audit passed or the code is secure, and the project's own "
+                "test suite was not run."
             )
         L += [f"- {x}" for x in lim]
         text, _ = secrets.redact_text("\n".join(L) + "\n")

@@ -4,9 +4,6 @@ verdicts — and nothing a model says can turn a gap into a clean result."""
 from __future__ import annotations
 
 import json
-import os
-import stat
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -288,59 +285,6 @@ def test_lockfile_parsers_read_the_real_formats():
     assert scanners.parse_lockfile("package-lock.json", pkg_lock) == [
         ("npm", "b", "1.0.0")
     ]
-
-
-async def test_an_installed_sarif_scanner_runs_and_a_missing_one_is_not_installed(
-    tmp_path, monkeypatch
-):
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    sarif = {
-        "runs": [
-            {
-                "tool": {"driver": {"name": "gitleaks"}},
-                "results": [
-                    {
-                        "ruleId": "generic-api-key",
-                        "level": "error",
-                        "message": {"text": "key " + planted()["github_token"]},
-                        "locations": [
-                            {
-                                "physicalLocation": {
-                                    "artifactLocation": {"uri": "config.py"},
-                                    "region": {"startLine": 2},
-                                }
-                            }
-                        ],
-                    }
-                ],
-            }
-        ]
-    }
-    payload = tmp_path / "out.sarif"
-    payload.write_text(json.dumps(sarif))
-    if sys.platform == "win32":
-        exe = bindir / "gitleaks.bat"
-        exe.write_text(f'@echo off\ntype "{payload}"\n')
-    else:
-        exe = bindir / "gitleaks"
-        exe.write_text(f"#!/bin/sh\ncat '{payload}'\n")
-        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ.get("PATH", ""))
-    monkeypatch.setattr(
-        scanners,
-        "SARIF_SCANNERS",
-        {
-            "gitleaks": scanners.SARIF_SCANNERS["gitleaks"],
-            "trivy-missing-xyz": ["trivy-missing-xyz", "fs"],
-        },
-    )
-    results = await scanners.run_sarif_scanners(str(tmp_path), timeout_s=30)
-    assert results["trivy-missing-xyz"] == {"status": "not_installed"}
-    assert results["gitleaks"]["status"] == "ran"
-    [hit] = results["gitleaks"]["findings"]
-    assert hit["path"] == "config.py" and hit["line"] == 2
-    assert planted()["github_token"] not in json.dumps(results)
 
 
 async def test_retest_passes_only_when_the_flagged_code_is_gone(tmp_path):

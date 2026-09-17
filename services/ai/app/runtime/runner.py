@@ -1035,6 +1035,13 @@ async def run_generation(
                 route_reason=route.reason,
                 osv_enabled=settings.ai_security_osv_enabled,
                 scanner_timeout_s=settings.ai_security_scanner_timeout_s,
+                scanners=tuple(
+                    n.strip()
+                    for n in settings.ai_security_scanners.split(",")
+                    if n.strip()
+                ),
+                scanner_bin_dir=settings.ai_security_scanner_bin_dir,
+                opengrep_rules=settings.ai_security_opengrep_rules,
             )
             sec_state.seed_from_completed(req.completedTools)
             # The GitHub connection's declared READS are guaranteed a binding;

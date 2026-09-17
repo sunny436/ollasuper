@@ -29,7 +29,12 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+)
 from langchain_core.runnables import Runnable
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -415,7 +420,25 @@ def _build_agent_graph(
         budget = state.get("tool_budget", 0)
         if has_calls and (budget is None or budget > 0):
             return "executor"
+        # Security audit FINALIZATION: a turn that did audit work but ended
+        # without submitting its findings gets exactly one more step to do so
+        # (see SecurityTurn.checkpoint_due). Every other turn ends as before.
+        if tools_ctx.security is not None and tools_ctx.security.checkpoint_due():
+            return "security_checkpoint"
         return END
+
+    async def security_checkpoint(state: ChatState) -> dict:
+        from app.secaudit.report import CHECKPOINT_PROMPT
+
+        tools_ctx.security.checkpoint_used = True
+        log.info("secaudit.checkpoint", extra={"run_id": tools_ctx.run_id})
+        # One step of budget: enough to call security_report, after which the
+        # model answers in text with no tools (the loop cannot resume).
+        return {
+            "messages": [HumanMessage(content=CHECKPOINT_PROMPT)],
+            "tool_budget": 1,
+            "tool_stalls": 0,
+        }
 
     def route_after_executor(state: ChatState) -> str:
         # Back to the model to observe the results, unless the user cancelled, a
@@ -433,10 +456,18 @@ def _build_agent_graph(
     builder.add_node("prepare", _prepare)
     builder.add_node("model", model)
     builder.add_node("executor", executor)
+    builder.add_node("security_checkpoint", security_checkpoint)
+    builder.add_edge("security_checkpoint", "model")
     builder.add_edge(START, "prepare")
     builder.add_edge("prepare", "model")
     builder.add_conditional_edges(
-        "model", route_after_model, {"executor": "executor", END: END}
+        "model",
+        route_after_model,
+        {
+            "executor": "executor",
+            "security_checkpoint": "security_checkpoint",
+            END: END,
+        },
     )
     builder.add_conditional_edges(
         "executor", route_after_executor, {"model": "model", END: END}

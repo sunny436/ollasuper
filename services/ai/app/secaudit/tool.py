@@ -80,10 +80,11 @@ SECURITY_SCAN_TOOL_SPEC: dict = {
         "description": (
             "Deterministic security stages for a LOCAL repository. ops: secrets (rule-"
             "based sweep of every tracked file) | dependencies (lockfile versions "
-            "checked against the OSV database) | scanners (installed SARIF scanners "
-            "such as semgrep/gitleaks/trivy; missing ones are reported as not "
-            "installed) | retest (after a fix: re-read `path` and confirm each flagged "
-            "`evidence` snippet is gone and no secret pattern remains). A failed stage "
+            "checked against the OSV database) | scanners (the configured SARIF "
+            "scanners, e.g. OpenGrep and Gitleaks; a missing or failing one is "
+            "reported as such) | retest (after a fix: re-read `path` and confirm "
+            "each flagged `evidence` snippet is gone and no secret pattern remains; "
+            "this checks the flagged code only, not a re-audit). A failed stage "
             "is reported as failed, never as clean."
         ),
         "parameters": {
@@ -433,7 +434,13 @@ async def _scan_op(state: SecurityTurn, repo: str, root: str, args: dict) -> dic
         )
         return {"status": "ran", "lockfiles": locks, **res}
     if op == "scanners":
-        results = await scanners.run_sarif_scanners(root, state.scanner_timeout_s)
+        results = await scanners.run_sarif_scanners(
+            root,
+            state.scanner_timeout_s,
+            enabled=state.scanners,
+            bin_dir=state.scanner_bin_dir,
+            rules=state.opengrep_rules,
+        )
         for name, r in results.items():
             state.set_stage(
                 f"sast:{name}",
@@ -489,7 +496,8 @@ async def _scan_op(state: SecurityTurn, repo: str, root: str, args: dict) -> dic
         else:
             status, detail = (
                 "passed",
-                "flagged evidence absent; no secret pattern in the file",
+                "flagged evidence absent; no secret pattern in the file (covers the "
+                "flagged code only, not a re-audit)",
             )
         if not fixed_here and status == "passed":
             detail += " (no fix was applied through this turn)"
@@ -604,7 +612,7 @@ async def _post_fix_check(
         result = {
             "status": "passed",
             "detail": "automatic post-fix check: replaced code absent, no secret "
-            "pattern introduced",
+            "pattern introduced (covers the changed code only, not a re-audit)",
         }
     state.retests[(repo, path)] = result
     state.add_read(
@@ -674,6 +682,11 @@ class SecurityFixAdapter:
             root = state.local.resolve(user_id or state.user_id, repo)
             if user_id and user_id != state.user_id:
                 raise local.LocalError("not_authorized", "caller mismatch")
+            # The fix reached the repository: that IS verified access, even on a
+            # resumed attempt whose earlier reads were not restored.
+            if repo not in state.local_heads:
+                state.local_heads[repo] = await local.head(root)
+            state.local_access[repo] = "verified"
             res = await local.apply_fix(
                 root, path, str(payload.get("old") or ""), str(payload.get("new") or "")
             )

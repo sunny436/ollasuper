@@ -1,0 +1,187 @@
+# First-party OpenGrep rules for OllaSuper security audits (Python + JS/TS).
+#
+# Deliberately small and high-signal: every rule names a dangerous sink class the
+# audit method already investigates, so a hit is a lead for validation, never a
+# confirmed finding on its own. Written for this project (no third-party rule
+# licence applies). An operator may point AI_SECURITY_OPENGREP_RULES at a
+# different ruleset they are licensed to use.
+rules:
+  # ------------------------------------------------------------------ Python
+  - id: py-sql-built-from-strings
+    languages: [python]
+    severity: ERROR
+    message: SQL text is built from strings/f-strings and reaches execute(); use bound parameters.
+    metadata: {cwe: "CWE-89", owasp: "A03:2021"}
+    pattern-either:
+      - pattern: $DB.execute("..." + $X + ..., ...)
+      - pattern: $DB.execute(f"...", ...)
+      - pattern: $DB.execute("...".format(...), ...)
+      - pattern: $DB.execute("..." % $X, ...)
+      - pattern: |
+          $Q = "..." + $X + ...
+          ...
+          $DB.execute($Q, ...)
+      - pattern: |
+          $Q = f"..."
+          ...
+          $DB.execute($Q, ...)
+
+  - id: py-subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: subprocess with shell=True runs its argument through a shell; pass an argv list.
+    metadata: {cwe: "CWE-78", owasp: "A03:2021"}
+    pattern-either:
+      - pattern: subprocess.$F(..., shell=True, ...)
+      - pattern: asyncio.create_subprocess_shell($CMD, ...)
+
+  - id: py-os-system-dynamic
+    languages: [python]
+    severity: ERROR
+    message: os.system/os.popen with a non-literal command.
+    metadata: {cwe: "CWE-78", owasp: "A03:2021"}
+    patterns:
+      - pattern-either:
+          - pattern: os.system($CMD)
+          - pattern: os.popen($CMD, ...)
+      - pattern-not: os.system("...")
+      - pattern-not: os.popen("...", ...)
+
+  - id: py-eval-exec-dynamic
+    languages: [python]
+    severity: ERROR
+    message: eval/exec of a non-literal value executes arbitrary code.
+    metadata: {cwe: "CWE-95", owasp: "A03:2021"}
+    patterns:
+      - pattern-either:
+          - pattern: eval($X, ...)
+          - pattern: exec($X, ...)
+      - pattern-not: eval("...", ...)
+      - pattern-not: exec("...", ...)
+
+  - id: py-unsafe-deserialization
+    languages: [python]
+    severity: ERROR
+    message: Deserializing untrusted data with pickle/marshal/yaml.load can execute code.
+    metadata: {cwe: "CWE-502", owasp: "A08:2021"}
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+      - pattern: marshal.loads(...)
+      - patterns:
+          - pattern: yaml.load(...)
+          - pattern-not: yaml.load(..., Loader=yaml.SafeLoader, ...)
+          - pattern-not: yaml.load(..., Loader=SafeLoader, ...)
+
+  - id: py-tls-verification-disabled
+    languages: [python]
+    severity: WARNING
+    message: TLS certificate verification is disabled.
+    metadata: {cwe: "CWE-295", owasp: "A02:2021"}
+    pattern-either:
+      - pattern: requests.$F(..., verify=False, ...)
+      - pattern: httpx.$F(..., verify=False, ...)
+      - pattern: httpx.Client(..., verify=False, ...)
+      - pattern: httpx.AsyncClient(..., verify=False, ...)
+
+  - id: py-jwt-signature-not-verified
+    languages: [python]
+    severity: ERROR
+    message: JWT decoded without verifying its signature.
+    metadata: {cwe: "CWE-347", owasp: "A07:2021"}
+    pattern-either:
+      - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: jwt.decode(..., verify=False, ...)
+
+  - id: py-request-data-to-outbound-fetch
+    languages: [python]
+    severity: ERROR
+    message: Request-controlled data reaches an outbound HTTP request (possible SSRF).
+    metadata: {cwe: "CWE-918", owasp: "A10:2021"}
+    mode: taint
+    pattern-sources:
+      - pattern: flask.request.$ATTR
+      - pattern: request.args.get(...)
+      - pattern: request.form.get(...)
+      - pattern: request.json
+      - pattern: request.query_params.get(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: requests.$M($URL, ...)
+          - pattern: httpx.$M($URL, ...)
+          - pattern: $CLIENT.get($URL, ...)
+          - pattern: urllib.request.urlopen($URL, ...)
+    pattern-sanitizers:
+      - pattern: assert_dialable(...)
+      - pattern: allowlisted(...)
+
+  - id: py-request-data-to-file-path
+    languages: [python]
+    severity: ERROR
+    message: Request-controlled data builds a filesystem path (possible path traversal).
+    metadata: {cwe: "CWE-22", owasp: "A01:2021"}
+    mode: taint
+    pattern-sources:
+      - pattern: flask.request.$ATTR
+      - pattern: request.args.get(...)
+      - pattern: request.form.get(...)
+      - pattern: request.query_params.get(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: open($PATH, ...)
+          - pattern: send_file($PATH, ...)
+          - pattern: FileResponse($PATH, ...)
+          - pattern: os.path.join(..., $PATH, ...)
+    pattern-sanitizers:
+      - pattern: secure_filename(...)
+      - pattern: os.path.basename(...)
+
+  - id: py-flask-debug-enabled
+    languages: [python]
+    severity: WARNING
+    message: Flask debug mode exposes an interactive debugger.
+    metadata: {cwe: "CWE-489", owasp: "A05:2021"}
+    pattern: $APP.run(..., debug=True, ...)
+
+  # ------------------------------------------------------------- JS / TS
+  - id: js-child-process-dynamic-command
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: child_process exec/execSync with a dynamic command string runs through a shell.
+    metadata: {cwe: "CWE-78", owasp: "A03:2021"}
+    patterns:
+      - pattern-either:
+          - pattern: exec(`...${$X}...`, ...)
+          - pattern: execSync(`...${$X}...`, ...)
+          - pattern: exec("..." + $X, ...)
+          - pattern: execSync("..." + $X, ...)
+          - pattern: $CP.exec(`...${$X}...`, ...)
+          - pattern: $CP.execSync(`...${$X}...`, ...)
+
+  - id: js-eval-dynamic
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: eval/new Function with a non-literal value executes arbitrary code.
+    metadata: {cwe: "CWE-95", owasp: "A03:2021"}
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function(..., $X)
+      - pattern-not: eval("...")
+      - pattern-not: new Function("...")
+
+  - id: react-dangerously-set-inner-html
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: dangerouslySetInnerHTML renders raw HTML; confirm the value cannot carry user/model content.
+    metadata: {cwe: "CWE-79", owasp: "A03:2021"}
+    pattern: <$EL dangerouslySetInnerHTML={...} />
+
+  - id: js-tls-verification-disabled
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: TLS certificate verification is disabled.
+    metadata: {cwe: "CWE-295", owasp: "A02:2021"}
+    pattern-either:
+      - pattern: "{..., rejectUnauthorized: false, ...}"
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"

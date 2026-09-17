@@ -1311,6 +1311,13 @@ async def _run_one(
             retry_after = e.retry_after_s
             if not e.retryable:
                 break  # non-retryable: do not retry
+        # Security turn: a GitHub call that timed out is not retried (bounded:
+        # one timeout instead of three). Retry policy for everything else is
+        # unchanged.
+        if ctx.security is not None and not ctx.security.retry_allowed(
+            tool_id, err_payload
+        ):
+            break
         # Phase 2 AT-MOST-ONCE: never auto-retry an AMBIGUOUS outcome
         # (timeout/5xx/transport/2xx-unreadable) on a non-idempotent side-effecting
         # tool — the effect may already have landed. Recorded INDETERMINATE below.

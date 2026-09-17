@@ -403,8 +403,18 @@ class Settings(BaseSettings):
     ai_security_local_roots: str = ""
     # Comma-separated authenticated user ids allowed to use those roots.
     ai_security_local_user_ids: str = ""
-    # Per installed SARIF scanner (semgrep/gitleaks/...) wall-clock limit.
-    ai_security_scanner_timeout_s: float = 300.0
+    # Per SARIF scanner wall-clock limit — well inside the 300s turn deadline
+    # (measured: opengrep 11s, gitleaks 3s on the whole OllaSuper repository).
+    ai_security_scanner_timeout_s: float = 120.0
+    # Which SARIF scanners an audit runs (comma-separated). Only these are
+    # attempted and reported; a configured scanner that is missing is
+    # `not_installed`, never clean.
+    ai_security_scanners: str = "opengrep,gitleaks"
+    # Directory holding the pinned scanner binaries (deploy/65-secaudit.sh);
+    # empty = PATH lookup only.
+    ai_security_scanner_bin_dir: str = ""
+    # OpenGrep/Semgrep ruleset; empty = the first-party app/secaudit/rules.
+    ai_security_opengrep_rules: str = ""
     # Dependency audit: send lockfile package names/versions to api.osv.dev.
     ai_security_osv_enabled: bool = True
     # How long a model call may spend ESTABLISHING a connection, as distinct
