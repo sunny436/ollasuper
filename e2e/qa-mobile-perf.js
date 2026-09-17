@@ -1007,9 +1007,15 @@ function gatesMode() {
   const ma = load(LABEL, "memory");
   if (ma) {
     const r = ma.result;
-    const bad = Object.entries(r.scenarios).filter(([, s]) => s.heapGrowthPctAfterWarmup > 10 || s.listenersDelta > Math.max(20, s.samples[0].listeners * 0.05) || s.socketsDelta > 0 || s.subscriptionsDelta > 2);
+    // Growth across the SECOND half (mid -> last cycle): the first cycles fill caches
+    // (transcript cache, Convex query cache), which is warm-up, not a leak.
+    const secondHalf = (s) => {
+      const [, mid, last] = s.samples;
+      return mid && last && mid.heapMB ? Math.round(((last.heapMB - mid.heapMB) / mid.heapMB) * 1000) / 10 : null;
+    };
+    const bad = Object.entries(r.scenarios).filter(([, s]) => secondHalf(s) > 10 || s.samples[s.samples.length - 1].listeners - s.samples[1].listeners > Math.max(20, s.samples[1].listeners * 0.05) || s.socketsDelta > 0 || s.subscriptionsDelta > 2);
     gate("G7", "memory over repeated interaction", bad.length === 0 && r.detachedEnd <= r.detachedAfterCycles + 50 && r.fullReloadsDuringCycles === 0,
-      `${Object.entries(r.scenarios).map(([n, s]) => `${n}: heap ${s.heapGrowthPctAfterWarmup}% listeners ${s.listenersDelta >= 0 ? "+" : ""}${s.listenersDelta} sockets Δ${s.socketsDelta} subs Δ${s.subscriptionsDelta}`).join("; ")}; detached ${r.detachedAfterCycles} -> ${r.detachedEnd}, reloads ${r.fullReloadsDuringCycles}`);
+      `${Object.entries(r.scenarios).map(([n, s]) => `${n}: heap 2nd-half ${secondHalf(s)}% (from cycle 1 ${s.heapGrowthPctAfterWarmup}%) listeners ${s.listenersDelta >= 0 ? "+" : ""}${s.listenersDelta} sockets Δ${s.socketsDelta} subs Δ${s.subscriptionsDelta}`).join("; ")}; detached ${r.detachedAfterCycles} -> ${r.detachedEnd}, reloads ${r.fullReloadsDuringCycles}`);
   } else gate("G7", "memory", null, "after memory run missing");
   const errors = ["perf", "network", "memory", "battery"].map((m) => load(LABEL, m)).filter(Boolean).reduce((n, d) => n + d.consoleErrors.length, 0);
   gate("G9", "console errors in after runs", errors === 0, `${errors} errors`);

@@ -211,7 +211,7 @@ export function NotificationsBell() {
       <DropdownMenuContent
         align="end"
         sideOffset={8}
-        className="workspace w-[min(20rem,calc(100vw-2rem))] p-0"
+        className="workspace max-h-[var(--radix-dropdown-menu-content-available-height)] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto p-0"
       >
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <span className="text-xs font-medium text-primary">Notifications</span>

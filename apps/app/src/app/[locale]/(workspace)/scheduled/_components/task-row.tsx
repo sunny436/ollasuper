@@ -70,6 +70,8 @@ export function TaskRow({
   onPaused?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  // Near the bottom of a short (landscape phone) viewport the menu opens upward.
+  const [menuUp, setMenuUp] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
@@ -168,7 +170,11 @@ export function TaskRow({
               aria-label="Task actions"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((v) => !v)}
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                setMenuUp(r.bottom + 240 > window.innerHeight && r.top > 240);
+                setMenuOpen((v) => !v);
+              }}
               className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
             >
               <MoreHorizontal className="h-3.5 w-3.5" />
@@ -187,7 +193,7 @@ export function TaskRow({
                     role="menuitem" so the a11y tree is still correct. */}
                 <div
                   role="menu"
-                  className="absolute right-0 z-50 mt-1 w-56 overflow-hidden rounded-xl border border-border bg-card p-1 shadow-xl"
+                  className={`absolute right-0 z-50 w-56 overflow-hidden rounded-xl border border-border bg-card p-1 shadow-xl ${menuUp ? "bottom-full mb-1" : "mt-1"}`}
                 >
                   {/*
                     Run now is DISABLED while paused. Server-side it would create

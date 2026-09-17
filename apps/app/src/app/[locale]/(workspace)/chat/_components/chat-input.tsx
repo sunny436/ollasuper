@@ -349,7 +349,7 @@ export function ChatInput({
       <div
         ref={composerShell}
         data-composer-shell
-        className={`mx-auto w-full ${centred ? "max-w-[58rem]" : "max-w-3xl"}`}
+        className={`mx-auto w-full [container-type:inline-size] ${centred ? "max-w-[58rem]" : "max-w-3xl"}`}
       >
         <label htmlFor="chat-composer" className="sr-only">
           Message
@@ -370,7 +370,7 @@ export function ChatInput({
               ? // nowrap keeps the empty pill a single row, but an attachment
                 // chip is `basis-full` and would otherwise collapse the textarea
                 // to ~0 width on this one line — wrap once a chip is present.
-                `flex ${attachments.items.length > 0 ? "flex-wrap" : "flex-nowrap"} items-center gap-1.5 rounded-[32px] border border-white/60 bg-card/70 px-3.5 py-3 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10`
+                `flex ${attachments.items.length > 0 ? "flex-wrap" : "flex-wrap [@container(min-width:32rem)]:flex-nowrap"} items-center gap-1.5 rounded-[32px] border border-white/60 bg-card/70 px-3.5 py-3 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10`
               : "flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-3xl border border-border bg-card/70 px-3 py-2.5 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25"
           }
         >
@@ -442,7 +442,10 @@ export function ChatInput({
           <div
             className={
               centred
-                ? "order-2 min-w-0 flex-1 [&_textarea]:text-lg [&_textarea]:leading-8"
+                ? // Below a 32rem composer the one-row pill left the textarea 43 px
+                  // wide at 320 px and 98 px at 375 px (measured): give it its own
+                  // full-width row there, controls underneath.
+                  "order-first min-w-0 basis-full [&_textarea]:text-lg [&_textarea]:leading-8 [@container(min-width:32rem)]:order-2 [@container(min-width:32rem)]:flex-1 [@container(min-width:32rem)]:basis-auto"
                 : "order-1 w-full basis-full"
             }
           >
@@ -484,7 +487,7 @@ export function ChatInput({
           {/* RIGHT controls: mic / send / stop */}
           <div
             className={`flex items-center gap-1 ${
-              centred ? "order-3" : "order-4 ml-auto"
+              centred ? "order-3 ml-auto [@container(min-width:32rem)]:ml-0" : "order-4 ml-auto"
             }`}
           >
             {isStreaming ? (

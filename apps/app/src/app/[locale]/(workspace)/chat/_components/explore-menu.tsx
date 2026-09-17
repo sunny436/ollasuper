@@ -326,7 +326,7 @@ export function ExploreMenu({
           // Inline width beats the class below; the class stays as the fallback
           // for the (defensive) unmeasured case.
           style={anchor ? { width: anchor.width } : undefined}
-          className="workspace z-50 max-h-[70vh] w-[min(46rem,calc(100vw-2rem))] overflow-hidden rounded-2xl p-0"
+          className="workspace z-50 max-h-[min(70vh,var(--radix-dropdown-menu-content-available-height))] w-[min(46rem,calc(100vw-2rem))] overflow-hidden rounded-2xl p-0"
         >
           <div className="flex items-center justify-between border-b border-border bg-primary/[0.03] px-4 py-2.5">
             <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-primary/45">

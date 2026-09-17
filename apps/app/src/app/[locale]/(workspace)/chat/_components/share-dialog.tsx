@@ -61,6 +61,7 @@ export function ShareDialog({
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const requested = useRef(false);
+  const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -126,7 +127,20 @@ export function ShareDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="workspace">
+      <DialogContent
+        className="workspace"
+        // Opened from buttons, not a DialogTrigger, so Radix has no trigger to
+        // return focus to and it fell to <body>. Remember what had focus.
+        onOpenAutoFocus={() => {
+          returnFocus.current = document.activeElement as HTMLElement | null;
+        }}
+        onCloseAutoFocus={(e) => {
+          if (returnFocus.current?.isConnected) {
+            e.preventDefault();
+            returnFocus.current.focus();
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>
             {isTurn ? "Share response" : "Share conversation"}
