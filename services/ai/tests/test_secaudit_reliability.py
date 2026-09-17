@@ -330,6 +330,10 @@ async def test_audit_approval_fix_retest_final_report(monkeypatch, repo):
     assert "SSRF in /preview" in text and "Verdict: FINDINGS" in text
     assert "It is not a re-audit" in text
     assert "not a re-audit" in text.split("### Fixes")[1]
+    # Even negated, "the code is secure" is never written (e2e guard, prod-found).
+    assert "the code is secure" not in text.replace(
+        "not a statement that the code is secure", ""
+    )
 
 
 async def test_approval_without_findings_is_incomplete_but_shows_the_fix(

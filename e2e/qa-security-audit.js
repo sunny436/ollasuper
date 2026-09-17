@@ -53,7 +53,13 @@ const TURNS = [
       "and submit the report.",
     report: true,
     verdict: /Verdict: (FINDINGS|INCOMPLETE)/,
-    must: ["local:fixture — access verified", "Secrets detected"],
+    // The pinned OpenGrep/Gitleaks must actually run (deploy/65-secaudit.sh).
+    must: [
+      "local:fixture — access verified",
+      "Secrets detected",
+      "sast:opengrep: ran",
+      "sast:gitleaks: ran",
+    ],
   },
   {
     slug: "ollasuper",
@@ -99,7 +105,7 @@ const TURNS = [
     decide: "approve",
     report: true,
     verdict: /Verdict: /,
-    must: ["Fix retest: passed"],
+    must: ["Fix retest: passed", "not a re-audit"],
   },
   {
     // Needs a DISPOSABLE repository the connected GitHub account can write to.

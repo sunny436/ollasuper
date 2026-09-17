@@ -1090,8 +1090,8 @@ class SecurityTurn:
             lim.append(
                 "A passed fix retest shows only that the flagged code changed and "
                 "no secret pattern was introduced. It is not a re-audit: it does not "
-                "mean the audit passed or the code is secure, and the project's own "
-                "test suite was not run."
+                "mean the audit passed or that no other vulnerability remains, and "
+                "the project's own test suite was not run."
             )
         L += [f"- {x}" for x in lim]
         text, _ = secrets.redact_text("\n".join(L) + "\n")
