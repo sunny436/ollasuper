@@ -17,6 +17,7 @@ const jakarta = Plus_Jakarta_Sans({
 });
 import { AmbienceProvider } from "@/lib/ambience/ambience-provider";
 import { AmbienceScript } from "@/lib/ambience/ambience-script";
+import { PerfProbeLoader } from "@/lib/perf-probe/perf-probe-loader";
 import { ConvexClientProvider } from "../convex-client-provider";
 
 export const metadata: Metadata = {
@@ -52,6 +53,8 @@ export default function RootLayout({
                 a small client chunk for nothing. Re-add if a Tooltip is used. */}
             <ConvexClientProvider>{children}</ConvexClientProvider>
           </AmbienceProvider>
+          {/* Opt-in (?perf=1) real-device perf probe; a no-op unless enabled. */}
+          <PerfProbeLoader />
         </body>
       </html>
     </ConvexAuthNextjsServerProvider>
