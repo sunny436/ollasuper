@@ -49,9 +49,13 @@ let katexPromise: Promise<unknown> | null = null;
 function loadKatex(): Promise<unknown> {
   if (!katexPromise) {
     katexPromise = import("rehype-katex").then((m) => {
-      // Side-effect: inject katex's stylesheet. CSS value-imports have no types.
+      // Side-effect: inject katex's stylesheet. A failed load (offline) rejects
+      // with an Event; unhandled, it surfaced as a page error on prod. Math still
+      // renders, unstyled, and the next message with math retries.
       // @ts-expect-error no type declaration for a CSS module import
-      void import("katex/dist/katex.min.css");
+      import("katex/dist/katex.min.css").catch(() => {
+        katexPromise = null;
+      });
       // biome-ignore lint/suspicious/noExplicitAny: default export typing
       return (m as any).default;
     }, (e) => {
