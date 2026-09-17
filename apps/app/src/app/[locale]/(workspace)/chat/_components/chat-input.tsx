@@ -307,7 +307,10 @@ export function ChatInput({
   // people compare it to. Every enlargement therefore starts at the 32rem
   // container breakpoint instead of being unconditional; measured 142 -> 112 px
   // with the textarea coming out slightly WIDER. Taps stay 44 px.
-  const iconBtn = `shrink-0 rounded-full ${centred ? "p-2 [@container(min-width:32rem)]:p-2.5" : "p-2"} text-primary/45 transition hover:bg-primary/5 hover:text-primary/80`;
+  // The centred icon buttons size from padding, so the smaller padding above took
+  // them 44 -> 40 px. min-h/w restores the 44 px hit area without adding height:
+  // the row is already 44 px tall because of the send button.
+  const iconBtn = `shrink-0 rounded-full ${centred ? "p-2 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11 [@container(min-width:32rem)]:p-2.5" : "p-2"} text-primary/45 transition hover:bg-primary/5 hover:text-primary/80`;
   const btnBox = `flex ${centred ? "h-11 w-11 [@container(min-width:32rem)]:h-12 [@container(min-width:32rem)]:w-12" : "h-9 w-9"} items-center justify-center rounded-full`;
   const bigIcon = centred
     ? "h-5 w-5 [@container(min-width:32rem)]:h-6 [@container(min-width:32rem)]:w-6"
