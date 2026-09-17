@@ -65,6 +65,12 @@ const log = (...a) => console.log(...a);
 
 // Installed in every page: long tasks, event timing, first <pre>, rAF + WebGL counters.
 const INIT = () => {
+  // A rejection whose reason is a DOM Event reaches Playwright as "pageerror Event" with
+  // no stack and no URL; name the element that fired it so the failure is traceable.
+  window.addEventListener("unhandledrejection", (e) => {
+    const t = e.reason instanceof Event ? e.reason.target : null;
+    if (t) console.warn(`[rejected-event] ${e.reason.type} <${t.tagName?.toLowerCase()}> ${t.href || t.src || t.rel || ""}`);
+  });
   window.__lt = [];
   window.__et = [];
   window.__rafCalls = 0;
@@ -102,6 +108,7 @@ const INIT = () => {
 function watch(page, tag) {
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(`[${tag}] ${m.text().slice(0, 200)}`);
+    if (m.text().startsWith("[rejected-event]")) failedRequests.push(`[${tag}] ${m.text().slice(0, 200)}`);
   });
   page.on("pageerror", (e) => errs.push(`[${tag}] pageerror ${e.message.slice(0, 200)}`));
   // Which request failed, not just that one did (the console line has no URL).
@@ -1041,8 +1048,11 @@ function gatesMode() {
     gate("G7", "memory over repeated interaction", bad.length === 0 && r.detachedEnd <= r.detachedAfterCycles + 50 && r.fullReloadsDuringCycles === 0,
       `${Object.entries(r.scenarios).map(([n, s]) => `${n}: heap 2nd-half ${secondHalf(s)}% (from cycle 1 ${s.heapGrowthPctAfterWarmup}%) listeners ${s.listenersDelta >= 0 ? "+" : ""}${s.listenersDelta} sockets Δ${s.socketsDelta} subs Δ${s.subscriptionsDelta}`).join("; ")}; detached ${r.detachedAfterCycles} -> ${r.detachedEnd}, reloads ${r.fullReloadsDuringCycles}`);
   } else gate("G7", "memory", null, "after memory run missing");
-  const errors = ["perf", "network", "memory", "battery"].map((m) => load(LABEL, m)).filter(Boolean).reduce((n, d) => n + d.consoleErrors.length, 0);
-  gate("G9", "console errors in after runs", errors === 0, `${errors} errors`);
+  const all = ["perf", "network", "memory", "battery"].map((m) => load(LABEL, m)).filter(Boolean).flatMap((d) => d.consoleErrors);
+  // Network mode takes the browser offline on purpose; Chromium logs each request made in
+  // that window. Those lines are the simulation, not the app. Page errors still count.
+  const errors = all.filter((e) => !/Failed to load resource: net::ERR_INTERNET_DISCONNECTED/.test(e));
+  gate("G9", "console/page errors in after runs", errors.length === 0, `${errors.length} errors (${all.length} raw, incl. simulated-offline resource logs)${errors.length ? `: ${errors.slice(0, 3).join(" | ")}` : ""}`);
   return verdicts;
 }
 
