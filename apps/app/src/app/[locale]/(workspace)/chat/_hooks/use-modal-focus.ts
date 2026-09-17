@@ -1,6 +1,6 @@
 "use client";
 
-import { type RefObject, useEffect, useRef } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -21,10 +21,16 @@ export function useModalFocus<T extends HTMLElement>(
   open: boolean,
 ): RefObject<T | null> {
   const ref = useRef<T | null>(null);
+  const returnTo = useRef<HTMLElement | null>(null);
+
+  // Layout effect: runs before a dialog's own autofocus effect moves focus into
+  // it, so this records the control that opened the dialog, not its first input.
+  useLayoutEffect(() => {
+    if (open) returnTo.current = document.activeElement as HTMLElement | null;
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    const returnTo = document.activeElement as HTMLElement | null;
     const frame = requestAnimationFrame(() => {
       const el = ref.current;
       if (el && !el.contains(document.activeElement)) {
@@ -56,7 +62,8 @@ export function useModalFocus<T extends HTMLElement>(
     return () => {
       cancelAnimationFrame(frame);
       document.removeEventListener("keydown", onKey);
-      if (returnTo?.isConnected && returnTo !== document.body) returnTo.focus();
+      const back = returnTo.current;
+      if (back?.isConnected && back !== document.body) back.focus();
     };
   }, [open]);
 

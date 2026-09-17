@@ -69,7 +69,7 @@ async function newGroup(type, touch) {
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(`[${type.name()}${touch ? " touch" : ""}] ${page.url().replace(BASE, "")} ${m.text().slice(0, 180)}`);
   });
-  page.on("pageerror", (e) => errs.push(`[${type.name()}] pageerror ${e.message.slice(0, 180)}`));
+  page.on("pageerror", (e) => errs.push(`[${type.name()}] ${page.url().replace(BASE, "")} pageerror ${e.message.slice(0, 180)}`));
   return { browser, context, page };
 }
 

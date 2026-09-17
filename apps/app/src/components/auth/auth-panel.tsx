@@ -391,7 +391,10 @@ export function AuthPanel() {
         <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[32px] border border-white/10 bg-white/[0.03] shadow-[0_30px_90px_rgba(0,0,0,0.65)] backdrop-blur-2xl md:flex-row">
 
         {/* ===== LEFT: constant branding for every mode (no tab nav, no AI pill) ===== */}
-        <div className="relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-[#4F8BF0]/10 p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
+        {/* Scrolls on short desktop windows, so it must be keyboard-reachable
+            (axe scrollable-region-focusable on prod). */}
+        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-reachable (WCAG 2.1.1) */}
+        <div tabIndex={0} role="region" aria-label="About Ollasuper" className="relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-[#4F8BF0]/10 p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
           {/* Subtle orbital / radial art — behind content, never overlapping. */}
           <div
             aria-hidden="true"
