@@ -300,15 +300,28 @@ export function ChatInput({
   };
 
   // Centred = the Gemini pill, scaled ~1.8x; docked keeps today's sizes.
-  const iconBtn = `shrink-0 rounded-full ${centred ? "p-2.5" : "p-2"} text-primary/45 transition hover:bg-primary/5 hover:text-primary/80`;
-  const btnBox = `flex ${centred ? "h-12 w-12" : "h-9 w-9"} items-center justify-center rounded-full`;
-  const bigIcon = centred ? "h-6 w-6" : "h-4 w-4";
-  const stopIcon = centred ? "h-5 w-5" : "h-3.5 w-3.5";
-  const micIcon = centred ? "h-6 w-6" : "h-[18px] w-[18px]";
+  //
+  // The 1.8x scale is a DESKTOP size. Under a 32rem composer the pill is already
+  // two rows (the textarea needs its own — see the textarea wrapper below), so at
+  // desktop sizes it stood 142 px tall on a phone against ~110 px for the apps
+  // people compare it to. Every enlargement therefore starts at the 32rem
+  // container breakpoint instead of being unconditional; measured 142 -> 112 px
+  // with the textarea coming out slightly WIDER. Taps stay 44 px.
+  const iconBtn = `shrink-0 rounded-full ${centred ? "p-2 [@container(min-width:32rem)]:p-2.5" : "p-2"} text-primary/45 transition hover:bg-primary/5 hover:text-primary/80`;
+  const btnBox = `flex ${centred ? "h-11 w-11 [@container(min-width:32rem)]:h-12 [@container(min-width:32rem)]:w-12" : "h-9 w-9"} items-center justify-center rounded-full`;
+  const bigIcon = centred
+    ? "h-5 w-5 [@container(min-width:32rem)]:h-6 [@container(min-width:32rem)]:w-6"
+    : "h-4 w-4";
+  const stopIcon = centred
+    ? "h-4 w-4 [@container(min-width:32rem)]:h-5 [@container(min-width:32rem)]:w-5"
+    : "h-3.5 w-3.5";
+  const micIcon = centred
+    ? "h-5 w-5 [@container(min-width:32rem)]:h-6 [@container(min-width:32rem)]:w-6"
+    : "h-[18px] w-[18px]";
 
   return (
     <div
-      className="relative shrink-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6"
+      className="relative shrink-0 px-4 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:px-6 md:pb-[max(1rem,env(safe-area-inset-bottom))]"
       onDragEnter={(e) => {
         e.preventDefault();
         dragDepth.current += 1;
@@ -370,8 +383,8 @@ export function ChatInput({
               ? // nowrap keeps the empty pill a single row, but an attachment
                 // chip is `basis-full` and would otherwise collapse the textarea
                 // to ~0 width on this one line — wrap once a chip is present.
-                `flex ${attachments.items.length > 0 ? "flex-wrap" : "flex-wrap [@container(min-width:32rem)]:flex-nowrap"} items-center gap-1.5 rounded-[32px] border border-white/60 bg-card/70 px-3.5 py-3 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10`
-              : "flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-3xl border border-border bg-card/70 px-3 py-2.5 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25"
+                `flex ${attachments.items.length > 0 ? "flex-wrap" : "flex-wrap [@container(min-width:32rem)]:flex-nowrap"} items-center gap-1 rounded-[32px] border border-white/60 bg-card/70 px-3 py-2 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10 [@container(min-width:32rem)]:gap-1.5 [@container(min-width:32rem)]:px-3.5 [@container(min-width:32rem)]:py-3`
+              : "flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-3xl border border-border bg-card/70 px-3 py-2 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25 [@container(min-width:32rem)]:py-2.5"
           }
         >
           {attachments.items.length > 0 && (
@@ -445,7 +458,9 @@ export function ChatInput({
                 ? // Below a 32rem composer the one-row pill left the textarea 43 px
                   // wide at 320 px and 98 px at 375 px (measured): give it its own
                   // full-width row there, controls underneath.
-                  "order-first min-w-0 basis-full [&_textarea]:text-lg [&_textarea]:leading-8 [@container(min-width:32rem)]:order-2 [@container(min-width:32rem)]:flex-1 [@container(min-width:32rem)]:basis-auto"
+                  // The 18px/32px enlargement is part of the same desktop scale as
+                  // the controls above: on a phone it only makes the pill taller.
+                  "order-first min-w-0 basis-full [@container(min-width:32rem)]:order-2 [@container(min-width:32rem)]:flex-1 [@container(min-width:32rem)]:basis-auto [@container(min-width:32rem)]:[&_textarea]:text-lg [@container(min-width:32rem)]:[&_textarea]:leading-8"
                 : "order-1 w-full basis-full"
             }
           >

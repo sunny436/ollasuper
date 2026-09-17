@@ -108,13 +108,22 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                   // prototype does: layout projection writes to the transform, so a
                   // CSS translate on the same element is fought over every frame
                   // and the spring lands in the wrong place.
+                  //
+                  // TOUCH: the composer sits at the foot of the screen, as it does
+                  // once a thread exists — centred it left 201-283 px of dead space
+                  // below it on a phone and put the one control you always reach for
+                  // in the middle of the screen. `pointer: coarse` rather than a
+                  // width breakpoint: a phone in landscape (844x390) is still a phone.
+                  // The greeting keeps its position (my-auto below).
                   `pointer-events-none absolute inset-0 ${
                     exploreOpen ? "z-40" : "z-20"
-                  } flex items-center px-4 md:px-6`
+                  } flex items-center px-4 md:px-6 [@media(pointer:coarse)]:items-stretch`
                 : "relative z-20 shrink-0"
             }
           >
-            <div className={`pointer-events-auto mx-auto flex w-full flex-col items-center gap-5 ${centred ? "max-w-[58rem]" : "max-w-3xl"}`}>
+            <div
+              className={`pointer-events-auto mx-auto flex w-full flex-col items-center gap-5 ${centred ? "max-w-[58rem] [@media(pointer:coarse)]:h-full" : "max-w-3xl"}`}
+            >
               <AnimatePresence mode="popLayout">
                 {centred && (
                   <m.div
@@ -128,7 +137,10 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                     animate={{ opacity: exploreOpen ? 0.3 : 1, y: 0 }}
                     exit={coarsePointer ? HERO_EXIT_TOUCH : HERO_EXIT}
                     transition={ITEM_SPRING}
-                    className="w-full"
+                    // my-auto: with the column filling the height on touch, this
+                    // keeps the greeting exactly where it was while the composer
+                    // moves to the bottom.
+                    className="w-full [@media(pointer:coarse)]:my-auto"
                   >
                     <EmptyHero />
                   </m.div>

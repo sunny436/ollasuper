@@ -188,7 +188,19 @@ export function MessageList({ threadId }: { threadId: string | null }) {
         // pin during streaming and produces 1-3px jitter per token.
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
       >
-        <div className="mx-auto w-full max-w-3xl px-4 py-6 md:px-6">
+        {/*
+          overflow-wrap is INHERITED, and it is set here rather than per renderer:
+          measured on production, a bare URL rendered as a link inside a list item
+          — the shape of every research answer's source list — could not break, so
+          the transcript scrolled sideways to 892 px against a 390 px viewport
+          (WebKit/iOS). Only markdown's `p` set break-words; li, ol, headings,
+          blockquote, cells, agent activity, sources and approval cards set
+          nothing. One declaration here covers all of them.
+
+          break-word, NOT anywhere: `anywhere` also shrinks min-content, which
+          would make wide tables wrap instead of scroll inside their wrapper.
+        */}
+        <div className="mx-auto w-full max-w-3xl px-4 py-6 [overflow-wrap:break-word] md:px-6">
           {loadingFirst && settled.length === 0 && pendingToShow.length === 0 && (
             <>
               <MessageSkeleton align="right" />

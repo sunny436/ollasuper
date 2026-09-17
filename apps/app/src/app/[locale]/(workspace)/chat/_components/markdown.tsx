@@ -109,7 +109,9 @@ const components: Components = {
         target="_blank"
         // noopener/noreferrer defeats reverse tabnabbing.
         rel="noopener noreferrer nofollow"
-        className="text-brand-ink underline underline-offset-2 hover:opacity-80"
+        // anywhere, not the inherited break-word: a bare URL with no hyphen or
+        // slash to break at still has to wrap rather than leave the container.
+        className="text-brand-ink underline underline-offset-2 [overflow-wrap:anywhere] hover:opacity-80"
       >
         {children}
       </a>

@@ -407,6 +407,72 @@ async function statesPart(type, touch, page, info, results) {
   }
 }
 
+// ------------------------------------------------------------------- unbreakable
+/**
+ * Content the model really emits that nothing on a seeded route contains: a bare
+ * URL as a link inside a list item, and a long display equation. Both are
+ * unbreakable strings, and both escaped the transcript on production (the link
+ * scrolled it to 892 px against a 390 px viewport in WebKit; the equation pushed
+ * the document to 6056 px) while this matrix reported zero overflow — because no
+ * route it visits renders either. Injected rather than generated: a prompt is not
+ * guaranteed to produce the shape, and this is a CSS regression test.
+ *
+ * Asserts the page and transcript stay at viewport width AND that code blocks and
+ * tables keep scrolling inside themselves — the fix must not buy one with the other.
+ */
+async function unbreakablePart(type, touch, page, info, results) {
+  const route = info.codeThread ? `/en/chat/${info.codeThread}` : info.longThread ? `/en/chat/${info.longThread}` : null;
+  if (!route) return;
+  for (const [vn, w, h] of touch ? [["320", 320, 640], ["390", 390, 664], ["844L", 844, 390]] : [["1280", 1280, 800]]) {
+    const where = `${type.name()} ${vn} unbreakable-content`;
+    try {
+      await page.setViewportSize({ width: w, height: h });
+      await page.goto(`${BASE}${route}`, { waitUntil: "domcontentloaded" });
+      await settle(page);
+      const r = await page.evaluate(() => {
+        const host = [...document.querySelectorAll("div.group.my-5")].pop();
+        if (!host) return null;
+        const probe = document.createElement("div");
+        probe.innerHTML =
+          '<ul class="my-2 list-disc space-y-1.5 pl-5">' +
+          '<li><a href="#">https://www2.example.com/us/en/insights/topics/technology-management/tech-trends-2025-artificial-intelligence-adoption-enterprise-survey-report.html</a></li>' +
+          `<li><a href="#">https://example.com/${"a".repeat(120)}</a></li>` +
+          `<li>plain ${"b".repeat(140)}</li></ul>` +
+          `<span class="katex-display"><span class="katex"><span class="katex-html">${"x_{i}+alpha ".repeat(60)}</span></span></span>`;
+        host.appendChild(probe);
+        const vw = document.documentElement.clientWidth;
+        const scroller = document.querySelector('[aria-label="Conversation"]');
+        const codeWrap = [...document.querySelectorAll("div.overflow-x-auto")].find((d) => d.querySelector("pre"));
+        const tableWrap = [...document.querySelectorAll("div.overflow-x-auto")].find((d) => d.querySelector("table"));
+        const kd = probe.querySelector(".katex-display");
+        const out = {
+          vw,
+          docOverflowPx: document.documentElement.scrollWidth - vw,
+          scrollerOverflowPx: scroller ? scroller.scrollWidth - scroller.clientWidth : null,
+          widestRight: Math.max(...[...probe.querySelectorAll("*")].map((e) => Math.round(e.getBoundingClientRect().right))),
+          mathScrollsInternally: kd ? kd.scrollWidth > kd.clientWidth + 1 : null,
+          codeScrollsInternally: codeWrap ? codeWrap.scrollWidth > codeWrap.clientWidth + 1 : null,
+          tableScrollsInternally: tableWrap ? tableWrap.scrollWidth > tableWrap.clientWidth + 1 : null,
+        };
+        probe.remove();
+        return out;
+      });
+      if (!r) {
+        results.unbreakable.push({ where, skipped: "no assistant message on this route" });
+        continue;
+      }
+      results.unbreakable.push({ where, ...r });
+      if (r.docOverflowPx > 1) fail(where, `page scrolls horizontally by ${r.docOverflowPx}px`);
+      if (r.scrollerOverflowPx > 1) fail(where, `transcript scrolls horizontally by ${r.scrollerOverflowPx}px`);
+      if (r.widestRight > r.vw + 1) fail(where, `content reaches ${r.widestRight}px on a ${r.vw}px viewport`);
+      if (r.codeScrollsInternally === false) fail(where, "code block no longer scrolls inside its wrapper");
+      if (r.tableScrollsInternally === false) fail(where, "table no longer scrolls inside its wrapper");
+    } catch (e) {
+      fail(where, `error ${e.message.slice(0, 120)}`);
+    }
+  }
+}
+
 // -------------------------------------------------------------------------- a11y
 async function axe(page, include) {
   const has = await page.evaluate(() => typeof window.axe !== "undefined");
@@ -513,7 +579,7 @@ async function motionPart(type, touch, results, info) {
 
 (async () => {
   if (!EMAIL || !PASSWORD) throw new Error("QA_EMAIL and QA_PASSWORD must be set");
-  const results = { routes: [], states: [], axe: [], keyboard: [], reducedMotion: [], textScale: [], shareAnon: null };
+  const results = { routes: [], states: [], unbreakable: [], axe: [], keyboard: [], reducedMotion: [], textScale: [], shareAnon: null };
   let info = null;
   for (const engine of ENGINES) {
     const type = engine === "webkit" ? webkit : chromium;
@@ -527,6 +593,7 @@ async function motionPart(type, touch, results, info) {
       log(`\n== ${engine} ${touch ? "touch" : "desktop"}`);
       if (PART === "all" || PART === "routes") await routesPart(type, touch, page, info, results);
       if (PART === "all" || PART === "states") await statesPart(type, touch, page, info, results);
+      if (PART === "all" || PART === "states" || PART === "unbreakable") await unbreakablePart(type, touch, page, info, results);
       if ((PART === "all" || PART === "a11y") && engine === "chromium") await a11yPart(type, touch, page, info, results);
       await browser.close();
       if ((PART === "all" || PART === "motion") && engine === "chromium") await motionPart(type, touch, results, info);

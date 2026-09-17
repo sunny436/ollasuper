@@ -159,6 +159,24 @@
   }
 }
 
+/* MATH CANNOT WRAP. KaTeX ships `.katex-display > .katex { white-space: nowrap }`
+ * and no overflow rule, so one long display equation is as wide as it is:
+ * measured on a 390px viewport it pushed the document to 6056px. overflow-wrap
+ * cannot reach it, so it scrolls inside its own box — the treatment code blocks
+ * and tables already get. Scoped to .workspace, the only place math renders.
+ *
+ * Display math ONLY. Inline math is an inline box, where overflow-x is ignored;
+ * forcing inline-block to make it scrollable moves the baseline to the bottom
+ * margin edge and would nudge every inline equation in the app. Long inline math
+ * is still clipped at the message edge — it does not scroll the page (verified in
+ * WebKit) and is left alone. */
+.workspace .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
 /* TOUCH DEVICES: no live blur.
  *
  * Measured against production on emulated phones (e2e/qa-mobile-perf.js): the glass
