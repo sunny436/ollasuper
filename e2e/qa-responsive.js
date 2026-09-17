@@ -438,11 +438,11 @@ async function unbreakablePart(type, touch, page, info, results) {
           '<li><a href="#">https://www2.example.com/us/en/insights/topics/technology-management/tech-trends-2025-artificial-intelligence-adoption-enterprise-survey-report.html</a></li>' +
           `<li><a href="#">https://example.com/${"a".repeat(120)}</a></li>` +
           `<li>plain ${"b".repeat(140)}</li></ul>` +
-          // white-space:nowrap inline: KaTeX's own stylesheet sets it on
-          // `.katex-display > .katex`, but that sheet only loads for a message that
-          // actually contains math, so without this the probe wraps and asserts
-          // nothing.
-          `<span class="katex-display"><span class="katex" style="white-space:nowrap"><span class="katex-html">${"x_{i}+alpha ".repeat(60)}</span></span></span>`;
+          // KaTeX's own stylesheet only loads for a message that actually contains
+          // math, so the two declarations that make math overflow are restated here:
+          // display:block on the wrapper and nowrap on the math. Without them the
+          // probe wraps and asserts nothing.
+          `<span class="katex-display" style="display:block"><span class="katex" style="white-space:nowrap"><span class="katex-html">${"x_{i}+alpha ".repeat(60)}</span></span></span>`;
         host.appendChild(probe);
         const vw = document.documentElement.clientWidth;
         const scroller = document.querySelector('[aria-label="Conversation"]');

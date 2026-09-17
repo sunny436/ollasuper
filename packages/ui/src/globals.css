@@ -171,6 +171,9 @@
  * is still clipped at the message edge — it does not scroll the page (verified in
  * WebKit) and is left alone. */
 .workspace .katex-display {
+  /* display:block is KaTeX's own, restated so the scroll box does not depend on
+     its lazily-loaded stylesheet: overflow-x is ignored on an inline box. */
+  display: block;
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
