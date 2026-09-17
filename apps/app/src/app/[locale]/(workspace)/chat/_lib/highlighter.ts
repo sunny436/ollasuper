@@ -91,6 +91,11 @@ async function getBundled(): Promise<Record<string, unknown>> {
     bundledPromise = import("shiki").then(
       // biome-ignore lint/suspicious/noExplicitAny: shiki types are loaded lazily
       (shiki) => (shiki as any).bundledLanguages as Record<string, unknown>,
+      (e) => {
+        // Not cached on failure (offline): the next code block retries.
+        bundledPromise = null;
+        throw e;
+      },
     );
   }
   return bundledPromise;
@@ -114,7 +119,11 @@ async function getHighlighter() {
         // No grammar up front: each one loads the first time it is used.
         langs: [],
       }),
-    );
+    ).catch((e) => {
+      // Not cached on failure (offline): the next code block retries.
+      highlighterPromise = null;
+      throw e;
+    });
   }
   return highlighterPromise;
 }

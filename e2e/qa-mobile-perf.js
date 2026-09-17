@@ -606,9 +606,9 @@ async function memoryMode() {
     } catch {}
   });
   let reloads = 0;
-  page.on("framenavigated", (f) => {
-    if (f === page.mainFrame()) reloads++;
-  });
+  // Real document loads only: framenavigated also fires for client-side route
+  // changes, which is exactly the in-app navigation this mode is made of.
+  page.on("domcontentloaded", () => reloads++);
   const sample = async (label) => {
     await cdp.send("HeapProfiler.collectGarbage");
     await page.waitForTimeout(400);
@@ -699,7 +699,13 @@ async function memoryMode() {
       return {};
     },
   };
-  // Warm-up: land on the long thread once, then start counting.
+  // Make the long thread the most recent conversation so the drawer lists it (a
+  // full load here is before counting), then land on it in-app once.
+  await page.goto(`${BASE}/en/chat/${long}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("#chat-composer:not([disabled])", { timeout: 120000 });
+  await send(page, SHORT_PROMPT);
+  await waitDone(page, 120000);
+  await page.waitForTimeout(2000);
   await toThread(long);
   const reloadsBefore = reloads;
   for (const [name, fn] of Object.entries(scenarios)) {

@@ -22,7 +22,15 @@ import { memo, useEffect, useRef, useState } from "react";
 let chartPromise: Promise<typeof import("chart.js/auto").default> | null = null;
 function getChart() {
   if (!chartPromise) {
-    chartPromise = import("chart.js/auto").then((m) => m.default);
+    // A failed import (offline, a deploy replacing chunks) must not be cached: the
+    // next use retries instead of staying broken for the rest of the session.
+    chartPromise = import("chart.js/auto").then(
+      (m) => m.default,
+      (e) => {
+        chartPromise = null;
+        throw e;
+      },
+    );
   }
   return chartPromise;
 }

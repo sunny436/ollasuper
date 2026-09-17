@@ -17,10 +17,18 @@ let loadPromise: Promise<ComponentType<MarkdownProps>> | null = null;
 /** Kick the chunk download. Idempotent; safe to call from many places. */
 export function preloadMarkdown(): Promise<ComponentType<MarkdownProps>> {
   if (!loadPromise) {
-    loadPromise = import("./markdown").then((m) => {
-      Loaded = m.Markdown as ComponentType<MarkdownProps>;
-      return Loaded;
-    });
+    loadPromise = import("./markdown").then(
+      (m) => {
+        Loaded = m.Markdown as ComponentType<MarkdownProps>;
+        return Loaded;
+      },
+      (e) => {
+        // Not cached on failure (offline): without this every message stayed raw
+        // text for the rest of the session.
+        loadPromise = null;
+        throw e;
+      },
+    );
   }
   return loadPromise;
 }
@@ -39,11 +47,20 @@ export function LazyMarkdown({ content, streaming }: MarkdownProps) {
   useEffect(() => {
     if (Comp) return;
     let on = true;
-    preloadMarkdown().then((c) => {
-      if (on) setComp(() => c);
-    });
+    const load = () =>
+      preloadMarkdown().then(
+        (c) => {
+          if (on) setComp(() => c);
+        },
+        () => {
+          /* offline: retried when the browser comes back online */
+        },
+      );
+    load();
+    window.addEventListener("online", load);
     return () => {
       on = false;
+      window.removeEventListener("online", load);
     };
   }, [Comp]);
 

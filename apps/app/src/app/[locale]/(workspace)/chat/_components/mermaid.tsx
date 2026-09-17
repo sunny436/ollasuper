@@ -33,7 +33,14 @@ function isDark(): boolean {
 
 async function getMermaid(dark: boolean) {
   if (!mermaidPromise) {
-    mermaidPromise = import("mermaid").then((m) => m.default);
+    // A failed import (offline, a deploy replacing chunks) must not be cached.
+    mermaidPromise = import("mermaid").then(
+      (m) => m.default,
+      (e) => {
+        mermaidPromise = null;
+        throw e;
+      },
+    );
   }
   const mermaid = await mermaidPromise;
   mermaid.initialize({

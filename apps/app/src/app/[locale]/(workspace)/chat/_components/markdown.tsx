@@ -54,6 +54,10 @@ function loadKatex(): Promise<unknown> {
       void import("katex/dist/katex.min.css");
       // biome-ignore lint/suspicious/noExplicitAny: default export typing
       return (m as any).default;
+    }, (e) => {
+      // A failed import (offline) must not be cached; the next render retries.
+      katexPromise = null;
+      throw e;
     });
   }
   return katexPromise;
