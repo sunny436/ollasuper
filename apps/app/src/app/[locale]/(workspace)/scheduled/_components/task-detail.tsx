@@ -293,7 +293,7 @@ function RunRow({
         <button
           type="button"
           onClick={onCancel}
-          className="shrink-0 rounded-md px-2 py-1 text-xs text-primary/50 opacity-0 transition hover:bg-primary/5 hover:text-primary group-hover:opacity-100"
+          className="shrink-0 rounded-md px-2 py-1 text-xs text-primary/50 opacity-0 transition hover:bg-primary/5 hover:text-primary group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11"
         >
           Cancel
         </button>

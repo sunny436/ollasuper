@@ -151,13 +151,13 @@ export function TaskRow({
           </span>
         </button>
 
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
           {!completed && (
             <button
               type="button"
               aria-label="Edit task"
               onClick={() => setEditing(true)}
-              className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary"
+              className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>
@@ -169,7 +169,7 @@ export function TaskRow({
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               onClick={() => setMenuOpen((v) => !v)}
-              className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary"
+              className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
             >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>

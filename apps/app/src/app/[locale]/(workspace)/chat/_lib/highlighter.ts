@@ -17,6 +17,17 @@ import type { ReactNode } from "react";
  * ~530KB of source), so eager-loading the whole catalogue would defeat the
  * lazy-import. Any language shiki bundles is therefore supported, plus the
  * aliases below; anything unknown falls back to a plain <pre>.
+ *
+ * No grammar is registered up front. The highlighter used to preload 15 (tsx and
+ * jsx alone ~170 KB of source each) the first time any code block completed —
+ * mid-stream, on a phone — when a message typically needs one.
+ *
+ * ENGINE STAYS ONIGURUMA, deliberately. Its WASM ships as a 607 KB (226 KB gzip)
+ * JS chunk, and shiki's JavaScript regex engine avoids that — but measured in
+ * WebKit (the iOS Safari engine) it tokenises TypeScript differently from
+ * Oniguruma, forgiving mode or not: whole lines lose their colours. Chromium
+ * matched. A faster load that mis-highlights the most common language on iPhones
+ * is a regression, not an optimisation.
  */
 
 // Loaded on demand. `unknown` avoids importing shiki's types eagerly.
@@ -28,27 +39,6 @@ let bundledPromise: Promise<Record<string, unknown>> | null = null;
 
 const CACHE_MAX = 60;
 const cache = new Map<string, ReactNode>();
-
-// The small set registered when the highlighter is created — the common ones,
-// so the very first highlight needs no extra grammar fetch. Everything else is
-// loaded lazily on first use.
-const BASE_LANGS = [
-  "typescript",
-  "javascript",
-  "tsx",
-  "jsx",
-  "json",
-  "python",
-  "bash",
-  "sql",
-  "html",
-  "css",
-  "yaml",
-  "markdown",
-  "rust",
-  "go",
-  "diff",
-];
 
 // Aliases shiki does not already resolve, or that map onto a near neighbour
 // when there is no dedicated grammar (svg→xml, mysql→sql, gitignore→ini, …).
@@ -116,15 +106,15 @@ function normaliseLang(lang?: string): string | null {
 
 async function getHighlighter() {
   if (!highlighterPromise) {
-    highlighterPromise = import("shiki").then((shiki) => {
-      for (const l of BASE_LANGS) loaded.add(l);
-      return shiki.createHighlighter({
+    highlighterPromise = import("shiki").then((shiki) =>
+      shiki.createHighlighter({
         // Dual theme emitted as CSS variables, so a next-themes toggle flips
         // colours with zero re-highlighting (see .shiki span in globals.css).
         themes: ["github-light", "github-dark-default"],
-        langs: BASE_LANGS,
-      });
-    });
+        // No grammar up front: each one loads the first time it is used.
+        langs: [],
+      }),
+    );
   }
   return highlighterPromise;
 }

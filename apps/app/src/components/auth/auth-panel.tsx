@@ -385,7 +385,9 @@ export function AuthPanel() {
 
       {/* Near-full-page auth shell; the neon halo sits behind it (-inset, -z-10). */}
       <div className="relative h-auto w-[92vw] max-w-[1360px] md:h-[86vh] md:max-h-[860px]">
-        <div className="pointer-events-none absolute -inset-8 -z-10 rounded-[44px] bg-gradient-to-r from-cyan-500/20 via-purple-600/20 to-pink-500/20 blur-[70px]" />
+        {/* A rounded-rect glow: no filter-free equivalent, so touch devices (see the
+            no-live-blur rule in globals.css) skip it; the card keeps its own shadow. */}
+        <div className="pointer-events-none absolute -inset-8 -z-10 hidden rounded-[44px] bg-gradient-to-r from-cyan-500/20 via-purple-600/20 to-pink-500/20 blur-[70px] [@media(pointer:fine)]:block" />
         <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[32px] border border-white/10 bg-white/[0.03] shadow-[0_30px_90px_rgba(0,0,0,0.65)] backdrop-blur-2xl md:flex-row">
 
         {/* ===== LEFT: constant branding for every mode (no tab nav, no AI pill) ===== */}

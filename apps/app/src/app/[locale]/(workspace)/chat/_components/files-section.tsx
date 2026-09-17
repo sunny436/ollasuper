@@ -188,7 +188,7 @@ function FileItem({
         title="Delete file?"
         description={file.name}
         confirmLabel="Delete"
-        className="text-primary/30 opacity-0 transition hover:text-destructive group-hover:opacity-100"
+        className="text-primary/30 opacity-0 transition hover:text-destructive group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
         onConfirm={onDelete}
       />
     </div>

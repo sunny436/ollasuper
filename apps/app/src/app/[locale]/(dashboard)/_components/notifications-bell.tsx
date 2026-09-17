@@ -191,7 +191,7 @@ export function NotificationsBell() {
         <button
           type="button"
           aria-label="Notifications"
-          className="relative flex h-7 w-7 items-center justify-center rounded-md text-primary/50 transition hover:bg-primary/5 hover:text-primary"
+          className="relative flex h-7 w-7 items-center justify-center rounded-md text-primary/50 transition hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
         >
           <Bell className="h-4 w-4" />
           {unread > 0 && (

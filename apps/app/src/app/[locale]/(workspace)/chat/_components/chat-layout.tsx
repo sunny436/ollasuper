@@ -6,6 +6,7 @@ import { AmbienceBackdrop } from "./ambience-backdrop";
 import { EmptyHero } from "./empty-state";
 import { ChatInput } from "./chat-input";
 import { useChatSession } from "../_hooks/use-chat-session";
+import { useMediaQuery } from "../_hooks/use-media-query";
 
 /**
  * The composer's home, and the centred -> bottom transition.
@@ -40,9 +41,15 @@ const loadMotionFeatures = () =>
 /** Supplied by the prototype; kept exactly. */
 const CONTAINER_SPRING = { type: "spring", stiffness: 350, damping: 35 } as const;
 const ITEM_SPRING = { type: "spring", stiffness: 350, damping: 30 } as const;
+/** The greeting's exit on send. Touch devices skip the animated blur: a filter
+ *  interpolated every frame over the hero is exactly the live-blur cost the
+ *  touch policy in packages/ui/src/globals.css removes. */
+const HERO_EXIT = { opacity: 0, y: -40, filter: "blur(12px)", scale: 0.95 } as const;
+const HERO_EXIT_TOUCH = { opacity: 0, y: -40, scale: 0.95 } as const;
 
 export function ChatLayout({ children }: { children: React.ReactNode }) {
   const { threadId, threadStatus } = useChatSession();
+  const coarsePointer = useMediaQuery("(pointer: coarse)");
 
   // Centred only for a genuinely new conversation. A thread opened from the
   // rail mounts straight into the docked state — `layout` animates between
@@ -119,7 +126,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                     // style it writes wins over any class and the greeting
                     // stayed at full opacity on production.
                     animate={{ opacity: exploreOpen ? 0.3 : 1, y: 0 }}
-                    exit={{ opacity: 0, y: -40, filter: "blur(12px)", scale: 0.95 }}
+                    exit={coarsePointer ? HERO_EXIT_TOUCH : HERO_EXIT}
                     transition={ITEM_SPRING}
                     className="w-full"
                   >

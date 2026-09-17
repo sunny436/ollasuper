@@ -85,7 +85,7 @@ export function ProjectsPane() {
             type="button"
             onClick={openSidebar}
             aria-label="Open conversations"
-            className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary md:hidden"
+            className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary md:hidden [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
           >
             <PanelLeft className="h-4 w-4" />
           </button>

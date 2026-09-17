@@ -206,7 +206,7 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
             {user?.email}
           </span>
         </span>
-        <Settings className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+        <Settings className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100" />
       </button>
     </div>
   );
@@ -406,7 +406,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
               return (
                 <div
                   key={t._id}
-                  className={`group flex items-center gap-1 rounded-lg px-2 py-2 text-sm transition-colors duration-200 ${
+                  className={`group flex items-center gap-1 rounded-lg px-2 py-2 text-sm transition-colors duration-200 [@media(pointer:coarse)]:py-0 ${
                     active
                       ? "bg-brand/10 font-medium text-brand-ink"
                       : "text-muted-foreground hover:bg-accent hover:text-primary"
@@ -418,7 +418,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                     onClick={onNavigate}
                     onPointerEnter={() => prefetchThread(convex, t._id)}
                     onFocus={() => prefetchThread(convex, t._id)}
-                    className="flex min-w-0 flex-1 items-center gap-2.5 truncate"
+                    className="flex min-w-0 flex-1 items-center gap-2.5 truncate [@media(pointer:coarse)]:min-h-11"
                   >
                     <MessageSquare
                       className={`h-3.5 w-3.5 shrink-0 ${
@@ -533,7 +533,7 @@ function ThreadMenu({
         type="button"
         aria-label="Conversation actions"
         onClick={() => setOpen((v) => !v)}
-        className="rounded p-0.5 text-primary/30 opacity-0 transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100"
+        className="rounded p-0.5 text-primary/30 opacity-0 transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
       >
         <MoreHorizontal className="h-3.5 w-3.5" />
       </button>

@@ -42,7 +42,7 @@ function GlowOrbs({
     <div ref={orbRef} className="absolute inset-0" style={{ willChange: "transform" }}>
       {/* Daylight — sky blue, upper-left */}
       <div
-        className="absolute rounded-full blur-[140px]"
+        className="glow-orb absolute rounded-full blur-[140px]"
         style={{
           top: "-10%",
           left: "-5%",
@@ -55,7 +55,7 @@ function GlowOrbs({
       />
       {/* Amber — honey, center-right */}
       <div
-        className="absolute rounded-full blur-[140px]"
+        className="glow-orb absolute rounded-full blur-[140px]"
         style={{
           top: "8%",
           right: "-10%",
@@ -68,7 +68,7 @@ function GlowOrbs({
       />
       {/* Midnight — indigo, lower */}
       <div
-        className="absolute rounded-full blur-[140px]"
+        className="glow-orb absolute rounded-full blur-[140px]"
         style={{
           bottom: "-15%",
           left: "18%",

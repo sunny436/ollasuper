@@ -151,13 +151,22 @@ export function ChatInput({
   // centred->docked morph exactly because both read the same threadId.
   const centred = threadId === null;
 
+  // Length at the last autosize: only a shorter value can need a smaller box.
+  const sizedLength = useRef(0);
   const autosize = useCallback(() => {
     const el = taRef.current;
     if (!el) return;
     const max = Math.min(320, Math.max(160, Math.round(window.innerHeight * 0.4)));
-    el.style.height = "0px";
-    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
-    el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
+    const shrinking = el.value.length < sizedLength.current;
+    sizedLength.current = el.value.length;
+    // Collapsing to 0 and re-measuring forces a full-page layout, and it ran on
+    // every keystroke — the hottest function on the typing path (measured on
+    // prod). Text that only grew can never need a smaller box, so one
+    // scrollHeight read decides; only a shrink (delete, clear, replace) collapses.
+    if (shrinking) el.style.height = "0px";
+    const h = el.scrollHeight;
+    if (shrinking || h > el.clientHeight) el.style.height = `${Math.min(h, max)}px`;
+    el.style.overflowY = h > max ? "auto" : "hidden";
   }, []);
 
   const appendDictation = useCallback(

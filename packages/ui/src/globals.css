@@ -159,6 +159,47 @@
   }
 }
 
+/* TOUCH DEVICES: no live blur.
+ *
+ * Measured against production on emulated phones (e2e/qa-mobile-perf.js): the glass
+ * surfaces (backdrop-blur-*) are re-filtered on every keystroke, caret blink,
+ * scroll and dialog open — removing them cut the compositor's work while typing by
+ * 65-74% in Chromium — and in WebKit the large decorative blur-[70-190px] glow orbs
+ * were re-rasterised on every repaint (typing latency p50 258 -> 114 ms without
+ * them). At phone pixel ratios both costs are several times a laptop's, which is the
+ * "laggy in everything" reported on iPhone and Android.
+ *
+ * So on a coarse primary pointer: no backdrop-filter anywhere (every overlay panel is
+ * already opaque, and the glass that remains sits over a backdrop that is blurred
+ * anyway), and the glow orbs keep their colours as a filter-free radial gradient.
+ * Fine pointers (desktop, trackpad iPad) are unchanged.
+ *
+ * Remember: backdrop-filter makes an element the containing block for
+ * `position: fixed` descendants. On touch that no longer happens, so a fixed child
+ * of a glass surface resolves against the viewport — which is what the portalled
+ * dialogs wanted anyway. */
+@media (pointer: coarse) {
+  *,
+  *::before,
+  *::after {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  .glow-orb {
+    filter: none !important;
+  }
+  /* Orbs drawn as a blurred linear gradient on a round box would show a hard edge
+     without the blur; --glow-from/--glow-via carry their colours for this. */
+  .glow-orb[class*="--glow-from"] {
+    background-image: radial-gradient(
+      closest-side,
+      var(--glow-from),
+      var(--glow-via, transparent) 55%,
+      transparent
+    ) !important;
+  }
+}
+
 /* Shiki dual-theme: flip colours via CSS on theme change rather than
    re-highlighting every code block. */
 .shiki span {

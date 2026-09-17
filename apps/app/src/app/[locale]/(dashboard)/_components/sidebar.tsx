@@ -120,7 +120,12 @@ export function Sidebar() {
   return (
     <>
       <div className="flex h-14 items-center gap-3 border-b border-border bg-card px-4 md:hidden">
-        <button type="button" aria-label="Open menu" onClick={() => setOpen(true)}>
+        <button
+          type="button"
+          aria-label="Open menu"
+          onClick={() => setOpen(true)}
+          className="-ml-3 flex h-11 w-11 items-center justify-center"
+        >
           <Menu className="h-5 w-5" />
         </button>
         <Image src="/logo.png" alt="logo" width={22} height={22} />

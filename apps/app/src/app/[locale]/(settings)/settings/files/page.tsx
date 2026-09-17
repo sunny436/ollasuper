@@ -257,7 +257,7 @@ export default function FilesSection() {
                     title="Delete file?"
                     description={f.name}
                     confirmLabel="Delete"
-                    className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-500 transition hover:bg-red-500/10"
+                    className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-500 transition hover:bg-red-500/10 [@media(pointer:coarse)]:min-h-11"
                     onConfirm={async () => {
                       await removeFile({ fileId: f._id });
                       toast.success("File deleted");
@@ -326,7 +326,7 @@ export default function FilesSection() {
                 {f.status === "failed" && (
                   <button
                     type="button"
-                    className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-primary/70 transition hover:bg-primary/5"
+                    className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-primary/70 transition hover:bg-primary/5 [@media(pointer:coarse)]:min-h-11"
                     onClick={async () => {
                       await retryKnowledge({ fileId: f._id });
                       toast.success("Retrying");
@@ -340,7 +340,7 @@ export default function FilesSection() {
                   title="Delete file?"
                   description={f.name}
                   confirmLabel="Delete"
-                  className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-500 transition hover:bg-red-500/10"
+                  className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-500 transition hover:bg-red-500/10 [@media(pointer:coarse)]:min-h-11"
                   onConfirm={async () => {
                     await removeKnowledge({ fileId: f._id });
                     toast.success("File deleted");

@@ -228,7 +228,7 @@ function CategoryChip({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+      className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:text-xs ${
         active
           ? "border-border bg-card/80 font-medium text-primary"
           : "border-transparent text-primary/50 hover:bg-card/50 hover:text-primary/80"

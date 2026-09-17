@@ -118,7 +118,7 @@ export function ChatPane({
           type="button"
           onClick={openSidebar}
           aria-label="Open conversations"
-          className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-primary md:hidden"
+          className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-primary md:hidden [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
         >
           <PanelLeft className="h-4 w-4" />
         </button>
@@ -126,7 +126,7 @@ export function ChatPane({
           type="button"
           onClick={toggleCollapsed}
           aria-label={collapsed ? "Open conversations" : "Hide conversations"}
-          className="hidden rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-primary md:block"
+          className="hidden rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-primary md:block [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
         >
           <PanelLeft className="h-4 w-4" />
         </button>
@@ -168,7 +168,7 @@ export function ChatPane({
               onClick={() => setShareOpen(true)}
               disabled={thread.isStreaming}
               aria-label="Share conversation"
-              className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground shadow-sm transition-all hover:bg-accent hover:text-primary active:scale-95 disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground shadow-sm transition-all hover:bg-accent hover:text-primary active:scale-95 disabled:opacity-40 [@media(pointer:coarse)]:min-h-11"
             >
               <Share2 className="h-3.5 w-3.5" /> Share
             </button>

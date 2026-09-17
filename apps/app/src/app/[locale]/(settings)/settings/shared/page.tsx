@@ -99,7 +99,7 @@ export default function SharedChatsPage() {
                 key={f.key}
                 type="button"
                 onClick={() => setFilter(f.key)}
-                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                className={`rounded-full px-3 py-1 text-xs font-medium transition [@media(pointer:coarse)]:min-h-11 ${
                   filter === f.key
                     ? "bg-primary/10 text-primary"
                     : "text-primary/55 hover:bg-primary/5 hover:text-primary/80"

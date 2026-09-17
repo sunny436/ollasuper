@@ -300,7 +300,7 @@ export function ExploreMenu({
             // something else fails WCAG 2.5.3 and breaks "click Skills" in voice
             // control. e2e/p-explore.js locates this button by this exact name.
             aria-label="Skills"
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] text-primary/55 transition hover:bg-primary/5 hover:text-primary/80 disabled:opacity-40"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] text-primary/55 transition hover:bg-primary/5 hover:text-primary/80 disabled:opacity-40 [@media(pointer:coarse)]:min-h-11"
           >
             <Sparkles className="h-3 w-3" />
             Skills

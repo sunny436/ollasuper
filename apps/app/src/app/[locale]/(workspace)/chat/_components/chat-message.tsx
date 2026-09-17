@@ -215,7 +215,7 @@ function ChatMessageImpl({
           <div className="rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-[15.5px] leading-[1.7] text-brand-foreground shadow-sm">
             <p className="whitespace-pre-wrap break-words">{message.content}</p>
           </div>
-          <div className="mt-1 flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          <div className="mt-1 flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
             <IconButton label="Copy" onClick={copy}>
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
             </IconButton>
@@ -286,7 +286,7 @@ function ChatMessageImpl({
       )}
 
       {!isStreaming && message.status === "complete" && (
-        <div className="mt-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        <div className="mt-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
           <IconButton label="Copy response" onClick={copy}>
             {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
           </IconButton>
@@ -339,7 +339,7 @@ function IconButton({
       disabled={disabled}
       aria-label={label}
       title={label}
-      className="rounded p-1 text-primary/40 transition hover:bg-primary/5 hover:text-primary/70 disabled:pointer-events-none disabled:opacity-50"
+      className="rounded p-1 text-primary/40 transition hover:bg-primary/5 hover:text-primary/70 disabled:pointer-events-none disabled:opacity-50 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
     >
       {children}
     </button>
