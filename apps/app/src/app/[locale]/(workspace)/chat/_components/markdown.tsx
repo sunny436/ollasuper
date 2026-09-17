@@ -152,7 +152,7 @@ const components: Components = {
     // Focusable + named so a wide table can be scrolled from the keyboard
     // (axe scrollable-region-focusable on prod).
     // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-reachable (WCAG 2.1.1)
-    <div tabIndex={0} role="region" aria-label="Table" className="-mx-4 my-3 overflow-x-auto px-4 md:mx-0 md:px-0">
+    <div tabIndex={0} role="group" aria-label="Table" className="-mx-4 my-3 overflow-x-auto px-4 md:mx-0 md:px-0">
       <table {...props} className="w-full border-collapse text-sm">
         {children}
       </table>
