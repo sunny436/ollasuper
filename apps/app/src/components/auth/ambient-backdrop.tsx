@@ -25,8 +25,8 @@ export function AmbientBackdrop() {
       />
 
       {/* Auroras — toned down for subtle edge texture under the full-page shell. */}
-      <div className="glow-orb absolute -top-40 -left-32 h-[620px] w-[620px] rounded-full bg-gradient-to-br from-cyan-500/20 via-purple-600/15 to-transparent blur-[180px] [--glow-from:rgb(6_182_212/0.14)] [--glow-via:rgb(147_51_234/0.09)]" />
-      <div className="glow-orb absolute -right-32 -bottom-40 h-[560px] w-[560px] rounded-full bg-gradient-to-tr from-pink-500/15 via-purple-600/15 to-transparent blur-[190px] [--glow-from:rgb(236_72_153/0.1)] [--glow-via:rgb(147_51_234/0.09)]" />
+      <div className="glow-orb absolute -top-40 -left-32 h-[620px] w-[620px] rounded-full bg-gradient-to-br from-cyan-500/20 via-purple-600/15 to-transparent blur-[180px] [--glow-from:rgb(6_182_212/0.07)] [--glow-via:rgb(147_51_234/0.045)]" />
+      <div className="glow-orb absolute -right-32 -bottom-40 h-[560px] w-[560px] rounded-full bg-gradient-to-tr from-pink-500/15 via-purple-600/15 to-transparent blur-[190px] [--glow-from:rgb(236_72_153/0.05)] [--glow-via:rgb(147_51_234/0.045)]" />
     </div>
   );
 }
