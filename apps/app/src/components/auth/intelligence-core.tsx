@@ -148,12 +148,22 @@ export function IntelligenceCore({ className }: { className?: string }) {
     //   2. Do not render what nobody can see. The rail collapses to w-0 and is
     //      display:none on mobile, but the element stays in the DOM, and rAF
     //      keeps firing for a background tab too.
+    //   3. On touch devices (battery, phone GPU), rest while nobody is engaging
+    //      with it: while a text field has focus, and after IDLE_MS without a
+    //      touch or scroll; either resumes it. Measured on /login (emulated
+    //      phone): the live orb kept the main thread 57% busy at idle against
+    //      10% hidden, and moved typing latency p50 from 11 to 39 ms (Chromium)
+    //      and from 195 to 340 ms (WebKit). Fine pointers keep rules 1-2 only.
     const FRAME_MS = 1000 / 30;
+    const IDLE_MS = 8000;
     let lastMs = Number.NEGATIVE_INFINITY;
     let onScreen = true;
     let pageVisible = true;
     let visibility: IntersectionObserver | undefined;
     let onVisibilityChange: (() => void) | undefined;
+    let engaged = true;
+    let typing = false;
+    let removeEngagement: (() => void) | undefined;
 
     if (reduceMotion) {
       renderFrame(0);
@@ -166,7 +176,9 @@ export function IntelligenceCore({ className }: { className?: string }) {
         renderFrame(ms / 1000);
       };
       const start = () => {
-        if (frameId === undefined && onScreen && pageVisible) animate();
+        if (frameId === undefined && onScreen && pageVisible && engaged && !typing) {
+          animate();
+        }
       };
       const stop = () => {
         if (frameId !== undefined) {
@@ -189,12 +201,52 @@ export function IntelligenceCore({ className }: { className?: string }) {
       };
       document.addEventListener("visibilitychange", onVisibilityChange);
 
+      if (window.matchMedia("(pointer: coarse)").matches) {
+        const isField = (el: Element | null) =>
+          !!el &&
+          (el.matches("input, textarea, select") || (el as HTMLElement).isContentEditable);
+        const sync = () => (engaged && !typing ? start() : stop());
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        const wake = () => {
+          engaged = true;
+          clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            engaged = false;
+            stop();
+          }, IDLE_MS);
+          sync();
+        };
+        // focusout fires before the next focusin; read where focus settled.
+        const onFocusChange = () =>
+          setTimeout(() => {
+            typing = isField(document.activeElement);
+            sync();
+          }, 0);
+        const opts = { capture: true, passive: true } as const;
+        document.addEventListener("touchstart", wake, opts);
+        document.addEventListener("pointerdown", wake, opts);
+        document.addEventListener("scroll", wake, opts);
+        document.addEventListener("focusin", onFocusChange);
+        document.addEventListener("focusout", onFocusChange);
+        typing = isField(document.activeElement);
+        wake();
+        removeEngagement = () => {
+          clearTimeout(idleTimer);
+          document.removeEventListener("touchstart", wake, opts);
+          document.removeEventListener("pointerdown", wake, opts);
+          document.removeEventListener("scroll", wake, opts);
+          document.removeEventListener("focusin", onFocusChange);
+          document.removeEventListener("focusout", onFocusChange);
+        };
+      }
+
       start();
     }
 
     return () => {
       if (frameId !== undefined) cancelAnimationFrame(frameId);
       visibility?.disconnect();
+      removeEngagement?.();
       if (onVisibilityChange) {
         document.removeEventListener("visibilitychange", onVisibilityChange);
       }
