@@ -49,6 +49,7 @@ export function Sidebar() {
           Workspace
         </span>
         <select
+          aria-label="Workspace"
           value={current ?? ""}
           onChange={(e) => select(e.target.value as Id<"workspaces">)}
           className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm"

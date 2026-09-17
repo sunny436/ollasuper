@@ -177,6 +177,12 @@ export function MessageList({ threadId }: { threadId: string | null }) {
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollerRef}
+        // Focusable and named so the transcript can be scrolled from the keyboard
+        // (axe scrollable-region-focusable, found on prod by e2e/qa-responsive.js).
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-reachable (WCAG 2.1.1)
+        tabIndex={0}
+        role="region"
+        aria-label="Conversation"
         // overflow-anchor:none — browser scroll anchoring silently adjusts
         // scrollTop to keep an anchor node stationary, which fights the manual
         // pin during streaming and produces 1-3px jitter per token.
