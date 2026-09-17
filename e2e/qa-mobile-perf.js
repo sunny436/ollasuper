@@ -104,7 +104,10 @@ function watch(page, tag) {
     if (m.type() === "error") errs.push(`[${tag}] ${m.text().slice(0, 200)}`);
   });
   page.on("pageerror", (e) => errs.push(`[${tag}] pageerror ${e.message.slice(0, 200)}`));
+  // Which request failed, not just that one did (the console line has no URL).
+  page.on("requestfailed", (r) => failedRequests.push(`[${tag}] ${r.failure()?.errorText} ${r.resourceType()} ${r.url().replace(BASE, "").slice(0, 160)}`));
 }
+const failedRequests = [];
 
 async function login(browserType, contextOptions, tag) {
   const browser = await browserType.launch({ headless: MODE !== "battery" });
@@ -951,8 +954,8 @@ function compareMode() {
   }
   if (report.perf) {
     log("\nperf medians  (before -> after)");
-    for (const after of report.perf.after.profiles) {
-      const before = report.perf.before.profiles.find((x) => x.profile === after.profile);
+    for (const after of report.perf.after.result.profiles) {
+      const before = report.perf.before.result.profiles.find((x) => x.profile === after.profile);
       if (!before) continue;
       log(`\n  ${after.profile}`);
       for (const [k, v] of Object.entries(after.median)) {
@@ -1050,7 +1053,8 @@ function gatesMode() {
   else throw new Error(`unknown mode ${MODE}`);
   const benign = errs.filter((e) => !/favicon|third-party cookie/i.test(e));
   const file = path.join(OUT, `${LABEL}-${MODE}.json`);
-  fs.writeFileSync(file, JSON.stringify({ base: BASE, mode: MODE, label: LABEL, at: new Date().toISOString(), result, consoleErrors: benign }, null, 2));
+  fs.writeFileSync(file, JSON.stringify({ base: BASE, mode: MODE, label: LABEL, at: new Date().toISOString(), result, consoleErrors: benign, failedRequests }, null, 2));
+  for (const f of failedRequests.slice(0, 12)) log(`  failed request: ${f}`);
   log(`\nconsole errors: ${benign.length}`);
   for (const e of benign.slice(0, 8)) log(`  ! ${e}`);
   log(`wrote ${file}`);

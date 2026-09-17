@@ -6,6 +6,7 @@ import { useMutation } from "convex/react";
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useModalFocus } from "../../chat/_hooks/use-modal-focus";
 import { ProjectInstructions } from "./project-instructions";
 
 /**
@@ -61,6 +62,8 @@ export function ProjectSettingsDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onOpenChange]);
 
+  const dialogRef = useModalFocus<HTMLDivElement>(open);
+
   if (!open) return null;
 
   const trimmed = draft.trim();
@@ -91,6 +94,7 @@ export function ProjectSettingsDialog({
         aria-hidden="true"
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Project settings"

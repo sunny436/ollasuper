@@ -6,6 +6,7 @@ import { useMutation } from "convex/react";
 import { useRouter } from "next/navigation";
 import { Lightbulb } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useModalFocus } from "../../chat/_hooks/use-modal-focus";
 
 /**
  * Create a project.
@@ -58,6 +59,8 @@ export function CreateProjectDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onOpenChange]);
 
+  const dialogRef = useModalFocus<HTMLDivElement>(open);
+
   if (!open) return null;
 
   const trimmed = name.trim();
@@ -98,6 +101,7 @@ export function CreateProjectDialog({
         aria-hidden="true"
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="New project"

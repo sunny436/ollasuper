@@ -7,6 +7,7 @@ import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
+import { useModalFocus } from "../_hooks/use-modal-focus";
 
 /**
  * Per-chat instruction OVERRIDE.
@@ -67,6 +68,8 @@ export function ChatInstructionsDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  const dialogRef = useModalFocus<HTMLDivElement>(open);
+
   if (!open) return null;
   if (typeof document === "undefined") return null;
 
@@ -96,6 +99,7 @@ export function ChatInstructionsDialog({
         aria-hidden="true"
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Instructions for this chat"

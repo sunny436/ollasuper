@@ -180,7 +180,9 @@ const AUDIT = ({ touch, shell }) => {
     const inView = r.top >= 0 && r.left >= 0 && r.bottom <= vh && r.right <= vw;
     if (!inView) continue;
     if (touch && Math.min(r.width, r.height) < 44) small.push(`${desc(el)} ${Math.round(r.width)}x${Math.round(r.height)}`);
-    if (touch && effectiveOpacity(el) < 0.05) hoverHidden.push(desc(el));
+    // Controls hidden on purpose (aria-hidden / tabIndex -1, e.g. scroll-to-latest while at the
+    // bottom) are not hover-only controls.
+    if (touch && effectiveOpacity(el) < 0.05 && !el.closest('[aria-hidden="true"]') && el.getAttribute('tabindex') !== '-1') hoverHidden.push(desc(el));
     // Visually hidden controls (sr-only file inputs under their label) are meant to sit under something.
     if (modalOpen || style(el).pointerEvents === "none" || effectiveOpacity(el) < 0.05 || r.width <= 2 || r.height <= 2) continue;
     const cx = r.left + r.width / 2;

@@ -15,7 +15,8 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useModalFocus } from "../../chat/_hooks/use-modal-focus";
 import { toast } from "sonner";
 import { fmtSize } from "../../chat/_lib/format";
 
@@ -297,6 +298,15 @@ function AttachExistingDialog({
 }) {
   const linkFile = useMutation(api.projects.linkFile);
   const [busy, setBusy] = useState(false);
+  // Mounted only while open. It had no Escape handler at all.
+  const dialogRef = useModalFocus<HTMLDivElement>(true);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   const { results, status, loadMore } = usePaginatedQuery(
     api.userFiles.list,
     { workspaceId },
@@ -329,6 +339,7 @@ function AttachExistingDialog({
         aria-hidden="true"
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Attach an existing file"

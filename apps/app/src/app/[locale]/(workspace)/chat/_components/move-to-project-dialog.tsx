@@ -8,6 +8,7 @@ import { FolderKanban, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
+import { useModalFocus } from "../_hooks/use-modal-focus";
 
 /**
  * Move a chat into a Project, between Projects, or out of one.
@@ -71,6 +72,8 @@ export function MoveToProjectDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  const dialogRef = useModalFocus<HTMLDivElement>(open);
+
   if (!open) return null;
 
   const currentProjectId = thread?.project?._id ?? null;
@@ -109,6 +112,7 @@ export function MoveToProjectDialog({
         aria-hidden="true"
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Move chat to a project"
