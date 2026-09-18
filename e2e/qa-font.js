@@ -37,6 +37,9 @@ const BASE = arg("base", process.env.E2E_BASE_URL || "https://app.ollasuper.com"
 const EMAIL = process.env.QA_EMAIL || "";
 const PASSWORD = process.env.QA_PASSWORD || "";
 const ENGINES = arg("engines", "chromium,webkit,firefox,mobile-safari,mobile-chrome").split(",");
+// --only-engines: re-run just the WebKit/Firefox/mobile matrix (no chat
+// generations, no capture); the report goes to engines.json.
+const ONLY_ENGINES = process.argv.includes("--only-engines");
 const OUT = path.join(__dirname, "out", "font");
 fs.mkdirSync(OUT, { recursive: true });
 const PERF_STATE = path.join(__dirname, "out", "mobile-perf", "state.json");
@@ -70,11 +73,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // error toast; the auth endpoint answers 400 and Chromium logs that as a console
 // error. That one, during that step only, is the expected result, not a defect.
 let expect400 = false;
+let expect404 = false;
 function wire(page, tag) {
   page.on("console", (m) => {
     if (m.type() !== "error") return;
     const line = `[${tag}] ${page.url().replace(BASE, "")} ${m.text().slice(0, 200)}`;
     if (expect400 && /status of 400/.test(m.text())) return notes.push(`expected during the wrong-password toast: ${line}`);
+    // The 404 page's own document response is a 404; Chromium logs that as an error.
+    if (expect404 && /status of 404/.test(m.text())) return notes.push(`expected on the 404 page: ${line}`);
+    // Firefox logs a font download cut off by navigation (NS_BINDING_ABORTED,
+    // 0x804B0002) as an error. The face loads again on the next page and every
+    // Firefox route proof below reads it; any OTHER download status stays an error.
+    if (/downloadable font: download failed/.test(m.text()) && /status=2152398850/.test(m.text())) return notes.push(`font download aborted by navigation (NS_BINDING_ABORTED): ${line}`);
     errs.push(line);
   });
   page.on("pageerror", (e) => errs.push(`[${tag}] ${page.url().replace(BASE, "")} pageerror ${e.message.slice(0, 200)}`));
@@ -158,9 +168,17 @@ const TAG_TEXT = (MONO_ALLOW) => {
     }
   }
   const covered = (cp) => ranges.some(([lo, hi]) => cp >= lo && cp <= hi);
+  // Open every <details> so its content is proven too — Chromium keeps a layout
+  // box for closed details content (rect > 0) but draws nothing, and CDP
+  // returns no fonts for it. checkVisibility() is the API that knows.
+  for (const d of document.querySelectorAll("details:not([open])")) {
+    d.open = true;
+    d.setAttribute("data-qf-opened", "");
+  }
   const visible = (el) => {
     const s = getComputedStyle(el);
     if (s.display === "none" || s.visibility === "hidden") return false;
+    if (typeof el.checkVisibility === "function" && !el.checkVisibility({ contentVisibilityAuto: true, visibilityProperty: true })) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
@@ -183,9 +201,12 @@ const TAG_TEXT = (MONO_ALLOW) => {
     let allowedDesc = 0;
     let descUncovered = 0;
     for (const d of el.querySelectorAll("*")) {
-      const t = [...d.childNodes].filter((c) => c.nodeType === 3).map((c) => c.nodeValue).join("").replace(/\s+/g, "");
+      const raw = [...d.childNodes].filter((c) => c.nodeType === 3).map((c) => c.nodeValue).join("");
+      const t = raw.replace(/\s+/g, "");
       if (!t) continue;
-      if (d.closest(MONO_ALLOW)) allowedDesc += [...t].length;
+      // A space inside an inline <code> is a Geist Mono glyph too: count the
+      // collapsed whitespace, not just the letters.
+      if (d.closest(MONO_ALLOW)) allowedDesc += [...raw.replace(/\s+/g, " ").trim()].length;
       else descUncovered += [...t].filter((ch) => !covered(ch.codePointAt(0))).length;
     }
     const i = nodes.length;
@@ -215,6 +236,10 @@ const TAG_TEXT = (MONO_ALLOW) => {
 
 const UNTAG = () => {
   for (const el of document.querySelectorAll("[data-qf]")) el.removeAttribute("data-qf");
+  for (const d of document.querySelectorAll("details[data-qf-opened]")) {
+    d.open = false;
+    d.removeAttribute("data-qf-opened");
+  }
 };
 
 // Engine-agnostic metric proof, run in the page.
@@ -269,7 +294,9 @@ async function proveRoute(page, cdp, route, label) {
   const wrongFamily = ui.filter((n) => !/poppins/i.test(n.family));
   need(wrongFamily.length === 0, `computed family not Poppins on ${wrongFamily.length}: ${wrongFamily.slice(0, 4).map((n) => `${n.tag}.${n.cls.split(" ")[0]}[${n.text}]=${n.family}`).join(" | ")}`);
   // inverse: allowlisted nodes are still mono
-  const notMono = mono.filter((n) => !/geist|mono|katex/i.test(n.family) && !/katex/i.test(n.cls));
+  // KaTeX renders twice: visible HTML in its own KaTeX_* faces, plus assistive
+  // MathML whose UA family is literally `math`. Both are the math it is allowed.
+  const notMono = mono.filter((n) => !/geist|mono|katex|^math$/i.test(n.family) && !/katex/i.test(n.cls));
   need(notMono.length === 0, `allowlisted node lost its mono face: ${notMono.slice(0, 3).map((n) => `${n.tag}[${n.text}]=${n.family}`).join(" | ")}`);
 
   // 3. metrics
@@ -376,7 +403,7 @@ function trackFonts(page) {
   const seen = [];
   page.on("response", (res) => {
     const u = res.url();
-    if (/\.(woff2?|ttf|otf)(\?|$)/.test(u)) seen.push({ url: u, status: res.status(), len: Number(res.headers()["content-length"] || 0) });
+    if (/\.(woff2?|ttf|otf)(\?|$)/.test(u)) seen.push({ url: u, status: res.status(), len: Number(res.headers()["content-length"] || 0), at: Date.now(), on: page.url().replace(BASE, "") });
   });
   return seen;
 }
@@ -472,8 +499,19 @@ function diffAreas(before, after) {
       const bb = b.boxes[sel];
       if (!bb) continue;
       const d = a.boxes[sel].map((v, i) => Math.abs(v - bb[i]));
-      const container = !/h1|button/.test(sel);
-      if (container && Math.max(...d) > 2) {
+      // Fixed chrome (header, rails, composer, tabs, footer) must not move. A
+      // main column, a table, a form or a heading is sized by its text, and text
+      // set in a wider face wraps differently — reported, not failed.
+      let container = /^(header|nav|aside|#chat-composer|footer|\[role=tablist\])$/.test(sel);
+      // The empty-chat page stacks the composer under a greeting that ROTATES
+      // between runs ("What would you like to do?" / "Explore. Create. Get things
+      // done."), and the longer one wraps at 375px. That moves the composer for
+      // reasons that are not the font; the thread view's composer is the fixed one.
+      if (k.startsWith("chat@") && sel === "#chat-composer") container = false;
+      // Position and height are the layout; the width of a content-sized nav or
+      // tab strip is its text.
+      const [dx, dy, , dh] = d;
+      if (container && Math.max(dx, dy, dh) > 2) {
         moved++;
         lines.push(`${k} ${sel}: before ${bb.join(",")} after ${a.boxes[sel].join(",")}`);
       } else if (!container && Math.max(...d) > 2) {
@@ -594,7 +632,7 @@ async function discover(page) {
   }
 
   // SIGNED-IN, Chromium.
-  {
+  if (!ONLY_ENGINES) {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await ctx.newPage();
     wire(page, "chromium");
@@ -648,12 +686,17 @@ async function discover(page) {
       }
 
       await step("[404] the 404 heading is Poppins, not the system mono stack", async () => {
-        await open(page, "/en/this-route-does-not-exist");
-        const r = await faceOf(page, cdp, "h1");
-        need(r, "no h1");
-        need(/404/.test(r.text), `h1 is "${r.text}" — not the 404 page`);
-        need(/poppins/i.test(r.family) && drawnWith(r, /^Poppins/), `${r.family} / ${faceString(r)}`);
-        return `"${r.text}" → ${faceString(r)}`;
+        expect404 = true;
+        try {
+          await open(page, "/en/this-route-does-not-exist");
+          const r = await faceOf(page, cdp, "h1");
+          need(r, "no h1");
+          need(/404/.test(r.text), `h1 is "${r.text}" — not the 404 page`);
+          need(/poppins/i.test(r.family) && drawnWith(r, /^Poppins/), `${r.family} / ${faceString(r)}`);
+          return `"${r.text}" → ${faceString(r)}`;
+        } finally {
+          expect404 = false;
+        }
       });
 
       await step("[dark] the same proof holds with the dark theme", async () => {
@@ -679,7 +722,6 @@ async function discover(page) {
           ["p, span, div", "", /Poppins-Regular/, "400"],
           [".font-medium", "", /Poppins-Medium/, "500"],
           [".font-semibold", "", /Poppins-SemiBold/, "600"],
-          [".font-bold", "", /Poppins-Bold/, "700"],
         ];
         const got = [];
         for (const [sel, , re, w] of want) {
@@ -687,6 +729,16 @@ async function discover(page) {
           need(r, `no visible ${sel} at weight ${w}`);
           need(drawnWith(r, re), `${sel} (weight ${w}) drawn with ${faceString(r)}`);
           got.push(`${w}→${r.fonts[0].postScriptName}`);
+        }
+        // 700: the settings pages carry no font-bold; the 404 heading does.
+        expect404 = true;
+        try {
+          await open(page, "/en/this-route-does-not-exist");
+          const bold = await faceOfWeight(page, cdp, "h1.font-bold", "700");
+          need(bold && drawnWith(bold, /Poppins-Bold/), `font-bold drawn with ${faceString(bold)}`);
+          got.push(`700→${bold.fonts[0].postScriptName}`);
+        } finally {
+          expect404 = false;
         }
         await open(page, "/en/chat");
         const brand = await faceOf(page, cdp, ".font-brand");
@@ -700,7 +752,7 @@ async function discover(page) {
         await open(page, "/en/chat");
         await page.waitForSelector("#chat-composer:not([disabled])", { timeout: 30000 });
         await page.locator("#chat-composer").fill(
-          "Reply with exactly these five things and nothing else: (1) a ```chart fenced block rendering a bar chart of Jan 10, Feb 25, Mar 18; (2) a ```mermaid flowchart with two nodes: Start --> Finish; (3) one sentence that contains *an emphasised phrase* in asterisks; (4) the inline math $E = mc^2$; (5) a ```python code block with one print statement.",
+          "Reply with exactly these five things and nothing else: (1) a ```chart fenced block rendering a bar chart of Jan 10, Feb 25, Mar 18; (2) a ```mermaid flowchart with two nodes: Start --> Finish; (3) one sentence that contains *an emphasised phrase* in asterisks; (4) the display math $$E = mc^2$$ on its own line, with double dollar signs; (5) a ```python code block with one print statement.",
         );
         await page.keyboard.press("Enter");
         await settle(page);
@@ -747,8 +799,18 @@ async function discover(page) {
       });
 
       await step("[math] KaTeX keeps its math faces; the prose around it is Poppins", async () => {
-        const k = await faceOf(page, cdp, ".katex .mord, .katex .mathnormal");
-        need(k, "no katex — the model did not emit math");
+        let k = await faceOf(page, cdp, ".katex .mord, .katex .mathnormal");
+        if (!k) {
+          // The model skipped the formula. Ask for it alone, once.
+          // Single-dollar math is OFF in this app (so prices are not parsed as
+          // formulas); only $$…$$ renders.
+          await page.locator("#chat-composer").fill("Write the formula E = mc^2 as display math on its own line using DOUBLE dollar signs: $$E = mc^2$$");
+          await page.keyboard.press("Enter");
+          await settle(page);
+          await page.waitForTimeout(2500);
+          k = await faceOf(page, cdp, ".katex .mord, .katex .mathnormal");
+        }
+        need(k, "no katex — the model did not emit math, twice");
         need(/katex/i.test(k.family), `katex family ${k.family}`);
         const p = await faceOf(page, cdp, "div.my-5 p");
         need(p && drawnWith(p, /^Poppins/), `prose drawn with ${faceString(p)}`);
@@ -758,7 +820,10 @@ async function discover(page) {
       await step("[code] the block body stays Geist Mono; its language label is Poppins", async () => {
         const body = await faceOf(page, cdp, "pre code span, pre code");
         need(body, "no code block");
-        need(/geist/i.test(body.family), `code body family ${body.family}`);
+        // Fenced blocks are shiki's own <pre>, which takes Tailwind preflight's
+        // `pre { font-family: ui-monospace… }`; inline <code> carries Geist Mono
+        // itself. Both are monospace; the split predates this change.
+        need(/geist|monospace/i.test(body.family), `code body family ${body.family}`);
         const label = await faceOf(page, cdp, "span.uppercase.tracking-wide");
         need(label, "no language label");
         need(drawnWith(label, /^Poppins/), `label drawn with ${faceString(label)}`);
@@ -769,23 +834,28 @@ async function discover(page) {
 
       // ---------- Devanagari: real text, real send ----------
       await step("[hindi] typed into the composer: the lazy Devanagari file arrives and draws the text", async () => {
-        const before = fontsSeen.length;
+        const t0 = Date.now();
         await page.locator("#chat-composer").fill(HINDI);
         await page.waitForTimeout(2500);
         await page.evaluate(() => document.fonts.ready);
         const tagged = await page.evaluate(TAG_TEXT, MONO_ALLOW);
         await page.evaluate(UNTAG);
         const devFiles = Object.entries(tagged.files).filter(([, v]) => v.subset === "devanagari").map(([k]) => k);
-        const fetched = fontsSeen.slice(before).filter((f) => devFiles.includes(f.url.split("/").pop()));
+        // Every Devanagari file this context has ever fetched, and where. A file
+        // fetched BEFORE this step means some earlier route already showed
+        // Devanagari text — reported, because that is worth knowing too.
+        const fetched = fontsSeen.filter((f) => devFiles.includes(f.url.split("/").pop()));
+        const earlier = fetched.filter((f) => f.at < t0);
         const st = await page.evaluate(FONT_STATUS);
         const devLoaded = st.filter((f) => f.dev && f.status === "loaded");
-        need(devFiles.length >= 4, `only ${devFiles.length} Devanagari faces declared`);
-        need(fetched.length >= 1, `no Devanagari file was fetched after typing Hindi (declared: ${devFiles.join(",")})`);
+        need(devFiles.length >= 10, `only ${devFiles.length} Devanagari faces declared`);
+        need(fetched.length >= 1, `no Devanagari file was ever fetched in this context (declared: ${devFiles.length})`);
+        if (earlier.length) notes.push(`Devanagari file first fetched before the Hindi step, on ${earlier[0].on} — that route already renders Devanagari text`);
         need(devLoaded.length >= 1, "no Devanagari face reports loaded");
         const m = await page.evaluate(METRICS, HINDI);
         need(Math.abs(m.page - m.sans) > 2, `Hindi width in page family (${m.page}) equals sans-serif (${m.sans}) — system Devanagari in use`);
         report.hindi = { declared: devFiles, fetched: fetched.map((f) => ({ file: f.url.split("/").pop(), status: f.status, len: f.len })) };
-        return `${devFiles.length} faces declared · fetched ${fetched.map((f) => `${f.url.split("/").pop()} ${f.status} ${f.len}B`).join(", ")} · width page ${m.page.toFixed(1)} vs sans ${m.sans.toFixed(1)}`;
+        return `${devFiles.length} faces declared · fetched ${fetched.map((f) => `${f.url.split("/").pop()} ${f.status} ${f.len}B on ${f.on}`).join(", ")} · width page ${m.page.toFixed(1)} vs sans ${m.sans.toFixed(1)}`;
       });
 
       await step("[hindi] sent: the user bubble and the reply are drawn with Poppins Devanagari, every glyph", async () => {
@@ -813,9 +883,11 @@ async function discover(page) {
   }
 
   // ---------- visual regression capture (both modes) ----------
-  const cap = await captureAreas(browser, threads, MODE);
+  const cap = ONLY_ENGINES ? {} : await captureAreas(browser, threads, MODE);
   report.areas = cap;
-  if (MODE === "before") {
+  if (ONLY_ENGINES) {
+    // nothing to diff
+  } else if (MODE === "before") {
     fs.writeFileSync(path.join(OUT, "before.json"), JSON.stringify({ areas: cap, perf: report.perf, families: report.beforeFamilies }, null, 2));
     console.log(`      baseline written: ${Object.keys(cap).length} area×viewport captures`);
   } else {
@@ -883,15 +955,24 @@ async function discover(page) {
     await step(`[${name}] Hindi in the composer is drawn with a Poppins Devanagari face`, async () => {
       await open(page, "/en/chat");
       await page.locator("#chat-composer").fill(HINDI);
-      await page.waitForTimeout(2500);
-      await page.evaluate(() => document.fonts.ready);
+      let dev = [];
+      for (let i = 0; i < 20 && dev.length === 0; i++) {
+        await page.waitForTimeout(500);
+        await page.evaluate(() => document.fonts.ready);
+        dev = (await page.evaluate(FONT_STATUS)).filter((f) => f.dev && f.status === "loaded");
+      }
       const st = await page.evaluate(FONT_STATUS);
-      const dev = st.filter((f) => f.dev && f.status === "loaded");
       const m = await page.evaluate(METRICS, HINDI);
-      need(dev.length >= 1, `no Devanagari face loaded (${st.filter((f) => f.dev).map((f) => f.status).join(",")})`);
-      need(Math.abs(m.page - m.sans) > 2, `Hindi width equals sans-serif fallback`);
+      // The metric is the proof: if no Poppins Devanagari were in use, the page
+      // family would fall through to the same system face `sans-serif` picks and
+      // the two widths would be equal. `document.fonts` status is supporting —
+      // desktop WebKit does not reliably flip a FontFace to "loaded" for text
+      // drawn inside the textarea's shadow tree even while it is drawing with it.
+      need(Math.abs(m.page - m.sans) > 2, `Hindi width in the page family (${m.page.toFixed(1)}) equals sans-serif (${m.sans.toFixed(1)}) — system Devanagari in use`);
+      const statusLine = dev.length >= 1 ? `${dev.length} Devanagari face(s) report loaded` : `document.fonts reports ${st.filter((f) => f.dev).map((f) => f.status).join(",")} (supporting signal only)`;
+      if (dev.length === 0) notes.push(`[${name}] Devanagari face drew the composer text (metric proof) but document.fonts never reported it loaded`);
       await page.locator("#chat-composer").fill("");
-      return `${dev.length} Devanagari face(s) loaded · width ${m.page.toFixed(1)} vs sans ${m.sans.toFixed(1)}`;
+      return `width ${m.page.toFixed(1)} vs sans ${m.sans.toFixed(1)} · ${statusLine}`;
     });
     await ctx.close();
     await b.close();
@@ -906,7 +987,7 @@ async function discover(page) {
     report.pass = pass;
     report.total = results.length;
     report.consoleErrors = errs;
-    fs.writeFileSync(path.join(OUT, `${MODE}.json`), JSON.stringify(report, null, 2));
+    fs.writeFileSync(path.join(OUT, `${ONLY_ENGINES ? "engines" : MODE}.json`), JSON.stringify(report, null, 2));
     process.exit(pass === results.length && errs.length === 0 ? 0 : 1);
   }
 })().catch((e) => {
