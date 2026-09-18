@@ -62,11 +62,13 @@ states, axe), `e2e/qa-mobile-smoke.js`; real-device overlay `?perf=1` + `e2e/per
   current `next start` builds on prod Convex, 6 runs each): typing p90 33→28 / 32→25 ms,
   compositor −71% / −65%, desktop flat, first code block unchanged (highlighter
   micro-A/B n=10: long tasks 739→732 ms, JS 1936→941 KB), streaming inconclusive (n=2).
-- **Regression kept (measured, cause NOT isolated):** cold-load TBT on Pixel 7 4× rose
-  127→215 ms (n=10) while time-to-usable composer is unchanged (2969 vs 2961 ms). Not the
-  new `useMediaQuery` (gap persists with it forced off); about half is touch-only; the
-  bisect at n=6–8 could not resolve it against run-to-run noise (baseline medians swing
-  122–178 ms). Next step: bisect 86b9114..7f44c62 with ≥15 runs per build.
+- **Cold-load TBT — resolved on production, discrepancy recorded:** a local A/B (two
+  `next start` builds on one machine) showed the fixed build 127→215 ms worse, and the
+  bisect could not isolate it against run-to-run noise. Measured against PRODUCTION with
+  the same harness the ordering is the opposite and consistent: cold TBT 497 (baseline
+  86b9114) → 207 → **163** (all fixes), usable 4292 → 3367 → **3259**. The local result
+  does not reproduce where users are; localhost removes the network phase, which is the
+  most likely cause of the inversion. Not chased further.
 - **Composer + overflow (2026-09-17, deployed 47c4d71):** the new-chat composer was the
   desktop pill at phone sizes (142 px tall, centred with 201–283 px of dead space below);
   every enlargement now starts at the 32rem container breakpoint and on a coarse pointer it
@@ -84,10 +86,20 @@ states, axe), `e2e/qa-mobile-smoke.js`; real-device overlay `?perf=1` + `e2e/per
   reported zero overflow while this was live.
 - **NOT verified:** no physical Android, no older iPhone, no iPhone before/after numbers
   (overlay shipped; user run pending); hidden-tab throttling not observable in automation.
-- **Open:** image attachments are routed to text-only deepseek-v4-flash → 400 "Something
-  went wrong" (pre-existing backend routing bug, fix not approved yet); axe color-contrast
-  409 nodes (design), landmark-one-main 16, page-has-heading-one 6, one unlabeled
-  dashboard nav on /files; offline send on a NEW chat shows no optimistic bubble; React DOM
+- **Image attachments FIXED (2026-09-17, f24f070, prod-verified):** the router documented
+  vision as unmodellable because the catalogue reports `vision: true` for every entry, so
+  an image turn could land on deepseek-v4-flash and the provider answered 400 "this model
+  does not support image input". `vision` is now a per-model profile fact (absent = true,
+  so only a model KNOWN to refuse images is excluded) applied before the reasoning floor
+  and in failover. Cost: an image promotes the turn to MODERATE and the only vision model
+  at that floor is the heavy one, so image turns pay ~2.3 s more TTFT. Prod: an uploaded
+  image reads back correctly, `qa-mobile-smoke.js` 16/20 → **20/20**.
+- **Contrast FIXED (e706a69 + follow-up, prod-verified):** text-primary/40 measured
+  2.55:1 on white, /45 2.91, /50 3.41, /55 3.91, text-red-500 3.76 — all under 4.5:1. The
+  four dimmed tiers collapse to /60 and /65, red-500 → red-600, plus the notification
+  badge, composer hint and emerald status labels. axe color-contrast **409 → 3 nodes**.
+- **Open:** landmark-one-main 16, page-has-heading-one 6, one unlabeled
+  dashboard nav on /files, 3 residual contrast nodes; offline send on a NEW chat shows no optimistic bubble; React DOM
   leaves an unhandled `Event` rejection when a lazily-added stylesheet fails offline.
 
 ## Security audits (Codex Security adaptation) — LIVE, prod-verified 2026-09-16
