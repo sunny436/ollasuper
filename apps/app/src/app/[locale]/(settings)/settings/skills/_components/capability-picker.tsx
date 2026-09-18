@@ -118,7 +118,7 @@ export function CapabilityPicker({
         aria-label="Search capabilities"
       />
 
-      <div className="max-h-44 overflow-y-auto rounded-lg border border-border">
+      <div className="scrollbar-quiet max-h-44 overflow-y-auto rounded-lg border border-border">
         {shown.length === 0 && (
           <p className="p-3 text-center text-xs text-primary/60">
             Nothing matches “{filter}”.

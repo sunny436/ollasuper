@@ -116,7 +116,7 @@ export function ProjectSettingsDialog({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+        <div className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto px-5 pb-5">
           <label
             htmlFor="project-name"
             className="mt-4 block text-xs font-semibold uppercase tracking-wider text-muted-foreground"

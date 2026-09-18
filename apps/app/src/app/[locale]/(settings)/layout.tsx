@@ -86,7 +86,7 @@ export default function SettingsLayout({
               </div>
             </header>
 
-            <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto">
               <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
                 {children}
               </div>

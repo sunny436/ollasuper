@@ -344,7 +344,7 @@ export function ExploreMenu({
             — which reads as the visual order. A row-major grid would make Down
             jump between columns.
           */}
-          <div className="grid max-h-[calc(70vh-6rem)] grid-cols-1 gap-x-1 overflow-y-auto overscroll-contain p-2 sm:grid-cols-3">
+          <div className="scrollbar-quiet grid max-h-[calc(70vh-6rem)] grid-cols-1 gap-x-1 overflow-y-auto overscroll-contain p-2 sm:grid-cols-3">
             {COLUMNS.map((col) => {
               const items = visible.filter((c) => c.column === col.key);
               if (items.length === 0) return null;

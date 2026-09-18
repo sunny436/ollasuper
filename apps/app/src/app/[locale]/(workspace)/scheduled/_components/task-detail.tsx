@@ -93,7 +93,7 @@ export function TaskDetail({
         onClose={onClose}
       />
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      <div className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {notFound && (
           <EmptyPanel
             icon={CalendarClock}

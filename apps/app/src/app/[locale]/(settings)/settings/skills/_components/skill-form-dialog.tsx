@@ -165,7 +165,7 @@ export function SkillFormDialog({
       {/* Radix portals to document.body, which is OUTSIDE the settings shell's
           `.workspace` subtree — without this the dialog renders against the base
           palette while the page behind it uses the workspace tokens. */}
-      <DialogContent className="workspace max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="scrollbar-quiet workspace max-h-[85vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{skill ? "Edit skill" : "New skill"}</DialogTitle>
           <DialogDescription>

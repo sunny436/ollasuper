@@ -71,7 +71,7 @@ export function ScheduledPane() {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+      <div className="scrollbar-quiet flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
         {/* Rail controls, matching the chat pane's header affordances. */}
         <div className="flex shrink-0 items-center gap-1 px-3 py-3">
           <button

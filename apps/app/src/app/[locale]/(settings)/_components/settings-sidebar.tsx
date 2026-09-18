@@ -90,7 +90,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       {/* Nav */}
-      <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+      <nav className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto px-3 py-2">
         {items.length === 0 ? (
           <p className="px-3 py-4 text-xs text-primary/60">
             No settings match “{q}”.

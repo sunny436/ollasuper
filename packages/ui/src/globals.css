@@ -172,9 +172,16 @@
  * because of it. The thumb is painted without hover (a touch device has none);
  * hover only deepens it. `scrollbar-width/color` cover Firefox and Chromium 121+,
  * the ::-webkit- rules older Chromium and Safari. No JS, no animation. */
-.scrollbar-quiet {
-  scrollbar-width: thin;
-  scrollbar-color: hsl(var(--primary) / 0.18) transparent;
+/* Firefox ONLY. Chromium supports BOTH syntaxes and, when scrollbar-width is
+ * set, it renders the standard bar and IGNORES the ::-webkit- rules below —
+ * measured: 10px and no inset pill. Gating on the engine that actually lacks the
+ * pseudo-element gives Firefox the standard properties and leaves Chromium and
+ * Safari on the styled thumb. */
+@supports not selector(::-webkit-scrollbar) {
+  .scrollbar-quiet {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--primary) / 0.18) transparent;
+  }
 }
 .scrollbar-quiet::-webkit-scrollbar {
   width: 8px;

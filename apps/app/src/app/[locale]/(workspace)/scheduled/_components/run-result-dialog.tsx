@@ -55,7 +55,7 @@ export function RunResultDialog({
         <DialogTitle className="shrink-0 pr-8 text-base font-semibold text-primary">
           {title}
         </DialogTitle>
-        <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+        <div className="scrollbar-quiet mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
           <RunResult taskId={taskId} occurrenceId={occurrenceId} />
         </div>
       </DialogContent>

@@ -63,7 +63,7 @@ export function Sidebar() {
         </select>
       </div>
 
-      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-1">
+      <nav className="scrollbar-quiet flex-1 space-y-1 overflow-y-auto px-3 py-1">
         {NAV.map((item) => {
           const active =
             "prefix" in item && item.prefix

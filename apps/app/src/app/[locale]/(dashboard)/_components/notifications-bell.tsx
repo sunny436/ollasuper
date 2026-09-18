@@ -211,7 +211,7 @@ export function NotificationsBell() {
       <DropdownMenuContent
         align="end"
         sideOffset={8}
-        className="workspace max-h-[var(--radix-dropdown-menu-content-available-height)] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto p-0"
+        className="scrollbar-quiet workspace max-h-[var(--radix-dropdown-menu-content-available-height)] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto p-0"
       >
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <span className="text-xs font-medium text-primary">Notifications</span>
@@ -226,7 +226,7 @@ export function NotificationsBell() {
           )}
         </div>
 
-        <div className="max-h-80 divide-y divide-border/50 overflow-y-auto">
+        <div className="scrollbar-quiet max-h-80 divide-y divide-border/50 overflow-y-auto">
           {loading ? (
             <div className="space-y-3 px-3 py-3" aria-busy="true">
               <span className="sr-only">Loading notifications</span>

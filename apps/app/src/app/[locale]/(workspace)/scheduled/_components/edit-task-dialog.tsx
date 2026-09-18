@@ -128,7 +128,7 @@ export function EditTaskDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="workspace max-h-[85vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="scrollbar-quiet workspace max-h-[85vh] overflow-y-auto sm:max-w-lg">
         <div className="text-xs uppercase tracking-wider text-muted-foreground">
           {duplicate
             ? "Duplicate"

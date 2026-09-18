@@ -137,7 +137,7 @@ export function MoveToProjectDialog({
           </button>
         </div>
 
-        <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
+        <div className="scrollbar-quiet mt-4 min-h-0 flex-1 overflow-y-auto">
           {status === "LoadingFirstPage" && (
             <div className="space-y-2">
               {[0, 1, 2].map((i) => (

@@ -57,7 +57,7 @@ export function CommandPalette() {
           }}
           className="w-full border-b border-border bg-transparent px-4 py-3 text-sm outline-none"
         />
-        <div className="max-h-72 overflow-y-auto p-1">
+        <div className="scrollbar-quiet max-h-72 overflow-y-auto p-1">
           {filtered.length ? (
             filtered.map((c) => (
               <button

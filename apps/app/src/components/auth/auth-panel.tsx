@@ -394,7 +394,7 @@ export function AuthPanel() {
         {/* Scrolls on short desktop windows, so it must be keyboard-reachable
             (axe scrollable-region-focusable on prod). */}
         {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-reachable (WCAG 2.1.1) */}
-        <div tabIndex={0} role="region" aria-label="About Ollasuper" className="relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-[#4F8BF0]/10 p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
+        <div tabIndex={0} role="region" aria-label="About Ollasuper" className="scrollbar-quiet relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-[#4F8BF0]/10 p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
           {/* Subtle orbital / radial art — behind content, never overlapping. */}
           <div
             aria-hidden="true"
@@ -470,7 +470,7 @@ export function AuthPanel() {
         {/* ===== RIGHT: mode-specific form ===== */}
         {/* m-auto (not justify-center) centres the block but lets a tall mode
             scroll from the top instead of clipping it under overflow-y-auto. */}
-        <div className="relative z-10 flex flex-1 flex-col overflow-y-auto p-8 md:p-12">
+        <div className="scrollbar-quiet relative z-10 flex flex-1 flex-col overflow-y-auto p-8 md:p-12">
           <div className="m-auto w-full max-w-md">
             <div className="mb-8 text-center">
               {/* No text-transform: renders copy verbatim ("Welcome back"). */}
