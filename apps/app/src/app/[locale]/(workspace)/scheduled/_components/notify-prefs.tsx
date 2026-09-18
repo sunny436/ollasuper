@@ -146,7 +146,7 @@ function PrefGroup({
       <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </p>
-      {hint && <p className="mt-1 text-xs text-primary/50">{hint}</p>}
+      {hint && <p className="mt-1 text-xs text-primary/65">{hint}</p>}
       <div className="mt-1 divide-y divide-border/60">{children}</div>
     </div>
   );

@@ -26,7 +26,7 @@ export function AttachmentChip({
           className="h-7 w-7 shrink-0 rounded object-cover"
         />
       ) : (
-        <FileText className="h-4 w-4 shrink-0 text-primary/40" />
+        <FileText className="h-4 w-4 shrink-0 text-primary/60" />
       )}
 
       <span className="max-w-[10rem] truncate text-primary/80">{item.name}</span>
@@ -51,7 +51,7 @@ export function AttachmentChip({
       )}
 
       {item.status === "uploading" && (
-        <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary/40" />
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary/60" />
       )}
 
       <button

@@ -191,7 +191,7 @@ export function NotificationsBell() {
         <button
           type="button"
           aria-label="Notifications"
-          className="relative flex h-7 w-7 items-center justify-center rounded-md text-primary/50 transition hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+          className="relative flex h-7 w-7 items-center justify-center rounded-md text-primary/65 transition hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
         >
           <Bell className="h-4 w-4" />
           {unread > 0 && (
@@ -219,7 +219,7 @@ export function NotificationsBell() {
             <button
               type="button"
               onClick={() => void markAllRead()}
-              className="rounded-md px-1.5 py-0.5 text-[11px] text-primary/50 transition hover:bg-primary/5 hover:text-primary"
+              className="rounded-md px-1.5 py-0.5 text-[11px] text-primary/65 transition hover:bg-primary/5 hover:text-primary"
             >
               Mark all as read
             </button>
@@ -238,7 +238,7 @@ export function NotificationsBell() {
               ))}
             </div>
           ) : rows.length === 0 ? (
-            <div className="px-3 py-6 text-center text-sm text-primary/40">
+            <div className="px-3 py-6 text-center text-sm text-primary/60">
               You're all caught up
             </div>
           ) : (
@@ -257,7 +257,7 @@ export function NotificationsBell() {
           <button
             type="button"
             onClick={() => setBefore(result.nextCursor ?? undefined)}
-            className="w-full border-t border-border px-3 py-2 text-xs text-primary/50 transition hover:bg-primary/5 hover:text-primary"
+            className="w-full border-t border-border px-3 py-2 text-xs text-primary/65 transition hover:bg-primary/5 hover:text-primary"
           >
             Show older
           </button>
@@ -266,7 +266,7 @@ export function NotificationsBell() {
           <button
             type="button"
             onClick={() => setBefore(undefined)}
-            className="w-full border-t border-border px-3 py-2 text-xs text-primary/50 transition hover:bg-primary/5 hover:text-primary"
+            className="w-full border-t border-border px-3 py-2 text-xs text-primary/65 transition hover:bg-primary/5 hover:text-primary"
           >
             Back to latest
           </button>

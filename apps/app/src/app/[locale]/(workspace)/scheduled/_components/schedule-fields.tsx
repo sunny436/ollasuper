@@ -173,7 +173,7 @@ export function ScheduleFields({
         >
           <div className="flex flex-wrap items-center justify-end gap-1">
             {value.weekdays.length === 0 && (
-              <span className="mr-1 text-xs text-primary/50">Pick a day</span>
+              <span className="mr-1 text-xs text-primary/65">Pick a day</span>
             )}
             {WEEKDAY_OPTIONS.map((d) => {
               const on = value.weekdays.includes(d.value);

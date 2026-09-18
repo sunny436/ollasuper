@@ -174,7 +174,7 @@ export function ShareDialog({
         )}
         {status === "error" && (
           <div className="py-2">
-            <p className="text-sm text-red-500">
+            <p className="text-sm text-red-600">
               Couldn't create a share link.
             </p>
             <button
@@ -231,7 +231,7 @@ export function ShareDialog({
             </div>
 
             <div className="flex items-center justify-between border-t border-border pt-3">
-              <p className="text-xs text-primary/45">
+              <p className="text-xs text-primary/60">
                 {expiresAt
                   ? `Expires ${new Date(expiresAt).toLocaleDateString()}.`
                   : "Expires in 7 days."}

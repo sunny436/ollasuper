@@ -94,7 +94,7 @@ export function FilesSection() {
             <button
               type="button"
               onClick={() => loadMore(20)}
-              className="mt-1 w-full rounded-md px-2 py-1 text-[11px] text-primary/50 transition hover:bg-primary/5"
+              className="mt-1 w-full rounded-md px-2 py-1 text-[11px] text-primary/65 transition hover:bg-primary/5"
             >
               Load more
             </button>
@@ -178,7 +178,7 @@ function FileItem({
               toast.error("Couldn't retry");
             }
           }}
-          className="shrink-0 rounded p-0.5 text-primary/40 transition hover:bg-primary/10 hover:text-primary/70"
+          className="shrink-0 rounded p-0.5 text-primary/60 transition hover:bg-primary/10 hover:text-primary/70"
         >
           <RotateCcw className="h-3.5 w-3.5" />
         </button>
@@ -225,7 +225,7 @@ function StatusBadge({
   return (
     <span
       title={stageMessage ?? undefined}
-      className="inline-flex shrink-0 items-center gap-0.5 rounded border border-border bg-primary/5 px-1.5 py-px text-[9px] font-medium text-primary/50"
+      className="inline-flex shrink-0 items-center gap-0.5 rounded border border-border bg-primary/5 px-1.5 py-px text-[9px] font-medium text-primary/65"
     >
       <Loader2 className="h-2.5 w-2.5 animate-spin" />
       Working

@@ -175,7 +175,7 @@ export default function FilesSection() {
           <h1 className="text-2xl font-semibold tracking-tight text-primary">
             Files
           </h1>
-          <p className="mt-1 text-sm text-primary/55">
+          <p className="mt-1 text-sm text-primary/65">
             Anything the assistant can read becomes searchable in chat.
             Everything else is stored as-is.
           </p>
@@ -199,13 +199,13 @@ export default function FilesSection() {
       </div>
 
       {status === "LoadingFirstPage" && (
-        <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/50 backdrop-blur-xl">
+        <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl">
           Loading…
         </p>
       )}
 
       {status !== "LoadingFirstPage" && files.length === 0 && (
-        <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/50 backdrop-blur-xl">
+        <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl">
           Nothing stored here — files the assistant can read are listed under
           Searchable below.
         </p>
@@ -220,9 +220,9 @@ export default function FilesSection() {
             className="overflow-hidden rounded-2xl border border-border bg-card/60 backdrop-blur-xl"
           >
             <div className="flex items-center gap-2 border-b border-border px-5 py-3">
-              <Icon className="h-4 w-4 text-primary/50" />
+              <Icon className="h-4 w-4 text-primary/65" />
               <h2 className="text-sm font-medium text-primary/85">{cat}</h2>
-              <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/50">
+              <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/65">
                 {items.length}
               </span>
             </div>
@@ -247,7 +247,7 @@ export default function FilesSection() {
                         {f.name}
                       </span>
                     )}
-                    <p className="mt-0.5 text-xs text-primary/45">
+                    <p className="mt-0.5 text-xs text-primary/60">
                       {fmtSize(f.size)} ·{" "}
                       {new Date(f.createdAt).toLocaleDateString()}
                     </p>
@@ -257,7 +257,7 @@ export default function FilesSection() {
                     title="Delete file?"
                     description={f.name}
                     confirmLabel="Delete"
-                    className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-500 transition hover:bg-red-500/10 [@media(pointer:coarse)]:min-h-11"
+                    className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-600 transition hover:bg-red-500/10 [@media(pointer:coarse)]:min-h-11"
                     onConfirm={async () => {
                       await removeFile({ fileId: f._id });
                       toast.success("File deleted");
@@ -284,21 +284,21 @@ export default function FilesSection() {
           only rows the model can actually read. */}
       <div className="overflow-hidden rounded-2xl border border-border bg-card/60 backdrop-blur-xl">
         <div className="flex items-center gap-2 border-b border-border px-5 py-3">
-          <FileText className="h-4 w-4 text-primary/50" />
+          <FileText className="h-4 w-4 text-primary/65" />
           <h2 className="text-sm font-medium text-primary/85">Searchable</h2>
-          <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/50">
+          <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/65">
             {knowledge.length}
           </span>
-          <span className="ml-auto text-[11px] text-primary/45">
+          <span className="ml-auto text-[11px] text-primary/60">
             Used to answer your questions in chat · only you can see these
           </span>
         </div>
         {knowledgeStatus === "LoadingFirstPage" ? (
-          <p className="px-5 py-6 text-center text-sm text-primary/50">
+          <p className="px-5 py-6 text-center text-sm text-primary/65">
             Loading…
           </p>
         ) : knowledge.length === 0 ? (
-          <p className="px-5 py-6 text-center text-sm text-primary/50">
+          <p className="px-5 py-6 text-center text-sm text-primary/65">
             Nothing searchable yet — upload a document, spreadsheet, image or
             code file above.
           </p>
@@ -313,7 +313,7 @@ export default function FilesSection() {
                   <span className="truncate text-sm text-primary/85">
                     {f.name}
                   </span>
-                  <p className="mt-0.5 text-xs text-primary/45">
+                  <p className="mt-0.5 text-xs text-primary/60">
                     {fmtSize(f.size)} ·{" "}
                     {new Date(f.createdAt).toLocaleDateString()} ·{" "}
                     {f.status === "ready"
@@ -340,7 +340,7 @@ export default function FilesSection() {
                   title="Delete file?"
                   description={f.name}
                   confirmLabel="Delete"
-                  className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-500 transition hover:bg-red-500/10 [@media(pointer:coarse)]:min-h-11"
+                  className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-600 transition hover:bg-red-500/10 [@media(pointer:coarse)]:min-h-11"
                   onConfirm={async () => {
                     await removeKnowledge({ fileId: f._id });
                     toast.success("File deleted");

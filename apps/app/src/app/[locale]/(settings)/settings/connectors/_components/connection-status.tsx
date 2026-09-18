@@ -19,7 +19,7 @@ import type { DisplayState } from "../_lib/state";
  */
 
 const TONE: Record<string, string> = {
-  neutral: "text-primary/55",
+  neutral: "text-primary/65",
   good: "text-emerald-600 dark:text-emerald-400",
   warn: "text-amber-600 dark:text-amber-400",
   bad: "text-rose-600 dark:text-rose-400",
@@ -51,5 +51,5 @@ export function ConnectionStatus({
 /** The one-sentence explanation under a status. Separated so a dense card can
  *  show the status alone while the detail page shows both. */
 export function ConnectionHint({ state }: { state: DisplayState }) {
-  return <p className="text-xs text-primary/50">{STATE[state].hint}</p>;
+  return <p className="text-xs text-primary/65">{STATE[state].hint}</p>;
 }

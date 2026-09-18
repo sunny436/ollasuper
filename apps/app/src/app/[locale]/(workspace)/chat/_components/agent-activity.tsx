@@ -139,13 +139,13 @@ function ExecutionStatusImpl({
             {agg.label}
           </span>
           {runs.length > 1 && (
-            <span className="shrink-0 tabular-nums text-[11px] text-primary/40">
+            <span className="shrink-0 tabular-nums text-[11px] text-primary/60">
               {runs.filter((r) => r.status !== "running").length}/{runs.length}
             </span>
           )}
           <ChevronDown
             aria-hidden
-            className="h-3.5 w-3.5 shrink-0 text-primary/40 transition-transform duration-200 group-open/disc:rotate-180"
+            className="h-3.5 w-3.5 shrink-0 text-primary/60 transition-transform duration-200 group-open/disc:rotate-180"
           />
         </>
       }
@@ -209,7 +209,7 @@ function ToolRunImpl({ run }: { run: ToolRunModel }) {
         {/* Completed rows are quieter than the active one (the icon carries state). */}
         <span
           className={`[overflow-wrap:anywhere] ${
-            run.status === "running" ? "text-primary/80" : "text-primary/50"
+            run.status === "running" ? "text-primary/80" : "text-primary/65"
           }`}
         >
           {label}
@@ -225,7 +225,7 @@ function ToolRunImpl({ run }: { run: ToolRunModel }) {
       </div>
 
       {run.status === "running" && run.progress?.message && (
-        <p className="mt-0.5 pl-5 text-primary/50 [overflow-wrap:anywhere]">
+        <p className="mt-0.5 pl-5 text-primary/65 [overflow-wrap:anywhere]">
           {run.progress.message}
         </p>
       )}
@@ -234,7 +234,7 @@ function ToolRunImpl({ run }: { run: ToolRunModel }) {
         <Disclosure
           className="mt-0.5 pl-5"
           summary={
-            <span className="text-[11px] text-primary/50 hover:text-primary/70">
+            <span className="text-[11px] text-primary/65 hover:text-primary/70">
               View result
             </span>
           }
@@ -350,7 +350,7 @@ export function ResultPreview({ result }: { result: unknown }) {
             <tbody>
               {entries.slice(0, 30).map(([k, v]) => (
                 <tr key={k} className="border-border/40 border-b last:border-0">
-                  <td className="py-0.5 pr-3 align-top font-medium text-primary/50 [overflow-wrap:anywhere]">
+                  <td className="py-0.5 pr-3 align-top font-medium text-primary/65 [overflow-wrap:anywhere]">
                     {k}
                   </td>
                   <td className="py-0.5 align-top text-primary/80 [overflow-wrap:anywhere]">

@@ -539,7 +539,7 @@ export function ScheduleComposer({
               type="button"
               onClick={discard}
               aria-label="Discard draft"
-              className="shrink-0 rounded-md p-1 text-primary/40 hover:bg-primary/5 hover:text-primary"
+              className="shrink-0 rounded-md p-1 text-primary/60 hover:bg-primary/5 hover:text-primary"
             >
               <X className="h-4 w-4" />
             </button>

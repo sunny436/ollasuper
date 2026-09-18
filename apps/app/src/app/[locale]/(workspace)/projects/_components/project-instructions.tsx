@@ -181,7 +181,7 @@ function ProjectMemories({ projectId }: { projectId: Id<"projects"> }) {
               key={m._id}
               className="group flex items-start gap-3 rounded-xl border border-border bg-card px-3 py-2.5"
             >
-              <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-primary/5 text-primary/50">
+              <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-primary/5 text-primary/65">
                 <Brain className="h-3.5 w-3.5" />
               </span>
               <span className="min-w-0 flex-1">
@@ -207,7 +207,7 @@ function ProjectMemories({ projectId }: { projectId: Id<"projects"> }) {
         <button
           type="button"
           onClick={() => loadMore(PAGE)}
-          className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/50 transition hover:bg-primary/5"
+          className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/65 transition hover:bg-primary/5"
         >
           Load more
         </button>

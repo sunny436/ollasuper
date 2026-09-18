@@ -222,7 +222,7 @@ function ChartBlockImpl({ spec, complete }: { spec: string; complete: boolean })
   // Streaming — a subtle placeholder rather than raw partial JSON.
   if (!complete) {
     return (
-      <div className="my-3 flex h-24 items-center justify-center rounded-lg border border-border bg-card/40 text-[13px] text-primary/40">
+      <div className="my-3 flex h-24 items-center justify-center rounded-lg border border-border bg-card/40 text-[13px] text-primary/60">
         <span className="animate-pulse">Preparing chart…</span>
       </div>
     );
@@ -233,7 +233,7 @@ function ChartBlockImpl({ spec, complete }: { spec: string; complete: boolean })
     return (
       <pre className="my-3 overflow-x-auto rounded-lg bg-black/[0.045] p-4 font-geist-mono text-[12.5px] leading-[1.7] dark:bg-white/[0.04] md:text-[13px]">
         <code>{spec}</code>
-        <span className="mt-2 block text-[11px] text-primary/40">
+        <span className="mt-2 block text-[11px] text-primary/60">
           (chart: spec could not be rendered)
         </span>
       </pre>

@@ -28,8 +28,8 @@ const FILTERS: { key: Filter; label: string }[] = [
 
 const STATUS_STYLE: Record<string, string> = {
   active: "text-emerald-600 dark:text-emerald-400",
-  expired: "text-primary/40",
-  revoked: "text-red-500",
+  expired: "text-primary/60",
+  revoked: "text-red-600",
 };
 
 export default function SharedChatsPage() {
@@ -85,7 +85,7 @@ export default function SharedChatsPage() {
         <h1 className="text-2xl font-semibold tracking-tight text-primary">
           Shared Links
         </h1>
-        <p className="mt-1 text-sm text-primary/55">
+        <p className="mt-1 text-sm text-primary/65">
           Links you've created to share conversations or responses. Shared
           content is read-only and expires after 7 days.
         </p>
@@ -102,7 +102,7 @@ export default function SharedChatsPage() {
                 className={`rounded-full px-3 py-1 text-xs font-medium transition [@media(pointer:coarse)]:min-h-11 ${
                   filter === f.key
                     ? "bg-primary/10 text-primary"
-                    : "text-primary/55 hover:bg-primary/5 hover:text-primary/80"
+                    : "text-primary/65 hover:bg-primary/5 hover:text-primary/80"
                 }`}
               >
                 {f.label}
@@ -119,10 +119,10 @@ export default function SharedChatsPage() {
 
         <div className="divide-y divide-border">
           {status === "LoadingFirstPage" && (
-            <p className="p-5 text-sm text-primary/50">Loading…</p>
+            <p className="p-5 text-sm text-primary/65">Loading…</p>
           )}
           {status !== "LoadingFirstPage" && rows.length === 0 && (
-            <p className="p-8 text-center text-sm text-primary/50">
+            <p className="p-8 text-center text-sm text-primary/65">
               No shared links yet. Use the Share button in a chat to create one.
             </p>
           )}
@@ -136,11 +136,11 @@ export default function SharedChatsPage() {
                   <span className="truncate text-sm font-medium text-primary/85">
                     {r.title || "Untitled"}
                   </span>
-                  <span className="shrink-0 rounded border border-border px-1.5 py-px text-[10px] font-medium text-primary/50">
+                  <span className="shrink-0 rounded border border-border px-1.5 py-px text-[10px] font-medium text-primary/65">
                     {r.shareType === "single_turn" ? "Response" : "Full chat"}
                   </span>
                 </div>
-                <p className="mt-0.5 text-xs text-primary/45">
+                <p className="mt-0.5 text-xs text-primary/60">
                   Created {new Date(r.createdAt).toLocaleDateString()} · Expires{" "}
                   {new Date(r.expiresAt).toLocaleDateString()} ·{" "}
                   <span className={STATUS_STYLE[r.status] ?? ""}>
@@ -156,7 +156,7 @@ export default function SharedChatsPage() {
                       onClick={() => copyLink(r.token)}
                       aria-label="Copy link"
                       title="Copy link"
-                      className="rounded p-1.5 text-primary/45 transition hover:bg-primary/5 hover:text-primary/80"
+                      className="rounded p-1.5 text-primary/60 transition hover:bg-primary/5 hover:text-primary/80"
                     >
                       <Link2 className="h-4 w-4" />
                     </button>
@@ -166,7 +166,7 @@ export default function SharedChatsPage() {
                       rel="noopener noreferrer"
                       aria-label="Open shared page"
                       title="Open shared page"
-                      className="rounded p-1.5 text-primary/45 transition hover:bg-primary/5 hover:text-primary/80"
+                      className="rounded p-1.5 text-primary/60 transition hover:bg-primary/5 hover:text-primary/80"
                     >
                       <ExternalLink className="h-4 w-4" />
                     </a>
@@ -175,7 +175,7 @@ export default function SharedChatsPage() {
                       title="Revoke this share link?"
                       description="Anyone with this link will lose access to this shared content. This cannot be undone."
                       confirmLabel="Revoke"
-                      className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-500/10"
+                      className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-500/10"
                       onConfirm={() => onRevoke(r._id)}
                     />
                   </>

@@ -17,7 +17,7 @@ function ActionPreview({ preview }: { preview: ParsedActionPreview }) {
   const entries = Object.entries(preview.diff);
   return (
     <div className="mt-2 rounded-md border border-border bg-card/50 p-2">
-      <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-primary/50">
+      <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-primary/65">
         <span className="rounded bg-primary/5 px-1.5 py-0.5 font-medium text-primary/70">
           {preview.action || "change"}
         </span>
@@ -45,7 +45,7 @@ function ActionPreview({ preview }: { preview: ParsedActionPreview }) {
           ))}
         </dl>
       )}
-      <p className="mt-1.5 text-[10px] text-primary/45">
+      <p className="mt-1.5 text-[10px] text-primary/60">
         {preview.reversibility === "reversible" ? "Reversible" : "Irreversible"} ·{" "}
         {preview.verificationPlan || "Verified after the change."}
       </p>
@@ -105,7 +105,7 @@ export function ApprovalCard({
               </button>
             </div>
           ) : (
-            <p className="mt-1 text-primary/50">This action required approval.</p>
+            <p className="mt-1 text-primary/65">This action required approval.</p>
           )}
         </div>
       </div>

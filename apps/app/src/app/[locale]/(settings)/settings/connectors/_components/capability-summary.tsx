@@ -30,7 +30,7 @@ export function CapabilitySummary({
   if (toolCount === null) {
     return (
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-primary/55">{ERROR.capabilities.body}</span>
+        <span className="text-xs text-primary/65">{ERROR.capabilities.body}</span>
         {onRetry && (
           <button
             type="button"
@@ -53,7 +53,7 @@ export function CapabilitySummary({
   }
 
   return (
-    <p className="text-xs text-primary/55">{parts.join(" · ")}</p>
+    <p className="text-xs text-primary/65">{parts.join(" · ")}</p>
   );
 }
 

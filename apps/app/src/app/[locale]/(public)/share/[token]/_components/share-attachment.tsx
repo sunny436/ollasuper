@@ -31,7 +31,7 @@ export function ShareAttachment({ att, url }: { att: Att; url: string }) {
       rel="noopener noreferrer"
       className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-primary/80 transition hover:text-primary"
     >
-      <FileText className="h-4 w-4 text-primary/45" />
+      <FileText className="h-4 w-4 text-primary/60" />
       <span className="truncate">{att.name}</span>
     </a>
   );

@@ -300,7 +300,7 @@ export function ExploreMenu({
             // something else fails WCAG 2.5.3 and breaks "click Skills" in voice
             // control. e2e/p-explore.js locates this button by this exact name.
             aria-label="Skills"
-            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] text-primary/55 transition hover:bg-primary/5 hover:text-primary/80 disabled:opacity-40 [@media(pointer:coarse)]:min-h-11"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] text-primary/65 transition hover:bg-primary/5 hover:text-primary/80 disabled:opacity-40 [@media(pointer:coarse)]:min-h-11"
           >
             <Sparkles className="h-3 w-3" />
             Skills
@@ -329,7 +329,7 @@ export function ExploreMenu({
           className="workspace z-50 max-h-[min(70vh,var(--radix-dropdown-menu-content-available-height))] w-[min(46rem,calc(100vw-2rem))] overflow-hidden rounded-2xl p-0"
         >
           <div className="flex items-center justify-between border-b border-border bg-primary/[0.03] px-4 py-2.5">
-            <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-primary/45">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-primary/60">
               <LayoutGrid className="h-3.5 w-3.5" />
               AI capabilities
             </span>
@@ -391,7 +391,7 @@ export function ExploreMenu({
           <DropdownMenuItem asChild>
             <Link
               href="/settings/skills"
-              className="flex cursor-pointer items-center gap-2 border-t border-border px-4 py-2.5 text-[12px] text-primary/55 transition hover:text-primary/85"
+              className="flex cursor-pointer items-center gap-2 border-t border-border px-4 py-2.5 text-[12px] text-primary/65 transition hover:text-primary/85"
             >
               <Wand2 className="h-3.5 w-3.5 shrink-0" />
               <span>

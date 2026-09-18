@@ -158,7 +158,7 @@ export default async function SharePage({
           <h1 className="mt-1 text-2xl font-medium text-primary">
             {share.title?.trim() || "Shared conversation"}
           </h1>
-          <p className="mt-2 text-xs text-primary/50">
+          <p className="mt-2 text-xs text-primary/65">
             Shared on {fmtDate(share.createdAt)} · read-only
           </p>
         </header>
@@ -206,7 +206,7 @@ export default async function SharePage({
         </div>
 
         <footer className="mt-12 border-t border-border pt-6 text-center">
-          <p className="text-xs text-primary/45">
+          <p className="text-xs text-primary/60">
             This is a read-only shared conversation.
           </p>
           <Link

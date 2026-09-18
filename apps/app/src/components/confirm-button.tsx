@@ -18,7 +18,7 @@ export function ConfirmButton({
   title = "Are you sure?",
   description,
   confirmLabel = "Confirm",
-  className = "text-xs text-red-500 underline",
+  className = "text-xs text-red-600 underline",
 }: {
   onConfirm: () => Promise<void> | void;
   label: React.ReactNode;

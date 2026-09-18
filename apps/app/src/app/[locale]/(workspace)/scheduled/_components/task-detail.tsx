@@ -227,7 +227,7 @@ function Header({
             type="button"
             aria-label="Edit task"
             onClick={onEdit}
-            className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary"
+            className="rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary"
           >
             <Pencil className="h-4 w-4" />
           </button>
@@ -236,7 +236,7 @@ function Header({
           type="button"
           aria-label="Close panel"
           onClick={onClose}
-          className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary"
+          className="rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary"
         >
           <X className="h-4 w-4" />
         </button>
@@ -293,7 +293,7 @@ function RunRow({
         <button
           type="button"
           onClick={onCancel}
-          className="shrink-0 rounded-md px-2 py-1 text-xs text-primary/50 opacity-0 transition hover:bg-primary/5 hover:text-primary group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11"
+          className="shrink-0 rounded-md px-2 py-1 text-xs text-primary/65 opacity-0 transition hover:bg-primary/5 hover:text-primary group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11"
         >
           Cancel
         </button>

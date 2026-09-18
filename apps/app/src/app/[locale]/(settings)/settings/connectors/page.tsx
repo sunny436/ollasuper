@@ -74,12 +74,12 @@ export default function ConnectorsPage() {
         <h1 className="text-2xl font-semibold tracking-tight text-primary">
           {PAGE.title}
         </h1>
-        <p className="mt-1 max-w-xl text-sm text-primary/55">{PAGE.subtitle}</p>
+        <p className="mt-1 max-w-xl text-sm text-primary/65">{PAGE.subtitle}</p>
       </header>
 
       {/* §182: one sentence of education, and it names the approval guarantee
           rather than leaving the user to wonder. */}
-      <p className="rounded-lg border border-border bg-card/40 p-3 text-xs leading-relaxed text-primary/55">
+      <p className="rounded-lg border border-border bg-card/40 p-3 text-xs leading-relaxed text-primary/65">
         {PAGE.about}
       </p>
 
@@ -107,7 +107,7 @@ export default function ConnectorsPage() {
             <button
               type="button"
               onClick={dismissAuthUrl}
-              className="text-xs text-primary/50 underline"
+              className="text-xs text-primary/65 underline"
             >
               Dismiss
             </button>
@@ -231,7 +231,7 @@ function CategoryChip({
       className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:text-xs ${
         active
           ? "border-border bg-card/80 font-medium text-primary"
-          : "border-transparent text-primary/50 hover:bg-card/50 hover:text-primary/80"
+          : "border-transparent text-primary/65 hover:bg-card/50 hover:text-primary/80"
       }`}
     >
       {label}
@@ -262,7 +262,7 @@ function EmptyPanel({ title, body }: { title: string; body: string }) {
   return (
     <div className="rounded-xl border border-dashed border-border p-8 text-center">
       <p className="text-sm font-medium text-primary/70">{title}</p>
-      <p className="mt-1 text-xs text-primary/45">{body}</p>
+      <p className="mt-1 text-xs text-primary/60">{body}</p>
     </div>
   );
 }
@@ -281,7 +281,7 @@ function ErrorPanel({
   return (
     <div className="rounded-xl border border-border bg-card/40 p-6 text-center">
       <p className="text-sm font-medium text-primary/80">{title}</p>
-      <p className="mt-1 text-xs text-primary/50">{body}</p>
+      <p className="mt-1 text-xs text-primary/65">{body}</p>
       {/* §213: every recoverable error offers the action that recovers it. */}
       <Button size="sm" variant="outline" className="mt-3" onClick={onAction}>
         {action}

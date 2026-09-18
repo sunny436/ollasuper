@@ -130,7 +130,7 @@ export function ResourceViewer({
         )}
 
         {state.truncated && (
-          <p className="text-[11px] text-primary/45">
+          <p className="text-[11px] text-primary/60">
             Shown up to OllaSuper's size limit. The rest was not loaded.
           </p>
         )}

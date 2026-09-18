@@ -217,7 +217,7 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
                 ))}
           </div>
           {(moreLabel || !preview.faithful) && (
-            <span className="text-[10px] text-primary/40">
+            <span className="text-[10px] text-primary/60">
               {!preview.faithful
                 ? preview.note || "Approximate preview — download for the exact file"
                 : moreLabel}
@@ -229,7 +229,7 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
         <FileText className="h-4 w-4 shrink-0 text-brand-ink" aria-hidden />
         <span className="min-w-0 flex-1 truncate text-primary/80">{title}</span>
         {size && (
-          <span className="shrink-0 text-primary/40 tabular-nums">{size}</span>
+          <span className="shrink-0 text-primary/60 tabular-nums">{size}</span>
         )}
         {badge && <Badge>{badge}</Badge>}
         {downloadable && (

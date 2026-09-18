@@ -159,7 +159,7 @@ export function TaskRow({
               type="button"
               aria-label="Edit task"
               onClick={() => setEditing(true)}
-              className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+              className="rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>
@@ -175,7 +175,7 @@ export function TaskRow({
                 setMenuUp(r.bottom + 240 > window.innerHeight && r.top > 240);
                 setMenuOpen((v) => !v);
               }}
-              className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+              className="rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
             >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>

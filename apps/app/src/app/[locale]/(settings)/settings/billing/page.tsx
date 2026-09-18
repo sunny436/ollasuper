@@ -166,7 +166,7 @@ export default function BillingSettings() {
                     </span>
                     <p className="flex items-start gap-1 text-sm font-normal text-primary/60">
                       {user.subscription.cancelAtPeriodEnd === true ? (
-                        <span className="flex h-[18px] items-center text-sm font-medium text-red-500">
+                        <span className="flex h-[18px] items-center text-sm font-medium text-red-600">
                           Expires
                         </span>
                       ) : (

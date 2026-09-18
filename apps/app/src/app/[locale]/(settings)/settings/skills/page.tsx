@@ -87,7 +87,7 @@ export default function SkillsSection() {
           <h1 className="text-2xl font-semibold tracking-tight text-primary">
             My Skills
           </h1>
-          <p className="mt-1 max-w-xl text-sm text-primary/55">
+          <p className="mt-1 max-w-xl text-sm text-primary/65">
             Guidance you write once and the assistant follows when a task fits.
             Private to you, and used across your workspaces. Skills shape how it
             answers — they do not change what it is allowed to do.
@@ -100,7 +100,7 @@ export default function SkillsSection() {
 
       {loading && (
         <p
-          className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/50 backdrop-blur-xl"
+          className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl"
           aria-live="polite"
         >
           Loading your skills…
@@ -110,7 +110,7 @@ export default function SkillsSection() {
       {!loading && skills.length === 0 && (
         <div className="rounded-2xl border border-border bg-card/60 p-8 text-center backdrop-blur-xl">
           <p className="text-sm text-primary/60">You have no skills yet.</p>
-          <p className="mx-auto mt-1 max-w-md text-xs text-primary/45">
+          <p className="mx-auto mt-1 max-w-md text-xs text-primary/60">
             A skill is a short set of instructions for a kind of task you do
             often — reviewing contracts, writing release notes, triaging bugs.
           </p>
@@ -138,17 +138,17 @@ export default function SkillsSection() {
                   <div className="min-w-0">
                     <p
                       className={`truncate text-sm font-medium ${
-                        s.enabled ? "text-primary/85" : "text-primary/40"
+                        s.enabled ? "text-primary/85" : "text-primary/60"
                       }`}
                     >
                       {s.name}
                     </p>
                     {s.description && (
-                      <p className="mt-0.5 line-clamp-2 text-xs text-primary/55">
+                      <p className="mt-0.5 line-clamp-2 text-xs text-primary/65">
                         {s.description}
                       </p>
                     )}
-                    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-primary/45">
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-primary/60">
                       {!s.enabled && (
                         <span className="rounded bg-primary/5 px-1.5 py-0.5">
                           Off
@@ -169,7 +169,7 @@ export default function SkillsSection() {
                     />
                     <button
                       type="button"
-                      className="text-xs text-primary/55 underline underline-offset-2 hover:text-primary/80"
+                      className="text-xs text-primary/65 underline underline-offset-2 hover:text-primary/80"
                       onClick={() =>
                         openEdit({
                           _id: s._id,

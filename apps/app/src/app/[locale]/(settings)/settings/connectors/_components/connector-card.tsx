@@ -79,12 +79,12 @@ export function ConnectorCard({
             {view.displayName}
           </Link>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="text-[11px] text-primary/45">
+            <span className="text-[11px] text-primary/60">
               {view.categoryLabel}
             </span>
             {view.runtime === "local" && (
               // §34: "Runs locally", never "Docker" or "stdio gateway".
-              <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-primary/50">
+              <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-primary/65">
                 <HardDrive aria-hidden className="h-3 w-3" />
                 Runs locally
               </span>
@@ -94,7 +94,7 @@ export function ConnectorCard({
       </div>
 
       {view.description && (
-        <p className="line-clamp-2 text-xs leading-relaxed text-primary/55">
+        <p className="line-clamp-2 text-xs leading-relaxed text-primary/65">
           {view.description}
         </p>
       )}

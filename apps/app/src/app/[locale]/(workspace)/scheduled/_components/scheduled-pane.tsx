@@ -78,7 +78,7 @@ export function ScheduledPane() {
             type="button"
             onClick={openSidebar}
             aria-label="Open conversations"
-            className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary md:hidden [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+            className="rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary md:hidden [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
           >
             <PanelLeft className="h-4 w-4" />
           </button>
@@ -86,7 +86,7 @@ export function ScheduledPane() {
             type="button"
             onClick={toggleCollapsed}
             aria-label={collapsed ? "Show conversations" : "Hide conversations"}
-            className="hidden rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary md:block"
+            className="hidden rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary md:block"
           >
             <PanelLeft className="h-4 w-4" />
           </button>

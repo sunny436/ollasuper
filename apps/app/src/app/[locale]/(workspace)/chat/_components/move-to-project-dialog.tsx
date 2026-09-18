@@ -187,7 +187,7 @@ export function MoveToProjectDialog({
             <button
               type="button"
               onClick={() => loadMore(PAGE)}
-              className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/50 transition hover:bg-primary/5"
+              className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/65 transition hover:bg-primary/5"
             >
               Load more
             </button>

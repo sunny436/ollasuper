@@ -115,7 +115,7 @@ function MermaidImpl({ code, complete }: { code: string; complete: boolean }) {
     <pre className="my-3 overflow-x-auto rounded-lg bg-black/[0.045] p-4 font-geist-mono text-[12.5px] leading-[1.7] dark:bg-white/[0.04] md:text-[13px]">
       <code>{code}</code>
       {failed && (
-        <span className="mt-2 block text-[11px] text-primary/40">
+        <span className="mt-2 block text-[11px] text-primary/60">
           (mermaid: diagram could not be rendered)
         </span>
       )}

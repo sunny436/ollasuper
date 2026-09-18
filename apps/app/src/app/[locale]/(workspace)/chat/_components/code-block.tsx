@@ -97,7 +97,7 @@ function CodeBlockImpl({
   return (
     <div className="group relative my-3 -mx-4 md:mx-0">
       <div className="flex items-center justify-between rounded-t-lg border-b border-border/60 bg-black/[0.03] px-3 py-1.5 dark:bg-white/[0.03] md:rounded-t-lg">
-        <span className="font-geist-mono text-[11px] uppercase tracking-wide text-primary/40">
+        <span className="font-geist-mono text-[11px] uppercase tracking-wide text-primary/60">
           {lang ?? "text"}
         </span>
         <div className="flex items-center gap-1">
@@ -105,7 +105,7 @@ function CodeBlockImpl({
           type="button"
           onClick={onDownload}
           aria-label="Download code"
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-primary/50 transition hover:bg-primary/5 hover:text-primary/80"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-primary/65 transition hover:bg-primary/5 hover:text-primary/80"
         >
           <Download className="h-3 w-3" /> Download
         </button>
@@ -113,7 +113,7 @@ function CodeBlockImpl({
           type="button"
           onClick={onCopy}
           aria-label={copied ? "Copied" : "Copy code"}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-primary/50 transition hover:bg-primary/5 hover:text-primary/80"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-primary/65 transition hover:bg-primary/5 hover:text-primary/80"
         >
           {copied ? (
             <>

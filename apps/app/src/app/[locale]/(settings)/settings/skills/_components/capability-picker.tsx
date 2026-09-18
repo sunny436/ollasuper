@@ -85,7 +85,7 @@ export function CapabilityPicker({
           {value.length}/{max}
         </span>
       </div>
-      <p className="text-xs text-primary/45">
+      <p className="text-xs text-primary/60">
         Optional. What this skill prefers to work with, so those tools are more
         likely to be offered when it applies. It does not grant access — what
         the assistant may actually run is unchanged.
@@ -98,11 +98,11 @@ export function CapabilityPicker({
               key={id}
               type="button"
               onClick={() => toggle(id)}
-              className="group flex items-center gap-1 rounded-full border border-border bg-primary/5 px-2 py-0.5 text-[11px] text-primary/70 transition hover:border-red-500/40 hover:text-red-500"
+              className="group flex items-center gap-1 rounded-full border border-border bg-primary/5 px-2 py-0.5 text-[11px] text-primary/70 transition hover:border-red-500/40 hover:text-red-600"
               aria-label={`Remove ${id}`}
             >
               {id}
-              <span aria-hidden className="text-primary/40 group-hover:text-red-500">
+              <span aria-hidden className="text-primary/60 group-hover:text-red-600">
                 ×
               </span>
             </button>
@@ -120,7 +120,7 @@ export function CapabilityPicker({
 
       <div className="max-h-44 overflow-y-auto rounded-lg border border-border">
         {shown.length === 0 && (
-          <p className="p-3 text-center text-xs text-primary/40">
+          <p className="p-3 text-center text-xs text-primary/60">
             Nothing matches “{filter}”.
           </p>
         )}
@@ -146,7 +146,7 @@ export function CapabilityPicker({
         })}
       </div>
       {atLimit && (
-        <p className="text-[11px] text-primary/45">
+        <p className="text-[11px] text-primary/60">
           That is the maximum for one skill. Untick one to choose another.
         </p>
       )}

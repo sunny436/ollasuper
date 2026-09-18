@@ -221,7 +221,7 @@ export function ProjectSources({
               key={f._id}
               className="group flex items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5"
             >
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/5 text-primary/50">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/5 text-primary/65">
                 {f.status === "processing" ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : f.status === "failed" ? (
@@ -260,7 +260,7 @@ export function ProjectSources({
         <button
           type="button"
           onClick={() => loadMore(PAGE)}
-          className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/50 transition hover:bg-primary/5"
+          className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/65 transition hover:bg-primary/5"
         >
           Load more
         </button>
@@ -398,7 +398,7 @@ function AttachExistingDialog({
             <button
               type="button"
               onClick={() => loadMore(PAGE)}
-              className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/50 transition hover:bg-primary/5"
+              className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/65 transition hover:bg-primary/5"
             >
               Load more
             </button>

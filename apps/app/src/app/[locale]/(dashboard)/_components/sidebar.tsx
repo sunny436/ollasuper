@@ -45,7 +45,7 @@ export function Sidebar() {
       </div>
 
       <div className="p-3">
-        <span className="mb-1 block text-[10px] uppercase tracking-wide text-primary/40">
+        <span className="mb-1 block text-[10px] uppercase tracking-wide text-primary/60">
           Workspace
         </span>
         <select
@@ -98,7 +98,7 @@ export function Sidebar() {
           )}
           <div className="min-w-0">
             <p className="truncate text-sm font-medium text-primary/80">{user?.displayName || user?.name || "—"}</p>
-            <p className="truncate text-xs text-primary/50">{user?.email}</p>
+            <p className="truncate text-xs text-primary/65">{user?.email}</p>
           </div>
         </div>
         <div className="flex items-center justify-between">

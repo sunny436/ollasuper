@@ -72,7 +72,7 @@ export function CapabilityList({
       {!loading && !error && items.length === 0 && (
         <div className="rounded-lg border border-dashed border-border p-4">
           <p className="text-xs font-medium text-primary/60">{empty.title}</p>
-          <p className="mt-0.5 text-[11px] text-primary/45">{empty.body}</p>
+          <p className="mt-0.5 text-[11px] text-primary/60">{empty.body}</p>
         </div>
       )}
 
@@ -83,7 +83,7 @@ export function CapabilityList({
       )}
 
       {dropped > 0 && (
-        <p className="text-[11px] text-primary/45">
+        <p className="text-[11px] text-primary/60">
           {dropped} more were not shown because this app advertised more than
           OllaSuper accepts.
         </p>
@@ -115,7 +115,7 @@ export function CapabilityRow({
             {name}
           </span>
           {meta && (
-            <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-primary/45">
+            <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-primary/60">
               {meta}
             </span>
           )}
@@ -127,7 +127,7 @@ export function CapabilityRow({
           )}
         </div>
         {description && (
-          <p className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-primary/50">
+          <p className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-primary/65">
             {description}
           </p>
         )}

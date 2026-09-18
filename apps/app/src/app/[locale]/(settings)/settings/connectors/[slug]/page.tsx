@@ -99,7 +99,7 @@ export default function ConnectorDetailPage({
           <p className="text-sm font-medium text-primary/70">
             Connector not found
           </p>
-          <p className="mt-1 text-xs text-primary/45">
+          <p className="mt-1 text-xs text-primary/60">
             This connector isn't available on this deployment.
           </p>
         </div>
@@ -120,11 +120,11 @@ export default function ConnectorDetailPage({
               {view.displayName}
             </h1>
             <div className="mt-1 flex flex-wrap items-center gap-2">
-              <span className="text-xs text-primary/45">
+              <span className="text-xs text-primary/60">
                 {view.categoryLabel}
               </span>
               {view.runtime === "local" && (
-                <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-primary/50">
+                <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-primary/65">
                   <HardDrive aria-hidden className="h-3 w-3" />
                   Runs locally
                 </span>
@@ -145,13 +145,13 @@ export default function ConnectorDetailPage({
         <ConnectionStatus state={view.state} size="md" />
         <ConnectionHint state={view.state} />
         {view.runtime === "local" && (
-          <p className="text-xs text-primary/45">{PAGE.localAbout}</p>
+          <p className="text-xs text-primary/60">{PAGE.localAbout}</p>
         )}
         {/* §110/§111: whose connection this is, in the only terms the backend
             actually records. There is no account label anywhere in the schema,
             so none is invented. */}
         {view.connectionId && (
-          <p className="text-[11px] text-primary/40">
+          <p className="text-[11px] text-primary/60">
             Personal connection · used in this workspace
           </p>
         )}
@@ -204,11 +204,11 @@ export default function ConnectorDetailPage({
               />
               {view.toolCount !== null && toolNames.length > 0 &&
                 view.toolCount > toolNames.length && (
-                  <p className="text-[11px] text-primary/45">
+                  <p className="text-[11px] text-primary/60">
                     and {view.toolCount - toolNames.length} more
                   </p>
                 )}
-              <p className="text-[11px] text-primary/45">
+              <p className="text-[11px] text-primary/60">
                 Tools that change something ask for your approval before they
                 run.
               </p>
@@ -327,7 +327,7 @@ function BackLink() {
   return (
     <Link
       href="/settings/connectors"
-      className="inline-flex w-fit items-center gap-1.5 text-xs text-primary/50 transition hover:text-primary/80"
+      className="inline-flex w-fit items-center gap-1.5 text-xs text-primary/65 transition hover:text-primary/80"
     >
       <ArrowLeft aria-hidden className="h-3.5 w-3.5" />
       {PAGE.title}
@@ -338,7 +338,7 @@ function BackLink() {
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <>
-      <dt className="text-primary/45">{label}</dt>
+      <dt className="text-primary/60">{label}</dt>
       <dd className="text-primary/70 [overflow-wrap:anywhere]">{value}</dd>
     </>
   );

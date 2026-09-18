@@ -98,7 +98,7 @@ function ProfileMenuItem({
       onClick={onNavigate}
       className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs text-primary/75 transition hover:bg-primary/5 hover:text-primary"
     >
-      <Icon className="h-3.5 w-3.5 text-primary/45" />
+      <Icon className="h-3.5 w-3.5 text-primary/60" />
       {label}
     </Link>
   );
@@ -162,7 +162,7 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
               }}
               className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs text-primary/75 transition hover:bg-primary/5 hover:text-primary"
             >
-              <LogOut className="h-3.5 w-3.5 text-primary/45" /> Log out
+              <LogOut className="h-3.5 w-3.5 text-primary/60" /> Log out
             </button>
           </div>
         </>
@@ -392,7 +392,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
         {!showSkeleton && filtered.length === 0 && (
           <div className="px-2 py-6 text-center">
-            <p className="text-xs text-primary/50">No conversations yet</p>
+            <p className="text-xs text-primary/65">No conversations yet</p>
           </div>
         )}
 
@@ -488,7 +488,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           <button
             type="button"
             onClick={() => loadMore(PAGE)}
-            className="w-full rounded-md px-2 py-1.5 text-xs text-primary/50 transition hover:bg-primary/5"
+            className="w-full rounded-md px-2 py-1.5 text-xs text-primary/65 transition hover:bg-primary/5"
           >
             Load more
           </button>

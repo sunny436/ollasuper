@@ -70,7 +70,7 @@ function MessageMeta({
 }) {
   return (
     <div
-      className={`mb-1.5 flex items-center gap-1.5 px-1 text-[11px] text-primary/40 ${
+      className={`mb-1.5 flex items-center gap-1.5 px-1 text-[11px] text-primary/60 ${
         assistant ? "" : "justify-end"
       }`}
     >
@@ -82,7 +82,7 @@ function MessageMeta({
         <span className="sr-only">Assistant</span>
       ) : (
         <>
-          <span className="text-primary/50">{who}</span>
+          <span className="text-primary/65">{who}</span>
           <span aria-hidden="true">·</span>
         </>
       )}
@@ -271,7 +271,7 @@ function ChatMessageImpl({
       )}
 
       {message.status === "aborted" && (
-        <div className="mt-2 flex items-center gap-2 text-xs text-primary/45">
+        <div className="mt-2 flex items-center gap-2 text-xs text-primary/60">
           <span>Stopped</span>
           {!readOnly && (
           <button
@@ -339,7 +339,7 @@ function IconButton({
       disabled={disabled}
       aria-label={label}
       title={label}
-      className="rounded p-1 text-primary/40 transition hover:bg-primary/5 hover:text-primary/70 disabled:pointer-events-none disabled:opacity-50 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+      className="rounded p-1 text-primary/60 transition hover:bg-primary/5 hover:text-primary/70 disabled:pointer-events-none disabled:opacity-50 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
     >
       {children}
     </button>

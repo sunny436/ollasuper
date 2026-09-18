@@ -70,7 +70,7 @@ export function CommandPalette() {
               </button>
             ))
           ) : (
-            <div className="px-3 py-4 text-sm text-primary/40">No results</div>
+            <div className="px-3 py-4 text-sm text-primary/60">No results</div>
           )}
         </div>
       </div>

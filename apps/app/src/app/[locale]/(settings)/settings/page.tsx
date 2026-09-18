@@ -269,7 +269,7 @@ export default function ProfileSection() {
         <h1 className="text-2xl font-semibold tracking-tight text-primary">
           Profile
         </h1>
-        <p className="mt-1 text-sm text-primary/55">
+        <p className="mt-1 text-sm text-primary/65">
           Your public identity across the workspace.
         </p>
       </div>
@@ -310,7 +310,7 @@ export default function ProfileSection() {
             <button
               type="button"
               onClick={() => void handleRemoveUserImage()}
-              className="text-xs text-primary/55 underline-offset-2 transition hover:text-primary/80 hover:underline"
+              className="text-xs text-primary/65 underline-offset-2 transition hover:text-primary/80 hover:underline"
             >
               {t("avatar.resetButton")}
             </button>
@@ -350,7 +350,7 @@ export default function ProfileSection() {
               onChange={(e) => setUsername(e.target.value)}
               className="bg-transparent"
             />
-            <p className="text-xs text-primary/45">
+            <p className="text-xs text-primary/60">
               3–32 characters, letters and numbers only.
             </p>
           </div>

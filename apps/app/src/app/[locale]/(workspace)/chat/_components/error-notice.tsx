@@ -38,12 +38,12 @@ export function ErrorNotice({
         <Disclosure
           className="mt-1"
           summary={
-            <span className="text-[11px] text-primary/40 hover:text-primary/60">
+            <span className="text-[11px] text-primary/60 hover:text-primary/60">
               Details
             </span>
           }
         >
-          <p className="text-[12px] text-primary/50 [overflow-wrap:anywhere]">
+          <p className="text-[12px] text-primary/65 [overflow-wrap:anywhere]">
             {message}
           </p>
         </Disclosure>

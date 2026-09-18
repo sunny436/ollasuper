@@ -3,7 +3,7 @@
  *
  * Samples every 2% from 0..100 and asserts that every full-strength text token
  * stays legible against its surface at every slider position — the guard against
- * the mid-transition washout regressing. Opacity-dimmed usages (text-primary/40
+ * the mid-transition washout regressing. Opacity-dimmed usages (text-primary/60
  * icons, placeholders) are decorative and intentionally out of scope.
  *
  * Text is contrast-picked so the worst case is a narrow crossover band; we require

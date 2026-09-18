@@ -121,11 +121,11 @@ export function PromptRunDialog({
                 <span className="text-xs font-medium text-primary/70">
                   {a.name}
                   {a.required && (
-                    <span className="ml-1 text-primary/40">(required)</span>
+                    <span className="ml-1 text-primary/60">(required)</span>
                   )}
                 </span>
                 {a.description && (
-                  <span className="text-[11px] text-primary/45">
+                  <span className="text-[11px] text-primary/60">
                     {a.description}
                   </span>
                 )}
@@ -152,7 +152,7 @@ export function PromptRunDialog({
             <div className="flex flex-col gap-2 p-3">
               {messages.map((m, i) => (
                 <div key={`${m.role}-${i}`}>
-                  <p className="text-[10px] font-medium uppercase tracking-wide text-primary/40">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-primary/60">
                     {m.role}
                   </p>
                   {/* TEXT, never markdown and never HTML. §75. */}
@@ -162,7 +162,7 @@ export function PromptRunDialog({
                 </div>
               ))}
               {messages.length === 0 && (
-                <p className="text-xs text-primary/50">
+                <p className="text-xs text-primary/65">
                   This prompt produced no content.
                 </p>
               )}

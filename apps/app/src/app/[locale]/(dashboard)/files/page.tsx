@@ -144,10 +144,10 @@ export default function FilesPage() {
         <div className="mb-6 overflow-hidden rounded-lg border border-border bg-card">
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
             <h2 className="text-sm font-medium text-primary/85">Searchable</h2>
-            <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/50">
+            <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/65">
               {knowledge.length}
             </span>
-            <span className="ml-auto text-xs text-primary/50">
+            <span className="ml-auto text-xs text-primary/65">
               Used to answer your questions in chat · only you can see these
             </span>
           </div>
@@ -155,7 +155,7 @@ export default function FilesPage() {
             <tbody>
               {knowledgeStatus === "LoadingFirstPage" && (
                 <tr>
-                  <td className="px-4 py-6 text-primary/40" colSpan={4}>
+                  <td className="px-4 py-6 text-primary/60" colSpan={4}>
                     Loading…
                   </td>
                 </tr>
@@ -163,7 +163,7 @@ export default function FilesPage() {
               {knowledgeStatus !== "LoadingFirstPage" &&
                 knowledge.length === 0 && (
                   <tr>
-                    <td className="px-4 py-6 text-primary/40" colSpan={4}>
+                    <td className="px-4 py-6 text-primary/60" colSpan={4}>
                       Nothing searchable yet — upload a document, spreadsheet,
                       image or code file.
                     </td>
@@ -176,7 +176,7 @@ export default function FilesPage() {
                 >
                   <td className="px-4 py-3 text-primary/80">{f.name}</td>
                   <td className="px-4 py-3 text-primary/60">{fmtSize(f.size)}</td>
-                  <td className="px-4 py-3 text-primary/50">
+                  <td className="px-4 py-3 text-primary/65">
                     {f.status === "ready"
                       ? "Ready"
                       : f.status === "processing"
@@ -228,10 +228,10 @@ export default function FilesPage() {
         <div className="overflow-hidden rounded-lg border border-border bg-card">
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
             <h2 className="text-sm font-medium text-primary/85">Stored</h2>
-            <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/50">
+            <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] text-primary/65">
               {files.length}
             </span>
-            <span className="ml-auto text-xs text-primary/50">
+            <span className="ml-auto text-xs text-primary/65">
               Not searchable · visible to your workspace
             </span>
           </div>
@@ -247,14 +247,14 @@ export default function FilesPage() {
             <tbody>
               {status === "LoadingFirstPage" && (
                 <tr>
-                  <td className="px-4 py-6 text-primary/40" colSpan={4}>
+                  <td className="px-4 py-6 text-primary/60" colSpan={4}>
                     Loading…
                   </td>
                 </tr>
               )}
               {status !== "LoadingFirstPage" && files.length === 0 && (
                 <tr>
-                  <td className="px-4 py-6 text-primary/40" colSpan={4}>
+                  <td className="px-4 py-6 text-primary/60" colSpan={4}>
                     No stored files.
                   </td>
                 </tr>
@@ -279,7 +279,7 @@ export default function FilesPage() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-primary/60">{fmtSize(f.size)}</td>
-                  <td className="px-4 py-3 text-primary/50">
+                  <td className="px-4 py-3 text-primary/65">
                     {new Date(f.createdAt).toLocaleString()}
                   </td>
                   <td className="px-4 py-3 text-right">
@@ -307,7 +307,7 @@ export default function FilesPage() {
           </div>
         )}
         {status === "LoadingMore" && (
-          <p className="mt-4 text-center text-sm text-primary/40">Loading…</p>
+          <p className="mt-4 text-center text-sm text-primary/60">Loading…</p>
         )}
       </div>
     </div>

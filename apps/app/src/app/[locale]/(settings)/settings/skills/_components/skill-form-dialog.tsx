@@ -255,7 +255,7 @@ export function SkillFormDialog({
           />
 
           {error && (
-            <p className="text-sm text-red-500" role="alert">
+            <p className="text-sm text-red-600" role="alert">
               {error}
             </p>
           )}
@@ -309,7 +309,7 @@ function Field({
       <label htmlFor={id} className="text-sm font-medium text-primary/80">
         {label}
       </label>
-      <p className="text-xs text-primary/45">{hint}</p>
+      <p className="text-xs text-primary/60">{hint}</p>
       {children}
       <p
         className={`text-right text-[11px] ${

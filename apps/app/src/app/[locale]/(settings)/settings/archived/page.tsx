@@ -55,7 +55,7 @@ export default function ArchivedSection() {
         <h1 className="text-2xl font-semibold tracking-tight text-primary">
           Archived chats
         </h1>
-        <p className="mt-1 text-sm text-primary/55">
+        <p className="mt-1 text-sm text-primary/65">
           Conversations you've archived. Restore one to bring it back to the
           sidebar, or delete it permanently.
         </p>
@@ -63,13 +63,13 @@ export default function ArchivedSection() {
 
       <div className="flex flex-col gap-2">
         {status === "LoadingFirstPage" && (
-          <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/50 backdrop-blur-xl">
+          <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl">
             Loading…
           </p>
         )}
 
         {status !== "LoadingFirstPage" && results.length === 0 && (
-          <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/50 backdrop-blur-xl">
+          <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl">
             No archived chats. Archive a conversation from its menu to keep it
             out of the sidebar without deleting it.
           </p>
@@ -80,7 +80,7 @@ export default function ArchivedSection() {
             key={t._id}
             className="group flex items-center gap-3 rounded-2xl border border-border bg-card/60 p-4 backdrop-blur-xl transition hover:border-brand/25"
           >
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/5 text-primary/50">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/5 text-primary/65">
               <MessageSquare className="h-4 w-4" />
             </span>
             {/*
@@ -97,7 +97,7 @@ export default function ArchivedSection() {
               <p className="truncate text-sm font-medium text-primary/85 transition group-hover:text-primary">
                 {t.title || "Untitled"}
               </p>
-              <p className="mt-0.5 flex items-center gap-1.5 text-xs text-primary/45">
+              <p className="mt-0.5 flex items-center gap-1.5 text-xs text-primary/60">
                 {t.project && (
                   <>
                     <span className="inline-flex max-w-[12rem] items-center gap-1 truncate rounded-md bg-brand/10 px-1.5 py-0.5 font-medium text-brand-ink">
@@ -124,7 +124,7 @@ export default function ArchivedSection() {
                 title="Delete this chat?"
                 description="This moves the conversation to trash and it will be permanently removed. This cannot be undone."
                 confirmLabel="Delete"
-                className="rounded-lg px-2.5 py-1.5 text-xs text-red-500 transition hover:bg-red-500/10"
+                className="rounded-lg px-2.5 py-1.5 text-xs text-red-600 transition hover:bg-red-500/10"
                 onConfirm={() => onDelete(t._id)}
               />
             </div>

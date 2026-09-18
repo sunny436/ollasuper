@@ -85,7 +85,7 @@ export function ProjectsPane() {
             type="button"
             onClick={openSidebar}
             aria-label="Open conversations"
-            className="rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary md:hidden [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+            className="rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary md:hidden [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
           >
             <PanelLeft className="h-4 w-4" />
           </button>
@@ -93,7 +93,7 @@ export function ProjectsPane() {
             type="button"
             onClick={toggleCollapsed}
             aria-label={collapsed ? "Show conversations" : "Hide conversations"}
-            className="hidden rounded-md p-1.5 text-primary/50 hover:bg-primary/5 hover:text-primary md:block"
+            className="hidden rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary md:block"
           >
             <PanelLeft className="h-4 w-4" />
           </button>
@@ -229,7 +229,7 @@ export function ProjectsPane() {
             <button
               type="button"
               onClick={() => loadMore(PAGE)}
-              className="mt-3 w-full rounded-md px-2 py-2 text-xs text-primary/50 transition hover:bg-primary/5"
+              className="mt-3 w-full rounded-md px-2 py-2 text-xs text-primary/65 transition hover:bg-primary/5"
             >
               Load more
             </button>

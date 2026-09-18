@@ -195,13 +195,13 @@ export default function PersonalizationSection() {
           <h1 className="text-2xl font-semibold tracking-tight text-primary">
             Personalization
           </h1>
-          <p className="mt-1 text-sm text-primary/55">
+          <p className="mt-1 text-sm text-primary/65">
             Shape how the assistant writes. These preferences apply to every new
             response.
           </p>
         </div>
         <div
-          className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/50 backdrop-blur-xl"
+          className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl"
           aria-live="polite"
         >
           Loading your preferences…
@@ -218,7 +218,7 @@ export default function PersonalizationSection() {
         <h1 className="text-2xl font-semibold tracking-tight text-primary">
           Personalization
         </h1>
-        <p className="mt-1 text-sm text-primary/55">
+        <p className="mt-1 text-sm text-primary/65">
           Shape how the assistant writes. These preferences apply to every new
           response.
         </p>
@@ -231,7 +231,7 @@ export default function PersonalizationSection() {
           <h2 className="text-sm font-medium text-primary/80">
             Use personalization
           </h2>
-          <p className="mt-1 text-xs text-primary/45">
+          <p className="mt-1 text-xs text-primary/60">
             When off, replies use the default style. Your settings are kept, and
             Memory and Projects are unaffected.
           </p>
@@ -250,7 +250,7 @@ export default function PersonalizationSection() {
         {/* Base style — the REGISTER. Exactly one. */}
         <div className="rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
           <h2 className="text-sm font-medium text-primary/80">Base style</h2>
-          <p className="mt-1 text-xs text-primary/45">
+          <p className="mt-1 text-xs text-primary/60">
             The overall tone of responses.
           </p>
           <div
@@ -286,7 +286,7 @@ export default function PersonalizationSection() {
           <h2 className="text-sm font-medium text-primary/80">
             Characteristics
           </h2>
-          <p className="mt-1 text-xs text-primary/45">
+          <p className="mt-1 text-xs text-primary/60">
             Optional traits layered on top of the base style.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
@@ -316,7 +316,7 @@ export default function PersonalizationSection() {
         <div className="flex items-center justify-between rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
           <div className="pr-4">
             <h2 className="text-sm font-medium text-primary/80">Fast answers</h2>
-            <p className="mt-1 text-xs text-primary/45">
+            <p className="mt-1 text-xs text-primary/60">
               Prefer quick, concise replies over exhaustive detail.
             </p>
           </div>
@@ -337,7 +337,7 @@ export default function PersonalizationSection() {
             <h2 className="text-sm font-medium text-primary/80">
               Response language
             </h2>
-            <p className="mt-1 text-xs text-primary/45">
+            <p className="mt-1 text-xs text-primary/60">
               Which language replies are written in.
             </p>
           </div>
@@ -361,7 +361,7 @@ export default function PersonalizationSection() {
           <h2 className="text-sm font-medium text-primary/80">
             Custom instructions
           </h2>
-          <p className="mt-1 text-xs text-primary/45">
+          <p className="mt-1 text-xs text-primary/60">
             Anything else the assistant should know about you or how you like to
             work. A specific instruction here wins over the toggles above.
           </p>
@@ -385,12 +385,12 @@ export default function PersonalizationSection() {
 
       <div className="flex flex-wrap items-center justify-end gap-2">
         {failed && (
-          <p className="mr-auto text-xs text-red-500" role="alert">
+          <p className="mr-auto text-xs text-red-600" role="alert">
             Couldn't reach the server. Your changes are still here — try again.
           </p>
         )}
         {!failed && dirty && (
-          <p className="mr-auto text-xs text-primary/45" aria-live="polite">
+          <p className="mr-auto text-xs text-primary/60" aria-live="polite">
             Unsaved changes
           </p>
         )}

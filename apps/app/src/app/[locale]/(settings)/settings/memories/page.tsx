@@ -63,7 +63,7 @@ export default function MemoriesSection() {
           <h1 className="text-2xl font-semibold tracking-tight text-primary">
             Memories
           </h1>
-          <p className="mt-1 text-sm text-primary/55">
+          <p className="mt-1 text-sm text-primary/65">
             Facts and preferences the assistant remembers about you across
             conversations. Your documents live in Files; this is long-term
             personal memory.
@@ -90,7 +90,7 @@ export default function MemoriesSection() {
           <h2 className="text-sm font-medium text-primary/80">
             Enable memory
           </h2>
-          <p className="mt-1 text-xs text-primary/45">
+          <p className="mt-1 text-xs text-primary/60">
             When off, the assistant neither saves new memories nor uses existing
             ones. Your saved memories are kept until you delete them.
           </p>
@@ -112,7 +112,7 @@ export default function MemoriesSection() {
 
       {/* List */}
       {memories.length === 0 ? (
-        <p className="text-sm text-primary/45">
+        <p className="text-sm text-primary/60">
           No memories yet. Ask the assistant to remember something — e.g.
           &ldquo;remember that I prefer concise answers&rdquo;.
         </p>
@@ -128,13 +128,13 @@ export default function MemoriesSection() {
                   <p
                     className={
                       m.status === "disabled"
-                        ? "text-sm text-primary/40 line-through"
+                        ? "text-sm text-primary/60 line-through"
                         : "text-sm text-primary/85"
                     }
                   >
                     {m.content}
                   </p>
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-primary/45">
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-primary/60">
                     <span className="rounded bg-primary/5 px-1.5 py-0.5">
                       {KIND_LABEL[m.kind] ?? m.kind}
                     </span>
@@ -167,7 +167,7 @@ export default function MemoriesSection() {
                   />
                   <button
                     type="button"
-                    className="text-xs text-primary/55 underline"
+                    className="text-xs text-primary/65 underline"
                     onClick={() => onEdit(m._id, m.content)}
                   >
                     Edit
