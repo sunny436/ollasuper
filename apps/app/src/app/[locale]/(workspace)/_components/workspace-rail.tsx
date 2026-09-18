@@ -196,7 +196,14 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
             ref={panelRef}
             tabIndex={-1}
             aria-label="Conversations"
-            className="fixed inset-y-0 left-0 z-40 w-[272px] border-r border-border bg-card outline-none md:hidden"
+            // overflow-hidden, like the docked rail above. Without it this
+            // element computed `overflow-y: visible`, so on a short viewport
+            // (measured: a phone in landscape, 342px of usable height) the brand,
+            // nav and account rows overflowed it and THE WHOLE SIDEBAR became the
+            // scroller — the account row ended up 19px below the fold and the
+            // history list was squeezed to 16px. Clipping here is what keeps the
+            // conversation list the only thing that scrolls.
+            className="fixed inset-y-0 left-0 z-40 w-[272px] overflow-hidden border-r border-border bg-card outline-none md:hidden"
           >
             <ChatSidebar onNavigate={closeSidebar} />
           </nav>

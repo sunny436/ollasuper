@@ -62,7 +62,7 @@ interface ThreadItem {
  */
 function BrandHeader({ active }: { active: boolean }) {
   return (
-    <div className="group flex cursor-pointer items-center gap-3 px-4 py-4">
+    <div className="group flex shrink-0 cursor-pointer items-center gap-3 px-4 py-4">
       <IntelligenceCore active={active} />
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -125,7 +125,7 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
   }, [open]);
 
   return (
-    <div className="relative border-t border-border p-2">
+    <div className="relative shrink-0 border-t border-border p-2">
       {open && (
         <>
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
@@ -330,7 +330,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
       {/* Grouped header block — New chat, Files — with no internal
           dividers, matching the reference's grouping. */}
-      <div className="flex flex-col gap-3 px-3 py-3">
+      <div className="flex shrink-0 flex-col gap-3 px-3 py-3">
         <button
           type="button"
           onClick={() => void onNewChat()}
@@ -378,7 +378,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         </Link>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      <div className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {showSkeleton && (
           <div className="space-y-1.5 px-1">
             {[0, 1, 2, 3, 4, 5].map((i) => (

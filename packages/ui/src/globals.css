@@ -159,6 +159,43 @@
   }
 }
 
+/* A quiet scrollbar for ONE list: the conversation history in the chat rail.
+ *
+ * Scoped to a class, not applied globally, because the app's other scrollers are
+ * deliberately different - the transcript hides its own, the suggestion strip has
+ * none, and code blocks keep the platform bar so a long line is obviously
+ * scrollable. Only the rail asked for the quiet treatment.
+ *
+ * The native bar measured 15px of the 272px rail; this is 8px with a 2px
+ * transparent border clipped to the padding box, which insets the thumb into a
+ * floating pill and gives the list 7px MORE room - so nothing can clip or overflow
+ * because of it. The thumb is painted without hover (a touch device has none);
+ * hover only deepens it. `scrollbar-width/color` cover Firefox and Chromium 121+,
+ * the ::-webkit- rules older Chromium and Safari. No JS, no animation. */
+.scrollbar-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--primary) / 0.18) transparent;
+}
+.scrollbar-quiet::-webkit-scrollbar {
+  width: 8px;
+}
+.scrollbar-quiet::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-quiet::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--primary) / 0.18);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 9999px;
+}
+.scrollbar-quiet::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--primary) / 0.3);
+}
+/* No arrows - they are the "thick native-looking bar" tell. */
+.scrollbar-quiet::-webkit-scrollbar-button {
+  display: none;
+}
+
 /* MATH CANNOT WRAP. KaTeX ships `.katex-display > .katex { white-space: nowrap }`
  * and no overflow rule, so one long display equation is as wide as it is:
  * measured on a 390px viewport it pushed the document to 6056px. overflow-wrap
