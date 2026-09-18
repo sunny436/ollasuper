@@ -78,7 +78,7 @@ export function FilesSection() {
       {/* ~6 rows visible, then scroll — the account knowledge base as a compact
           dropdown directly under New chat. */}
       {open && (
-        <div className="mt-1 max-h-64 overflow-y-auto pb-1">
+        <div className="scrollbar-quiet mt-1 max-h-64 overflow-y-auto pb-1">
           {results.map((f) => (
             <FileItem
               key={f._id}

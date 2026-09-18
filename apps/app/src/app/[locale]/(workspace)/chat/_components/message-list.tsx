@@ -186,7 +186,7 @@ export function MessageList({ threadId }: { threadId: string | null }) {
         // overflow-anchor:none — browser scroll anchoring silently adjusts
         // scrollTop to keep an anchor node stationary, which fights the manual
         // pin during streaming and produces 1-3px jitter per token.
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
+        className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
       >
         {/*
           overflow-wrap is INHERITED, and it is set here rather than per renderer:
