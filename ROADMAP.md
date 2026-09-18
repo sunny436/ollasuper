@@ -31,6 +31,37 @@ One finding is verified by unit test only, and deliberately so:
   on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
   surface is built, add the prod check with it.
 
+## OllaSuper branding system (2026-09-18) - LIVE, prod-verified
+
+The real mark and wordmark, as code. No raster brand asset survives: `logo.png`
+(1.6 MB, rendered at 26px) and `favicon.ico` are both deleted.
+
+- **The mark is the supplied SVG, unscaled.** An earlier pass shipped geometry I
+  reconstructed by eye from a pasted raster - right visual language, wrong logo.
+  The source artwork now lives in the repo and three assertions pin the component,
+  the favicon and the source to the same path string.
+- **`<OllaSuperBrand>`** - auth shows mark+wordmark, app swaps mark (below `md`)
+  for wordmark (`md` up) in pure CSS. `sr-only md:not-sr-only` keeps one text node
+  announced once at every size.
+- **Poppins 800** through the existing next/font/google call: one weight, one
+  subset, no new dependency.
+- **Favicon/OG from the same geometry:** `app/icon.svg` (own prefers-color-scheme
+  block - `currentColor` is inert in a favicon), `app/apple-icon.tsx` and a share
+  `opengraph-image.tsx`, both via `ImageResponse` (built into Next).
+- **Four defects the second pass caught before they shipped:** the favicon
+  currentColor trap; `/apple-icon` 302ing to /login because it has no extension;
+  `metadataBase` unset so og:image resolved to localhost; `viewport.themeColor` a
+  no-op with no `color` key. Plus two found by verifying rather than assuming:
+  `/favicon.ico` 307ing to HTML after deletion, and the locale-prefixed og:image
+  307ing every scraper to /login.
+- Removed: the `v4.0` badge, the `AI Workspace` subtitle (in two places - the rail
+  AND the breadcrumb fallback), `v0.1.0`, the upstream `myos` wordmark, and a dead
+  `orbIdle` requestIdleCallback state machine deferring a WebGL renderer that no
+  longer existed.
+- Verified on prod: `qa-branding` 20/20, `qa-monochrome` PASS, favicon resolves
+  black/white by browser scheme as a top-level document, all four share/OG paths
+  200, `/icon.svg` `/apple-icon` `/favicon.ico` all 200.
+
 ## Monochrome design system (2026-09-18) - LIVE, prod-verified
 
 Strict pure white `#FFFFFF` / pitch black `#000000`, neutral grayscale for everything

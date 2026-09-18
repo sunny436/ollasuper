@@ -269,6 +269,40 @@ is gone; the tokens in `globals.css` are literals again.
   both themes in a real browser, which is the only way to see computed colour,
   pseudo-elements and third-party CSS.
 
+### Branding (2026-09-18)
+
+One mark, one wordmark, one component — `src/components/branding/`.
+
+- **The mark is the supplied artwork, verbatim.** `olla-super-mark.source.svg` is
+  committed unmodified beside the component; nothing imports it. It exists so
+  "matches the logo exactly" is something `branding.test.ts` CHECKS — the
+  component path, the favicon path and the source path must be identical
+  character for character. Do not rescale it to a rounder viewBox: that trades
+  fidelity for tidiness, and an earlier reconstructed-by-eye mark already shipped
+  wrong once. Only two attributes were changed from the source, and only because
+  they had to be: `fill`/`stroke` `#020201` became `currentColor`. The 0.25 stroke
+  stays — the six subpaths abut, and without it antialiasing shows hairlines.
+- **`<OllaSuperBrand variant="auth" | "app" />` is the only brand component.**
+  The app variant swaps mark for wordmark in pure CSS at `md`. The wordmark is
+  `sr-only md:not-sr-only`, NOT `hidden md:block` — below `md` the text is
+  visually gone but stays in the accessibility tree, so the mark-only view keeps
+  its name from the same node, announced exactly once at every size.
+- **`currentColor` CANNOT be used in `app/icon.svg`.** A favicon renders outside
+  any document, so it resolves to the SVG's own `color` — black — and vanishes in
+  dark browser chrome. The file carries its own `prefers-color-scheme` block.
+  Verified by loading `/icon.svg` as a top-level document in both schemes.
+- **`/apple-icon` has no file extension**, so the middleware matcher (which exempts
+  `*.svg/png/…`) let it reach the auth gate; it needs an explicit bypass or every
+  signed-out fetch 302s to `/login`.
+- **The share `og:image` is locale-prefixed.** next-international hides the locale,
+  but Next builds metadata URLs from the route path — which lives under
+  `[locale]` — so the emitted URL is `/en/share/<token>/opengraph-image-…`. That
+  path needs its own public matcher, and must NOT go through `I18nMiddleware`.
+  Without it the card renders perfectly and no scraper can ever fetch it.
+- Email templates render their own italic uppercase wordmark and are deliberately
+  out of this system: email supports neither Poppins, nor SVG, nor `currentColor`.
+  `"myos.session.displaced"` is a localStorage key, not branding.
+
 ## Cost controls (do not remove)
 
 Unbounded context is the default failure mode of a chat product. Four layers, all deliberate:
