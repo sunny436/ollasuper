@@ -240,7 +240,13 @@ async function main() {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2200);
   s = await readState(page);
-  check("an invalid stored accent falls back to Blue", s.accent === "blue" && s.brand === EXPECTED.blue.light, `data-accent=${s.accent} --brand=${s.brand}`);
+  // Compared against blue for WHICHEVER mode the page is in — the independence
+  // step above leaves it dark, and blue-dark is still blue.
+  check(
+    "an invalid stored accent falls back to Blue",
+    s.accent === "blue" && s.brand === EXPECTED.blue[s.dark ? "dark" : "light"],
+    `data-accent=${s.accent} dark=${s.dark} --brand=${s.brand}`,
+  );
   check("...and injects no style attribute", s.injectedStyle === null, `style=${s.injectedStyle}`);
   check("...and logs nothing", errs.length === errsBefore, errs.slice(errsBefore, errsBefore + 2).join(" | "));
 
