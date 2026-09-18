@@ -1,8 +1,7 @@
 import { CommandPalette } from "@/components/command-palette";
-import { AmbienceSync } from "@/lib/ambience/ambience-sync";
+import { ThemeSync } from "@/lib/theme/theme-sync";
 import { WorkspaceProvider } from "@/lib/workspace-provider";
 import { Toaster } from "sonner";
-import { AmbientBackdrop } from "./_components/ambient-backdrop";
 
 /**
  * The full-bleed workspace shell.
@@ -30,7 +29,7 @@ export default function WorkspaceLayout({
 }) {
   return (
     <WorkspaceProvider>
-      <AmbienceSync />
+      <ThemeSync />
       {/*
         `workspace` re-points the existing design tokens (--card, --border,
         --background …) to the glass palette for this subtree only, so every
@@ -42,7 +41,6 @@ export default function WorkspaceLayout({
         a trackpad rubber-bands past the top of the transcript.
       */}
       <div className="workspace relative isolate flex h-dvh-safe w-full overflow-hidden overscroll-none bg-background text-foreground">
-        <AmbientBackdrop />
         {children}
       </div>
       <Toaster richColors position="top-right" />

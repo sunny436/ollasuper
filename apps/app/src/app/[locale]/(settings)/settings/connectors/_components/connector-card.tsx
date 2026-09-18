@@ -63,11 +63,11 @@ export function ConnectorCard({
 }) {
   const Icon = ICON[view.category] ?? Compass;
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card/60 p-4 transition-colors hover:bg-card/80">
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:bg-card">
       <div className="flex items-start gap-3">
         <span
           aria-hidden
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-background/60 text-primary/60"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-background text-primary/60"
         >
           <Icon className="h-4 w-4" />
         </span>

@@ -89,7 +89,7 @@ export function ProjectSettingsDialog({
     <>
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
       <div
-        className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
+        className="fixed inset-0 z-40 bg-black/50"
         onClick={() => onOpenChange(false)}
         aria-hidden="true"
       />
@@ -100,7 +100,7 @@ export function ProjectSettingsDialog({
         aria-label="Project settings"
         // max-h + internal scroll: name, instructions, the memory list and the
         // delete action together are taller than a short viewport.
-        className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-border bg-card shadow-2xl"
+        className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-border bg-card shadow-md"
       >
         <div className="flex shrink-0 items-start justify-between gap-3 px-5 pt-5">
           <h2 className="text-lg font-semibold text-primary">
@@ -141,7 +141,7 @@ export function ProjectSettingsDialog({
                 type="button"
                 onClick={() => void saveName()}
                 disabled={savingName}
-                className="shrink-0 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:brightness-110 disabled:opacity-40"
+                className="shrink-0 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-40"
               >
                 {savingName ? "Saving…" : "Save"}
               </button>

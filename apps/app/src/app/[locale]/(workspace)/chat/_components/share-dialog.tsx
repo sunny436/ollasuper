@@ -166,7 +166,7 @@ export function ShareDialog({
             <button
               type="button"
               onClick={() => void doCreate(false)}
-              className="rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:brightness-110"
+              className="rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90"
             >
               Create link
             </button>
@@ -174,7 +174,7 @@ export function ShareDialog({
         )}
         {status === "error" && (
           <div className="py-2">
-            <p className="text-sm text-red-600">
+            <p className="text-sm text-destructive">
               Couldn't create a share link.
             </p>
             <button
@@ -198,7 +198,7 @@ export function ShareDialog({
               <button
                 type="button"
                 onClick={copy}
-                className="flex shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:brightness-110"
+                className="flex shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90"
               >
                 {copied ? (
                   <Check className="h-4 w-4" />

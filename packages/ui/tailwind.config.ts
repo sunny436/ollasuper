@@ -56,6 +56,11 @@ const config = {
           DEFAULT: "hsl(var(--secondary))",
           foreground: "hsl(var(--secondary-foreground))",
         },
+        // Status. Ink and 1px borders only — the monochrome system has no room
+        // for a coloured fill, and a status banner reads fine as muted surface +
+        // coloured ink.
+        warning: "hsl(var(--warning))",
+        success: "hsl(var(--success))",
         destructive: {
           DEFAULT: "hsl(var(--destructive))",
           foreground: "hsl(var(--destructive-foreground))",

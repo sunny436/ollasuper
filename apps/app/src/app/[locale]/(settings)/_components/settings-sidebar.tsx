@@ -11,10 +11,10 @@ import {
   Wand2,
   X,
 } from "lucide-react";
+import { BrandMark } from "@/components/brand-mark";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { SettingsOrb } from "./settings-orb";
 
 /**
  * The five Settings sections. Billing is deliberately NOT here — it stays at
@@ -59,7 +59,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex h-full flex-col">
       {/* Header: brand orb + title + close */}
       <div className="flex items-center gap-3 px-4 py-4">
-        <SettingsOrb className="h-9 w-9" />
+        <BrandMark className="h-9 w-9" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold tracking-tight text-primary">
             Settings
@@ -85,7 +85,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search settings"
           aria-label="Search settings"
-          className="w-full rounded-lg border border-border bg-card/60 px-3 py-2 text-sm text-primary/80 outline-none transition placeholder:text-primary/35 focus:border-brand/40"
+          className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-primary/80 outline-none transition placeholder:text-primary/35 focus:border-brand/40"
         />
       </div>
 
@@ -105,8 +105,8 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
                 onClick={onNavigate}
                 className={`mb-1 flex items-center gap-3 rounded-xl border px-3 py-2.5 text-sm transition-colors ${
                   active
-                    ? "border-border bg-card/70 font-medium text-primary backdrop-blur-sm"
-                    : "border-transparent text-primary/60 hover:bg-card/40 hover:text-primary/90"
+                    ? "border-border bg-card font-medium text-primary"
+                    : "border-transparent text-primary/60 hover:bg-card hover:text-primary/90"
                 }`}
               >
                 <Icon

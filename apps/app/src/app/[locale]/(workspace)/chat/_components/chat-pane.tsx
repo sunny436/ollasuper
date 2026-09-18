@@ -113,7 +113,7 @@ export function ChatPane({
         would collide with the prompt library's `Close` button and throw on
         strict mode. Hence `Hide`.
       */}
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-card/50 px-4 backdrop-blur-xl">
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-card px-4">
         <button
           type="button"
           onClick={openSidebar}
@@ -157,10 +157,10 @@ export function ChatPane({
           </span>
         </div>
 
-        {/* Share + Notifications + Ambience — top-right of the chat header.
-            The bell sits between Share and the ambience (theme) control; it
-            used to live at the foot of the conversation rail, which predates
-            this header existing. */}
+        {/* Share + Notifications + Theme — top-right of the chat header.
+            The bell sits between Share and the theme toggle; it used to live at
+            the foot of the conversation rail, which predates this header
+            existing. */}
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {thread && (
             <button
@@ -168,14 +168,14 @@ export function ChatPane({
               onClick={() => setShareOpen(true)}
               disabled={thread.isStreaming}
               aria-label="Share conversation"
-              className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground shadow-sm transition-all hover:bg-accent hover:text-primary active:scale-95 disabled:opacity-40 [@media(pointer:coarse)]:min-h-11"
+              className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-primary active:scale-95 disabled:opacity-40 [@media(pointer:coarse)]:min-h-11"
             >
               <Share2 className="h-3.5 w-3.5" /> Share
             </button>
           )}
           <NotificationsBell />
           {/* Reference divider: bell, hairline, theme control. */}
-          <div className="mx-0.5 h-4 w-px bg-slate-200 dark:bg-slate-700/80" />
+          <div className="mx-0.5 h-4 w-px bg-muted dark:bg-muted" />
           <ThemeToggle />
         </div>
       </header>

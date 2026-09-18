@@ -6,7 +6,7 @@
 //   upload an image + PDF + text file from the composer; the chips fit the viewport;
 //   the reply answers from the text file (a phrase only that file contains); the new
 //   chat composer is wide enough to type in; message actions are visible on touch and
-//   hover-revealed on desktop; no backdrop-filter on touch, glass kept on desktop;
+//   hover-revealed on desktop; zero backdrop-filter on every profile;
 //   Share returns focus; the offline line appears and clears; zero console errors.
 const { chromium, devices } = require("playwright");
 const fs = require("node:fs");
@@ -54,7 +54,11 @@ async function runProfile(browser, name, opts) {
     backdrop: [...document.querySelectorAll("*")].filter((e) => { const s = getComputedStyle(e); return (s.backdropFilter && s.backdropFilter !== "none") || (s.webkitBackdropFilter && s.webkitBackdropFilter !== "none"); }).length,
   }));
   check("new-chat composer wide enough to type in", layout.composerW >= Math.min(220, layout.vw * 0.55), `${layout.composerW}px of ${layout.vw}px`);
-  check(touch ? "no backdrop-filter on touch" : "glass kept on desktop", touch ? layout.backdrop === 0 : layout.backdrop > 0, `${layout.backdrop} elements`);
+  // INVERTED 2026-09-18. This used to assert glass was KEPT on desktop and only
+  // removed on touch, which was correct while the product had a glass identity.
+  // The monochrome system has no glass anywhere, so the old assertion now asserts
+  // the opposite of the design and would pass only on a regression.
+  check("no backdrop-filter anywhere", layout.backdrop === 0, `${layout.backdrop} elements`);
 
   // Upload three files from the composer.
   const { token, files } = fixtures();

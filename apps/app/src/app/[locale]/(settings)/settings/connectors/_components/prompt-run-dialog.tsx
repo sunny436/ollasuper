@@ -142,13 +142,13 @@ export function PromptRunDialog({
         )}
 
         {error && (
-          <p className="rounded-lg border border-border bg-card/40 p-3 text-xs text-primary/60">
+          <p className="rounded-lg border border-border bg-card p-3 text-xs text-primary/60">
             {error}
           </p>
         )}
 
         {messages && (
-          <ScrollArea className="max-h-[40vh] rounded-lg border border-border bg-card/40">
+          <ScrollArea className="max-h-[40vh] rounded-lg border border-border bg-card">
             <div className="flex flex-col gap-2 p-3">
               {messages.map((m, i) => (
                 <div key={`${m.role}-${i}`}>

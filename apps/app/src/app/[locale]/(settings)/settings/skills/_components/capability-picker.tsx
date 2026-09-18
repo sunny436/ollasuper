@@ -98,11 +98,11 @@ export function CapabilityPicker({
               key={id}
               type="button"
               onClick={() => toggle(id)}
-              className="group flex items-center gap-1 rounded-full border border-border bg-primary/5 px-2 py-0.5 text-[11px] text-primary/70 transition hover:border-red-500/40 hover:text-red-600"
+              className="group flex items-center gap-1 rounded-full border border-border bg-primary/5 px-2 py-0.5 text-[11px] text-primary/70 transition hover:border-destructive hover:text-destructive"
               aria-label={`Remove ${id}`}
             >
               {id}
-              <span aria-hidden className="text-primary/60 group-hover:text-red-600">
+              <span aria-hidden className="text-primary/60 group-hover:text-destructive">
                 ×
               </span>
             </button>

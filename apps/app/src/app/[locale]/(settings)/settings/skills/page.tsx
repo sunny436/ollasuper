@@ -100,7 +100,7 @@ export default function SkillsSection() {
 
       {loading && (
         <p
-          className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl"
+          className="rounded-2xl border border-border bg-card p-8 text-center text-sm text-primary/65"
           aria-live="polite"
         >
           Loading your skills…
@@ -108,7 +108,7 @@ export default function SkillsSection() {
       )}
 
       {!loading && skills.length === 0 && (
-        <div className="rounded-2xl border border-border bg-card/60 p-8 text-center backdrop-blur-xl">
+        <div className="rounded-2xl border border-border bg-card p-8 text-center">
           <p className="text-sm text-primary/60">You have no skills yet.</p>
           <p className="mx-auto mt-1 max-w-md text-xs text-primary/60">
             A skill is a short set of instructions for a kind of task you do
@@ -132,7 +132,7 @@ export default function SkillsSection() {
             return (
               <li
                 key={s._id}
-                className="rounded-2xl border border-border bg-card/60 p-4 backdrop-blur-xl"
+                className="rounded-2xl border border-border bg-card p-4"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">

@@ -3,7 +3,7 @@
 import { FilesSection } from "./files-section";
 import { ChatInstructionsDialog } from "./chat-instructions-dialog";
 import { MoveToProjectDialog } from "./move-to-project-dialog";
-import { IntelligenceCore } from "./intelligence-core";
+import { BrandMark } from "@/components/brand-mark";
 import { clearDisplayCaches } from "@/lib/display-cache";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
@@ -63,7 +63,7 @@ interface ThreadItem {
 function BrandHeader({ active }: { active: boolean }) {
   return (
     <div className="group flex shrink-0 cursor-pointer items-center gap-3 px-4 py-4">
-      <IntelligenceCore active={active} />
+      <BrandMark className="h-8 w-8" />
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold tracking-tight text-primary">
@@ -134,7 +134,7 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
             onClick={() => setOpen(false)}
             aria-hidden="true"
           />
-          <div className="absolute bottom-[calc(100%-0.25rem)] left-2 right-2 z-20 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+          <div className="absolute bottom-[calc(100%-0.25rem)] left-2 right-2 z-20 rounded-xl border border-border bg-popover p-1.5 shadow-md">
             <ProfileMenuItem
               href="/settings"
               icon={Settings}
@@ -173,7 +173,7 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-label="Account menu"
-        className="group flex w-full items-center gap-2.5 rounded-xl border border-border bg-card/60 p-2 text-left transition-colors duration-200 hover:bg-accent"
+        className="group flex w-full items-center gap-2.5 rounded-xl border border-border bg-card p-2 text-left transition-colors duration-200 hover:bg-accent"
       >
         {/* THE PHOTO WAS NEVER RENDERED HERE. Settings and the dashboard rail
             both show `avatarUrl`, and useCachedUser already fetches and caches
@@ -185,10 +185,10 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
           <img
             src={user.avatarUrl}
             alt=""
-            className="h-8 w-8 shrink-0 rounded-lg object-cover shadow-sm"
+            className="h-8 w-8 shrink-0 rounded-lg object-cover"
           />
         ) : (
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand text-xs font-semibold text-brand-foreground shadow-sm">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand text-xs font-semibold text-brand-foreground">
             {(user?.displayName || user?.name || user?.email || "?")
               .charAt(0)
               .toUpperCase()}
@@ -334,7 +334,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         <button
           type="button"
           onClick={() => void onNewChat()}
-          className="group flex w-full items-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-medium text-primary shadow-sm transition-all duration-200 hover:border-brand/30 hover:shadow-md active:scale-[0.98]"
+          className="group flex w-full items-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-medium text-primary transition-all duration-200 hover:border-brand/30 active:scale-[0.98]"
         >
           <span className="rounded-lg bg-brand/10 p-1 text-brand-ink transition-colors group-hover:bg-brand group-hover:text-brand-foreground">
             <Plus className="h-4 w-4 transition-transform duration-300 group-hover:rotate-90 motion-reduce:transition-none" />
@@ -545,7 +545,7 @@ function ThreadMenu({
             onClick={() => setOpen(false)}
             aria-hidden="true"
           />
-          <div className="absolute right-0 z-50 mt-1 w-36 overflow-hidden rounded-md border border-border bg-card py-1 shadow-lg">
+          <div className="absolute right-0 z-50 mt-1 w-36 overflow-hidden rounded-md border border-border bg-card py-1 shadow-md">
             <MenuItem
               onClick={() => {
                 setOpen(false);

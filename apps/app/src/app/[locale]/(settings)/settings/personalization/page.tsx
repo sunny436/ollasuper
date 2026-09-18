@@ -201,7 +201,7 @@ export default function PersonalizationSection() {
           </p>
         </div>
         <div
-          className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl"
+          className="rounded-2xl border border-border bg-card p-8 text-center text-sm text-primary/65"
           aria-live="polite"
         >
           Loading your preferences…
@@ -226,7 +226,7 @@ export default function PersonalizationSection() {
 
       {/* Master switch. Turning it off IGNORES these preferences; it does not
           erase them, and it does not touch Memory or Projects. */}
-      <div className="flex items-center justify-between rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
+      <div className="flex items-center justify-between rounded-2xl border border-border bg-card p-6">
         <div className="pr-4">
           <h2 className="text-sm font-medium text-primary/80">
             Use personalization
@@ -248,7 +248,7 @@ export default function PersonalizationSection() {
         className={`flex flex-col gap-6 border-0 p-0 ${off ? "opacity-50" : ""}`}
       >
         {/* Base style — the REGISTER. Exactly one. */}
-        <div className="rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
+        <div className="rounded-2xl border border-border bg-card p-6">
           <h2 className="text-sm font-medium text-primary/80">Base style</h2>
           <p className="mt-1 text-xs text-primary/60">
             The overall tone of responses.
@@ -270,7 +270,7 @@ export default function PersonalizationSection() {
                   className={`rounded-full border px-4 py-1.5 text-sm transition ${
                     active
                       ? "border-brand/40 bg-brand/10 font-medium text-brand-ink"
-                      : "border-border text-primary/60 hover:bg-card/40 hover:text-primary/90"
+                      : "border-border text-primary/60 hover:bg-card hover:text-primary/90"
                   }`}
                 >
                   {label}
@@ -282,7 +282,7 @@ export default function PersonalizationSection() {
 
         {/* Characteristics — they MODULATE the register, never replace it, which
             is why "Formal + Warm" is coherent rather than contradictory. */}
-        <div className="rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
+        <div className="rounded-2xl border border-border bg-card p-6">
           <h2 className="text-sm font-medium text-primary/80">
             Characteristics
           </h2>
@@ -301,7 +301,7 @@ export default function PersonalizationSection() {
                   className={`rounded-full border px-4 py-1.5 text-sm transition ${
                     active
                       ? "border-brand/40 bg-brand/10 font-medium text-brand-ink"
-                      : "border-border text-primary/60 hover:bg-card/40 hover:text-primary/90"
+                      : "border-border text-primary/60 hover:bg-card hover:text-primary/90"
                   }`}
                 >
                   {label}
@@ -313,7 +313,7 @@ export default function PersonalizationSection() {
 
         {/* Length — a different axis from tone, so "Concise + Thorough" is a
             concise register with fuller coverage, not a contradiction. */}
-        <div className="flex items-center justify-between rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
+        <div className="flex items-center justify-between rounded-2xl border border-border bg-card p-6">
           <div className="pr-4">
             <h2 className="text-sm font-medium text-primary/80">Fast answers</h2>
             <p className="mt-1 text-xs text-primary/60">
@@ -332,7 +332,7 @@ export default function PersonalizationSection() {
           />
         </div>
 
-        <div className="flex items-center justify-between rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
+        <div className="flex items-center justify-between rounded-2xl border border-border bg-card p-6">
           <div className="pr-4">
             <h2 className="text-sm font-medium text-primary/80">
               Response language
@@ -347,7 +347,7 @@ export default function PersonalizationSection() {
             onChange={(e) =>
               setP((prev) => ({ ...prev, responseLanguage: e.target.value }))
             }
-            className="rounded-lg border border-border bg-card/60 px-3 py-1.5 text-sm text-primary/80 outline-none transition focus:border-brand/40"
+            className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-primary/80 outline-none transition focus:border-brand/40"
           >
             {LANGUAGES.map((l) => (
               <option key={l.value} value={l.value}>
@@ -357,7 +357,7 @@ export default function PersonalizationSection() {
           </select>
         </div>
 
-        <div className="rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
+        <div className="rounded-2xl border border-border bg-card p-6">
           <h2 className="text-sm font-medium text-primary/80">
             Custom instructions
           </h2>
@@ -385,7 +385,7 @@ export default function PersonalizationSection() {
 
       <div className="flex flex-wrap items-center justify-end gap-2">
         {failed && (
-          <p className="mr-auto text-xs text-red-600" role="alert">
+          <p className="mr-auto text-xs text-destructive" role="alert">
             Couldn't reach the server. Your changes are still here — try again.
           </p>
         )}

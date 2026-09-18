@@ -207,12 +207,15 @@ function ChatMessageImpl({
             </div>
           )}
           {/*
-            The user bubble rides the --brand token so it warms with the ambience
-            theme (sky-blue → bronze at amber → sky at midnight); brand-foreground
-            is contrast-picked against the fill, so the text stays legible at every
-            phase without a fixed white.
+            DELIBERATE DEVIATION, and the one place this design system bends.
+            `bg-brand` is now pure black (light) / pure white (dark). A solid ink slab
+            on every user turn is the heaviest thing on a page that is mostly
+            reading, and it competes with the assistant prose it is meant to frame.
+            The bubble is a muted surface with a 1px border instead: the shape and
+            the right alignment still mark the turn as the user's, without the mass.
+            Solid ink fills stay where they earn their weight - primary buttons.
           */}
-          <div className="rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-[15.5px] leading-[1.7] text-brand-foreground shadow-sm">
+          <div className="rounded-2xl rounded-br-md border border-border bg-muted px-4 py-2.5 text-[15.5px] leading-[1.7] text-foreground">
             <p className="whitespace-pre-wrap break-words">{message.content}</p>
           </div>
           <div className="mt-1 flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">

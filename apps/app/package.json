@@ -10,7 +10,7 @@
     "format": "biome format --write .",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "bun test && bun run ./src/lib/ambience/contrast.check.ts"
+    "test": "bun test"
   },
   "dependencies": {
     "@auth/core": "0.41.3",
@@ -46,7 +46,6 @@
     "remeda": "^2.14.0",
     "shiki": "^4.4.3",
     "sonner": "^2.0.7",
-    "three": "^0.185.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -54,7 +53,6 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/three": "^0.185.4",
     "typescript": "^5.5.4"
   }
 }

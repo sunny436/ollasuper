@@ -16,7 +16,7 @@ function fmt(v: unknown): string {
 function ActionPreview({ preview }: { preview: ParsedActionPreview }) {
   const entries = Object.entries(preview.diff);
   return (
-    <div className="mt-2 rounded-md border border-border bg-card/50 p-2">
+    <div className="mt-2 rounded-md border border-border bg-card p-2">
       <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-primary/65">
         <span className="rounded bg-primary/5 px-1.5 py-0.5 font-medium text-primary/70">
           {preview.action || "change"}
@@ -33,11 +33,11 @@ function ActionPreview({ preview }: { preview: ParsedActionPreview }) {
             <div key={field} className="text-[11px]">
               <dt className="font-medium text-primary/60">{field}</dt>
               <dd className="mt-0.5 flex flex-wrap items-center gap-1 text-primary/70">
-                <span className="rounded bg-rose-500/10 px-1 py-0.5 text-rose-600 line-through [overflow-wrap:anywhere] dark:text-rose-400">
+                <span className="rounded bg-muted px-1 py-0.5 text-destructive line-through [overflow-wrap:anywhere] dark:text-destructive">
                   {fmt(d.before)}
                 </span>
                 <span aria-hidden>→</span>
-                <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-emerald-700 [overflow-wrap:anywhere] dark:text-emerald-400">
+                <span className="rounded bg-muted px-1 py-0.5 text-success [overflow-wrap:anywhere] dark:text-success">
                   {fmt(d.after)}
                 </span>
               </dd>
@@ -69,10 +69,10 @@ export function ApprovalCard({
   onResolve?: (decision: "approve" | "reject") => void;
 }) {
   return (
-    <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs">
+    <div className="rounded-lg border border-warning bg-muted px-3 py-2 text-xs">
       <div className="flex items-start gap-2">
         <ShieldAlert
-          className="mt-0.5 h-4 w-4 shrink-0 text-amber-600"
+          className="mt-0.5 h-4 w-4 shrink-0 text-warning"
           aria-hidden
         />
         <div className="min-w-0 flex-1">

@@ -1,32 +1,22 @@
 "use client";
 
-import { type CSSProperties, useEffect, useState } from "react";
-import { useAmbience } from "@/lib/ambience/ambience-provider";
+import { useEffect, useState } from "react";
 import { useCachedUser } from "../_hooks/use-cached-user";
 
 /**
- * The greeting, revealed by a pure-CSS gradient sweep (`.greeting-sweep` in
- * globals.css): a soft mask wipes the text in left→right while an
- * indigo→magenta→rose beam rides the reveal edge, then every letter settles to
- * the ambience-adaptive foreground. The settle colour is passed in as
- * `--greeting-ink` so the CSS stays ambience-adaptive (legible across
- * daylight/amber/midnight) without a hardcoded hex — the old fixed sky→indigo
- * gradient clashed on amber and washed out on daylight. Runs once on mount.
- * Reduced motion and the no-`background-clip` fallback both resolve to solid,
- * fully-visible text (see the @supports / @media guards in globals.css).
- * `inline-block` shrink-wraps the glyph run so the mask/beam geometry maps to
- * the text, not the full-width centred line box (it still centres via the
- * parent's `text-center`). No transform / 3D context, so descenders are never
- * clipped.
+ * The greeting.
+ *
+ * It used to be revealed by a CSS gradient sweep - a mask wiping the text in
+ * left-to-right while an indigo->magenta->rose beam rode the edge. That was
+ * decoration carrying no information, and the only multi-hue text left in the
+ * product, so it is gone: one ink, no animation, nothing to fall back from.
  */
 function AnimatedHeadline({ text }: { text: string }) {
-  const { colors } = useAmbience();
   return (
     <h1
       // Wraps (balanced) below sm: nowrap clipped long greetings — "What would you like
       // to accomplish?", or any greeting carrying a long name — off a 375 px screen.
-      className="greeting-sweep inline-block max-w-full whitespace-normal pb-3 text-2xl font-medium leading-[1.35] [text-wrap:balance] sm:whitespace-nowrap sm:text-4xl"
-      style={{ "--greeting-ink": colors.text } as CSSProperties}
+      className="inline-block max-w-full whitespace-normal pb-3 text-2xl font-medium leading-[1.35] [text-wrap:balance] sm:whitespace-nowrap sm:text-4xl"
     >
       {text}
     </h1>

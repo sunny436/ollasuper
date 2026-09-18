@@ -15,8 +15,8 @@ const jakarta = Plus_Jakarta_Sans({
   variable: "--font-plus-jakarta-sans",
   display: "swap",
 });
-import { AmbienceProvider } from "@/lib/ambience/ambience-provider";
-import { AmbienceScript } from "@/lib/ambience/ambience-script";
+import { ThemeProvider } from "@/lib/theme/theme-provider";
+import { ThemeScript } from "@/lib/theme/theme-script";
 import { PerfProbeLoader } from "@/lib/perf-probe/perf-probe-loader";
 import { ConvexClientProvider } from "../convex-client-provider";
 
@@ -43,16 +43,16 @@ export default function RootLayout({
         <body
           className={cn(`${GeistMono.variable}`, "antialiased")}
         >
-          {/* Stamps ambience vars + .dark on <html> before first paint (no
-              flash). Must be the first thing in <body> so it runs before the
-              app content is styled. */}
-          <AmbienceScript />
-          <AmbienceProvider>
+          {/* Stamps the `dark` class on <html> before first paint (no flash).
+              Must be the first thing in <body> so it runs before the app
+              content is styled. */}
+          <ThemeScript />
+          <ThemeProvider>
             {/* No TooltipProvider: the app renders no Radix Tooltip (only the
                 unused ui/tooltip component exists), so mounting its context added
                 a small client chunk for nothing. Re-add if a Tooltip is used. */}
             <ConvexClientProvider>{children}</ConvexClientProvider>
-          </AmbienceProvider>
+          </ThemeProvider>
           {/* Opt-in (?perf=1) real-device perf probe; a no-op unless enabled. */}
           <PerfProbeLoader />
         </body>

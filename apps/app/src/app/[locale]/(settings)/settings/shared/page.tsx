@@ -27,9 +27,9 @@ const FILTERS: { key: Filter; label: string }[] = [
 ];
 
 const STATUS_STYLE: Record<string, string> = {
-  active: "text-emerald-700 dark:text-emerald-400",
+  active: "text-success dark:text-success",
   expired: "text-primary/60",
-  revoked: "text-red-600",
+  revoked: "text-destructive",
 };
 
 export default function SharedChatsPage() {
@@ -90,7 +90,7 @@ export default function SharedChatsPage() {
           content is read-only and expires after 7 days.
         </p>
       </div>
-      <div className="overflow-hidden rounded-2xl border border-border bg-card/60 backdrop-blur-xl">
+      <div className="overflow-hidden rounded-2xl border border-border bg-card">
 
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-4">
           <div className="flex flex-wrap gap-1">
@@ -175,7 +175,7 @@ export default function SharedChatsPage() {
                       title="Revoke this share link?"
                       description="Anyone with this link will lose access to this shared content. This cannot be undone."
                       confirmLabel="Revoke"
-                      className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-500/10"
+                      className="rounded px-2 py-1 text-xs text-destructive hover:bg-muted"
                       onConfirm={() => onRevoke(r._id)}
                     />
                   </>

@@ -168,7 +168,7 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
       */}
       <nav
         aria-label="Conversations"
-        className={`hidden shrink-0 overflow-hidden border-r border-border bg-card/60 backdrop-blur-xl transition-[width,opacity,visibility] duration-300 ease-out motion-reduce:transition-none md:block ${
+        className={`hidden shrink-0 overflow-hidden border-r border-border bg-card transition-[width,opacity,visibility] duration-300 ease-out motion-reduce:transition-none md:block ${
           collapsed ? "invisible w-0 opacity-0" : "visible w-[272px] opacity-100"
         }`}
       >
@@ -188,7 +188,7 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
         <>
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
           <div
-            className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden"
+            className="fixed inset-0 z-30 bg-black/60 md:hidden"
             onClick={closeSidebar}
             aria-hidden="true"
           />

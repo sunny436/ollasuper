@@ -96,7 +96,7 @@ export function CreateProjectDialog({
     <>
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
       <div
-        className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
+        className="fixed inset-0 z-40 bg-black/50"
         onClick={() => onOpenChange(false)}
         aria-hidden="true"
       />
@@ -105,7 +105,7 @@ export function CreateProjectDialog({
         role="dialog"
         aria-modal="true"
         aria-label="New project"
-        className="fixed left-1/2 top-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-2xl"
+        className="fixed left-1/2 top-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-5 shadow-md"
       >
         <h2 className="text-lg font-semibold text-primary">New project</h2>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -154,7 +154,7 @@ export function CreateProjectDialog({
             type="button"
             onClick={() => void submit()}
             disabled={!canSubmit}
-            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground shadow-sm transition hover:brightness-110 active:scale-95 disabled:opacity-40"
+            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 active:scale-95 disabled:opacity-40"
           >
             {submitting ? "Creating…" : "Create project"}
           </button>

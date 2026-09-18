@@ -20,9 +20,9 @@ import type { DisplayState } from "../_lib/state";
 
 const TONE: Record<string, string> = {
   neutral: "text-primary/65",
-  good: "text-emerald-700 dark:text-emerald-400",
-  warn: "text-amber-600 dark:text-amber-400",
-  bad: "text-rose-600 dark:text-rose-400",
+  good: "text-success dark:text-success",
+  warn: "text-warning dark:text-warning",
+  bad: "text-destructive dark:text-destructive",
 };
 
 export function ConnectionStatus({

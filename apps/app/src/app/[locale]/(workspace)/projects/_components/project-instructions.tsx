@@ -104,7 +104,7 @@ export function ProjectInstructions({
             type="button"
             onClick={() => void save()}
             disabled={!dirty || tooLong || saving}
-            className="rounded-lg bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground shadow-sm transition hover:brightness-110 disabled:opacity-40"
+            className="rounded-lg bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-40"
           >
             {saving ? "Saving…" : "Save"}
           </button>

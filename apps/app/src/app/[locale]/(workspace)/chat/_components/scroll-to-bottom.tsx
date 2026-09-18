@@ -22,7 +22,7 @@ export function ScrollToBottom({
       aria-label="Scroll to latest message"
       aria-hidden={!visible}
       tabIndex={visible ? 0 : -1}
-      className={`absolute bottom-[calc(100%+0.75rem)] left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-card/90 px-3 py-1.5 text-xs text-primary/80 shadow-lg backdrop-blur transition-opacity duration-150 ${
+      className={`absolute bottom-[calc(100%+0.75rem)] left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs text-primary/80 shadow-md transition-opacity duration-150 ${
         visible ? "opacity-100" : "pointer-events-none opacity-0"
       }`}
     >

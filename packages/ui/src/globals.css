@@ -3,137 +3,127 @@
 @tailwind utilities;
 
 /*
-  AMBIENCE INDIRECTION.
-  Every colour token below reads from an engine var `--amb-<token>` and falls
-  back to its original literal. The ambience engine (apps/app lib/ambience)
-  writes `--amb-*` / `--amb-ws-*` on <html>; because custom properties inherit,
-  every element — including Radix portals mounted at document.body — resolves
-  them with no per-node writes. When the engine is OFF (no provider, or the
-  NEXT_PUBLIC_AMBIENCE kill-switch) the var() is undefined and each token falls
-  back to the literal, so the app renders pixel-identical to before. The
-  literals are therefore load-bearing: they are the still-authoritative default
-  theme AND the ramp endpoints (day = these light values, night = the .dark
-  values). tailwind.config maps every token as hsl(var(--token)); unchanged.
+  MONOCHROME SYSTEM. One neutral scale, two ends: pure white and pitch black.
+  The previous day->amber->dusk->night colour engine wrote these tokens through
+  `--amb-*` vars at runtime; it is gone, so these are plain literals again and a
+  token is now readable by looking at it.
+
+  The full allowlist is these values and nothing else. Status colour (below) is
+  the only hue in the chrome, and it appears on text, icons and 1px borders —
+  never as a fill. CONTENT keeps its colour deliberately: syntax highlighting,
+  chart series (--chart-*) and mermaid diagrams encode meaning in hue, and
+  greyscaling them costs real legibility.
 */
 @layer base {
   :root {
-    --background: var(--amb-background, 0 0% 100%);
-    --foreground: var(--amb-foreground, 222.2 84% 4.9%);
-    --card: var(--amb-card, 0 0% 100%);
-    --card-foreground: var(--amb-card-foreground, 222.2 84% 4.9%);
-    --popover: var(--amb-popover, 0 0% 100%);
-    --popover-foreground: var(--amb-popover-foreground, 222.2 84% 4.9%);
-    --primary: var(--amb-primary, 222.2 47.4% 11.2%);
-    --primary-foreground: var(--amb-primary-foreground, 210 40% 98%);
-    --secondary: var(--amb-secondary, 210 40% 96.1%);
-    --secondary-foreground: var(--amb-secondary-foreground, 222.2 47.4% 11.2%);
-    --muted: var(--amb-muted, 210 40% 96.1%);
-    --muted-foreground: var(--amb-muted-foreground, 215.4 16.3% 46.9%);
-    --accent: var(--amb-accent, 210 40% 96.1%);
-    --accent-foreground: var(--amb-accent-foreground, 222.2 47.4% 11.2%);
-    --destructive: var(--amb-destructive, 0 84.2% 60.2%);
-    --destructive-foreground: var(--amb-destructive-foreground, 210 40% 98%);
-    --border: var(--amb-border, 214.3 31.8% 91.4%);
-    --input: var(--amb-input, 214.3 31.8% 91.4%);
-    --ring: var(--amb-ring, 222.2 84% 4.9%);
+    --background: 0 0% 100%; /* #FFFFFF */
+    --foreground: 0 0% 0%; /* #000000 */
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 0%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 0%;
+    --primary: 0 0% 0%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 96.1%; /* #F5F5F5 */
+    --secondary-foreground: 0 0% 0%;
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 42%; /* #6B6B6B — 5.1:1 on white */
+    --accent: 0 0% 94.1%; /* #F0F0F0 — hover */
+    --accent-foreground: 0 0% 0%;
+    --border: 0 0% 89.8%; /* #E5E5E5 */
+    --input: 0 0% 89.8%;
+    --ring: 0 0% 0%;
     --radius: 0.5rem;
+
+    /* Status. Text / icon / 1px border ONLY — never a fill. */
+    --destructive: 0 72.2% 50.6%; /* #DC2626 */
+    --destructive-foreground: 0 0% 100%;
+    --warning: 26 90.5% 37.1%; /* #B45309 */
+    --success: 142.4 71.8% 29.2%; /* #15803D */
+
+    /* CONTENT colour (charts). Intentionally NOT monochrome: five series in one
+       greyscale ramp cannot be told apart, and a pie chart becomes unreadable. */
     --chart-1: 12 76% 61%;
     --chart-2: 173 58% 39%;
     --chart-3: 197 37% 24%;
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
 
-    /* Workspace accent. Hue locked in the sky/indigo family across both
-       themes. One shade cannot be both a legible fill and legible text, so
-       there are three tokens with strict roles:
-         --brand            fills, borders, rings ONLY
-         --brand-foreground text ON a brand fill ONLY
-         --brand-ink        brand-coloured text on a page background ONLY
-       Blue is far darker than green at equal HSL lightness, so unlike the
-       green theme this fill needs NEAR-WHITE text on it, not near-black.
-       Contrast (WCAG): brand-foreground on brand 5.98:1, brand-ink on
-       background 8.59:1, brand vs background 6.26:1 (1.4.11 non-text). */
-    --brand: var(--amb-brand, 224 76% 50%);
-    --brand-foreground: var(--amb-brand-foreground, 210 40% 98%);
-    --brand-ink: var(--amb-brand-ink, 226 64% 40%);
+    /* "Brand" is now simply ink: black fills with white text on light, inverted
+       on dark. The three-token split is kept so 170 existing call sites keep
+       working unchanged. */
+    --brand: 0 0% 0%;
+    --brand-foreground: 0 0% 100%;
+    --brand-ink: 0 0% 0%;
   }
 
   .dark {
-    --background: var(--amb-background, 0 0% 0%);
-    --foreground: var(--amb-foreground, 0 0% 100%);
-    --card: var(--amb-card, 0 0% 3%);
-    --card-foreground: var(--amb-card-foreground, 0 0% 100%);
-    --popover: var(--amb-popover, 0 0% 3%);
-    --popover-foreground: var(--amb-popover-foreground, 0 0% 100%);
-    --primary: var(--amb-primary, 0 0% 100%);
-    --primary-foreground: var(--amb-primary-foreground, 0 0% 0%);
-    --secondary: var(--amb-secondary, 0 0% 10%);
-    --secondary-foreground: var(--amb-secondary-foreground, 0 0% 100%);
-    --muted: var(--amb-muted, 0 0% 10%);
-    --muted-foreground: var(--amb-muted-foreground, 0 0% 70%);
-    --accent: var(--amb-accent, 0 0% 15%);
-    --accent-foreground: var(--amb-accent-foreground, 0 0% 100%);
-    --destructive: var(--amb-destructive, 0 100% 30%);
-    --destructive-foreground: var(--amb-destructive-foreground, 0 0% 100%);
-    --border: var(--amb-border, 0 0% 20%);
-    --input: var(--amb-input, 0 0% 20%);
-    --ring: var(--amb-ring, 0 0% 80%);
+    --background: 0 0% 0%; /* #000000 */
+    --foreground: 0 0% 100%;
+    --card: 0 0% 4.3%; /* #0B0B0B */
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 4.3%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 0 0% 100%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 0 0% 7.8%; /* #141414 */
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 7.8%;
+    --muted-foreground: 0 0% 63.1%; /* #A1A1A1 — 7.3:1 on black */
+    --accent: 0 0% 10.2%; /* #1A1A1A — hover */
+    --accent-foreground: 0 0% 100%;
+    --border: 0 0% 14.9%; /* #262626 */
+    --input: 0 0% 14.9%;
+    --ring: 0 0% 100%;
+
+    --destructive: 0 90.6% 70.8%; /* #F87171 */
+    --destructive-foreground: 0 0% 0%;
+    --warning: 43.3 96.4% 56.3%; /* #FBBF24 */
+    --success: 141.9 69.2% 58%; /* #4ADE80 */
+
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
 
-    /* On the dark theme the fill is light enough to double as ink, so the
-       text-on-fill token flips to a dark navy. Contrast: brand-foreground on
-       brand 8.02:1, brand-ink on background 8.84:1. */
-    --brand: var(--amb-brand, 204 94% 62%);
-    --brand-foreground: var(--amb-brand-foreground, 226 95% 10%);
-    --brand-ink: var(--amb-brand-ink, 204 94% 62%);
+    --brand: 0 0% 100%;
+    --brand-foreground: 0 0% 0%;
+    --brand-ink: 0 0% 100%;
   }
 }
 
 @layer base {
-  /* Workspace surface palette.
-     This re-points the EXISTING tokens for the /chat subtree rather than
-     inventing parallel ones, so every component below keeps using bg-card,
-     border-border and text-primary and re-skins with no className changes.
-     Routes that kept the dashboard shell sit outside .workspace and are
-     untouched.
-     .dark .workspace (0,2,0) correctly outranks .workspace (0,1,0), so the
-     dark block does not need !important or source-order luck.
-     NOTE: Radix portals mount at document.body, outside this scope — any
-     portalled surface needs className="workspace" to inherit these.
-     Each token reads --amb-ws-* (engine) and falls back to the literal, same
-     as the root scope above. */
+  /* The workspace subtree used to carry a blue-tinted palette of its own. It now
+     inherits the single system, which is why /chat, /settings and the dashboard
+     finally look like one product. The class is kept because Radix portals opt
+     into it and components reference it. */
   .workspace {
-    --background: var(--amb-ws-background, 220 43% 98%);
-    --card: var(--amb-ws-card, 0 0% 100%);
-    --card-foreground: var(--amb-ws-card-foreground, 224 47% 11%);
-    --popover: var(--amb-ws-popover, 0 0% 100%);
-    --popover-foreground: var(--amb-ws-popover-foreground, 224 47% 11%);
-    --secondary: var(--amb-ws-secondary, 220 33% 96%);
-    --muted: var(--amb-ws-muted, 220 33% 96%);
-    --muted-foreground: var(--amb-ws-muted-foreground, 220 12% 46%);
-    --accent: var(--amb-ws-accent, 220 33% 94%);
-    --border: var(--amb-ws-border, 220 25% 90%);
-    --input: var(--amb-ws-input, 220 25% 90%);
+    --background: 0 0% 100%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 0%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 0%;
+    --secondary: 0 0% 96.1%;
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 42%;
+    --accent: 0 0% 94.1%;
+    --border: 0 0% 89.8%;
+    --input: 0 0% 89.8%;
   }
 
   .dark .workspace {
-    /* The prototype ground: a blue-tinted near-black, not the pure #000 of the
-       app-wide dark theme. Cards sit two steps up so glass edges read. */
-    --background: var(--amb-ws-background, 228 27% 4%);
-    --card: var(--amb-ws-card, 230 30% 7%);
-    --card-foreground: var(--amb-ws-card-foreground, 0 0% 100%);
-    --popover: var(--amb-ws-popover, 231 28% 10%);
-    --popover-foreground: var(--amb-ws-popover-foreground, 0 0% 100%);
-    --secondary: var(--amb-ws-secondary, 230 26% 9%);
-    --muted: var(--amb-ws-muted, 230 26% 9%);
-    --muted-foreground: var(--amb-ws-muted-foreground, 220 14% 65%);
-    --accent: var(--amb-ws-accent, 228 25% 14%);
-    --border: var(--amb-ws-border, 225 20% 17%);
-    --input: var(--amb-ws-input, 225 20% 17%);
+    --background: 0 0% 0%;
+    --card: 0 0% 4.3%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 4.3%;
+    --popover-foreground: 0 0% 100%;
+    --secondary: 0 0% 7.8%;
+    --muted: 0 0% 7.8%;
+    --muted-foreground: 0 0% 63.1%;
+    --accent: 0 0% 10.2%;
+    --border: 0 0% 14.9%;
+    --input: 0 0% 14.9%;
   }
 }
 
@@ -224,46 +214,6 @@
   padding: 2px 0;
 }
 
-/* TOUCH DEVICES: no live blur.
- *
- * Measured against production on emulated phones (e2e/qa-mobile-perf.js): the glass
- * surfaces (backdrop-blur-*) are re-filtered on every keystroke, caret blink,
- * scroll and dialog open — removing them cut the compositor's work while typing by
- * 65-74% in Chromium — and in WebKit the large decorative blur-[70-190px] glow orbs
- * were re-rasterised on every repaint (typing latency p50 258 -> 114 ms without
- * them). At phone pixel ratios both costs are several times a laptop's, which is the
- * "laggy in everything" reported on iPhone and Android.
- *
- * So on a coarse primary pointer: no backdrop-filter anywhere (every overlay panel is
- * already opaque, and the glass that remains sits over a backdrop that is blurred
- * anyway), and the glow orbs keep their colours as a filter-free radial gradient.
- * Fine pointers (desktop, trackpad iPad) are unchanged.
- *
- * Remember: backdrop-filter makes an element the containing block for
- * `position: fixed` descendants. On touch that no longer happens, so a fixed child
- * of a glass surface resolves against the viewport — which is what the portalled
- * dialogs wanted anyway. */
-@media (pointer: coarse) {
-  *,
-  *::before,
-  *::after {
-    -webkit-backdrop-filter: none !important;
-    backdrop-filter: none !important;
-  }
-  .glow-orb {
-    filter: none !important;
-  }
-  /* Orbs drawn as a blurred linear gradient on a round box would show a hard edge
-     without the blur; --glow-from/--glow-via carry their colours for this. */
-  .glow-orb[class*="--glow-from"] {
-    background-image: radial-gradient(
-      closest-side,
-      var(--glow-from),
-      var(--glow-via, transparent) 55%,
-      transparent
-    ) !important;
-  }
-}
 
 /* Shiki dual-theme: flip colours via CSS on theme change rather than
    re-highlighting every code block. */
@@ -274,79 +224,11 @@
   color: var(--s-dark);
 }
 
-/* Greeting gradient-sweep reveal (chat empty-state <h1>). PURE CSS, one shot.
-   Letters are painted by a background clipped to the glyphs; the settle colour
-   is background-color: var(--greeting-ink) (the ambience hsl the component
-   passes in). A soft mask wipes the text in left->right; an indigo->magenta->
-   rose beam rides the same edge because mask + background share size and one
-   animated position. Final state: solid ink, no mask/beam/transform/filter,
-   static.
-   NEVER-INVISIBLE: the base rule sets a real opaque colour; the transparent-
-   fill treatment lives inside @supports, and the RESTING mask/beam positions
-   already show solid ink (the hidden state exists only inside the keyframes),
-   so every fallback path resolves to visible text. */
-.greeting-sweep {
-  color: var(--greeting-ink, hsl(var(--foreground)));
-}
-
-@supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .greeting-sweep {
-    color: transparent;
-    -webkit-text-fill-color: transparent;
-    background-color: var(--greeting-ink, hsl(var(--foreground)));
-    background-image: linear-gradient(
-      to right,
-      transparent 40%,
-      #6366f1 45%,
-      #d946ef 50%,
-      #f43f5e 55%,
-      transparent 60%
-    );
-    background-repeat: no-repeat;
-    background-size: 300% 100%;
-    background-position: 0% 0; /* resting: beam parked off-text -> solid ink */
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-mask-image: linear-gradient(to right, #000 40%, transparent 60%);
-    mask-image: linear-gradient(to right, #000 40%, transparent 60%);
-    -webkit-mask-repeat: no-repeat;
-    mask-repeat: no-repeat;
-    -webkit-mask-size: 300% 100%;
-    mask-size: 300% 100%;
-    -webkit-mask-position: 0% 0; /* resting: fully revealed */
-    mask-position: 0% 0;
-    animation: greeting-sweep 2s ease-in-out 0.15s 1 backwards;
-  }
-
-  @keyframes greeting-sweep {
-    from {
-      -webkit-mask-position: 100% 0;
-      mask-position: 100% 0;
-      background-position: 100% 0;
-    }
-    to {
-      -webkit-mask-position: 0% 0;
-      mask-position: 0% 0;
-      background-position: 0% 0;
-    }
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .greeting-sweep {
-    animation: none;
-    -webkit-mask-image: none;
-    mask-image: none;
-    background-image: none;
-  }
-}
-
 /* The theme toggle's Sun/Moon morph. Two properties, two different curves: the
    transform springs (the overshoot is the whole feel of the control) while the
    opacity crossfades plainly, so the outgoing icon is gone before the incoming
    one finishes settling. Scoped to the icons — this is deliberately NOT a global
-   transition, because the ambience tween rewrites every colour var each frame
-   and a blanket rule would restart on every element on every frame. */
+   transition: a blanket rule would restart on every element on every frame. */
 .theme-icon-spring {
   transition:
     transform 350ms cubic-bezier(0.34, 1.56, 0.64, 1),

@@ -157,10 +157,10 @@ describe("the OAuth callback route", () => {
     const calls = stubPlane({ ok: true });
     for (const query of [
       "?state=short&code=x",
-      "?state=" + "a".repeat(200) + "&code=x",
+      `?state=${"a".repeat(200)}&code=x`,
       "?state=has%20space%3C%3E&code=x",
-      "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&code=" + "c".repeat(3000),
-      "?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&error=" + "e".repeat(300),
+      `?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&code=${"c".repeat(3000)}`,
+      `?state=st_abcdefghijklmnopqrstuvwxyz0123456789ABCD&error=${"e".repeat(300)}`,
     ]) {
       const res = await callback(t, query);
       expect(res.status, query.slice(0, 40)).toBe(400);

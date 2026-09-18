@@ -23,7 +23,7 @@ import { useModalFocus } from "../_hooks/use-modal-focus";
  * The dialog holds no chat state of its own; it mutates and closes.
  *
  * IT MUST BE PORTALLED. This renders from inside ChatSidebar, and the rail that
- * contains it (`workspace-rail.tsx`) is `backdrop-blur-xl` + `overflow-hidden`.
+ * contains it (`workspace-rail.tsx`) is `` + `overflow-hidden`.
  * `backdrop-filter` makes that element the containing block for `position:
  * fixed` descendants, so `left-1/2 -translate-x-1/2` centred the dialog on the
  * 272px RAIL rather than the viewport: 136 - 208 = -72px, and `overflow-hidden`
@@ -107,7 +107,7 @@ export function MoveToProjectDialog({
     <div className="workspace">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
       <div
-        className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
+        className="fixed inset-0 z-40 bg-black/50"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -116,7 +116,7 @@ export function MoveToProjectDialog({
         role="dialog"
         aria-modal="true"
         aria-label="Move chat to a project"
-        className="fixed left-1/2 top-1/2 z-50 flex max-h-[70vh] w-[min(26rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-border bg-card p-5 shadow-2xl"
+        className="fixed left-1/2 top-1/2 z-50 flex max-h-[70vh] w-[min(26rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-border bg-card p-5 shadow-md"
       >
         <div className="flex items-start justify-between gap-3">
           <div>

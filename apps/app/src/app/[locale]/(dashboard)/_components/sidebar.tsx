@@ -94,7 +94,7 @@ export function Sidebar() {
           {user?.avatarUrl ? (
             <img src={user.avatarUrl} alt="" className="h-8 w-8 rounded-full object-cover" />
           ) : (
-            <span className="h-8 w-8 shrink-0 rounded-full bg-gradient-to-br from-lime-400 via-cyan-300 to-blue-500" />
+            <span className="h-8 w-8 shrink-0 rounded-full border border-border bg-muted" />
           )}
           <div className="min-w-0">
             <p className="truncate text-sm font-medium text-primary/80">{user?.displayName || user?.name || "—"}</p>
@@ -143,7 +143,7 @@ export function Sidebar() {
             className="absolute inset-0 cursor-default bg-black/50"
             onClick={() => setOpen(false)}
           />
-          <div className="absolute left-0 top-0 h-full shadow-xl">
+          <div className="absolute left-0 top-0 h-full shadow-md">
             <button
               type="button"
               aria-label="Close menu"

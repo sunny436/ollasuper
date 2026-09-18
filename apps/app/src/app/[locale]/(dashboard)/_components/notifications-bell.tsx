@@ -57,9 +57,9 @@ function severityOf(type: string): Severity {
 }
 
 const SEVERITY: Record<Severity, { dot: string; label: string }> = {
-  success: { dot: "bg-emerald-500", label: "Success" },
-  failure: { dot: "bg-red-500", label: "Failed" },
-  warning: { dot: "bg-amber-500", label: "Warning" },
+  success: { dot: "bg-muted", label: "Success" },
+  failure: { dot: "bg-muted", label: "Failed" },
+  warning: { dot: "bg-muted", label: "Warning" },
   action: { dot: "bg-brand", label: "Action required" },
   info: { dot: "bg-primary/30", label: "Update" },
 };
@@ -197,7 +197,7 @@ export function NotificationsBell() {
           {unread > 0 && (
             <span
               aria-label={`${unread > 9 ? "9+" : unread} unread`}
-              className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[9px] font-medium text-white"
+              className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-foreground px-1 text-[9px] font-medium text-background"
             >
               {unread > 9 ? "9+" : unread}
             </span>

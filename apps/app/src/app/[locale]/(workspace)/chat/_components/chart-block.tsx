@@ -48,7 +48,13 @@ const CHART_TYPES = new Set([
 const RADIAL = new Set(["pie", "doughnut", "polarArea"]);
 const MAX_DATASETS = 24;
 const MAX_POINTS = 2000;
-// Accessible categorical palette (HSL triples). Index 0 is replaced by --brand.
+// Accessible categorical palette (HSL triples).
+//
+// DECOUPLED FROM --brand ON PURPOSE. Index 0 used to be replaced by the brand
+// token, which worked while the brand was a hue. The brand is now pure black /
+// pure white, so that substitution would paint series 1 in the chrome ink while
+// series 2..n stayed coloured - an unreadable chart and a meaningless legend.
+// Chart series are CONTENT, not chrome, and keep their own colour.
 const PALETTE = [
   "224 76% 52%",
   "160 64% 42%",
@@ -58,7 +64,7 @@ const PALETTE = [
   "192 70% 45%",
   "45 90% 50%",
   "110 45% 45%",
-];
+] as const;
 
 function isDark(): boolean {
   return (
@@ -107,8 +113,9 @@ function parseSpec(raw: string): AnyConfig | null {
  *  responsive layout. Global text/grid colour is set via Chart.defaults. */
 function buildConfig(cfg: AnyConfig, el: Element): AnyConfig {
   const card = readToken(el, "--card", "0 0% 100%");
-  const brand = readToken(el, "--brand", "224 76% 52%");
-  const palette = [brand, ...PALETTE.slice(1)];
+  // A local alias so the reads below stay short; the tuple is frozen at module
+  // scope, which is what makes PALETTE[0] a definite string for the fallbacks.
+  const palette = PALETTE;
   const type: string = cfg.type;
   const area: boolean = !!cfg._area;
   const radial = RADIAL.has(type);
@@ -116,7 +123,7 @@ function buildConfig(cfg: AnyConfig, el: Element): AnyConfig {
   const datasets = (cfg.data?.datasets ?? [])
     .slice(0, MAX_DATASETS)
     .map((ds: AnyConfig, i: number) => {
-      const base = palette[i % palette.length] ?? brand;
+      const base = palette[i % palette.length] ?? PALETTE[0];
       const next = { ...ds };
       if (Array.isArray(next.data) && next.data.length > MAX_POINTS) {
         next.data = next.data.slice(0, MAX_POINTS);
@@ -125,7 +132,7 @@ function buildConfig(cfg: AnyConfig, el: Element): AnyConfig {
         if (next.backgroundColor == null) {
           const n = Array.isArray(next.data) ? next.data.length : palette.length;
           next.backgroundColor = Array.from({ length: n }, (_, k) =>
-            hsl(palette[k % palette.length] ?? brand),
+            hsl(palette[k % palette.length] ?? PALETTE[0]),
           );
         }
         if (next.borderColor == null) next.borderColor = hsl(card);
@@ -222,7 +229,7 @@ function ChartBlockImpl({ spec, complete }: { spec: string; complete: boolean })
   // Streaming — a subtle placeholder rather than raw partial JSON.
   if (!complete) {
     return (
-      <div className="my-3 flex h-24 items-center justify-center rounded-lg border border-border bg-card/40 text-[13px] text-primary/60">
+      <div className="my-3 flex h-24 items-center justify-center rounded-lg border border-border bg-card text-[13px] text-primary/60">
         <span className="animate-pulse">Preparing chart…</span>
       </div>
     );
@@ -241,7 +248,7 @@ function ChartBlockImpl({ spec, complete }: { spec: string; complete: boolean })
   }
 
   return (
-    <div className="my-3 overflow-x-auto rounded-lg border border-border bg-card/40 p-3">
+    <div data-chart className="my-3 overflow-x-auto rounded-lg border border-border bg-card p-3">
       <div className="relative h-[clamp(220px,45vw,360px)] w-full">
         <canvas ref={canvasRef} />
       </div>

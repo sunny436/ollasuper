@@ -134,7 +134,7 @@ export function ScheduledPane() {
                       shape. */}
                   <div
                     role="menu"
-                    className="absolute right-0 z-50 mt-1 w-36 overflow-hidden rounded-lg border border-border bg-card p-1 shadow-lg"
+                    className="absolute right-0 z-50 mt-1 w-36 overflow-hidden rounded-lg border border-border bg-card p-1 shadow-md"
                   >
                     {FILTERS.map((f) => (
                       <button
@@ -205,7 +205,7 @@ function TaskListSkeleton() {
       {[0, 1, 2].map((i) => (
         <div
           key={i}
-          className="h-[68px] animate-pulse rounded-xl border border-border bg-card/40"
+          className="h-[68px] animate-pulse rounded-xl border border-border bg-card"
         />
       ))}
     </div>

@@ -79,7 +79,7 @@ export default function ConnectorsPage() {
 
       {/* §182: one sentence of education, and it names the approval guarantee
           rather than leaving the user to wonder. */}
-      <p className="rounded-lg border border-border bg-card/40 p-3 text-xs leading-relaxed text-primary/65">
+      <p className="rounded-lg border border-border bg-card p-3 text-xs leading-relaxed text-primary/65">
         {PAGE.about}
       </p>
 
@@ -87,7 +87,7 @@ export default function ConnectorsPage() {
           authorization URL is offered as a plain link the user can click
           themselves. It is minted by the backend and carries no token. */}
       {pendingAuthUrl && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+        <div className="rounded-lg border border-warning bg-muted p-3">
           <p className="text-xs font-medium text-primary">
             {ERROR.popupBlocked.title}
           </p>
@@ -121,7 +121,7 @@ export default function ConnectorsPage() {
           onChange={(e) => setQuery(e.target.value)}
           placeholder={PAGE.searchPlaceholder}
           aria-label={PAGE.searchPlaceholder}
-          className="min-w-0 flex-1 rounded-lg border border-border bg-card/60 px-3 py-2 text-sm text-primary/80 outline-none transition placeholder:text-primary/35 focus:border-brand/40"
+          className="min-w-0 flex-1 rounded-lg border border-border bg-card px-3 py-2 text-sm text-primary/80 outline-none transition placeholder:text-primary/35 focus:border-brand/40"
         />
       </div>
 
@@ -230,8 +230,8 @@ function CategoryChip({
       aria-pressed={active}
       className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:text-xs ${
         active
-          ? "border-border bg-card/80 font-medium text-primary"
-          : "border-transparent text-primary/65 hover:bg-card/50 hover:text-primary/80"
+          ? "border-border bg-card font-medium text-primary"
+          : "border-transparent text-primary/65 hover:bg-card hover:text-primary/80"
       }`}
     >
       {label}
@@ -251,7 +251,7 @@ function SkeletonGrid() {
       {[0, 1, 2, 3].map((i) => (
         <div
           key={i}
-          className="h-[132px] animate-pulse rounded-xl border border-border bg-card/40"
+          className="h-[132px] animate-pulse rounded-xl border border-border bg-card"
         />
       ))}
     </div>
@@ -279,7 +279,7 @@ function ErrorPanel({
   onAction: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card/40 p-6 text-center">
+    <div className="rounded-xl border border-border bg-card p-6 text-center">
       <p className="text-sm font-medium text-primary/80">{title}</p>
       <p className="mt-1 text-xs text-primary/65">{body}</p>
       {/* §213: every recoverable error offers the action that recovers it. */}

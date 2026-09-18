@@ -282,7 +282,7 @@ export function ExploreMenu({
         THE DIM LIVES IN chat-layout, NOT HERE.
 
         A body-portalled overlay was tried and reverted: the chat pane is
-        `relative isolate` (chat-layout, so the ambience backdrop's -z-10 stays
+        `relative isolate` (chat-layout, so this pane's own overlays stay
         contained), which makes it a stacking context. Anything at body level
         therefore paints above EVERYTHING inside it, and no z-index on the
         composer can escape its isolated ancestor — production showed the

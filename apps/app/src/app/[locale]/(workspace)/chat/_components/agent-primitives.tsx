@@ -12,9 +12,9 @@ type DotState = "running" | "done" | "error" | "waiting" | "unknown";
 
 const DOT_CLASS: Record<DotState, string> = {
   running: "bg-brand animate-pulse motion-reduce:animate-none",
-  done: "bg-emerald-500",
+  done: "bg-muted",
   error: "bg-destructive",
-  waiting: "bg-amber-500",
+  waiting: "bg-muted",
   unknown: "bg-primary/30",
 };
 
@@ -42,7 +42,7 @@ export function StatusDot({ state }: { state: DotState }) {
 type BadgeTone = "muted" | "brand" | "destructive";
 
 const BADGE_TONE: Record<BadgeTone, string> = {
-  muted: "border-border bg-card/60 text-primary/60",
+  muted: "border-border bg-card text-primary/60",
   brand: "border-brand/30 bg-brand/5 text-brand-ink",
   destructive: "border-destructive/30 bg-destructive/5 text-destructive",
 };

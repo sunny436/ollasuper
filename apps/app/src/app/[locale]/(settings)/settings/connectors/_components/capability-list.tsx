@@ -47,7 +47,7 @@ export function CapabilityList({
 
       {loading && (
         <div
-          className="h-16 animate-pulse rounded-lg border border-border bg-card/40"
+          className="h-16 animate-pulse rounded-lg border border-border bg-card"
           aria-busy="true"
           aria-label={`Loading ${title.toLowerCase()}`}
         />
@@ -55,7 +55,7 @@ export function CapabilityList({
 
       {!loading && error && (
         // A failed listing, not an empty one. Different words, different action.
-        <div className="rounded-lg border border-border bg-card/40 p-3">
+        <div className="rounded-lg border border-border bg-card p-3">
           <p className="text-xs text-primary/60">{error}</p>
           {onRetry && (
             <button
@@ -108,7 +108,7 @@ export function CapabilityRow({
   action?: React.ReactNode;
 }) {
   return (
-    <li className="flex items-start gap-3 rounded-lg border border-border bg-card/40 px-3 py-2">
+    <li className="flex items-start gap-3 rounded-lg border border-border bg-card px-3 py-2">
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-xs font-medium text-primary/80">
@@ -120,7 +120,7 @@ export function CapabilityRow({
             </span>
           )}
           {warn && (
-            <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+            <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-warning dark:text-warning">
               <ShieldAlert aria-hidden className="h-3 w-3" />
               {warn}
             </span>

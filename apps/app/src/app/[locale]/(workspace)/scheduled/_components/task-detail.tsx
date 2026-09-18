@@ -80,7 +80,7 @@ export function TaskDetail({
   const notFound = task === null;
 
   return (
-    <aside className="hidden w-[420px] shrink-0 flex-col border-l border-border bg-card/60 backdrop-blur-xl lg:flex">
+    <aside className="hidden w-[420px] shrink-0 flex-col border-l border-border bg-card lg:flex">
       <Header
         title={task?.title ?? (notFound ? "Unavailable" : "Loading…")}
         subtitle={

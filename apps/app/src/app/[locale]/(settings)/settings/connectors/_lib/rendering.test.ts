@@ -17,10 +17,10 @@ import { describe, expect, test } from "bun:test";
  * So this walks the directory and asserts it, the same way the Phase 4 vault
  * contract test parses `convex/http.ts` rather than trusting a comment.
  *
- * IT IS SCOPED TO THIS FEATURE on purpose. `mermaid.tsx` and
- * `ambience-script.tsx` are audited exceptions elsewhere, and widening this to
- * the whole app would either fail on them or need an allowlist that the next
- * person would add to.
+ * IT IS SCOPED TO THIS FEATURE on purpose. `mermaid.tsx` and the pre-paint
+ * theme script are audited exceptions elsewhere, and widening this to the whole
+ * app would either fail on them or need an allowlist that the next person would
+ * add to.
  */
 
 const ROOT = join(import.meta.dir, "..");

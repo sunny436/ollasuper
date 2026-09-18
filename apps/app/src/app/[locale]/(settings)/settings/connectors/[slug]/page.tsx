@@ -84,7 +84,7 @@ export default function ConnectorDetailPage({
   if (loading) {
     return (
       <div
-        className="h-64 animate-pulse rounded-xl border border-border bg-card/40"
+        className="h-64 animate-pulse rounded-xl border border-border bg-card"
         aria-busy="true"
         aria-label="Loading connector"
       />
@@ -141,7 +141,7 @@ export default function ConnectorDetailPage({
         )}
       </header>
 
-      <section className="flex flex-col gap-2 rounded-xl border border-border bg-card/40 p-4">
+      <section className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4">
         <ConnectionStatus state={view.state} size="md" />
         <ConnectionHint state={view.state} />
         {view.runtime === "local" && (
@@ -275,7 +275,7 @@ export default function ConnectorDetailPage({
       )}
 
       {/* §183: technical facts exist, behind a disclosure, never in the way. */}
-      <details className="rounded-xl border border-border bg-card/30 p-4">
+      <details className="rounded-xl border border-border bg-card p-4">
         <summary className="cursor-pointer text-xs font-medium text-primary/60">
           About this connection
         </summary>

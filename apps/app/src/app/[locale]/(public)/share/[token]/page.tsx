@@ -102,7 +102,7 @@ function StatePage({ heading, body }: { heading: string; body: string }) {
         <p className="mt-2 text-sm text-primary/60">{body}</p>
         <Link
           href="/"
-          className="mt-6 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:brightness-110"
+          className="mt-6 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90"
         >
           Start your own chat
         </Link>
@@ -168,7 +168,7 @@ export default async function SharePage({
             m.role === "user" ? (
               // biome-ignore lint/suspicious/noArrayIndexKey: static frozen snapshot
               <div key={mi} className="flex justify-end">
-                <div className="max-w-[85%] rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-[15px] leading-[1.7] text-brand-foreground">
+                <div className="max-w-[85%] rounded-2xl rounded-br-md border border-border bg-muted px-4 py-2.5 text-[15px] leading-[1.7] text-foreground">
                   <p className="whitespace-pre-wrap break-words">{m.content}</p>
                   {m.attachments.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-2">
@@ -211,7 +211,7 @@ export default async function SharePage({
           </p>
           <Link
             href="/"
-            className="mt-3 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:brightness-110"
+            className="mt-3 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90"
           >
             Start your own chat
           </Link>

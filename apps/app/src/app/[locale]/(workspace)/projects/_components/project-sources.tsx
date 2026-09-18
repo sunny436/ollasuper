@@ -147,7 +147,7 @@ export function ProjectSources({
               type="button"
               onClick={() => inputRef.current?.click()}
               disabled={uploading || !workspaceId}
-              className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-xs font-medium text-brand-foreground shadow-sm transition hover:brightness-110 disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-40"
             >
               {uploading ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -206,7 +206,7 @@ export function ProjectSources({
               type="button"
               onClick={() => inputRef.current?.click()}
               disabled={uploading || !workspaceId}
-              className="mt-5 rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground shadow-sm transition hover:brightness-110 disabled:opacity-40"
+              className="mt-5 rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-40"
             >
               {uploading ? "Uploading…" : "Add sources"}
             </button>
@@ -334,7 +334,7 @@ function AttachExistingDialog({
     <>
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-away dismiss */}
       <div
-        className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
+        className="fixed inset-0 z-40 bg-black/50"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -343,7 +343,7 @@ function AttachExistingDialog({
         role="dialog"
         aria-modal="true"
         aria-label="Attach an existing file"
-        className="fixed left-1/2 top-1/2 z-50 flex max-h-[70vh] w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-border bg-card p-5 shadow-2xl"
+        className="fixed left-1/2 top-1/2 z-50 flex max-h-[70vh] w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-border bg-card p-5 shadow-md"
       >
         <div className="flex items-start justify-between gap-3">
           <h2 className="text-lg font-semibold text-primary">Attach a file</h2>

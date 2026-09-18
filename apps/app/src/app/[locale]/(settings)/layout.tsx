@@ -1,13 +1,12 @@
 "use client";
 
 import { CommandPalette } from "@/components/command-palette";
-import { AmbienceSync } from "@/lib/ambience/ambience-sync";
+import { ThemeSync } from "@/lib/theme/theme-sync";
 import { WorkspaceProvider } from "@/lib/workspace-provider";
 import { I18nProviderClient } from "@/locales/client";
 import { Menu } from "lucide-react";
 import { use, useState } from "react";
 import { Toaster } from "sonner";
-import { AmbientBackdrop } from "./_components/ambient-backdrop";
 import { SettingsSidebar } from "./_components/settings-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 
@@ -42,15 +41,14 @@ export default function SettingsLayout({
   return (
     <I18nProviderClient locale={locale}>
       <WorkspaceProvider>
-        <AmbienceSync />
+        <ThemeSync />
         {/* .workspace re-points the surface tokens to the deep-space glass
             palette so every child re-skins with no className churn; relative +
             isolate keep the backdrop under the shell (globals.css:96-137). */}
         <div className="workspace relative isolate flex h-dvh-safe w-full overflow-hidden bg-background text-foreground">
-          <AmbientBackdrop />
 
           {/* Desktop sidebar */}
-          <aside className="relative z-10 hidden w-72 shrink-0 border-r border-border bg-card/30 backdrop-blur-xl md:flex md:flex-col">
+          <aside className="relative z-10 hidden w-72 shrink-0 border-r border-border bg-card md:flex md:flex-col">
             <SettingsSidebar />
           </aside>
 
@@ -63,7 +61,7 @@ export default function SettingsLayout({
                 onClick={() => setDrawer(false)}
                 aria-hidden="true"
               />
-              <div className="workspace absolute left-0 top-0 h-full w-72 border-r border-border bg-popover shadow-2xl">
+              <div className="workspace absolute left-0 top-0 h-full w-72 border-r border-border bg-popover shadow-md">
                 <SettingsSidebar onNavigate={() => setDrawer(false)} />
               </div>
             </div>

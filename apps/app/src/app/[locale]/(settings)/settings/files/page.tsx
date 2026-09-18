@@ -199,13 +199,13 @@ export default function FilesSection() {
       </div>
 
       {status === "LoadingFirstPage" && (
-        <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl">
+        <p className="rounded-2xl border border-border bg-card p-8 text-center text-sm text-primary/65">
           Loading…
         </p>
       )}
 
       {status !== "LoadingFirstPage" && files.length === 0 && (
-        <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl">
+        <p className="rounded-2xl border border-border bg-card p-8 text-center text-sm text-primary/65">
           Nothing stored here — files the assistant can read are listed under
           Searchable below.
         </p>
@@ -217,7 +217,7 @@ export default function FilesSection() {
         return (
           <div
             key={cat}
-            className="overflow-hidden rounded-2xl border border-border bg-card/60 backdrop-blur-xl"
+            className="overflow-hidden rounded-2xl border border-border bg-card"
           >
             <div className="flex items-center gap-2 border-b border-border px-5 py-3">
               <Icon className="h-4 w-4 text-primary/65" />
@@ -257,7 +257,7 @@ export default function FilesSection() {
                     title="Delete file?"
                     description={f.name}
                     confirmLabel="Delete"
-                    className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-600 transition hover:bg-red-500/10 [@media(pointer:coarse)]:min-h-11"
+                    className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-destructive transition hover:bg-muted [@media(pointer:coarse)]:min-h-11"
                     onConfirm={async () => {
                       await removeFile({ fileId: f._id });
                       toast.success("File deleted");
@@ -282,7 +282,7 @@ export default function FilesSection() {
           these rows have a different owner and a different visibility rule, and
           merging them would misrepresent who can see what. They are also the
           only rows the model can actually read. */}
-      <div className="overflow-hidden rounded-2xl border border-border bg-card/60 backdrop-blur-xl">
+      <div className="overflow-hidden rounded-2xl border border-border bg-card">
         <div className="flex items-center gap-2 border-b border-border px-5 py-3">
           <FileText className="h-4 w-4 text-primary/65" />
           <h2 className="text-sm font-medium text-primary/85">Searchable</h2>
@@ -340,7 +340,7 @@ export default function FilesSection() {
                   title="Delete file?"
                   description={f.name}
                   confirmLabel="Delete"
-                  className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-red-600 transition hover:bg-red-500/10 [@media(pointer:coarse)]:min-h-11"
+                  className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs text-destructive transition hover:bg-muted [@media(pointer:coarse)]:min-h-11"
                   onConfirm={async () => {
                     await removeKnowledge({ fileId: f._id });
                     toast.success("File deleted");

@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuthActions } from "@convex-dev/auth/react";
+import { BrandMark } from "@/components/brand-mark";
 import { api } from "@v1/backend/convex/_generated/api";
 import { useAction } from "convex/react";
 import { useForm } from "@tanstack/react-form";
@@ -24,9 +25,7 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { AmbientBackdrop } from "./ambient-backdrop";
 import { consumeDisplacedFlag } from "@/lib/displaced-session";
-import { IntelligenceCoreFallback } from "./intelligence-core-fallback";
 import { OAuthRow } from "./oauth-row";
 import {
   forgotSchema,
@@ -41,10 +40,6 @@ import {
 // three.js is ~150kB gzipped and this is the app's entry page, so it loads only
 // after hydration and never lands in the login route's first-load bundle.
 // ssr:false is legal here and only here — this file is a client component.
-const IntelligenceCore = dynamic(
-  () => import("./intelligence-core").then((m) => m.IntelligenceCore),
-  { ssr: false, loading: () => <IntelligenceCoreFallback /> },
-);
 
 // Rendered during SSR too, so it cannot be new Date().getFullYear() without
 // risking a hydration mismatch across a year boundary.
@@ -52,19 +47,18 @@ const COPYRIGHT_YEAR = 2026;
 
 type Mode = "signIn" | "signUp" | "verify" | "forgot" | "reset" | "otp";
 
-const LABEL = "mb-2 block font-semibold text-[11px] text-white/60 uppercase tracking-[0.12em]";
+const LABEL =
+  "mb-2 block font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.12em]";
 const FIELD_ROW =
-  "flex min-h-[62px] items-center gap-3.5 rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-4 transition-colors focus-within:border-[#06B6D4]/60 focus-within:bg-white/[0.06]";
+  "flex min-h-[62px] items-center gap-3.5 rounded-lg border border-border bg-card px-5 py-4 transition-colors focus-within:border-foreground";
 const FIELD_INPUT =
-  "w-full bg-transparent font-medium text-[15px] text-white placeholder-white/25 focus:outline-none";
+  "w-full bg-transparent font-medium text-[15px] text-foreground placeholder:text-muted-foreground focus:outline-none";
 const SUBMIT =
-  "group flex min-h-[64px] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#22C1E8] via-[#4F8BF0] to-[#7C3AED] px-8 py-4 font-bold text-sm text-white uppercase tracking-[0.14em] shadow-[0_10px_40px_rgba(6,182,212,0.4)] transition-all hover:shadow-[0_14px_48px_rgba(124,58,237,0.5)] disabled:opacity-60";
-const LINK = "font-semibold text-[#22C1E8] text-[13px] transition-colors hover:text-[#5AD8FA]";
-// The one gradient-TEXT in the app (no bg-clip-text existed before). Needs BOTH
-// bg-clip-text and text-transparent or it renders as solid text. Four colour
-// stops → arbitrary linear-gradient, since from/via/to only expresses three.
-const WORDMARK =
-  "bg-[linear-gradient(90deg,#22D3EE_0%,#4F8BF0_34%,#7C3AED_66%,#EC4899_100%)] bg-clip-text font-black text-3xl italic uppercase tracking-tight text-transparent";
+  "group flex min-h-[64px] w-full items-center justify-center gap-2 rounded-lg bg-foreground px-8 py-4 font-bold text-sm text-background uppercase tracking-[0.14em] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-40";
+const LINK =
+  "font-semibold text-foreground text-[13px] underline underline-offset-4 transition-opacity hover:opacity-70";
+// Was the app's only gradient TEXT (four stops via bg-clip-text). One ink now.
+const WORDMARK = "font-black text-3xl uppercase tracking-tight text-foreground";
 
 // ---------------------------------------------------------------------------
 // Every sub-component below lives at MODULE SCOPE. Defining one inside the panel
@@ -81,7 +75,7 @@ const loadMotionFeatures = () =>
 function FieldError({ errors }: { errors: unknown[] }) {
   const first = errors.find((e): e is string => typeof e === "string" && e.length > 0);
   if (!first) return null;
-  return <span className="mt-1.5 inline-block font-medium text-[11px] text-rose-400">{first}</span>;
+  return <span className="mt-1.5 inline-block font-medium text-[11px] text-destructive">{first}</span>;
 }
 
 function SubmitButton({ pending, label }: { pending: boolean; label: string }) {
@@ -112,12 +106,12 @@ function FeatureCard({
   accent: string;
 }) {
   return (
-    <div className="flex flex-col gap-2 rounded-2xl border border-[#7C3AED]/15 bg-white/[0.03] p-4 backdrop-blur-sm transition-colors hover:border-[#7C3AED]/30">
-      <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04]">
+    <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card p-4 transition-colors hover:border-foreground">
+      <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card">
         <Icon className={`h-4 w-4 ${accent}`} />
       </span>
-      <p className="font-semibold text-[13px] text-white">{title}</p>
-      <p className="text-[11px] leading-snug text-white/45">{desc}</p>
+      <p className="font-semibold text-[13px] text-foreground">{title}</p>
+      <p className="text-[11px] leading-snug text-foreground/45">{desc}</p>
     </div>
   );
 }
@@ -147,7 +141,7 @@ function PanelFrame({
 }
 
 function Hint({ children }: { children: React.ReactNode }) {
-  return <p className="text-white/45 text-xs">{children}</p>;
+  return <p className="text-foreground/45 text-xs">{children}</p>;
 }
 
 /** Shared shell for a labelled input so every field looks identical. */
@@ -380,51 +374,35 @@ export function AuthPanel() {
 
   return (
     <LazyMotion features={loadMotionFeatures}>
-    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#07080E] p-4 font-sans selection:bg-[#7C3AED]/40 selection:text-white md:p-8">
-      <AmbientBackdrop />
+    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-background p-4 font-sans md:p-8">
 
       {/* Near-full-page auth shell; the neon halo sits behind it (-inset, -z-10). */}
       <div className="relative h-auto w-[92vw] max-w-[1360px] md:h-[86vh] md:max-h-[860px]">
-        {/* A rounded-rect glow: no filter-free equivalent, so touch devices (see the
-            no-live-blur rule in globals.css) skip it; the card keeps its own shadow. */}
-        <div className="pointer-events-none absolute -inset-8 -z-10 hidden rounded-[44px] bg-gradient-to-r from-cyan-500/20 via-purple-600/20 to-pink-500/20 blur-[70px] [@media(pointer:fine)]:block" />
-        <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[32px] border border-white/10 bg-white/[0.03] shadow-[0_30px_90px_rgba(0,0,0,0.65)] backdrop-blur-2xl md:flex-row">
+        <div className="relative flex h-full w-full flex-col overflow-hidden rounded-xl border border-border bg-card md:flex-row">
 
         {/* ===== LEFT: constant branding for every mode (no tab nav, no AI pill) ===== */}
         {/* Scrolls on short desktop windows, so it must be keyboard-reachable
             (axe scrollable-region-focusable on prod). */}
         {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-reachable (WCAG 2.1.1) */}
-        <div tabIndex={0} role="region" aria-label="About Ollasuper" className="scrollbar-quiet relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-[#4F8BF0]/10 p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
-          {/* Subtle orbital / radial art — behind content, never overlapping. */}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 -z-0 bg-[radial-gradient(circle_at_50%_28%,rgba(124,58,237,0.14),transparent_60%)]"
-          />
-
+        <div tabIndex={0} role="region" aria-label="About Ollasuper" className="scrollbar-quiet relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-border p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
           {/* Top: reused orb housing (VERBATIM) + wordmark + divider + taglines. */}
           <div className="relative z-10 flex flex-col items-center gap-5">
-            <div className="relative flex h-28 w-28 items-center justify-center rounded-full bg-gradient-to-tr from-[#06B6D4] via-[#7C3AED] to-[#EC4899] p-[3px] shadow-[0_0_50px_rgba(6,182,212,0.55)]">
-              <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-full border border-white/20 bg-[#0D0E15]">
-                <IntelligenceCore />
-              </div>
-            </div>
+            <BrandMark className="h-20 w-20 rounded-2xl" />
 
             <span className={WORDMARK}>OLLASUPER</span>
 
             {/* ──── ✦ ──── */}
             <div className="flex items-center gap-3">
-              <span className="h-px w-12 bg-gradient-to-r from-transparent to-white/25" />
-              <span className="text-[11px] text-[#5AD8FA] drop-shadow-[0_0_6px_rgba(90,216,250,0.7)]">
-                ✦
-              </span>
-              <span className="h-px w-12 bg-gradient-to-l from-transparent to-white/25" />
+              <span className="h-px w-12 bg-border" />
+              <span className="text-[11px] text-muted-foreground">✦</span>
+              <span className="h-px w-12 bg-border" />
             </div>
 
             <div className="text-center">
-              <p className="font-semibold text-[20px] text-white">
+              <p className="font-semibold text-[20px] text-foreground">
                 All-in-One Super Intelligence Workspace
               </p>
-              <p className="mt-2 text-[15px] text-white/45">
+              <p className="mt-2 text-[15px] text-foreground/45">
                 AI tools for creators, builders &amp; dreamers.
               </p>
             </div>
@@ -436,32 +414,32 @@ export function AuthPanel() {
               icon={Zap}
               title="Super Fast"
               desc="AI that works as fast as you think"
-              accent="text-[#5AD8FA]"
+              accent="text-foreground"
             />
             <FeatureCard
               icon={Sparkles}
               title="All-in-One"
               desc="Everything you need, in one workspace"
-              accent="text-[#4F8BF0]"
+              accent="text-foreground"
             />
             <FeatureCard
               icon={ShieldCheck}
               title="Privacy First"
               desc="Your data, your control, always secure"
-              accent="text-[#7C3AED]"
+              accent="text-foreground"
             />
             <FeatureCard
               icon={Users}
               title="Built for Teams"
               desc="Create, collaborate and achieve more"
-              accent="text-[#EC4899]"
+              accent="text-foreground"
             />
           </div>
 
           {/* Footer (desktop only). */}
-          <div className="relative z-10 hidden w-full items-center justify-between border-white/10 border-t pt-5 text-[11px] text-white/40 md:flex">
+          <div className="relative z-10 hidden w-full items-center justify-between border-border border-t pt-5 text-[11px] text-muted-foreground md:flex">
             <span>&copy; {COPYRIGHT_YEAR} Ollasuper Workspaces</span>
-            <span className="flex items-center gap-1.5 text-[#5AD8FA]/80">
+            <span className="flex items-center gap-1.5 text-muted-foreground">
               <ShieldCheck className="h-3 w-3" /> Convex Auth
             </span>
           </div>
@@ -474,10 +452,10 @@ export function AuthPanel() {
           <div className="m-auto w-full max-w-md">
             <div className="mb-8 text-center">
               {/* No text-transform: renders copy verbatim ("Welcome back"). */}
-              <h1 className="font-bold text-[40px] leading-tight text-white">
+              <h1 className="font-bold text-[40px] leading-tight text-foreground">
                 {copy[mode].title}
               </h1>
-              <p className="mt-2 text-[15px] text-white/45">{copy[mode].sub}</p>
+              <p className="mt-2 text-[15px] text-foreground/45">{copy[mode].sub}</p>
             </div>
 
             {/* mode="wait" is load-bearing, not decorative: e2e/p2-auth.js fills
@@ -489,7 +467,7 @@ export function AuthPanel() {
                   <signInForm.Field name="email" validators={{ onSubmit: signInSchema.shape.email }}>
                     {(field) => (
                       <FieldShell label="Email address" htmlFor="email" errors={field.state.meta.errors}>
-                        <Mail className="h-4 w-4 shrink-0 text-white/35" />
+                        <Mail className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="email"
                           name="email"
@@ -520,7 +498,7 @@ export function AuthPanel() {
                           </button>
                         }
                       >
-                        <Lock className="h-4 w-4 shrink-0 text-white/35" />
+                        <Lock className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="password"
                           name="password"
@@ -536,7 +514,7 @@ export function AuthPanel() {
                           type="button"
                           aria-label={reveal ? "Hide password" : "Show password"}
                           onClick={() => setReveal((v) => !v)}
-                          className="shrink-0 text-white/35 transition-colors hover:text-white/70"
+                          className="shrink-0 text-foreground/35 transition-colors hover:text-muted-foreground"
                         >
                           {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -556,7 +534,7 @@ export function AuthPanel() {
                   <signUpForm.Field name="name" validators={{ onSubmit: signUpSchema.shape.name }}>
                     {(field) => (
                       <FieldShell label="Full name" htmlFor="name" errors={field.state.meta.errors}>
-                        <User className="h-4 w-4 shrink-0 text-white/35" />
+                        <User className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="name"
                           name="name"
@@ -579,7 +557,7 @@ export function AuthPanel() {
                         htmlFor="signup-email"
                         errors={field.state.meta.errors}
                       >
-                        <Mail className="h-4 w-4 shrink-0 text-white/35" />
+                        <Mail className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="signup-email"
                           name="email"
@@ -605,7 +583,7 @@ export function AuthPanel() {
                         htmlFor="signup-password"
                         errors={field.state.meta.errors}
                       >
-                        <Lock className="h-4 w-4 shrink-0 text-white/35" />
+                        <Lock className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="signup-password"
                           name="password"
@@ -621,7 +599,7 @@ export function AuthPanel() {
                           type="button"
                           aria-label={reveal ? "Hide password" : "Show password"}
                           onClick={() => setReveal((v) => !v)}
-                          className="shrink-0 text-white/35 transition-colors hover:text-white/70"
+                          className="shrink-0 text-foreground/35 transition-colors hover:text-muted-foreground"
                         >
                           {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -649,7 +627,7 @@ export function AuthPanel() {
               {mode === "verify" && (
                 <PanelFrame formKey="verify" onSubmit={submit(verifyForm)}>
                   <Hint>
-                    Code sent to <span className="font-medium text-white/70">{email}</span>
+                    Code sent to <span className="font-medium text-muted-foreground">{email}</span>
                   </Hint>
                   <verifyForm.Field name="code" validators={{ onSubmit: verifySchema.shape.code }}>
                     {(field) => (
@@ -658,7 +636,7 @@ export function AuthPanel() {
                         htmlFor="verify-code"
                         errors={field.state.meta.errors}
                       >
-                        <KeyRound className="h-4 w-4 shrink-0 text-white/35" />
+                        <KeyRound className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="verify-code"
                           name="code"
@@ -689,7 +667,7 @@ export function AuthPanel() {
                         htmlFor="forgot-email"
                         errors={field.state.meta.errors}
                       >
-                        <Mail className="h-4 w-4 shrink-0 text-white/35" />
+                        <Mail className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="forgot-email"
                           name="email"
@@ -714,7 +692,7 @@ export function AuthPanel() {
               {mode === "reset" && (
                 <PanelFrame formKey="reset" onSubmit={submit(resetForm)}>
                   <Hint>
-                    Reset code sent to <span className="font-medium text-white/70">{email}</span>
+                    Reset code sent to <span className="font-medium text-muted-foreground">{email}</span>
                   </Hint>
                   <resetForm.Field name="code" validators={{ onSubmit: resetSchema.shape.code }}>
                     {(field) => (
@@ -723,7 +701,7 @@ export function AuthPanel() {
                         htmlFor="reset-code"
                         errors={field.state.meta.errors}
                       >
-                        <KeyRound className="h-4 w-4 shrink-0 text-white/35" />
+                        <KeyRound className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="reset-code"
                           name="code"
@@ -748,7 +726,7 @@ export function AuthPanel() {
                         htmlFor="reset-password"
                         errors={field.state.meta.errors}
                       >
-                        <Lock className="h-4 w-4 shrink-0 text-white/35" />
+                        <Lock className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="reset-password"
                           name="newPassword"
@@ -764,7 +742,7 @@ export function AuthPanel() {
                           type="button"
                           aria-label={reveal ? "Hide password" : "Show password"}
                           onClick={() => setReveal((v) => !v)}
-                          className="shrink-0 text-white/35 transition-colors hover:text-white/70"
+                          className="shrink-0 text-foreground/35 transition-colors hover:text-muted-foreground"
                         >
                           {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -790,7 +768,7 @@ export function AuthPanel() {
                         htmlFor="otp-email"
                         errors={field.state.meta.errors}
                       >
-                        <Mail className="h-4 w-4 shrink-0 text-white/35" />
+                        <Mail className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="otp-email"
                           name="email"
@@ -815,7 +793,7 @@ export function AuthPanel() {
               {mode === "otp" && email && (
                 <PanelFrame formKey="otp-code" onSubmit={submit(otpCodeForm)}>
                   <Hint>
-                    Code sent to <span className="font-medium text-white/70">{email}</span>
+                    Code sent to <span className="font-medium text-muted-foreground">{email}</span>
                   </Hint>
                   <otpCodeForm.Field name="code" validators={{ onSubmit: otpCodeSchema.shape.code }}>
                     {(field) => (
@@ -824,7 +802,7 @@ export function AuthPanel() {
                         htmlFor="otp-code"
                         errors={field.state.meta.errors}
                       >
-                        <KeyRound className="h-4 w-4 shrink-0 text-white/35" />
+                        <KeyRound className="h-4 w-4 shrink-0 text-foreground/35" />
                         <input
                           id="otp-code"
                           name="code"
@@ -856,11 +834,11 @@ export function AuthPanel() {
 
             {/* OR divider above the social row. */}
             <div className="my-6 flex items-center gap-4">
-              <span className="h-px flex-1 bg-white/10" />
-              <span className="font-semibold text-[11px] text-white/30 uppercase tracking-widest">
+              <span className="h-px flex-1 bg-border" />
+              <span className="font-semibold text-[11px] text-muted-foreground uppercase tracking-widest">
                 or
               </span>
-              <span className="h-px flex-1 bg-white/10" />
+              <span className="h-px flex-1 bg-border" />
             </div>
 
             <OAuthRow onGoogle={() => void signIn("google")} disabled={pending} />
@@ -868,7 +846,7 @@ export function AuthPanel() {
             {/* Mode-aware bottom link — replaces the removed Login/Sign-up tabs.
                 Only calls setMode; lives outside AnimatePresence. */}
             {mode === "signIn" && (
-              <p className="mt-6 text-center text-[13px] text-white/45">
+              <p className="mt-6 text-center text-[13px] text-foreground/45">
                 New to OllaSuper?{" "}
                 <button type="button" className={LINK} onClick={() => setMode("signUp")}>
                   Create an account →
@@ -876,7 +854,7 @@ export function AuthPanel() {
               </p>
             )}
             {mode === "signUp" && (
-              <p className="mt-6 text-center text-[13px] text-white/45">
+              <p className="mt-6 text-center text-[13px] text-foreground/45">
                 Already have an account?{" "}
                 <button type="button" className={LINK} onClick={() => setMode("signIn")}>
                   Sign in

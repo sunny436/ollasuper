@@ -85,7 +85,7 @@ export default function MemoriesSection() {
       </div>
 
       {/* Master switch */}
-      <div className="flex items-center justify-between rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
+      <div className="flex items-center justify-between rounded-2xl border border-border bg-card p-6">
         <div>
           <h2 className="text-sm font-medium text-primary/80">
             Enable memory
@@ -121,7 +121,7 @@ export default function MemoriesSection() {
           {memories.map((m) => (
             <li
               key={m._id}
-              className="rounded-2xl border border-border bg-card/60 p-4 backdrop-blur-xl"
+              className="rounded-2xl border border-border bg-card p-4"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">

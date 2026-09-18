@@ -45,7 +45,7 @@ export function CommandPalette() {
         className="absolute inset-0 h-full w-full cursor-default bg-black/40"
         onClick={() => setOpen(false)}
       />
-      <div className="relative w-full max-w-md overflow-hidden rounded-lg border border-border bg-card shadow-2xl">
+      <div className="relative w-full max-w-md overflow-hidden rounded-lg border border-border bg-card shadow-md">
         <input
           // biome-ignore lint/a11y/noAutofocus: palette focus is expected
           autoFocus

@@ -112,7 +112,7 @@ function CitationCard({
   );
 
   return (
-    <li className="flex items-center gap-2 rounded-md border border-border/50 bg-card/40 px-2 py-1 text-xs">
+    <li className="flex items-center gap-2 rounded-md border border-border/50 bg-card px-2 py-1 text-xs">
       <span className="shrink-0 text-primary/30 tabular-nums">{index}.</span>
       {href ? (
         <a
@@ -193,7 +193,7 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
   return (
     <div
       data-artifact-card
-      className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 p-2 text-xs"
+      className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card p-2 text-xs"
     >
       {preview && (
         <div data-artifact-preview className="flex flex-col gap-1">

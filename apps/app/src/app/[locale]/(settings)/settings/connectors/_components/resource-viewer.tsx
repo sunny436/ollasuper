@@ -106,20 +106,20 @@ export function ResourceViewer({
 
         {state.loading && (
           <div
-            className="h-40 animate-pulse rounded-lg border border-border bg-card/40"
+            className="h-40 animate-pulse rounded-lg border border-border bg-card"
             aria-busy="true"
             aria-label="Loading resource"
           />
         )}
 
         {!state.loading && state.error && (
-          <p className="rounded-lg border border-border bg-card/40 p-3 text-xs text-primary/60">
+          <p className="rounded-lg border border-border bg-card p-3 text-xs text-primary/60">
             {state.error}
           </p>
         )}
 
         {!state.loading && state.text !== null && (
-          <ScrollArea className="max-h-[50vh] rounded-lg border border-border bg-card/40">
+          <ScrollArea className="max-h-[50vh] rounded-lg border border-border bg-card">
             {/* `pre` + `whitespace-pre-wrap`: the content is shown, never
                 interpreted. `overflow-x-auto` on the wrapper keeps a long line
                 inside its own scroller instead of widening the page. */}

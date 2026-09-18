@@ -102,7 +102,8 @@ function MermaidImpl({ code, complete }: { code: string; complete: boolean }) {
   if (svg) {
     return (
       <div
-        className="my-3 flex justify-center overflow-x-auto rounded-lg border border-border bg-card/40 p-3 [&_svg]:max-w-full [&_svg]:h-auto"
+        data-content-colour
+        className="mermaid-render my-3 flex justify-center overflow-x-auto rounded-lg border border-border bg-card p-3 [&_svg]:max-w-full [&_svg]:h-auto"
         // biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid-generated SVG only, securityLevel:"strict"; see file header + CLAUDE.md
         dangerouslySetInnerHTML={{ __html: svg }}
       />

@@ -83,7 +83,7 @@ export function RunResult({
 
   return (
     <div>
-      <div className="rounded-xl border border-border bg-card/50 p-3">
+      <div className="rounded-xl border border-border bg-card p-3">
         <p className="text-xs font-medium text-primary/80">
           {runStatusLabel(occurrence.status, occurrence.scheduledFor)}
           {occurrence.attempts > 1 && ` · ${occurrence.attempts} attempts`}

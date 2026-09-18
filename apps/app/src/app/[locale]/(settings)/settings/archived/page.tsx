@@ -63,13 +63,13 @@ export default function ArchivedSection() {
 
       <div className="flex flex-col gap-2">
         {status === "LoadingFirstPage" && (
-          <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl">
+          <p className="rounded-2xl border border-border bg-card p-8 text-center text-sm text-primary/65">
             Loading…
           </p>
         )}
 
         {status !== "LoadingFirstPage" && results.length === 0 && (
-          <p className="rounded-2xl border border-border bg-card/60 p-8 text-center text-sm text-primary/65 backdrop-blur-xl">
+          <p className="rounded-2xl border border-border bg-card p-8 text-center text-sm text-primary/65">
             No archived chats. Archive a conversation from its menu to keep it
             out of the sidebar without deleting it.
           </p>
@@ -78,7 +78,7 @@ export default function ArchivedSection() {
         {results.map((t) => (
           <div
             key={t._id}
-            className="group flex items-center gap-3 rounded-2xl border border-border bg-card/60 p-4 backdrop-blur-xl transition hover:border-brand/25"
+            className="group flex items-center gap-3 rounded-2xl border border-border bg-card p-4 transition hover:border-brand/25"
           >
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/5 text-primary/65">
               <MessageSquare className="h-4 w-4" />
@@ -124,7 +124,7 @@ export default function ArchivedSection() {
                 title="Delete this chat?"
                 description="This moves the conversation to trash and it will be permanently removed. This cannot be undone."
                 confirmLabel="Delete"
-                className="rounded-lg px-2.5 py-1.5 text-xs text-red-600 transition hover:bg-red-500/10"
+                className="rounded-lg px-2.5 py-1.5 text-xs text-destructive transition hover:bg-muted"
                 onConfirm={() => onDelete(t._id)}
               />
             </div>

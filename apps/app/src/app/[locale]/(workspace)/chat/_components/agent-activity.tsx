@@ -131,7 +131,7 @@ function ExecutionStatusImpl({
   const agg = aggregateStatus(runs, isStreaming);
   return (
     <Disclosure
-      className="rounded-full border border-border/60 bg-card/40 px-3 py-1 text-xs open:rounded-2xl"
+      className="rounded-full border border-border/60 bg-card px-3 py-1 text-xs open:rounded-2xl"
       summary={
         <>
           <StateIcon state={agg.state} />
@@ -286,7 +286,7 @@ export function ResultPreview({ result }: { result: unknown }) {
   // string → markdown (inherits the XSS-safe pipeline: no rehype-raw, url-guard)
   if (typeof result === "string") {
     return (
-      <div className="rounded-md bg-card/50 px-2 py-1.5 text-[13px]">
+      <div className="rounded-md bg-card px-2 py-1.5 text-[13px]">
         <LazyMarkdown content={result} streaming={false} />
       </div>
     );

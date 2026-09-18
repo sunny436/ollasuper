@@ -2,7 +2,6 @@
 
 import { AnimatePresence, LazyMotion, m } from "framer-motion";
 import { useState } from "react";
-import { AmbienceBackdrop } from "./ambience-backdrop";
 import { EmptyHero } from "./empty-state";
 import { ChatInput } from "./chat-input";
 import { useChatSession } from "../_hooks/use-chat-session";
@@ -74,9 +73,6 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
     // `isolate` contains the backdrop's -z-10 so it stays behind this pane's
     // header/transcript but never slides under the workspace-level background.
     <div className="relative isolate flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* Landing-only ambient layer (glow orbs + starfield), behind the header
-          glass. Unmounts on first send, when `centred` flips false. */}
-      {centred && <AmbienceBackdrop />}
       {children}
 
       {/*
@@ -89,7 +85,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
       {centred && exploreOpen && (
         <div
           aria-hidden
-          className="absolute inset-0 z-30 bg-background/40 backdrop-blur-[2px]"
+          className="absolute inset-0 z-30 bg-background"
         />
       )}
 

@@ -65,7 +65,7 @@ function ChangePasswordSection() {
   };
 
   return (
-    <div className="rounded-2xl border border-border bg-card/60 backdrop-blur-xl">
+    <div className="rounded-2xl border border-border bg-card">
       <div className="flex flex-col gap-2 p-6">
         <h2 className="text-lg font-medium text-primary">Change password</h2>
         <p className="text-sm font-normal text-primary/60">
@@ -103,7 +103,7 @@ function ChangePasswordSection() {
           )}
         </div>
       </div>
-      <div className="flex min-h-14 items-center justify-end rounded-b-2xl border-t border-border bg-card/40 px-6 py-3">
+      <div className="flex min-h-14 items-center justify-end rounded-b-2xl border-t border-border bg-card px-6 py-3">
         <Button type="button" size="sm" disabled={!ready} onClick={onSubmit}>
           {busy ? "Changing…" : "Change password"}
         </Button>
@@ -275,7 +275,7 @@ export default function ProfileSection() {
       </div>
 
       {/* Edit profile */}
-      <div className="rounded-2xl border border-border bg-card/60 p-6 backdrop-blur-xl">
+      <div className="rounded-2xl border border-border bg-card p-6">
         <div className="flex flex-col items-center gap-3">
           <label
             htmlFor="avatar_field"
@@ -288,7 +288,7 @@ export default function ProfileSection() {
                 alt={username || user.email || "Avatar"}
               />
             ) : (
-              <div className="grid h-24 w-24 place-items-center rounded-full bg-gradient-to-br from-sky-400 via-indigo-500 to-purple-500 text-2xl font-semibold text-white ring-2 ring-brand/30">
+              <div className="grid h-24 w-24 place-items-center rounded-full bg-foreground text-2xl font-semibold text-background">
                 {initial}
               </div>
             )}
@@ -380,7 +380,7 @@ export default function ProfileSection() {
       <ChangePasswordSection />
 
       {/* Delete account */}
-      <div className="rounded-2xl border border-destructive/60 bg-card/60 backdrop-blur-xl">
+      <div className="rounded-2xl border border-destructive/60 bg-card">
         <div className="flex flex-col gap-2 p-6">
           <h2 className="text-lg font-medium text-primary">
             {t("deleteAccount.title")}
@@ -389,7 +389,7 @@ export default function ProfileSection() {
             {t("deleteAccount.description")}
           </p>
         </div>
-        <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 rounded-b-2xl border-t border-destructive/30 bg-red-500/10 px-6 py-3">
+        <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 rounded-b-2xl border-t border-destructive/30 bg-muted px-6 py-3">
           <p className="text-sm font-normal text-primary/60">
             {t("deleteAccount.warning")}
           </p>

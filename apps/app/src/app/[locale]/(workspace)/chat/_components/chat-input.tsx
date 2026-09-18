@@ -81,7 +81,7 @@ function SuggestionChips({
           onClick={() => onPick(text)}
           // Staggered so three chips read as one gesture rather than a flash.
           style={{ animationDelay: `${i * 60}ms`, animationFillMode: "backwards" }}
-          className="animate-in fade-in slide-in-from-bottom-1 zoom-in-95 shrink-0 whitespace-nowrap rounded-full border border-border bg-card/70 px-3 py-1.5 text-xs text-primary/70 shadow-sm backdrop-blur-xl duration-200 transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-primary motion-reduce:animate-none"
+          className="animate-in fade-in slide-in-from-bottom-1 zoom-in-95 shrink-0 whitespace-nowrap rounded-full border border-border bg-card px-3 py-1.5 text-xs text-primary/70 duration-200 transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-primary motion-reduce:animate-none"
         >
           {text}
         </button>
@@ -349,7 +349,7 @@ export function ChatInput({
       }}
     >
       {dragging && (
-        <div className="pointer-events-none absolute inset-2 z-20 grid place-items-center rounded-xl border-2 border-dashed border-brand bg-brand/10 backdrop-blur-[1px]">
+        <div className="pointer-events-none absolute inset-2 z-20 grid place-items-center rounded-xl border-2 border-dashed border-brand bg-brand/10">
           <span className="text-sm font-medium text-brand-ink">Drop to attach</span>
         </div>
       )}
@@ -386,8 +386,8 @@ export function ChatInput({
               ? // nowrap keeps the empty pill a single row, but an attachment
                 // chip is `basis-full` and would otherwise collapse the textarea
                 // to ~0 width on this one line — wrap once a chip is present.
-                `flex ${attachments.items.length > 0 ? "flex-wrap" : "flex-wrap [@container(min-width:32rem)]:flex-nowrap"} items-center gap-1 rounded-[32px] border border-white/60 bg-card/70 px-3 py-2 shadow-[0_10px_40px_rgba(0,0,0,0.12)] backdrop-blur-2xl transition focus-within:border-brand/40 focus-within:shadow-[0_14px_48px_rgba(0,0,0,0.16)] dark:border-white/10 [@container(min-width:32rem)]:gap-1.5 [@container(min-width:32rem)]:px-3.5 [@container(min-width:32rem)]:py-3`
-              : "flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-3xl border border-border bg-card/70 px-3 py-2 shadow-lg backdrop-blur-xl transition focus-within:border-brand/40 focus-within:ring-1 focus-within:ring-brand/25 [@container(min-width:32rem)]:py-2.5"
+                `flex ${attachments.items.length > 0 ? "flex-wrap" : "flex-wrap [@container(min-width:32rem)]:flex-nowrap"} items-center gap-1 rounded-[32px] border border-border bg-card px-3 py-2 transition focus-within:border-foreground [@container(min-width:32rem)]:gap-1.5 [@container(min-width:32rem)]:px-3.5 [@container(min-width:32rem)]:py-3`
+              : "flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-3xl border border-border bg-card px-3 py-2 transition focus-within:border-foreground [@container(min-width:32rem)]:py-2.5"
           }
         >
           {attachments.items.length > 0 && (
@@ -531,11 +531,13 @@ export function ChatInput({
                         ? "Attachment failed to upload"
                         : "Send message"
                 }
-                // Brand accent — warms with the ambience theme (bronze at amber).
-                className={`${btnBox} shadow-md transition ${
+                // Solid ink fill. Hover and active are opacity, not brightness:
+                // brightness-110 on pure black is a no-op, so the old hover had no
+                // visible feedback at all once the brand became the ink.
+                className={`${btnBox} transition ${
                   sending || !canSend || sendBlocked
                     ? "bg-primary/10 text-primary/30"
-                    : "bg-brand text-brand-foreground hover:brightness-110 active:brightness-95"
+                    : "bg-brand text-brand-foreground hover:opacity-90 active:opacity-80"
                 }`}
               >
                 {sending ? (

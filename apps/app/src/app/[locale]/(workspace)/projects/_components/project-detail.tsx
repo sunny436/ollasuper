@@ -277,7 +277,7 @@ Its chats are kept and move back to your conversation list. You can restore the 
                       onClick={() => setMenuOpen(false)}
                       aria-hidden="true"
                     />
-                    <div className="absolute right-0 z-50 mt-1 w-48 overflow-hidden rounded-xl border border-border bg-popover py-1 shadow-xl">
+                    <div className="absolute right-0 z-50 mt-1 w-48 overflow-hidden rounded-xl border border-border bg-popover py-1 shadow-md">
                       <MenuItem
                         onClick={() => {
                           setMenuOpen(false);
@@ -346,7 +346,7 @@ Its chats are kept and move back to your conversation list. You can restore the 
           {/* The composer sits above the tabs and stays visible on both: starting
               a conversation is the primary action wherever you are in a project. */}
           {project && !readOnly && (
-            <div className="mt-5 flex items-center gap-2 rounded-2xl border border-border bg-card px-4 py-3 shadow-sm transition focus-within:border-brand/40">
+            <div className="mt-5 flex items-center gap-2 rounded-2xl border border-border bg-card px-4 py-3 transition focus-within:border-brand/40">
               <input
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
@@ -364,7 +364,7 @@ Its chats are kept and move back to your conversation list. You can restore the 
                 type="button"
                 onClick={startChat}
                 aria-label="Start chat"
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand text-brand-foreground transition hover:brightness-110 active:scale-95"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand text-brand-foreground transition hover:opacity-90 active:scale-95"
               >
                 <ArrowUp className="h-4 w-4" />
               </button>

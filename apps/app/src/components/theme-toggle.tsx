@@ -1,44 +1,21 @@
 "use client";
 
 import { useEffect } from "react";
-import { useAmbience } from "@/lib/ambience/ambience-provider";
+import { useTheme } from "@/lib/theme/theme-provider";
 
 /**
- * The Light/Dark theme control — one 36px square, Sun or Moon.
+ * The light/dark control. The only theme affordance in the product.
  *
- * Replaces the Ambience sliders and the three-stop Select. Those exposed the
- * full 0–100 ambience ramp; this exposes only its two ends, because the product
- * decision is a binary white/dark theme.
+ * IT HOLDS NO STATE. `useTheme` owns the mode; the pre-paint script stamps the
+ * class before first paint, so the icons below are driven purely by the `dark`
+ * class through Tailwind variants — there is nothing here to hydrate, and no
+ * first-frame flicker of the wrong icon.
  *
- * IT DOES NOT INTRODUCE THEME STATE. `useAmbience` remains the single
- * authoritative source — it owns the ~31 CSS vars, the `.dark` class on <html>,
- * the localStorage persistence and the pre-paint script. This button is one more
- * writer of that same state, and `setIntensityAnimated` gives the smooth colour
- * transition for free (a 260ms eased tween that already respects
- * prefers-reduced-motion). That is why there is no global `*` transition rule:
- * the tween writes every var each frame, so a transition on `*` would restart on
- * every element on every frame and fight it.
- *
- * THE ICONS ARE PURE CSS. Their state comes from `dark:` variants, not from
- * React. `ambience-script.tsx` stamps `.dark` before first paint, so the correct
- * icon is already correct in the first frame — no effect, no hydration
- * mismatch, and no possibility of flashing the wrong one on load. Reading
- * `intensity` to pick an icon would have reintroduced exactly that flash.
+ * Both icons are `currentColor` and the button uses surface tokens, so it is one
+ * ink on one surface in either theme — no amber sun, no indigo moon.
  */
-
-/** The two ends of the ambience ramp. 0 is the `Daylight` stop, 100 `Midnight`. */
-const LIGHT = 0;
-const DARK = 100;
-
 export function ThemeToggle() {
-  const { setIntensityAnimated } = useAmbience();
-
-  // The live truth, not derived state: whichever class the provider (or the
-  // pre-paint script) last wrote is what the user is actually looking at.
-  const toggle = () => {
-    const isDark = document.documentElement.classList.contains("dark");
-    setIntensityAnimated(isDark ? LIGHT : DARK);
-  };
+  const { toggle } = useTheme();
 
   useEffect(() => {
     // No centralized shortcut system exists in this app — every other keydown
@@ -53,7 +30,7 @@ export function ThemeToggle() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  });
+  }, [toggle]);
 
   return (
     <button
@@ -61,13 +38,13 @@ export function ThemeToggle() {
       onClick={toggle}
       aria-label="Toggle dark and light theme"
       title="Toggle Theme (Ctrl+Shift+L)"
-      className="relative flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-100 text-slate-600 transition-all duration-200 hover:bg-white hover:text-amber-500 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500/40 active:scale-90 dark:border-slate-700/80 dark:bg-slate-800/80 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-indigo-400 dark:hover:shadow-indigo-900/20"
+      className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
-      {/* Sun — visible in light, spins away and shrinks in dark. Absolute so the
-          two icons occupy the same centre and the morph has nothing to reflow. */}
+      {/* Sun — visible in light, rotated away in dark. Absolute so the two icons
+          share one centre and the swap reflows nothing. */}
       <svg
         aria-hidden="true"
-        className="theme-icon-spring absolute h-4 w-4 rotate-0 scale-100 text-amber-500 opacity-100 dark:-rotate-90 dark:scale-50 dark:opacity-0"
+        className="theme-icon-spring absolute h-4 w-4 rotate-0 scale-100 opacity-100 dark:-rotate-90 dark:scale-50 dark:opacity-0"
         fill="none"
         stroke="currentColor"
         viewBox="0 0 24 24"
@@ -84,7 +61,7 @@ export function ThemeToggle() {
       {/* Moon — the mirror image of the Sun's state. */}
       <svg
         aria-hidden="true"
-        className="theme-icon-spring absolute h-4 w-4 rotate-90 scale-50 text-indigo-400 opacity-0 dark:rotate-0 dark:scale-100 dark:opacity-100"
+        className="theme-icon-spring absolute h-4 w-4 rotate-90 scale-50 opacity-0 dark:rotate-0 dark:scale-100 dark:opacity-100"
         fill="currentColor"
         viewBox="0 0 24 24"
       >

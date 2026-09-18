@@ -24,7 +24,7 @@ import { useModalFocus } from "../_hooks/use-modal-focus";
  * style preferences, and neither can displace the platform rules above them.
  *
  * Portalled for the same reason move-to-project is: the rail is
- * `backdrop-blur-xl` + `overflow-hidden`, which makes it the containing block
+ * `` + `overflow-hidden`, which makes it the containing block
  * for `position: fixed` descendants and would clip this off-screen.
  */
 
@@ -94,7 +94,7 @@ export function ChatInstructionsDialog({
     <div className="workspace">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
       <div
-        className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
+        className="fixed inset-0 z-40 bg-black/50"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -103,7 +103,7 @@ export function ChatInstructionsDialog({
         role="dialog"
         aria-modal="true"
         aria-label="Instructions for this chat"
-        className="fixed left-1/2 top-1/2 z-50 flex max-h-[70vh] w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-border bg-card p-5 shadow-2xl"
+        className="fixed left-1/2 top-1/2 z-50 flex max-h-[70vh] w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-border bg-card p-5 shadow-md"
       >
         <div className="flex items-start justify-between gap-3">
           <div>

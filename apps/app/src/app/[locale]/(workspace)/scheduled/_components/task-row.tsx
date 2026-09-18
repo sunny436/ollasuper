@@ -124,7 +124,7 @@ export function TaskRow({
         className={`group flex items-center gap-3 rounded-xl border px-3 py-3 transition-colors ${
           selected
             ? "border-brand/40 bg-brand/5"
-            : "border-transparent bg-card/60 hover:border-border hover:bg-card"
+            : "border-transparent bg-card hover:border-border hover:bg-card"
         }`}
       >
         <button
@@ -193,7 +193,7 @@ export function TaskRow({
                     role="menuitem" so the a11y tree is still correct. */}
                 <div
                   role="menu"
-                  className={`absolute right-0 z-50 w-56 overflow-hidden rounded-xl border border-border bg-card p-1 shadow-xl ${menuUp ? "bottom-full mb-1" : "mt-1"}`}
+                  className={`absolute right-0 z-50 w-56 overflow-hidden rounded-xl border border-border bg-card p-1 shadow-md ${menuUp ? "bottom-full mb-1" : "mt-1"}`}
                 >
                   {/*
                     Run now is DISABLED while paused. Server-side it would create
