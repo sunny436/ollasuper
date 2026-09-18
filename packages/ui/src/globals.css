@@ -116,70 +116,104 @@
     the only yellow dark enough to carry white text is a brown, so it takes a bright
     fill with BLACK text instead.
 
+    SCOPED TO ANY ELEMENT, not just :root. These were `:root[data-accent]` first,
+    which meant a nested element carrying the attribute matched nothing and simply
+    inherited the page accent - so every swatch in Settings > Appearance painted
+    the same colour. Keying on the bare attribute lets <html> set the page accent
+    AND lets a swatch scope the palette to itself, with no colour repeated in the
+    component. The dark rules list both `.dark[data-accent]` (html itself) and
+    `.dark [data-accent]` (a descendant) for the same reason.
+
     ADDING AN ACCENT: one block pair here + one entry in lib/theme/accent.ts. A test
     fails if the two lists drift.
   */
-  :root[data-accent="green"] {
+  /*
+    Blue appears TWICE, deliberately. :root/.dark carry it as the no-attribute
+    fallback (a page that never runs the pre-paint script still renders the
+    product default rather than ink); this block is what lets a nested element
+    opt into blue explicitly, which the settings swatches do. The two are
+    asserted identical in monochrome.test.ts.
+  */
+  [data-accent="blue"] {
+    --brand: 221.2 83.2% 53.3%;
+    --brand-foreground: 0 0% 100%;
+    --brand-ink: 224.3 76.3% 48%;
+  }
+
+  .dark[data-accent="blue"],
+  .dark [data-accent="blue"] {
+    --brand: 213.1 93.9% 67.8%;
+    --brand-foreground: 0 0% 0%;
+    --brand-ink: 213.1 93.9% 67.8%;
+  }
+
+  [data-accent="green"] {
     --brand: 142.4 71.8% 29.2%;
     --brand-foreground: 0 0% 100%;
     --brand-ink: 142.8 64.2% 24.1%;
   }
-  :root.dark[data-accent="green"] {
+  .dark[data-accent="green"],
+  .dark [data-accent="green"] {
     --brand: 141.9 69.2% 58%;
     --brand-foreground: 0 0% 0%;
     --brand-ink: 141.9 69.2% 58%;
   }
 
-  :root[data-accent="yellow"] {
+  [data-accent="yellow"] {
     --brand: 47.9 95.8% 53.1%;
     --brand-foreground: 0 0% 0%;
     --brand-ink: 35.5 91.7% 32.9%;
   }
-  :root.dark[data-accent="yellow"] {
+  .dark[data-accent="yellow"],
+  .dark [data-accent="yellow"] {
     --brand: 47.9 95.8% 53.1%;
     --brand-foreground: 0 0% 0%;
     --brand-ink: 47.9 95.8% 53.1%;
   }
 
-  :root[data-accent="pink"] {
+  [data-accent="pink"] {
     --brand: 333.3 71.4% 50.6%;
     --brand-foreground: 0 0% 100%;
     --brand-ink: 335.1 77.6% 42%;
   }
-  :root.dark[data-accent="pink"] {
+  .dark[data-accent="pink"],
+  .dark [data-accent="pink"] {
     --brand: 328.6 85.5% 70.2%;
     --brand-foreground: 0 0% 0%;
     --brand-ink: 328.6 85.5% 70.2%;
   }
 
-  :root[data-accent="orange"] {
+  [data-accent="orange"] {
     --brand: 17.5 88.3% 40.4%;
     --brand-foreground: 0 0% 100%;
     --brand-ink: 15 79.1% 33.7%;
   }
-  :root.dark[data-accent="orange"] {
+  .dark[data-accent="orange"],
+  .dark [data-accent="orange"] {
     --brand: 27 96% 61%;
     --brand-foreground: 0 0% 0%;
     --brand-ink: 27 96% 61%;
   }
 
-  :root[data-accent="purple"] {
+  [data-accent="purple"] {
     --brand: 271.5 81.3% 55.9%;
     --brand-foreground: 0 0% 100%;
     --brand-ink: 272.1 71.7% 47.1%;
   }
-  :root.dark[data-accent="purple"] {
+  .dark[data-accent="purple"],
+  .dark [data-accent="purple"] {
     --brand: 270 95.2% 75.3%;
     --brand-foreground: 0 0% 0%;
     --brand-ink: 270 95.2% 75.3%;
   }
 
-  :root[data-accent="neutral"] {
+  [data-accent="neutral"] {
     --brand: 0 0% 0%;
     --brand-foreground: 0 0% 100%;
     --brand-ink: 0 0% 0%;
   }
-  :root.dark[data-accent="neutral"] {
+  .dark[data-accent="neutral"],
+  .dark [data-accent="neutral"] {
     --brand: 0 0% 100%;
     --brand-foreground: 0 0% 0%;
     --brand-ink: 0 0% 100%;

@@ -104,16 +104,38 @@ async function main() {
   page.on("console", (m) => m.type() === "error" && errs.push(m.text().slice(0, 150)));
   page.on("pageerror", (e) => errs.push(`pageerror ${e.message.slice(0, 150)}`));
 
-  await signIn(page, who);
-
   // ------------------------------------------------- default for a fresh visitor
+  //
+  // Checked LOGGED OUT, on purpose. Signed in there is an account preference, and
+  // it correctly outranks an empty local cache — so asserting "no cache means
+  // blue" against a signed-in page tests the wrong rung of the precedence chain,
+  // and fails the moment a previous run has stored something.
+  await page.goto(`${BASE}/login`, { waitUntil: "load" });
   await seed(page, null, "light");
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2200);
+  await page.reload({ waitUntil: "load" });
+  await page.waitForTimeout(1800);
   let s = await readState(page);
-  check("no stored accent resolves to Blue", s.accent === "blue", `data-accent=${s.accent}`);
+  check("a first-time visitor resolves to Blue", s.accent === "blue", `data-accent=${s.accent}`);
   const BLUE_LIGHT = s.brand;
   check("Blue is a real hue, not ink", /^\d/.test(BLUE_LIGHT) && BLUE_LIGHT !== "0 0% 0%", BLUE_LIGHT);
+
+  await signIn(page, who);
+
+  // The next rung of the chain: with no local cache, the ACCOUNT preference is
+  // restored. That is what carries the accent to a new device, and it is what the
+  // check above was accidentally measuring before it was moved to /login.
+  await seed(page, "pink", null);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2800); // let the settings write land
+  await seed(page, null, null); // drop the local cache only
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2800);
+  s = await readState(page);
+  check(
+    "with no local cache, the account preference is restored",
+    s.accent === "pink",
+    `data-accent=${s.accent}`,
+  );
 
   // ---------------------------------------------- every accent, both appearances
   const seen = {};
@@ -215,20 +237,46 @@ async function main() {
 
   // -------------------------------------- the shared Button moved off --primary
   await seed(page, "orange", "light");
-  await page.goto(`${BASE}/settings`, { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2400);
+  await page.goto(`${BASE}/chat`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("#chat-composer", { timeout: 30000 });
+  await page.waitForTimeout(1200);
+  // The send button only takes bg-brand once there is something to send, and an
+  // idle /chat renders no other filled brand surface — so without this the sweep
+  // below finds nothing and the assertion passes on an empty set.
+  await page.locator("#chat-composer").fill("accent probe");
+  await page.waitForTimeout(700);
+  // This must not be able to pass vacuously. An earlier version only checked that
+  // no visible button was pure black - which is also true on a page that renders
+  // no primary button at all, so it proved nothing about the shared <Button>.
+  // Instead: find the elements that actually carry the shared class and compare
+  // their PAINTED colour against the accent the page resolved.
   const buttons = await page.evaluate(() => {
-    const brand = getComputedStyle(document.documentElement).getPropertyValue("--brand").trim();
-    const btns = [...document.querySelectorAll("button")].filter((b) => {
-      const s = getComputedStyle(b);
-      return s.backgroundColor !== "rgba(0, 0, 0, 0)" && b.offsetParent !== null;
-    });
-    return { brand, backgrounds: [...new Set(btns.map((b) => getComputedStyle(b).backgroundColor))] };
+    const hsl = getComputedStyle(document.documentElement)
+      .getPropertyValue("--brand")
+      .trim();
+    // Paint the token into a probe so the comparison is rgb-vs-rgb rather than
+    // re-implementing hsl->rgb in the assertion.
+    const probe = document.createElement("div");
+    probe.style.cssText = `position:absolute;visibility:hidden;background:hsl(${hsl})`;
+    document.body.appendChild(probe);
+    const expected = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const filled = [...document.querySelectorAll("button, a")].filter(
+      (b) => /bg-brand/.test(b.className || "") && b.offsetParent !== null,
+    );
+    return {
+      hsl,
+      expected,
+      found: filled.length,
+      mismatched: filled
+        .map((b) => getComputedStyle(b).backgroundColor)
+        .filter((c) => c !== expected),
+    };
   });
   check(
-    "settings buttons are not stuck on pure ink under an accent",
-    !buttons.backgrounds.includes("rgb(0, 0, 0)"),
-    `brand=${buttons.brand} backgrounds=${buttons.backgrounds.join(", ")}`,
+    "the shared bg-brand surface paints the resolved accent",
+    buttons.found > 0 && buttons.mismatched.length === 0,
+    `found=${buttons.found} expected=${buttons.expected} mismatched=${buttons.mismatched.join(", ") || "none"}`,
   );
 
   check("zero console errors", errs.length === 0, errs.slice(0, 3).join(" | "));

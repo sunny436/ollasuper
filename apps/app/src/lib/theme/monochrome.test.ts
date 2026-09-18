@@ -363,25 +363,29 @@ describe("accent colour", () => {
   // sync test below is what stops the duplication rotting.
   const NAMES = ["blue", "green", "yellow", "pink", "orange", "purple", "neutral"];
 
-  /** Blue lives in :root/.dark; the other six in [data-accent] blocks. */
-  const accentTokens = (name: string, mode: "light" | "dark") => {
-    if (name === "blue") return mode === "light" ? root : dark;
-    return block(
+  /** Every accent has a block; blue additionally lives in :root/.dark. */
+  const accentTokens = (name: string, mode: "light" | "dark") =>
+    block(
       mode === "light"
-        ? `:root[data-accent="${name}"]`
-        : `:root.dark[data-accent="${name}"]`,
+        ? `[data-accent="${name}"]`
+        : `.dark[data-accent="${name}"],
+  .dark [data-accent="${name}"]`,
     );
-  };
 
   test("the CSS blocks and accent.ts list the same seven names", () => {
     const ts = readFileSync(join(APP_SRC, "lib", "theme", "accent.ts"), "utf8");
     const inTs = [...ts.matchAll(/name: "([a-z]+)"/g)].map((m) => m[1]);
     expect(inTs).toEqual(NAMES);
-    // Every non-default accent must have BOTH blocks; blue must have NEITHER,
-    // because it is the :root default.
+    // Every accent must have both blocks, blue included — the settings swatches
+    // scope the palette to themselves via the attribute, which only works if the
+    // selector exists for every name.
     for (const n of NAMES) {
-      const has = css.includes(`:root[data-accent="${n}"]`);
-      expect(`${n} light block: ${has}`).toBe(`${n} light block: ${n !== "blue"}`);
+      expect(`${n} light block`).toBe(
+        css.includes(`[data-accent="${n}"]`) ? `${n} light block` : `${n} MISSING`,
+      );
+      expect(`${n} dark block`).toBe(
+        css.includes(`.dark [data-accent="${n}"]`) ? `${n} dark block` : `${n} MISSING`,
+      );
     }
   });
 
@@ -421,6 +425,21 @@ describe("accent colour", () => {
       });
     }
   }
+
+  test("blue's two copies agree", () => {
+    // Blue is written twice on purpose: :root/.dark is the no-attribute fallback,
+    // the [data-accent="blue"] block is what a swatch opts into. If they drift,
+    // the default and the swatch show different blues.
+    for (const [mode, fallback] of [
+      ["light", root],
+      ["dark", dark],
+    ] as const) {
+      const explicit = accentTokens("blue", mode);
+      for (const t of ["--brand", "--brand-ink", "--brand-foreground"]) {
+        expect(`${mode} ${t} = ${explicit[t]}`).toBe(`${mode} ${t} = ${fallback[t]}`);
+      }
+    }
+  });
 
   test("neutral restores the monochrome palette exactly", () => {
     // The promise that the monochrome design survives as a first-class option.
