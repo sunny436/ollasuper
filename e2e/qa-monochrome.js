@@ -189,6 +189,30 @@ const STATUS_RGB = [
   [74, 222, 128], // #4ADE80 success, dark
 ];
 
+/**
+ * Force a theme through the SAME cache the pre-paint script reads, with a fresh
+ * timestamp so the account row loses last-write-wins instead of flipping the
+ * page mid-audit, then reload so the choice is applied BEFORE first paint.
+ *
+ * Deliberately NOT context.addInitScript: init scripts cannot be unregistered
+ * and they accumulate, so registering one per mode means every later navigation
+ * runs all of them in order and the last mode registered always wins. That bug
+ * made a whole "light" pass silently render dark, and every assertion in it
+ * still passed — which is the worst kind of green.
+ */
+async function setMode(page, mode) {
+  await page.evaluate(
+    ([m, ts]) => {
+      try {
+        localStorage.setItem("theme", m);
+        localStorage.setItem("theme_ts", String(ts));
+      } catch {}
+    },
+    [mode, Date.now()],
+  );
+  await page.reload({ waitUntil: "domcontentloaded" });
+}
+
 async function signIn(page, who) {
   await page.goto(`${BASE}/login`, { waitUntil: "load" });
   await page.waitForTimeout(2500);
@@ -211,9 +235,6 @@ async function main() {
   fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ headless: HEADLESS });
 
-  // Mode is forced through the SAME cache the pre-paint script reads, with a
-  // fresh timestamp so the account row (which may hold the other choice) loses
-  // the last-write-wins comparison instead of flipping the page mid-audit.
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
   page.on("console", (m) => {
@@ -224,16 +245,8 @@ async function main() {
   // ---- the login route, signed OUT. It is the one page every user sees first
   // and it carried 21 hardcoded hex colours before this work.
   for (const mode of ["light", "dark"]) {
-    await context.addInitScript(
-      ([m, ts]) => {
-        try {
-          localStorage.setItem("theme", m);
-          localStorage.setItem("theme_ts", String(ts));
-        } catch {}
-      },
-      [mode, Date.now()],
-    );
     await page.goto(`${BASE}/login`, { waitUntil: "load" });
+    await setMode(page, mode);
     await page.waitForTimeout(2500);
     await auditRoute(page, "/login", mode);
   }
@@ -266,17 +279,12 @@ async function main() {
 
   for (const mode of ["light", "dark"]) {
     log(`\n=== ${mode.toUpperCase()} ===`);
-    await page.evaluate(
-      ([m, ts]) => {
-        try {
-          localStorage.setItem("theme", m);
-          localStorage.setItem("theme_ts", String(ts));
-        } catch {}
-      },
-      [mode, Date.now()],
-    );
     for (const route of routes) {
       await page.goto(`${BASE}${route}`, { waitUntil: "domcontentloaded" });
+      // Re-asserted per route, not once per mode. ThemeSync can adopt the
+      // account row on any navigation, and the point of this harness is to
+      // audit what the chosen mode renders, not to race the sync.
+      await setMode(page, mode);
       await page.waitForTimeout(3000);
       await auditRoute(page, route, mode);
     }
