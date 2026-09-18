@@ -15,18 +15,50 @@ import { OLLA_MARK_PATH, OLLA_MARK_VIEWBOX } from "./olla-super-logo";
 const APP = join(import.meta.dir, "..", "..", "..");
 const SRC = join(APP, "src");
 const ICON = join(SRC, "app", "icon.svg");
+const SOURCE = join(import.meta.dir, "olla-super-mark.source.svg");
+
+/** The `d` of the single path in an SVG file. */
+function pathData(file: string): string {
+  const m = readFileSync(file, "utf8").match(/<path[^>]*\sd="([^"]*)"/s);
+  if (!m) throw new Error(`no <path d="..."> in ${file}`);
+  return m[1].trim();
+}
+
+describe("the mark matches the supplied artwork", () => {
+  // olla-super-mark.source.svg is the artwork of record, committed unmodified.
+  // Nothing imports it; it exists so "matches the logo exactly" is a thing the
+  // suite can CHECK rather than something a commit message claims.
+  const source = pathData(SOURCE);
+
+  test("the component carries the source geometry, character for character", () => {
+    expect(OLLA_MARK_PATH).toBe(source);
+  });
+
+  test("the favicon carries it too", () => {
+    expect(pathData(ICON)).toBe(source);
+  });
+
+  test("the viewBox is the source viewBox, unscaled", () => {
+    const vb = readFileSync(SOURCE, "utf8").match(/viewBox="([^"]*)"/);
+    expect(OLLA_MARK_VIEWBOX).toBe(vb?.[1]);
+  });
+});
 
 describe("the mark", () => {
   test("is vector geometry, not an embedded image", () => {
-    expect(OLLA_MARK_PATH).toMatch(/^M[\d.\- LZM]+Z$/);
+    // Move/line/cubic/close only. Anything else in here means someone pasted
+    // markup rather than path data.
+    expect(OLLA_MARK_PATH).toMatch(/^M[\d.\-\s MLCZ]+Z$/);
     expect(OLLA_MARK_PATH).not.toContain("base64");
-    expect(OLLA_MARK_PATH.length).toBeGreaterThan(80);
+    expect(OLLA_MARK_PATH.length).toBeGreaterThan(2000);
   });
 
-  test("has 3-fold symmetry: one hexagon plus three identical channels", () => {
-    // Four subpaths — the outer hexagon and one channel per 120 degrees. If a
-    // future edit hand-draws the arms instead, this is what notices.
-    expect(OLLA_MARK_PATH.split("M").length - 1).toBe(4);
+  test("is the supplied artwork, unscaled", () => {
+    // Six subpaths and the source viewBox, exactly as delivered. A redraw or a
+    // "tidy up" rescale to a rounder viewBox would change both, and both trade
+    // fidelity for neatness — which is how the wrong mark shipped once already.
+    expect(OLLA_MARK_PATH.split("M").length - 1).toBe(6);
+    expect(OLLA_MARK_VIEWBOX).toBe("0 0 1095 1095");
   });
 
   test("the component paints with currentColor and nothing else", () => {
@@ -37,8 +69,11 @@ describe("the mark", () => {
     for (const banned of ["<image", "base64", "url(", "linearGradient", "filter="]) {
       expect(src).not.toContain(banned);
     }
-    // No literal colour may be baked into the artwork.
-    expect(src.match(/fill="#[0-9a-fA-F]{3,8}"/)).toBeNull();
+    // No literal colour may be baked into the artwork — the source arrived with
+    // fill="#020201" and stroke="#020201", and both had to become currentColor
+    // or the mark would be invisible in dark mode.
+    expect(src.match(/(?:fill|stroke)="#[0-9a-fA-F]{3,8}"/)).toBeNull();
+    expect(src).toContain('stroke="currentColor"');
   });
 });
 
@@ -53,6 +88,12 @@ describe("icon.svg", () => {
     // path is duplicated by necessity — this is what stops it drifting.
     expect(svg).toContain(OLLA_MARK_PATH);
     expect(svg).toContain(`viewBox="${OLLA_MARK_VIEWBOX}"`);
+  });
+
+  test("keeps the seam-closing hairline the source relies on", () => {
+    // The artwork is six subpaths that abut; without a stroke matching the fill,
+    // antialiasing leaves visible background hairlines along the joins.
+    expect(svg).toContain("stroke-width=\"0.25\"");
   });
 
   test("resolves its own colour in both themes", () => {

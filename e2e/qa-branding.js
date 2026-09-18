@@ -34,9 +34,13 @@ const check = (name, ok, detail = "") => {
 /** What the brand lockup resolves to right now, in this viewport. */
 function readBrand(page) {
   return page.evaluate(() => {
-    const text = [...document.querySelectorAll("span")].find(
+    // The VISIBLE one. A hidden duplicate elsewhere in the tree would otherwise
+    // be measured instead, and report a colour from a surface nobody can see.
+    const all = [...document.querySelectorAll("span")].filter(
       (s) => s.textContent?.trim() === "OllaSuper" && s.children.length === 0,
     );
+    const text =
+      all.find((s) => s.getBoundingClientRect().width > 1) ?? all[0];
     const svg =
       text?.parentElement?.querySelector("svg") ??
       document.querySelector("span > svg");
@@ -56,6 +60,11 @@ function readBrand(page) {
       };
     };
     return {
+      // Reported on every check so a colour failure says whether the THEME was
+      // wrong or the brand was.
+      bodyBg: getComputedStyle(document.body).backgroundColor,
+      dark: document.documentElement.classList.contains("dark"),
+      count: all.length,
       hasText: !!text,
       text: vis(text),
       mark: vis(svg),
@@ -128,7 +137,7 @@ async function main() {
     check(
       `auth ${mode}: brand resolves to ${want}`,
       r.text?.color === want && r.markFill === want,
-      `text ${r.text?.color}, mark ${r.markFill}`,
+      `text ${r.text?.color}, mark ${r.markFill} | theme dark=${r.dark} bg=${r.bodyBg}`,
     );
     check(`auth ${mode}: wordmark renders in Poppins`, /Poppins/i.test(r.text?.font || ""), r.text?.font);
     check(`auth ${mode}: weight 800`, String(r.text?.weight) === "800", r.text?.weight);
@@ -147,7 +156,11 @@ async function main() {
       (d.text?.w ?? 0) > 40 && d.mark?.display === "none",
       `text ${d.text?.w}px, mark display=${d.mark?.display}`,
     );
-    check(`app desktop ${mode}: brand resolves to ${want}`, d.text?.color === want, d.text?.color);
+    check(
+      `app desktop ${mode}: brand resolves to ${want}`,
+      d.text?.color === want,
+      `got ${d.text?.color} | theme dark=${d.dark} bg=${d.bodyBg} | ${d.count} wordmark node(s)`,
+    );
   }
 
   // ------------------------------------------- the 767 / 768 boundary

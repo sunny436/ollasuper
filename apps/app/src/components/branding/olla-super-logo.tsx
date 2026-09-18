@@ -1,38 +1,58 @@
 /**
- * The OllaSuper mark. One path, no raster, no gradient, no filter.
+ * The OllaSuper mark. Vector geometry, verbatim from the supplied source.
  *
- * GEOMETRY IS GENERATED, NOT DRAWN BY HAND. The mark has 3-fold rotational
- * symmetry, so it is a hexagon with three identical channels cut out of it at
- * 0/120/240 degrees, punched with `fill-rule="evenodd"`. Building it that way is
- * not a shortcut: it is what makes the three negative-space channels provably
- * identical instead of hand-matched three times, and it is why the mark stays
- * balanced at 16px where hand-nudged coordinates would not.
+ * NOT REDRAWN. The path below is the operator-supplied artwork, untouched and
+ * unscaled - same coordinates, same 1095 viewBox, same evenodd rule. An earlier
+ * version of this file carried geometry I had reconstructed by eye from a raster
+ * reference; it was in the right visual language and was still the wrong mark.
+ * Re-fitting or re-scaling vector data to a rounder viewBox only trades fidelity
+ * for tidiness, so the original numbers stay exactly as they are.
  *
- * Every coordinate sits on the hexagon's own isometric grid — pointy-top,
- * centre (50,50), vertices (50,0) (93.3,25) (93.3,75) (50,100) (6.7,75) (6.7,25)
- * — so every edge lands on a 30/60/90 degree line and stays crisp when rasterised
- * to a favicon.
+ * The 0.25 stroke is NOT decoration. It matches the fill and closes the
+ * antialiasing seams between the six subpaths; without it a hairline of
+ * background shows through the joins at small sizes.
  *
- * The channels deliberately extend past the hexagon (negative coordinates, and
- * values over 100). They have to: a channel that stopped at the boundary would
- * leave a hairline of ink welding two arms together. The outermost <svg> clips to
- * its viewBox by default, so the overflow never paints.
- *
- * `currentColor`, so ONE file serves both themes — black on light, white on dark,
- * inherited from whatever `text-*` the caller sits in. There is no second asset
- * and no `dark:` variant on the artwork.
+ * `currentColor` on both fill and stroke, so ONE file serves both themes - black
+ * on light, white on dark, inherited from whatever `text-*` the caller sits in.
+ * There is no second asset and no `dark:` variant on the artwork.
  *
  * The path is exported because `app/icon.svg` needs the same geometry in a file
  * that cannot import React. `branding.test.ts` asserts the two are identical, so
  * "one source of truth" is enforced rather than promised.
  */
-export const OLLA_MARK_VIEWBOX = "0 0 100 100";
+export const OLLA_MARK_VIEWBOX = "0 0 1095 1095";
 
 export const OLLA_MARK_PATH =
-  "M50 0L93.3 25L93.3 75L50 100L6.7 75L6.7 25Z" +
-  "M51.5 -14L51.5 41.18L99.28 68.76L104.78 59.24L62.5 34.82L62.5 -14Z" +
-  "M104.68 83.3L56.89 55.71L9.11 83.3L14.61 92.83L56.89 68.41L99.18 92.83Z" +
-  "M-6.18 80.7L41.61 53.11L41.61 -2.06L30.61 -2.06L30.61 46.76L-11.68 71.17Z";
+  "M562.5 131.13C559.1 139.7 552.93 147.77 548.45 155.93C537.73 175.45 526.9 194.95 515.63 21" +
+  "4.17C510.32 223.23 505.26 232.49 500.15 241.67C498.03 245.48 496.22 250.53 493.23 253.73C4" +
+  "90.26 256.89 485.27 258.87 481.56 261.03C472.99 266.04 459.32 273.26 452.14 279.5C450.75 3" +
+  "13.39 452.38 347.59 452.49 381.5C452.63 428.5 452.68 475.5 452.92 522.5C453.05 546.16 453." +
+  "42 569.84 453.27 593.5C453.22 601.72 454.97 616.92 452.5 624.04C416.68 601.86 380.86 579.6" +
+  "8 345.04 557.5C345.04 458.17 345.04 358.83 345.04 259.5C417.53 216.71 490.01 173.92 562.5 " +
+  "131.13ZM588.5 145.35C593.98 147.87 598.81 151.44 603.96 154.53C613.93 160.53 623.76 166.75" +
+  " 633.66 172.87C667.02 193.49 700.61 213.75 733.77 234.71C774.45 260.41 815.36 285.83 856.1" +
+  "4 311.38C870.87 320.6 885.3 330.29 900.05 339.45C908.38 344.62 917.23 349.52 925 355.5C925" +
+  " 402.54 925 449.57 925 496.61C830.84 438.84 736.67 381.07 642.5 323.3C587.03 353.33 531.55" +
+  " 383.35 476.08 413.38C476.08 383.44 476.08 353.51 476.08 323.57C504.67 308.21 533.26 292.8" +
+  "6 561.85 277.5C549.16 271.83 536.47 266.17 523.77 260.5C545.35 222.12 566.92 183.73 588.5 " +
+  "145.35ZM285.69 296.2C285.69 379.64 285.69 463.07 285.69 546.5C340.56 581.5 395.43 616.5 45" +
+  "0.3 651.5C416.7 669.89 383.1 688.28 349.5 706.67C328.18 693.73 306.85 680.8 285.53 667.86C" +
+  "285.53 678.41 285.53 688.95 285.53 699.5C247.09 718.71 208.65 737.91 170.21 757.12C170.21 " +
+  "625.25 170.21 493.37 170.21 361.5C208.71 339.73 247.2 317.97 285.69 296.2ZM603.5 382.18C71" +
+  "0.67 447.64 817.84 513.1 925.02 578.55C925.02 638.64 925.02 698.73 925.02 758.81C885.2 738" +
+  ".71 845.38 718.6 805.56 698.5C805.56 678.83 805.56 659.17 805.56 639.5C799.49 635.29 792.8" +
+  "2 631.95 786.62 627.94C764.81 613.85 742.11 601.08 719.97 587.52C693.31 571.19 666.71 554." +
+  "76 639.99 538.51C623.25 528.32 606.85 517.33 589.82 507.65C566.83 494.58 544.66 480.07 521" +
+  ".93 466.55C513.11 461.31 491.7 450.25 485.67 443.5C524.95 423.06 564.22 402.62 603.5 382.1" +
+  "8ZM739.17 632.5C739.17 673.72 739.17 714.93 739.17 756.15C760.61 743.93 782.06 731.71 803." +
+  "5 719.5C837.31 737.83 871.11 756.17 904.92 774.5C896.65 780.35 887.79 785.3 879.26 790.74C" +
+  "861.7 801.94 844.04 812.97 826.15 823.63C783.35 849.12 741.07 875.48 697.99 900.48C665.47 " +
+  "919.35 632.91 938.11 600.26 956.74C592.15 961.37 583.87 965.68 575.73 970.23C568.42 974.32" +
+  " 561.2 978.91 553.5 982.21C515.76 958.64 478.01 935.07 440.27 911.5C509.48 871.83 578.7 83" +
+  "2.17 647.92 792.5C647.92 720.83 647.92 649.17 647.92 577.5C678.34 595.83 708.75 614.17 739" +
+  ".17 632.5ZM626.81 594.07C626.81 636.21 626.81 678.36 626.81 720.5C532.7 771.85 438.6 823.2" +
+  "1 344.5 874.56C293 840.87 241.5 807.19 190 773.5C221.83 757.28 253.67 741.05 285.5 724.83C" +
+  "302.83 735.21 320.17 745.6 337.5 755.99C433.94 702.01 530.37 648.04 626.81 594.07Z";
 
 /**
  * Decorative by default: every place this renders, "OllaSuper" is already present
@@ -48,7 +68,13 @@ export function OllaSuperLogo({ className }: { className?: string }) {
       focusable="false"
       className={className}
     >
-      <path fillRule="evenodd" d={OLLA_MARK_PATH} />
+      <path
+        d={OLLA_MARK_PATH}
+        fillRule="evenodd"
+        stroke="currentColor"
+        strokeWidth="0.25"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
