@@ -31,6 +31,53 @@ One finding is verified by unit test only, and deliberately so:
   on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
   surface is built, add the prod check with it.
 
+## Skill QA remediation (tester report 17-09-2026) - LIVE, prod-verified
+
+Fixed at shared layers only; every claim was checked against the code AND the live
+search provider first, and three of the report's items did not survive that check.
+
+- **False file / action claims (P1, P6) - FIXED.** Nothing compared what an answer
+  CLAIMED against what the turn PRODUCED. `app/runtime/claims.py` now checks the
+  finished answer against recorded state (ARTIFACT events, side-effecting executions
+  that succeeded) and appends a system-authored correction, like the requirement
+  ledger. False positives were the real risk, so a proposal ("save this as
+  notes.csv"), a user's own attachment, a filename in a code fence and an answer
+  already labelled DRAFT are all left alone (18 tests). Prod: asked to emit a
+  download line with no tool, the model answered "No file was generated"; asked to
+  send a Slack message it answered "I did not send anything, and I did not generate
+  a file."
+- **Fabricated facts (P2, P5) - FIXED at the policy layer.** The base prompt had no
+  uncertainty rule and there IS no coding skill - coding runs on that prompt, which
+  is why docs/infra answers invented URLs, versions and release history. A grounding
+  policy now ships on BOTH the agentic and plain paths (the fabrications happened on
+  tool-less turns). Prod: the same README request returned `UNKNOWN` for all three
+  unverifiable facts with TODO placeholders, and the reconcile() request covered the
+  "receipt" field the tester saw dropped.
+- **Web search (P3) - PARTIALLY FIXED, the rest is upstream.** `app/agent/search_guard.py`
+  fills `lang` (stated preference, else only a demonstrably English query - the
+  preference defaults to "auto", so a preference-only rule would have fixed nothing),
+  never invents `region`, strips utm/fbclid/gclid, MARKS opaque google `/goto`
+  wrappers (a HEAD returns 200 with no Location, so the canonical URL is not
+  recoverable), and annotates `relevance: none` when no result shares a term with the
+  query. Prod: `search_args_filled {"filled": ["lang"]}` in the service log, four
+  clean canonical citations, zero wrapper links. Engine health and Bing ranking are
+  NOT fixable here - live, `engines_failed` shows duckduckgo http_503 on nearly every
+  call and google http_502 intermittently while the merged results are fine, which is
+  also why partial engine failure is deliberately NOT escalated.
+- **Silent truncation (P4) - FIXED.** The truncation notice existed but only rendered
+  when a ledger existed, and `build_ledger` returns None below 2 requirements - so a
+  single-request long article stopped mid-sentence with nothing said. The notice (and
+  an empty-search notice) now render for every turn. Prod: asked for 900 entries the
+  model declared the limit up front, delivered a clean first batch and put the rest in
+  a file.
+- **Not reproducible:** the punctuation-only query that the tester saw crash returns
+  HTTP 200 with results today; a cheap pre-call guard was added anyway, labelled as
+  defensive rather than a reproduction.
+- **Not treated as bugs** (testing gaps per the brief): live Slack/Jira execution,
+  binary/scanned PDF ingestion, ERP tax rules, plagiarism tooling, in-place document
+  editing, long-session state, >25-call concurrency, deep SERP pagination.
+- Tests: 3184 pass (48 new), ruff clean. Deployed Python-only (1bb2f5c).
+
 ## Mobile + tablet performance and responsive — LIVE 2026-09-17, NOT production-ready
 
 Report: phones (iPhone and Android) 5–10 s to respond, lag in everything. Frontend only;
