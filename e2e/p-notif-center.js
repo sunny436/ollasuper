@@ -104,14 +104,15 @@ const taskRows = (page) =>
       "the bell is not in the chat header",
     );
     // DOM order inside the header's right cluster: Share, then the bell, then
-    // the ambience (theme) slider.
+    // the theme toggle - a button since the monochrome system replaced the
+    // ambience slider, so the selector below no longer looks for a range input.
     const order = await header.evaluate((h) => {
       const names = [];
-      for (const el of h.querySelectorAll("button,input[type=range]")) {
+      for (const el of h.querySelectorAll("button")) {
         const l = el.getAttribute("aria-label") || "";
         if (/Share conversation/.test(l)) names.push("share");
         else if (/^Notifications$/.test(l)) names.push("bell");
-        else if (/[Aa]mbience|[Tt]heme/.test(l)) names.push("theme");
+        else if (/[Tt]heme/.test(l)) names.push("theme");
       }
       return names.join(",");
     });
