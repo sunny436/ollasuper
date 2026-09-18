@@ -66,10 +66,22 @@ async function newGroup(type, touch) {
     deviceScaleFactor: touch ? 2 : 1,
   });
   const page = await context.newPage();
-  page.on("console", (m) => {
-    if (m.type() === "error") errs.push(`[${type.name()}${touch ? " touch" : ""}] ${page.url().replace(BASE, "")} ${m.text().slice(0, 180)}`);
+  // Attribute a console error to the navigation IN FLIGHT, not to page.url():
+  // WebKit reports the 404 page's own document response before the URL has
+  // moved on from the previous route, which blamed /en/slack for the 404 that
+  // /en/this-route-does-not-exist is meant to produce.
+  let navigating = "";
+  page.on("request", (r) => {
+    if (r.isNavigationRequest() && r.frame() === page.mainFrame()) navigating = r.url();
   });
-  page.on("pageerror", (e) => errs.push(`[${type.name()}] ${page.url().replace(BASE, "")} pageerror ${e.message.slice(0, 180)}`));
+  page.on("framenavigated", (f) => {
+    if (f === page.mainFrame()) navigating = "";
+  });
+  const where = () => (navigating || page.url()).replace(BASE, "");
+  page.on("console", (m) => {
+    if (m.type() === "error") errs.push(`[${type.name()}${touch ? " touch" : ""}] ${where()} ${m.text().slice(0, 180)}`);
+  });
+  page.on("pageerror", (e) => errs.push(`[${type.name()}] ${where()} pageerror ${e.message.slice(0, 180)}`));
   return { browser, context, page };
 }
 

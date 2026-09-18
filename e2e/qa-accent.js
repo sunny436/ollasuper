@@ -304,9 +304,13 @@ async function main() {
   // A message that FITS in 12 lines at desktop width and does not at phone
   // width. Without a ResizeObserver the state is decided once on mount and this
   // fails in both directions.
+  //
+  // Eight short rows: one line each at 1280 (8 < 12), two each at 420 (16 > 12).
+  // The earlier fixture (6 rows × 2 sentences) sat exactly on the 12-line edge
+  // in Plus Jakarta Sans and tipped over it in the wider Poppins.
   await untilIdle(page);
   await page.waitForTimeout(800);
-  const wrappy = Array.from({ length: 6 }, (_, i) => `row ${i + 1}: ${"a fairly long sentence that wraps only when the bubble is narrow ".repeat(2).trim()}`).join("\n");
+  const wrappy = Array.from({ length: 8 }, (_, i) => `row ${i + 1}: wraps only when the bubble is narrow, not before`).join("\n");
   await page.locator("#chat-composer").fill(wrappy);
   await page.keyboard.press("Enter");
   await page.waitForTimeout(2500);
