@@ -4,7 +4,7 @@ import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
 import { Check, Copy, Pencil, RefreshCw, RotateCcw, Share2 } from "lucide-react";
-import { memo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { TypedEvent } from "../_lib/agent-events";
 import { AgentActivity } from "./agent-activity";
@@ -95,6 +95,68 @@ function MessageMeta({
     </div>
   );
 }
+/**
+ * The user's turn. Accent-filled, and clamped when it is long.
+ *
+ * ACCENT FILL. The bubble was a muted surface through the monochrome work,
+ * because under pure ink a solid slab on every user turn was the heaviest thing
+ * on a page that is mostly reading. With an accent colour available that
+ * argument no longer holds for six of the seven options, and the operator
+ * chose the ChatGPT convention: the user's words sit on the accent. Under
+ * Neutral this is deliberately a black (light) / white (dark) bubble.
+ * `text-brand-foreground` is the per-accent on-fill text, already asserted at
+ * >= 4.5:1 against `--brand` for every accent in both modes.
+ *
+ * CLAMP. Beyond ~20 lines the bubble is cut with a fade and a "Show more"
+ * affordance, so a pasted document does not push the reply off screen. The cut
+ * is `max-h-[34em]` (20 lines x 1.7 line-height) with overflow hidden, NOT
+ * -webkit-line-clamp: line-clamp draws an ellipsis on the final line, which is
+ * wrong under a fade. The fade is a `mask-image` — an alpha ramp on the text
+ * itself, so it needs no knowledge of the bubble colour and works on all seven
+ * accents. It is not a painted gradient; the monochrome ban is on decorative
+ * colour gradients, and this paints no colour at all.
+ *
+ * The affordance appears only when the content actually overflows, measured
+ * while clamped: a short message gets no button and no fade.
+ *
+ * Module scope, never nested — see the note above MessageMeta.
+ */
+function UserBubble({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const ref = useRef<HTMLParagraphElement | null>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || expanded) return;
+    setOverflows(el.scrollHeight > el.clientHeight + 1);
+  }, [content, expanded]);
+
+  const clamped = overflows && !expanded;
+  return (
+    <div className="rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-[15.5px] leading-[1.7] text-brand-foreground">
+      <p
+        ref={ref}
+        className={`whitespace-pre-wrap break-words ${
+          expanded ? "" : "max-h-[34em] overflow-hidden"
+        } ${clamped ? "[mask-image:linear-gradient(to_bottom,black_78%,transparent)]" : ""}`}
+      >
+        {content}
+      </p>
+      {overflows && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="mt-1.5 text-xs font-medium underline underline-offset-2 opacity-80 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-foreground/60"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ChatMessageImpl({
   message,
   isStreaming,
@@ -206,18 +268,7 @@ function ChatMessageImpl({
               )}
             </div>
           )}
-          {/*
-            DELIBERATE DEVIATION, and the one place this design system bends.
-            `bg-brand` is now pure black (light) / pure white (dark). A solid ink slab
-            on every user turn is the heaviest thing on a page that is mostly
-            reading, and it competes with the assistant prose it is meant to frame.
-            The bubble is a muted surface with a 1px border instead: the shape and
-            the right alignment still mark the turn as the user's, without the mass.
-            Solid ink fills stay where they earn their weight - primary buttons.
-          */}
-          <div className="rounded-2xl rounded-br-md border border-border bg-muted px-4 py-2.5 text-[15.5px] leading-[1.7] text-foreground">
-            <p className="whitespace-pre-wrap break-words">{message.content}</p>
-          </div>
+          <UserBubble content={message.content} />
           <div className="mt-1 flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
             <IconButton label="Copy" onClick={copy}>
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
