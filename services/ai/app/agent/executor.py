@@ -50,6 +50,12 @@ from app.agent.orchestration_tools import (
     ORCHESTRATION_BUILTIN_NAMES,
 )
 from app.agent.policy import PolicyScope, check_tool_policy
+from app.agent.search_guard import (
+    empty_query,
+    is_search_tool,
+    prepare_args,
+    process_result,
+)
 from app.agent.taint import REJECTED_EARLIER, TaintLedger, source_of
 from app.data.tool import DATA_TOOL_NAMES, DataContext, run_tool
 from app.documents.context import DocumentsContext, run_document_ops
@@ -175,6 +181,10 @@ class ToolExecContext:
     # so existing tests are unchanged; the runner sets it from config).
     tool_max_retries: int = 0
     tool_retry_base_s: float = 0.5
+    # The user's own language preference (Personalization.responseLanguage), used
+    # ONLY to fill web search's `lang` when the model left it out — an English
+    # query was coming back with Spanish results. Empty/"auto" = leave unset.
+    response_language: str = ""
     # Phase 6: max tool calls run in one step (0 = unlimited, the default so
     # existing tests are unchanged; the runner sets it from config). Extra calls
     # are refused with a paired error.
@@ -1227,6 +1237,27 @@ async def _run_one(
     if not isinstance(input_schema, dict):
         input_schema = {}
     side_effecting = tool.side_effect is not SideEffect.READ_ONLY
+    # WEB SEARCH ONLY (gated on the provider's search operation id): fill the
+    # request fields the model leaves out, and refuse a query with nothing
+    # searchable in it. Done BEFORE the write-ahead so the recorded arguments are
+    # the ones that actually went to the provider.
+    if is_search_tool(tool_id, tool.name):
+        if empty_query(args):
+            nothing = {
+                "status": "success",
+                "count": 0,
+                "results": [],
+                "relevance": "none",
+                "note": "The query contains no searchable terms.",
+            }
+            ctx.writer.search_returned_nothing = True
+            return _tool_message(call_id, nothing, status="success")
+        args, _filled = prepare_args(args, response_language=ctx.response_language)
+        if _filled:
+            log.info(
+                "agent.search_args_filled",
+                extra={"tool_id": tool_id, "filled": sorted(_filled)},
+            )
     # WRITE-AHEAD (Phase 3): the DURABLE execution record (recovery authority) +
     # the TOOL_CALL event (UI + fallback authority). DUAL gate — a side-effecting
     # provider call fires ONLY if EITHER durably landed (deploy-safe: an old Convex
@@ -1402,6 +1433,15 @@ async def _run_one(
             },
         )
     _data = result.get("data")
+    # WEB SEARCH ONLY: strip tracking params, mark unresolvable redirect wrappers,
+    # and say so when nothing matches the query — measured against the live
+    # provider, which returns 11 unrelated results for a gibberish string with no
+    # zero-result signal of any kind. Results are annotated, never dropped or
+    # reordered: a ranking the provider got right is untouched.
+    if is_search_tool(tool_id, tool.name) and isinstance(_data, dict):
+        _data, _nothing = process_result(_data, args)
+        if _nothing:
+            ctx.writer.search_returned_nothing = True
     if ctx.security is not None:
         # BEFORE bounding: a cut through the middle of a secret would leave a
         # prefix no rule can recognise.

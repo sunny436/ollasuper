@@ -104,6 +104,17 @@ class DeltaWriter:
         # outcome already passes through, and ToolExecContext already carries
         # the writer — so counting needs no new plumbing.
         self.ledger = None
+        # Files this turn actually PRODUCED, appended by emit_event below. The
+        # download card renders from an ARTIFACT event and from nothing else, so
+        # this list is the turn's ground truth about whether a file exists — which
+        # is what `app/runtime/claims.py` checks the answer text against.
+        self.artifacts: list[dict[str, str]] = []
+        # Set by record_execution when a SIDE-EFFECTING tool actually succeeded.
+        self.external_action_succeeded = False
+        # Set by the executor when a web search came back with nothing that
+        # matches the query. Reported once, at the end of the turn, so an answer
+        # built on no evidence does not look like one built on evidence.
+        self.search_returned_nothing = False
         self._buf: list[str] = []
         self._buf_len = 0
         self._seq = 0
@@ -534,10 +545,15 @@ class DeltaWriter:
         # (write-ahead) and WAITING_APPROVAL, and counting those would inflate
         # every tally. `indeterminate` counts as a failure: the effect may have
         # landed, so an answer resting on it is not something to stand behind.
+        state = str(getattr(execution, "state", ""))
         if self.ledger is not None:
-            state = str(getattr(execution, "state", ""))
             if state.endswith(("succeeded", "failed", "timed_out", "indeterminate")):
                 self.ledger.note_tool(ok=state.endswith("succeeded"))
+        # Did anything actually reach the outside world this turn? A claim to have
+        # sent/filed/posted something is checked against this in
+        # `app/runtime/claims.py`; read-only calls never count as an action.
+        if state.endswith("succeeded") and side_effect != "read_only":
+            self.external_action_succeeded = True
         body: dict = {
             "op": "execution",
             "streamId": self._stream_id,
@@ -638,6 +654,19 @@ class DeltaWriter:
         if type is EventType.TOOL_CALL and "label" not in body:
             body["label"] = action_label(
                 str(body.get("tool_name") or ""), body.get("tool_id")
+            )
+        # Every producer of a downloadable file (generate_file, the documents tool,
+        # previews) emits its card through THIS call, so recording here needs no
+        # per-producer plumbing and cannot miss one that is added later.
+        if type is EventType.ARTIFACT:
+            _meta = body.get("metadata")
+            self.artifacts.append(
+                {
+                    "id": str(body.get("artifact_id") or ""),
+                    "filename": str(
+                        (_meta or {}).get("filename") if isinstance(_meta, dict) else ""
+                    ),
+                }
             )
         envelope = make_event(
             type,

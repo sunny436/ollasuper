@@ -405,3 +405,40 @@ async def test_a_first_step_execution_has_no_parent():
         await client.aclose()
 
     assert ctx.ledger.all()[0].parent_step is None
+
+
+# ------------------------------------------------- notices without a ledger
+# "Write a 2,000-word article" is ONE requirement, so it builds no ledger — and
+# that is exactly the shape the tester saw stop mid-sentence with nothing said
+# about it. These notices therefore cannot live behind the ledger.
+
+
+def test_a_single_requirement_request_builds_no_ledger():
+    assert build_ledger("Write a 2,000-word article about AI in software") is None
+
+
+def test_truncation_is_reported_without_a_ledger():
+    from app.runtime.ledger import render_standalone_notices
+
+    out = render_standalone_notices(output_truncated=True, no_evidence=False)
+    assert "length limit" in out
+
+
+def test_empty_search_is_reported_without_a_ledger():
+    from app.runtime.ledger import render_standalone_notices
+
+    out = render_standalone_notices(output_truncated=False, no_evidence=True)
+    assert "no usable results" in out
+
+
+def test_a_clean_turn_renders_nothing():
+    from app.runtime.ledger import render_standalone_notices
+
+    assert render_standalone_notices(output_truncated=False, no_evidence=False) == ""
+
+
+def test_both_notices_can_appear_together():
+    from app.runtime.ledger import render_standalone_notices
+
+    out = render_standalone_notices(output_truncated=True, no_evidence=True)
+    assert "length limit" in out and "no usable results" in out

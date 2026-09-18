@@ -90,6 +90,7 @@ from app.routing import Signals as RouteSignals
 from app.routing import select as route_select
 from app.runtime import compaction, suggestions
 from app.runtime.capabilities import render_capability_overview
+from app.runtime.claims import render_correction as render_claim_correction
 from app.runtime.context_manager import (
     ANSWER,
     classify_operation,
@@ -101,7 +102,7 @@ from app.runtime.context_tool import (
     ContextToolState,
 )
 from app.runtime.env_factory import build_live_agent_env
-from app.runtime.ledger import build_ledger
+from app.runtime.ledger import build_ledger, render_standalone_notices
 from app.runtime.roster import (
     build_delegate_spec,
     build_live_runtime,
@@ -1524,6 +1525,14 @@ async def run_generation(
                     default_timeout_s=settings.ollagraph_default_tool_timeout_s,
                     tool_max_retries=settings.ai_agent_tool_max_retries,
                     tool_retry_base_s=settings.ai_agent_tool_retry_base_s,
+                    # Fills web search's `lang` when the model omits it. The
+                    # user's stated preference only — never a guessed locale.
+                    response_language=(
+                        req.personalization.responseLanguage
+                        if req.personalization
+                        and req.personalization.responseLanguage
+                        else ""
+                    ),
                     max_tool_calls_per_step=settings.ai_agent_max_tool_calls_per_step,
                     max_stall_steps=settings.ai_agent_max_stall_steps,
                     max_concurrent_tools=settings.ai_agent_max_concurrent_tools,
@@ -2457,6 +2466,41 @@ async def run_generation(
                         "reported": bool(report),
                     },
                 )
+        elif status == "done" or _deadline_hit:
+            # No ledger — a single-requirement turn, which is most of them. The two
+            # facts that must never be silent still are: the answer was CUT OFF, or
+            # retrieval came back empty. Measured: "write a 2,000-word article" is
+            # one requirement, so it built no ledger and truncated mid-sentence
+            # with nothing said about it.
+            with contextlib.suppress(Exception):  # never fail a finished turn
+                notice = render_standalone_notices(
+                    output_truncated=(finish_reason or "").lower() == "length",
+                    no_evidence=bool(getattr(writer, "search_returned_nothing", False)),
+                )
+                if notice:
+                    await writer.push(notice)
+        # CLAIM CHECK. Deliberately NOT gated on the ledger: "here is your
+        # report.pdf" with no file behind it happens on the simplest turn there
+        # is. System-authored from recorded state (ARTIFACT events, side-effecting
+        # executions), appended before finalize so it lands in the same message.
+        if status == "done" or _deadline_hit:
+            with contextlib.suppress(Exception):  # never fail a finished turn
+                correction = render_claim_correction(
+                    writer.text or "",
+                    artifacts=list(getattr(writer, "artifacts", []) or []),
+                    external_tool_succeeded=bool(
+                        getattr(writer, "external_action_succeeded", False)
+                    ),
+                )
+                if correction:
+                    await writer.push(correction)
+                    log.info(
+                        "agent.claim_corrected",
+                        extra={
+                            "stream_id": req.streamId,
+                            "artifacts": len(getattr(writer, "artifacts", []) or []),
+                        },
+                    )
         if sec_state is not None and (status == "done" or _deadline_hit):
             with contextlib.suppress(Exception):  # never fail a finished turn
                 _answered = failover["model"] or model_id

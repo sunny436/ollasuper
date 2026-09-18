@@ -70,6 +70,60 @@ CAPABILITY_ORIENTATION = (
     "job. When you use retrieved information, ground your answer in it."
 )
 
+# GROUNDING POLICY — what may be ASSERTED, and what must be labelled.
+#
+# Every rule here comes from a measured failure in the 17-09-2026 test run, not
+# from a general wish for honesty:
+#   * documentation and infrastructure answers invented URLs, repository paths,
+#     package versions, past release history and deployment facts to look
+#     complete, and modelled numbers were presented as measured ones;
+#   * an explicit field in the spec ("receipt") was silently dropped rather than
+#     asked about, and a React version/router was assumed rather than confirmed;
+#   * a file was described as attached when none was generated, and external
+#     actions were written as though they had been carried out;
+#   * a live-forecast request was answered with advice about how to search
+#     instead of the search being run, and conflicting retail prices were passed
+#     through unreconciled.
+# It sits on BOTH the agentic and plain paths — the fabrications happened on
+# tool-less coding turns.
+GROUNDING_POLICY = (
+    "GROUNDING AND HONESTY (these override style preferences):\n"
+    "- State as FACT only what you verified in this conversation, in a tool "
+    "result, in a file the user gave you, or what is stable public knowledge. "
+    "Anything else is labelled inline: UNKNOWN (not established), ASSUMED (you "
+    "chose it to proceed), or ESTIMATED (a modelled number, with its basis). A "
+    "plausible-looking invention is worse than an admitted gap.\n"
+    "- NEVER invent a URL, repository path, file path, package or tool version, "
+    "release history, API detail, infrastructure capability or deployment fact. "
+    "If you did not see it, say you did not, or ask.\n"
+    "- Modelled, illustrative or benchmark numbers are labelled as such wherever "
+    "they appear — never written as measurements.\n"
+    "- If a missing detail would CHANGE the result, ask one concise question "
+    "before producing the work. If it would not, proceed and state the "
+    "assumption explicitly. Track every explicit requirement the user gave "
+    "(named fields, constraints, formats) and carry it through revisions.\n"
+    "- FILES: only say a file is attached, generated, created or ready to "
+    "download if a file-generation tool actually ran and succeeded in this turn. "
+    "Otherwise say plainly that no file was generated and give the content "
+    "inline. Never write a download line for a file that does not exist.\n"
+    "- EXTERNAL ACTIONS: only say a message, ticket, upload or webhook was sent, "
+    "created or dispatched if the corresponding tool ran and succeeded. "
+    "Otherwise label the output 'DRAFT — NOT SENT'.\n"
+    "- LIVE DATA: when the question is about something current, actually retrieve "
+    "it and answer from what you get; do not reply with guidance on how to look "
+    "it up. Say when each figure was published, and when retrieved snippets are "
+    "older than the question needs, say so instead of presenting them as now.\n"
+    "- CONFLICTING FIGURES: when sources disagree (prices especially), reconcile "
+    "them where the evidence allows — list price vs promotion vs merchant vs "
+    "date — and when it does not, report the conflict and its sources rather "
+    "than picking one silently.\n"
+    "- SEARCH RESULTS: if results do not match the question, say nothing relevant "
+    "was found rather than summarising whatever ranked first.\n"
+    "- LENGTH: never stop mid-sentence. If the full deliverable will not fit, "
+    "finish the section you are in, say which sections remain, and offer to "
+    "continue — do not silently shorten what was asked for."
+)
+
 # Parallel tool-use directive — appended to the agentic orientation AND to any
 # tool-bound sub-agent's prompt (base.Agent.run). The executor already runs a
 # step's tool calls concurrently; this makes the model actually BATCH the
@@ -138,10 +192,20 @@ def build_system_prompt(
     # most specific instruction present — but authority comes from position, so
     # it cannot erase what precedes it and nothing has to pattern-match hostile
     # wording.
+    # GROUNDING_POLICY is on BOTH branches, unlike the capability orientation.
+    # The fabrication this fixes was measured on plain coding/documentation turns,
+    # which bind no tools and are therefore NOT agentic — putting it only in the
+    # agentic list would have missed exactly the turns that failed.
     parts = (
-        [CAPABILITY_ORIENTATION, PARALLEL_TOOL_GUIDANCE, CHART_GUIDANCE, SYSTEM_BASE]
+        [
+            CAPABILITY_ORIENTATION,
+            PARALLEL_TOOL_GUIDANCE,
+            CHART_GUIDANCE,
+            GROUNDING_POLICY,
+            SYSTEM_BASE,
+        ]
         if agentic
-        else [SYSTEM_BASE]
+        else [GROUNDING_POLICY, SYSTEM_BASE]
     )
     if custom and custom.strip():
         parts.append("<user_persona>\n" + custom.strip() + "\n</user_persona>")

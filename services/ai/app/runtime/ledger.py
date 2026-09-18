@@ -203,10 +203,7 @@ class TurnLedger:
                 + "\n".join(f"- {r.text}" for r in self.unverified)
             )
         if self.output_truncated:
-            parts.append(
-                "**The response hit its length limit and stopped early.** Ask to "
-                "continue for the rest."
-            )
+            parts.append(TRUNCATION_NOTICE)
         if self.stopped_early:
             done = len(self.requirements) - len(self.unaddressed)
             parts.append(
@@ -253,6 +250,47 @@ def _bound(items: list[str]) -> list[str]:
         if len(out) >= MAX_REQUIREMENTS:
             break
     return out
+
+
+#: Appended whenever the model stopped because it ran out of output budget.
+#: Module-level because it must render for EVERY turn, not only an enumerable one:
+#: "write a 2,000-word article" is a SINGLE requirement, so it never built a
+#: ledger, and the answer simply stopped mid-sentence with nothing said about it.
+TRUNCATION_NOTICE = (
+    "**The response hit its length limit and stopped early.** Ask to "
+    "continue for the rest."
+)
+
+#: Appended when the turn's retrieval came back with nothing at all. Partial
+#: engine failure is deliberately NOT reported: the provider merges several
+#: engines and one of them (duckduckgo) fails on nearly every call, so flagging
+#: that would put a warning on almost every answer while the results were fine.
+NO_EVIDENCE_NOTICE = (
+    "**The search returned no usable results**, so this answer is not "
+    "grounded in retrieved sources. Treat it as unverified, or ask again with "
+    "different terms."
+)
+
+
+def render_standalone_notices(
+    *, output_truncated: bool, no_evidence: bool
+) -> str:
+    """The notices that must appear even when no ledger was built.
+
+    `render_report` covers the enumerable turns; this covers every other turn,
+    and the runner uses exactly one of the two so nothing is ever said twice.
+    """
+    parts = [
+        n
+        for n, on in (
+            (TRUNCATION_NOTICE, output_truncated),
+            (NO_EVIDENCE_NOTICE, no_evidence),
+        )
+        if on
+    ]
+    if not parts:
+        return ""
+    return "\n\n---\n\n" + "\n\n".join(parts)
 
 
 def build_ledger(request: str) -> TurnLedger | None:
