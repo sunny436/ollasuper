@@ -15,8 +15,8 @@ import {
   Settings,
   X,
 } from "lucide-react";
-import Image from "next/image";
 import Link from "next/link";
+import { OllaSuperBrand } from "@/components/branding";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -40,8 +40,9 @@ export function Sidebar() {
   const Body = (
     <div className="flex h-full w-60 flex-col border-r border-border bg-card">
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <Image src="/logo.png" alt="logo" width={26} height={26} />
-        <span className="font-mono text-sm font-medium text-primary">myos</span>
+        <span className="text-foreground">
+          <OllaSuperBrand variant="app" />
+        </span>
       </div>
 
       <div className="p-3">
@@ -129,8 +130,9 @@ export function Sidebar() {
         >
           <Menu className="h-5 w-5" />
         </button>
-        <Image src="/logo.png" alt="logo" width={22} height={22} />
-        <span className="font-mono text-sm font-medium">myos</span>
+        <span className="text-foreground">
+          <OllaSuperBrand variant="app" />
+        </span>
       </div>
 
       <aside className="sticky top-0 hidden h-screen shrink-0 md:block">{Body}</aside>

@@ -69,17 +69,17 @@ export async function generateMetadata({
     title,
     description: DESCRIPTION,
     robots,
+    // og:image comes from the colocated opengraph-image.tsx, which Next merges
+    // in automatically. It used to be "/logo.png" - a 1.6 MB raster of the old mark.
     openGraph: {
       title,
       description: DESCRIPTION,
       type: "article",
-      images: ["/logo.png"],
     },
     twitter: {
       card: "summary_large_image",
       title,
       description: DESCRIPTION,
-      images: ["/logo.png"],
     },
   };
 }

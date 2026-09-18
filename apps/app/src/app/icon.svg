@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!--
+    The favicon CANNOT use currentColor. A favicon renders outside any document,
+    so currentColor resolves to this SVG's own `color` - which defaults to black -
+    and the mark would vanish in dark browser chrome. It therefore carries its own
+    media query, which is the one legitimate reason this file is not simply the
+    React component serialised.
+
+    The geometry is identical to OLLA_MARK_PATH in
+    src/components/branding/olla-super-logo.tsx, and branding.test.ts fails if the
+    two ever drift.
+  -->
+  <style>
+    path { fill: #000000 }
+    @media (prefers-color-scheme: dark) { path { fill: #FFFFFF } }
+  </style>
+  <path fill-rule="evenodd" d="M50 0L93.3 25L93.3 75L50 100L6.7 75L6.7 25ZM51.5 -14L51.5 41.18L99.28 68.76L104.78 59.24L62.5 34.82L62.5 -14ZM104.68 83.3L56.89 55.71L9.11 83.3L14.61 92.83L56.89 68.41L99.18 92.83ZM-6.18 80.7L41.61 53.11L41.61 -2.06L30.61 -2.06L30.61 46.76L-11.68 71.17Z"/>
+</svg>

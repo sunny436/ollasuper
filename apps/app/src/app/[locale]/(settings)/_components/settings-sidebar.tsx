@@ -11,7 +11,7 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import { BrandMark } from "@/components/brand-mark";
+import { OllaSuperBrand } from "@/components/branding";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
@@ -57,15 +57,12 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header: brand orb + title + close */}
+      {/* Header: brand lockup + page label + close */}
       <div className="flex items-center gap-3 px-4 py-4">
-        <BrandMark className="h-9 w-9" />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold tracking-tight text-primary">
+        <div className="min-w-0 flex-1 text-foreground">
+          <OllaSuperBrand variant="app" />
+          <p className="mt-0.5 truncate text-[11px] font-medium text-muted-foreground">
             Settings
-          </p>
-          <p className="truncate text-[11px] font-medium text-muted-foreground">
-            Ollasuper
           </p>
         </div>
         <Link

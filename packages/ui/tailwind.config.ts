@@ -20,6 +20,16 @@ const config = {
     extend: {
       fontFamily: {
         departure: ["var(--font-departure-mono)"],
+        // The wordmark face. Poppins ExtraBold, loaded weight-800-only by the app
+        // layout. Scoped to the brand lockup on purpose — it is not a second UI
+        // face, and nothing else should reach for it.
+        brand: [
+          "var(--font-poppins)",
+          "var(--font-plus-jakarta-sans)",
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif",
+        ],
         // Plus Jakarta Sans is the app-wide UI face. `--font-plus-jakarta-sans` is
         // defined on <html> (apps/app layout) so Tailwind preflight's html
         // font-family resolves it. Remapping sans globally here is safe: the e2e

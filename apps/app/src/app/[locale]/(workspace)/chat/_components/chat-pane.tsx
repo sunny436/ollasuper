@@ -131,13 +131,13 @@ export function ChatPane({
           <PanelLeft className="h-4 w-4" />
         </button>
 
-        {/* Breadcrumb — Ollasuper › current conversation. */}
+        {/* Breadcrumb — OllaSuper › current conversation. */}
         <div className="flex min-w-0 items-center gap-1 text-sm">
           <Link
             href="/chat"
             className="hidden shrink-0 rounded-md px-2 py-1 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-primary sm:inline-block"
           >
-            Ollasuper
+            OllaSuper
           </Link>
           <ChevronRight className="hidden h-3.5 w-3.5 shrink-0 text-muted-foreground sm:block" />
           {headerProject && (

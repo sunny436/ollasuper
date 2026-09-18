@@ -19,6 +19,22 @@ const isPublicShare = createRouteMatcher(["/share", "/share/(.*)"]);
 // Public documents a signed-out visitor (or an app-marketplace reviewer) must be
 // able to open: static, server-rendered, no Convex, nothing per-user.
 const isPublicDoc = createRouteMatcher(["/privacy", "/terms", "/support", "/slack"]);
+// The generated apple-touch icon (app/apple-icon.tsx).
+//
+// `icon.svg` needs no entry — the matcher at the foot of this file already
+// excludes anything ending in an image extension. `/apple-icon` does NOT end in
+// one, so without this it reaches the auth gate and a signed-out fetch — iOS
+// asking for a home-screen icon — gets a 302 to /login instead of an image.
+//
+// It must also skip I18nMiddleware: it lives outside the [locale] segment, so a
+// locale rewrite would point it at a route that does not exist.
+//
+// The share page's opengraph-image is deliberately NOT listed. It lives INSIDE
+// [locale], so it needs the locale rewrite, and it is already public via
+// isPublicShare below. Next also emits it with a content-hash suffix
+// (`/opengraph-image-cap45`), so a matcher here would not catch it reliably —
+// and on the day it did, it would break it.
+const isBrandAsset = createRouteMatcher(["/apple-icon", "/apple-icon/(.*)"]);
 
 /**
  * One fixed-window counter, and the two properties that matter.
@@ -228,6 +244,8 @@ export default async function middleware(
   ...args: Parameters<typeof authMiddleware>
 ) {
   const [request] = args;
+  // Before anything else, and deliberately before the auth gate.
+  if (isBrandAsset(request)) return;
   if (isAuthApi(request)) {
     if (
       limited(authApiHits, trustedIp(request), AUTH_WINDOW_MS, AUTH_API_MAX)

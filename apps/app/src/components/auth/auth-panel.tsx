@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuthActions } from "@convex-dev/auth/react";
-import { BrandMark } from "@/components/brand-mark";
+import { OllaSuperBrand } from "@/components/branding";
 import { api } from "@v1/backend/convex/_generated/api";
 import { useAction } from "convex/react";
 import { useForm } from "@tanstack/react-form";
@@ -58,7 +58,7 @@ const SUBMIT =
 const LINK =
   "font-semibold text-foreground text-[13px] underline underline-offset-4 transition-opacity hover:opacity-70";
 // Was the app's only gradient TEXT (four stops via bg-clip-text). One ink now.
-const WORDMARK = "font-black text-3xl uppercase tracking-tight text-foreground";
+
 
 // ---------------------------------------------------------------------------
 // Every sub-component below lives at MODULE SCOPE. Defining one inside the panel
@@ -384,12 +384,15 @@ export function AuthPanel() {
         {/* Scrolls on short desktop windows, so it must be keyboard-reachable
             (axe scrollable-region-focusable on prod). */}
         {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-reachable (WCAG 2.1.1) */}
-        <div tabIndex={0} role="region" aria-label="About Ollasuper" className="scrollbar-quiet relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-border p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
+        <div tabIndex={0} role="region" aria-label="About OllaSuper" className="scrollbar-quiet relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-border p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
           {/* Top: reused orb housing (VERBATIM) + wordmark + divider + taglines. */}
           <div className="relative z-10 flex flex-col items-center gap-5">
-            <BrandMark className="h-20 w-20 rounded-2xl" />
-
-            <span className={WORDMARK}>OLLASUPER</span>
+            <OllaSuperBrand
+              variant="auth"
+              className="gap-3 text-foreground"
+              markClassName="h-11 w-11 sm:h-14 sm:w-14"
+              textClassName="text-[28px] sm:text-4xl"
+            />
 
             {/* ──── ✦ ──── */}
             <div className="flex items-center gap-3">
@@ -438,7 +441,7 @@ export function AuthPanel() {
 
           {/* Footer (desktop only). */}
           <div className="relative z-10 hidden w-full items-center justify-between border-border border-t pt-5 text-[11px] text-muted-foreground md:flex">
-            <span>&copy; {COPYRIGHT_YEAR} Ollasuper Workspaces</span>
+            <span>&copy; {COPYRIGHT_YEAR} OllaSuper Workspaces</span>
             <span className="flex items-center gap-1.5 text-muted-foreground">
               <ShieldCheck className="h-3 w-3" /> Convex Auth
             </span>
