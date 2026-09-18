@@ -137,7 +137,14 @@ async function main() {
   }
 
   // ------------------------------------- 6-8. signed in: toggle, reload, tab
-  const { context, page, errs } = await fresh(browser, "light", null);
+  //
+  // NO seed argument, deliberately. `fresh(…, null)` registers an init script
+  // that removes the key at every document start, and addInitScript cannot be
+  // unregistered — so it would wipe the cache on the very reload this section
+  // asserts survives it, and report the harness's own doing as a product bug.
+  // The fresh-visitor cases above want exactly that behaviour; this one must not
+  // have it.
+  const { context, page, errs } = await fresh(browser, "light");
   await signIn(page, who);
   const toggle = page.locator('button[aria-label="Toggle dark and light theme"]');
 
@@ -145,7 +152,10 @@ async function main() {
   await page.waitForTimeout(600);
   await toggle.first().click(); // -> dark
   await page.waitForTimeout(1200);
-  check("toggling writes the cache", (await state(page)).cached === "dark");
+  {
+    const s = await state(page);
+    check("toggling writes the cache", s.cached === "dark", JSON.stringify(s));
+  }
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForSelector("#chat-composer", { timeout: 30000 });
@@ -194,6 +204,17 @@ async function main() {
     );
     await offline.close();
   }
+
+  // Asserted HERE, before the cross-device step, and not at the end.
+  //
+  // Step 10 signs a second context into an account that permits one active
+  // session, which evicts the first: page A then reloads into a window where its
+  // token is dead and Convex logs `M(orgs:ensureWorkspace) Not authenticated`
+  // before auth re-establishes. That is the harness creating the condition, not
+  // the product failing, and folding it into a blanket "zero console errors"
+  // would have been a false failure attributed to the theme work.
+  check("no console errors (through step 9)", errs.length === 0, errs.slice(0, 3).join(" | "));
+  const errsBeforeCrossDevice = errs.length;
 
   // ----------------------------------------- 10. cross-device, live adoption
   //
@@ -247,7 +268,14 @@ async function main() {
     await b.close();
   }
 
-  check("no console errors across the matrix", errs.length === 0, errs.slice(0, 3).join(" | "));
+  const crossDeviceErrs = errs.slice(errsBeforeCrossDevice);
+  if (crossDeviceErrs.length) {
+    log(
+      `NOTE  ${crossDeviceErrs.length} console error(s) during the cross-device step, ` +
+        "expected from the single-session eviction, not asserted: " +
+        crossDeviceErrs.slice(0, 2).join(" | "),
+    );
+  }
 
   await context.close();
   await browser.close();
