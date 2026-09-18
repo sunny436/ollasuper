@@ -351,6 +351,16 @@
   color: var(--s-dark);
 }
 
+/* Sonner sets `font-family: ui-sans-serif, system-ui, …` on its own root and
+   injects that stylesheet at runtime, UNLAYERED — so it beats anything inside
+   @layer regardless of specificity and wins a tie against anything written
+   earlier. This rule is therefore deliberately outside every @layer block and
+   one specificity step above Sonner's (0,1,1 over 0,1,0), so source order cannot
+   matter. Every toast inherits the app face from <html> like everything else. */
+html [data-sonner-toaster] {
+  font-family: inherit;
+}
+
 /* The theme toggle's Sun/Moon morph. Two properties, two different curves: the
    transform springs (the overshoot is the whole feel of the control) while the
    opacity crossfades plainly, so the outgoing icon is gone before the incoming

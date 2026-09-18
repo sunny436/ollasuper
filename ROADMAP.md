@@ -31,6 +31,19 @@ One finding is verified by unit test only, and deliberately so:
   on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
   surface is built, add the prod check with it.
 
+## Poppins as the global font (2026-09-18) - LIVE, prod-verified
+
+One Tailwind `sans` entry, one `next/font/google` call (400–800, upright + italic,
+Latin preloaded, Devanagari + Latin-Extended declared lazily behind unicode-ranges),
+Plus Jakarta Sans removed. Three renderers that cannot inherit were handled by hand
+(Sonner's runtime stylesheet, Chart.js's canvas — which had been drawing at
+`10px sans-serif` since charts shipped — and mermaid, verified). Monospace kept on
+code and identifiers only; code labels, 404 and error headings moved to Poppins.
+Proof is `e2e/qa-font.js`: every visible text node on every route, glyph by glyph
+via CDP platform fonts, plus real Hindi typed and sent, a real toast, a real chart
+and diagram, five engines, before/after geometry, font bytes and CLS.
+Limits: OS-drawn select/date popups, the Satori OG image, email.
+
 ## Accent colour (2026-09-18) - LIVE, prod-verified
 
 ChatGPT-style accent, independent of light/dark. Seven options, default Blue, at

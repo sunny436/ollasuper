@@ -346,6 +346,41 @@ One mark, one wordmark, one component — `src/components/branding/`.
   out of this system: email supports neither Poppins, nor SVG, nor `currentColor`.
   `"myos.session.displaced"` is a localStorage key, not branding.
 
+### Typography (2026-09-18)
+
+**Poppins is the one UI face.** There is no per-component font work anywhere:
+Tailwind preflight puts `theme(fontFamily.sans)` on `<html>` and
+`font-family: inherit` on every form control, so the `sans` entry in
+`packages/ui/tailwind.config.ts` IS the app. `font-brand` (the wordmark) is the
+same face at 800.
+
+- Loaded once, in `app/[locale]/layout.tsx`, via `next/font/google`: weights
+  400 / 500 / 600 / 700 / 800 (the census of the source; 800 is the wordmark),
+  upright **and italic** (markdown emits `<em>`; a family with no italic face is
+  fake-slanted, and `next/font/google` only takes the weight × style product).
+  Self-hosted under `/_next/static/media/`; zero requests to Google.
+- **`subsets` decides what is preloaded, not what exists.** The one call declares
+  the Devanagari and Latin-Extended faces too, each behind a `unicode-range`, so
+  Hindi renders in Poppins and an English page never downloads them. **Do not add
+  a second `Poppins()` call** for the other scripts: it re-declares the same
+  faces at un-preloaded duplicate URLs and the browser can fetch both copies.
+- Three renderers cannot inherit and are handled by hand: **Sonner** injects its
+  own `font-family` at runtime, unlayered — the override in `globals.css` is
+  outside every `@layer` and one specificity step up (`html [data-sonner-toaster]`)
+  so source order cannot matter; **Chart.js** draws on a canvas, which has no
+  cascade — `"inherit"` is an invalid canvas font and silently left labels at
+  `10px sans-serif`, so it is handed the resolved `<html>` stack; **mermaid**'s
+  `fontFamily: "inherit"` is fine and is verified at runtime.
+- Monospace survives on exactly the code surfaces (`font-geist-mono` ×6) and two
+  identifier surfaces (`font-mono` on OAuth scopes and capability ids). Code
+  LABELS ("PYTHON"), the 404 and error headings are UI and are Poppins.
+  `lib/theme/font.test.ts` pins that allowlist by file and count — anything
+  new that names a font fails with its path — and `e2e/qa-font.js` reads the
+  platform font every glyph was drawn with (CDP), which is the only proof that
+  survives a third-party stylesheet.
+- Named limits: the OPEN popup of a native `<select>`/date/time input is OS-drawn;
+  the OG image is Satori with its own bundled font; email is out of scope.
+
 ## Cost controls (do not remove)
 
 Unbounded context is the default failure mode of a chat product. Four layers, all deliberate:

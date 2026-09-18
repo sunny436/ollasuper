@@ -203,7 +203,11 @@ function ChartBlockImpl({ spec, complete }: { spec: string; complete: boolean })
         const grid = hsla(readToken(canvas, "--border", "214 32% 91%"), 0.5);
         Chart.defaults.color = fg;
         Chart.defaults.borderColor = grid;
-        Chart.defaults.font.family = "inherit";
+        // Canvas has no cascade: "inherit" is not a valid family in a canvas
+        // font shorthand, so the context silently kept its 10px sans-serif
+        // default. Hand it the resolved <html> stack instead — the same string
+        // every DOM node renders with.
+        Chart.defaults.font.family = getComputedStyle(document.documentElement).fontFamily;
         if (chartRef.current) {
           chartRef.current.destroy();
           chartRef.current = null;

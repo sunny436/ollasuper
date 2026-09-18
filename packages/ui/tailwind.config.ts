@@ -20,29 +20,17 @@ const config = {
     extend: {
       fontFamily: {
         departure: ["var(--font-departure-mono)"],
-        // The wordmark face. Poppins ExtraBold, loaded weight-800-only by the app
-        // layout. Scoped to the brand lockup on purpose — it is not a second UI
-        // face, and nothing else should reach for it.
-        brand: [
-          "var(--font-poppins)",
-          "var(--font-plus-jakarta-sans)",
-          "ui-sans-serif",
-          "system-ui",
-          "sans-serif",
-        ],
-        // Plus Jakarta Sans is the app-wide UI face. `--font-plus-jakarta-sans` is
-        // defined on <html> (apps/app layout) so Tailwind preflight's html
-        // font-family resolves it. Remapping sans globally here is safe: the e2e
-        // suite has no screenshot comparisons, so nothing regresses.
-        sans: [
-          "var(--font-plus-jakarta-sans)",
-          "ui-sans-serif",
-          "system-ui",
-          "-apple-system",
-          "Segoe UI",
-          "Roboto",
-          "sans-serif",
-        ],
+        // Poppins is the app-wide UI face — every route, portal, dialog and form
+        // control, because Tailwind preflight puts `sans` on <html> and
+        // `font-family: inherit` on every control. `--font-poppins` is defined on
+        // <html> (apps/app layout) and already expands to `Poppins, Poppins
+        // Fallback` (metric-matched); the Devanagari and Latin-Extended faces
+        // are further @font-face rules of the SAME family, so nothing else
+        // belongs in this stack but the generic fallback.
+        sans: ["var(--font-poppins)", "sans-serif"],
+        // The wordmark lockup. Same face as the UI now, kept as its own key so
+        // the brand component and its test name what they mean.
+        brand: ["var(--font-poppins)", "sans-serif"],
         // Opt-in ONLY. The Geist vars are set on <body>; used only in code
         // blocks via font-geist-mono.
         "geist-mono": [

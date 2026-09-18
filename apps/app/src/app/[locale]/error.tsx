@@ -15,7 +15,7 @@ export default function ErrorBoundary({
   }, [error]);
   return (
     <div className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-secondary px-6 text-center dark:bg-black">
-      <h1 className="font-mono text-lg font-medium text-primary">
+      <h1 className="text-lg font-medium text-primary">
         Something went wrong
       </h1>
       <p className="max-w-md text-sm text-primary/60">

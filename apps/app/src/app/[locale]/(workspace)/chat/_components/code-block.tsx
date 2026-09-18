@@ -97,7 +97,7 @@ function CodeBlockImpl({
   return (
     <div className="group relative my-3 -mx-4 md:mx-0">
       <div className="flex items-center justify-between rounded-t-lg border-b border-border/60 bg-black/[0.03] px-3 py-1.5 dark:bg-white/[0.03] md:rounded-t-lg">
-        <span className="font-geist-mono text-[11px] uppercase tracking-wide text-primary/60">
+        <span className="text-[11px] uppercase tracking-wide text-primary/60">
           {lang ?? "text"}
         </span>
         <div className="flex items-center gap-1">

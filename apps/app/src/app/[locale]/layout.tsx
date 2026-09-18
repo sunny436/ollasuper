@@ -3,29 +3,37 @@ import { ConvexAuthNextjsServerProvider } from "@convex-dev/auth/nextjs/server";
 import { cn } from "@v1/ui/utils";
 import { GeistMono } from "geist/font/mono";
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans, Poppins } from "next/font/google";
+import { Poppins } from "next/font/google";
 
-// Plus Jakarta Sans is the app's primary UI face (mapped onto font-sans in the
-// UI tailwind config). Variable font, self-hosted by next/font (one file, all
-// weights). The variable must sit on <html>, not <body>: Tailwind preflight
-// applies font-family to <html>, and CSS custom properties do not inherit
-// upward, so a var defined only on <body> would resolve to nothing there.
-const jakarta = Plus_Jakarta_Sans({
-  subsets: ["latin"],
-  variable: "--font-plus-jakarta-sans",
-  display: "swap",
-});
-
-// The wordmark face, and ONLY the wordmark: one weight, one subset, so this adds
-// a single woff2 rather than a second font system. Loaded through the same
-// next/font/google mechanism as the UI face above, so it is self-hosted with no
-// new dependency and no request to Google at runtime.
+// Poppins is the app's ONE UI face (mapped onto font-sans and font-brand in the
+// UI tailwind config). It is a static family — one file per weight and style —
+// so the list below IS the preload list; a weight nobody uses is a file nobody
+// needs. 400/500/600/700 are the census of the source, 800 is the wordmark.
+// Italic is loaded because markdown emits <em> from model output; a family
+// without an italic face gets fake-slanted, and next/font/google only takes the
+// weight × style product, so the price of a real italic is four italic files
+// nothing uses (~30 KB, immutable-cached).
+//
+// `subsets` decides what is PRELOADED, not what exists: next/font declares every
+// subset Google ships for the family — Devanagari and Latin-Extended included —
+// each behind a unicode-range, so the browser fetches those files only when a
+// glyph in range is actually on screen. Zero cost on an English page, real
+// Poppins the moment someone writes Hindi. Do NOT add a second Poppins() call
+// for the other scripts: it re-declares the same faces at duplicate URLs and the
+// browser can end up downloading the un-preloaded copy beside the preloaded one
+// (seen in the build output while this was written).
+//
+// The variable must sit on <html>, not <body>: Tailwind preflight applies
+// font-family to <html>, and CSS custom properties do not inherit upward, so a
+// var defined only on <body> would resolve to nothing there.
 const poppins = Poppins({
   subsets: ["latin"],
-  weight: ["800"],
+  weight: ["400", "500", "600", "700", "800"],
+  style: ["normal", "italic"],
   variable: "--font-poppins",
   display: "swap",
 });
+
 import { ThemeProvider } from "@/lib/theme/theme-provider";
 import { ThemeScript } from "@/lib/theme/theme-script";
 import { PerfProbeLoader } from "@/lib/perf-probe/perf-probe-loader";
@@ -58,7 +66,7 @@ export default function RootLayout({
     <ConvexAuthNextjsServerProvider>
       <html
         lang="en"
-        className={cn(jakarta.variable, poppins.variable)}
+        className={poppins.variable}
         suppressHydrationWarning
       >
         <body
