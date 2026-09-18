@@ -185,3 +185,39 @@ def test_a_non_search_payload_is_passed_through():
         {"data": "something else"},
         False,
     )
+
+
+# --------------------------------------------------- language without a stated one
+# responseLanguage defaults to "auto", so filling `lang` only from the stated
+# preference would leave the measured failure (an English query answered with
+# Spanish results) unfixed for almost every user.
+
+
+def test_an_english_query_sets_lang_even_with_no_preference():
+    args, changed = prepare_args(
+        {"query": "who founded Nvidia"}, response_language=None
+    )
+    assert args["lang"] == "EN" and changed == {"lang": "EN"}
+
+
+def test_the_stated_preference_still_wins_over_detection():
+    args, _ = prepare_args({"query": "who founded Nvidia"}, response_language="DE")
+    assert args["lang"] == "DE"
+
+
+def test_a_non_english_query_is_left_to_the_provider():
+    for q in ["quién fundó Nvidia", "北京 天気 予報", "meilleur hôtel à Paris"]:
+        args, changed = prepare_args({"query": q}, response_language=None)
+        assert "lang" not in args, q
+        assert changed == {}
+
+
+def test_a_query_with_no_grammatical_evidence_is_left_alone():
+    """"nvidia stock price" is not evidence of a language — three nouns."""
+    args, _ = prepare_args({"query": "nvidia stock price"}, response_language=None)
+    assert "lang" not in args
+
+
+def test_a_single_token_is_never_labelled():
+    args, _ = prepare_args({"query": "nvidia"}, response_language=None)
+    assert "lang" not in args

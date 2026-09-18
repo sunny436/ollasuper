@@ -62,6 +62,32 @@ def distinctive_terms(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if w not in _STOP and len(w) > 2}
 
 
+#: Function words that only appear in ENGLISH text. Used to set `lang` when the
+#: user has no stated preference — which is the default, so without this the fix
+#: would do nothing for almost everyone. Deliberately one-directional: English is
+#: the language whose queries were coming back in Spanish, and a wrong guess for
+#: any other language would be the same class of error, so nothing else is
+#: inferred and the provider keeps its own default.
+_EN_MARKERS = frozenset(
+    """the a an is are was were be been being of to in for on with from by at
+    who what when where why how which whose whom does do did done has have had
+    can could should would will shall may might must about into over under
+    between near best top vs versus and or not than then this that these those
+    my your our their his her its me you we they it
+    """.split()
+)
+
+
+def detect_english(query: str) -> str:
+    """"EN" when the query is demonstrably English, else "" (leave it alone)."""
+    words = _WORD.findall(query.lower())
+    if len(words) < 2:
+        return ""  # one token carries no grammatical evidence
+    if any(ord(ch) > 0x2FF for ch in query):
+        return ""  # non-latin script: not ours to label
+    return "EN" if any(w in _EN_MARKERS for w in words) else ""
+
+
 def prepare_args(args: dict, *, response_language: str | None) -> tuple[dict, dict]:
     """Args to send, plus what was changed (for the tool-call event / logs).
 
@@ -71,10 +97,16 @@ def prepare_args(args: dict, *, response_language: str | None) -> tuple[dict, di
         return args, {}
     out = dict(args)
     changed: dict[str, str] = {}
-    lang = (response_language or "").strip()
-    if not out.get("lang") and lang and lang.lower() not in {"auto", "default"}:
-        out["lang"] = lang
-        changed["lang"] = lang
+    if not out.get("lang"):
+        stated = (response_language or "").strip()
+        lang = (
+            stated
+            if stated and stated.lower() not in {"auto", "default"}
+            else detect_english(str(out.get("query") or ""))
+        )
+        if lang:
+            out["lang"] = lang
+            changed["lang"] = lang
     return out, changed
 
 
