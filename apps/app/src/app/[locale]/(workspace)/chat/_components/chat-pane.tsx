@@ -153,7 +153,7 @@ export function ChatPane({
             </>
           )}
           <span className="truncate px-1 font-semibold text-primary">
-            {thread?.title ?? (headerProject ? "New chat" : "AI Workspace")}
+            {thread?.title ?? "New chat"}
           </span>
         </div>
 

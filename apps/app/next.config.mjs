@@ -77,6 +77,21 @@ const nextConfig = {
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
+  /**
+   * /favicon.ico serves the real mark instead of an HTML page.
+   *
+   * The icon is now app/icon.svg, and Next emits a <link rel="icon"> pointing at
+   * it, so current browsers never ask for /favicon.ico. Some clients and crawlers
+   * still do, by convention — and with public/favicon.ico deleted that request
+   * fell through the router and 307'd to /chat. Measured on production before
+   * this rewrite: `HTTP/1.1 307` with `content-type: text/html`, which is a worse
+   * answer than either an icon or a 404.
+   *
+   * A rewrite, not a redirect, so the bytes are served at the requested URL.
+   */
+  async rewrites() {
+    return [{ source: "/favicon.ico", destination: "/icon.svg" }];
+  },
 };
 
 // Only wrap when a DSN is actually configured.

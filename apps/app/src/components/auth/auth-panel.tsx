@@ -390,8 +390,8 @@ export function AuthPanel() {
             <OllaSuperBrand
               variant="auth"
               className="gap-3 text-foreground"
-              markClassName="h-11 w-11 sm:h-14 sm:w-14"
-              textClassName="text-[28px] sm:text-4xl"
+              markClassName="h-12 w-12 sm:h-16 sm:w-16"
+              textClassName="text-[30px] sm:text-[42px]"
             />
 
             {/* ──── ✦ ──── */}

@@ -12,6 +12,7 @@
     "chat:isolation": "node p-chat-isolation.js",
     "scheduled": "node p-scheduled.js",
     "skills": "node qa-skills.js",
+    "branding": "node qa-branding.js",
     "monochrome": "node qa-monochrome.js",
     "theme": "node qa-theme-persistence.js"
   },

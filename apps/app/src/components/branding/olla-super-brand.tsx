@@ -10,6 +10,12 @@ import { OllaSuperLogo } from "./olla-super-logo";
  *          anyone sees and it is not space-constrained.
  *   app  — mark below `md`, wordmark from `md` up.
  *
+ * SIZE STEPS WITH THE VIEWPORT. A fixed 15px wordmark read as an afterthought on
+ * a wide monitor — the rail is a constant 272px, so the brand was the only thing
+ * on screen that did not grow with the window. Both halves step at lg/xl, which
+ * is the same scale the rest of the app uses, so it stays proportionate from a
+ * laptop to an ultrawide without ever threatening the rail width.
+ *
  * The app swap is PURE CSS. No `window.innerWidth`, no `useEffect`, no media-query
  * hook: a JS swap renders the wrong half on the server, flashes on hydration, and
  * cannot be right during the first paint. `md` (768px) is not a new breakpoint —
@@ -40,12 +46,17 @@ export function OllaSuperBrand({
   return (
     <span className={`inline-flex items-center gap-2.5 ${className}`}>
       <OllaSuperLogo
-        className={`${auth ? "" : "md:hidden"} shrink-0 ${markClassName || (auth ? "h-9 w-9" : "h-7 w-7")}`}
+        className={`${auth ? "" : "md:hidden"} shrink-0 ${
+          markClassName || (auth ? "h-9 w-9" : "h-8 w-8")
+        }`}
       />
       <span
         className={`font-brand font-extrabold tracking-[-0.01em] ${
           auth ? "" : "sr-only md:not-sr-only"
-        } ${textClassName || (auth ? "text-2xl" : "text-[15px]")}`}
+        } ${
+          textClassName ||
+          (auth ? "text-2xl" : "text-[19px] lg:text-[21px] xl:text-[22px]")
+        }`}
       >
         OllaSuper
       </span>
