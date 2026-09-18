@@ -6,8 +6,7 @@
 const { chromium } = require("playwright");
 
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
-const EMAIL = process.env.ADMIN_EMAIL || "admin@myos.test";
-const PASSWORD = require("./creds").adminPassword();
+const { email: EMAIL, password: PASSWORD } = require("./creds").account();
 
 const errs = [];
 const results = [];

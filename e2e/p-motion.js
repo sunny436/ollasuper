@@ -15,8 +15,7 @@
 const { chromium } = require("playwright");
 
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
-const EMAIL = process.env.ADMIN_EMAIL;
-const PASSWORD = process.env.ADMIN_PASSWORD;
+const { email: EMAIL, password: PASSWORD } = require("./creds").account();
 
 const box = (page) =>
   page.evaluate(() => {

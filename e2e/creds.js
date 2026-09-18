@@ -31,4 +31,24 @@ function adminEmail() {
   return process.env.ADMIN_EMAIL || "admin@myos.test";
 }
 
-module.exports = { adminPassword, adminEmail };
+/**
+ * The account a suite signs in as: the admin account when ADMIN_PASSWORD is set,
+ * otherwise the QA account most of the other suites already use. Nothing is
+ * defaulted to a literal — see adminPassword above for why — so a run with
+ * neither variable still stops with an instruction instead of guessing.
+ */
+function account() {
+  if (process.env.ADMIN_PASSWORD) {
+    return { email: adminEmail(), password: process.env.ADMIN_PASSWORD };
+  }
+  if (process.env.QA_EMAIL && process.env.QA_PASSWORD) {
+    return { email: process.env.QA_EMAIL, password: process.env.QA_PASSWORD };
+  }
+  throw new Error(
+    "No credentials in the environment. Set ADMIN_PASSWORD (with ADMIN_EMAIL for a " +
+      "non-default account), or QA_EMAIL and QA_PASSWORD to run as the QA account:\n" +
+      '  bash:  export QA_EMAIL="..." QA_PASSWORD="..."',
+  );
+}
+
+module.exports = { adminPassword, adminEmail, account };
