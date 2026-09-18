@@ -15,7 +15,7 @@ import {
   Share2,
   Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ShareDialog } from "../../chat/_components/share-dialog";
 import {
@@ -72,6 +72,8 @@ export function TaskRow({
   const [menuOpen, setMenuOpen] = useState(false);
   // Near the bottom of a short (landscape phone) viewport the menu opens upward.
   const [menuUp, setMenuUp] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
@@ -93,6 +95,30 @@ export function TaskRow({
   const shareable =
     history?.page.find((o) => o.status === "succeeded" && o.messageId)
       ?.messageId ?? null;
+
+  /**
+   * Correct the flip from the menu's REAL geometry, once it exists.
+   *
+   * The onClick guess uses the trigger's rect and a 240px estimate of the menu
+   * height, both taken before the browser has finished reacting to the click.
+   * qa-responsive caught the result at 1280x800: a menu spanning y 653-852 on an
+   * 800px viewport — 52px of it unreachable. Measuring the element itself has no
+   * estimate to be wrong about.
+   *
+   * useLayoutEffect, not useEffect: this runs before paint, so the menu is never
+   * seen in the wrong position.
+   */
+  useLayoutEffect(() => {
+    if (!menuOpen) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (!menuUp && r.bottom > window.innerHeight - 8 && r.top - r.height > 8) {
+      setMenuUp(true);
+    } else if (menuUp && r.top < 8) {
+      setMenuUp(false);
+    }
+  }, [menuOpen, menuUp]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -171,6 +197,13 @@ export function TaskRow({
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               onClick={(e) => {
+                // A first guess from the TRIGGER's position, so the menu opens
+                // in roughly the right place on the very first frame. The
+                // layout effect below then corrects it from the menu's real
+                // measured height — 240 is an estimate, and this guess is taken
+                // before the click's own scroll-into-view has settled, which is
+                // how a menu ended up 52px under the fold at 1280x800
+                // (caught by qa-responsive, not by eye).
                 const r = e.currentTarget.getBoundingClientRect();
                 setMenuUp(r.bottom + 240 > window.innerHeight && r.top > 240);
                 setMenuOpen((v) => !v);
@@ -192,6 +225,7 @@ export function TaskRow({
                     no cross-browser styling story, and the buttons below carry
                     role="menuitem" so the a11y tree is still correct. */}
                 <div
+                  ref={menuRef}
                   role="menu"
                   className={`absolute right-0 z-50 w-56 overflow-hidden rounded-xl border border-border bg-card p-1 shadow-md ${menuUp ? "bottom-full mb-1" : "mt-1"}`}
                 >
