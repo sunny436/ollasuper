@@ -126,10 +126,20 @@ function UserBubble({ content }: { content: string }) {
   const [overflows, setOverflows] = useState(false);
   const ref = useRef<HTMLParagraphElement | null>(null);
 
+  // Re-measured on every size change, not once on mount. Whether 12 lines is
+  // enough depends on the width the text wraps at, and that changes with the
+  // window, the rail collapsing, and the drawer — a mount-only measurement left
+  // "Show more" stale after any of those. ResizeObserver fires on observe(), so
+  // it also covers the initial render. Only meaningful while clamped: expanded,
+  // the box is its natural height and scrollHeight === clientHeight by
+  // construction, so the value is left alone and re-taken on collapse.
   useEffect(() => {
     const el = ref.current;
     if (!el || expanded) return;
-    setOverflows(el.scrollHeight > el.clientHeight + 1);
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [content, expanded]);
 
   const clamped = overflows && !expanded;
@@ -144,11 +154,15 @@ function UserBubble({ content }: { content: string }) {
         {content}
       </p>
       {overflows && (
+        // Full-strength on-fill ink, no opacity. At 80% the white text over
+        // blue-600 composited to ~3.9:1 and over pink-600 to ~3.5:1 — under the
+        // 4.5:1 bar for 12px text. Hover is carried by the underline thickness,
+        // which costs nothing in contrast.
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className="mt-1.5 text-xs font-medium underline underline-offset-2 opacity-80 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-foreground/60"
+          className="mt-1.5 text-xs font-medium underline underline-offset-2 decoration-1 hover:decoration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-brand"
         >
           {expanded ? "Show less" : "Show more"}
         </button>

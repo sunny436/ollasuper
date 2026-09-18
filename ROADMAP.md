@@ -40,7 +40,20 @@ component edit (the shadcn `<Button>` default variant, which sat on `--primary`)
 
 - **Palette solved, not picked:** every value satisfies on-fill, on-page AND on-10%-tint
   contrast at ≥ 4.5:1 in both modes; the tint pair is the one a page-only assertion
-  misses and is what decided orange and yellow. Neutral is today's exact ink values.
+  misses and is what decided orange and yellow. Neutral is today's exact ink *tokens*
+  — but not today's exact *visual*: the user bubble is now accent-filled, so under
+  Neutral it is a solid ink slab, the look the monochrome work had removed. Operator
+  decision, documented rather than smoothed over.
+- **User bubble:** `bg-brand` + `text-brand-foreground`, clamped at 12 lines with a
+  `mask-image` fade (an alpha ramp, not a painted gradient) and a "Show more" control.
+  The control shipped at 80% opacity — white on blue at 3.9:1, on pink at 3.5:1 — and
+  is now full-strength; the clamp shipped measuring once on mount and now re-measures
+  through a `ResizeObserver`. Both caught by the operator asking for a brutal status.
+- **Test isolation:** `qa-accent` and `p-chat` capture the account's theme/accent
+  after sign-in and restore them at the end, verified by wiping the cache and watching
+  the account value come back. They no longer leave production QA data wherever the
+  last step put it. One stated limit: an account with no stored preference gets its
+  resolved default written back explicitly.
 - **Two traps the second pass caught:** `--accent` already existed (the hover surface);
   `--primary` is body ink and cannot be the accent.
 - **One bug the deploy caught:** `:root[data-accent]` selectors meant the picker

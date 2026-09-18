@@ -298,9 +298,16 @@ variables the monochrome system left at pure ink still drive ~162 brand-* utilit
   `monochrome.test.ts` re-checks all 42. **Yellow takes black on-fill text** — the only
   yellow dark enough to carry white is a brown.
 - Not accented, deliberately: `--ring`, status colours, `--chart-*`, the OllaSuper mark
-  (renders from `text-foreground`), and the user bubble (`bg-brand/10` would composite
-  to #E6E6E6 at Neutral against today's #F5F5F5, breaking "Neutral restores the
-  monochrome appearance").
+  (renders from `text-foreground`).
+- **The user bubble IS accented** (`bg-brand` / `text-brand-foreground`), by operator
+  decision, overriding an earlier audit that kept it `bg-muted`. Consequence stated
+  plainly: **under Neutral the bubble is a solid black (light) / white (dark) slab** —
+  the exact look the monochrome work removed. So "Neutral" restores the monochrome
+  *tokens* exactly, but not the previous *visual*: the bubble differs. Long turns clamp
+  at 12 lines (`max-h-[20.4em]`) with a `mask-image` fade and a "Show more" control at
+  full-strength on-fill ink — never at reduced opacity, which put white on blue at
+  3.9:1. The clamp re-measures through a `ResizeObserver`; a mount-only measurement
+  went stale the moment the rail collapsed or the window resized.
 - Persistence is **per user per workspace** (`chatSettings` `by_user_workspace`), the
   same as light/dark. `qa-monochrome.js` pins Neutral so the greyscale guarantee stays
   provable on a real page; `qa-accent.js` covers the rest.

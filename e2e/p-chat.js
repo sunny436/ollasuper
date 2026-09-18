@@ -7,6 +7,7 @@ const { chromium } = require("playwright");
 
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const { email: EMAIL, password: PASSWORD } = require("./creds").account();
+const { capturePrefs, restorePrefs } = require("./pref-state");
 
 const errs = [];
 const results = [];
@@ -71,6 +72,11 @@ const step = async (n, f) => {
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(1500);
   });
+
+  // The theme step below toggles dark and then light and used to leave the
+  // account on light whatever it held before. Captured here, on a context that
+  // has seeded nothing, so what ThemeSync adopted IS the account value.
+  const originalPrefs = await capturePrefs(page);
 
   await step("Chat appears in the sidebar and navigates", async () => {
     // /chat is full-bleed and has no dashboard aside, so drive the shell nav
@@ -434,6 +440,12 @@ const step = async (n, f) => {
   await step("root redirects to /chat", async () => {
     await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
     await page.waitForURL(/\/chat/, { timeout: 15000 });
+  });
+
+  await step("account theme/accent restored to what the suite found", async () => {
+    if (!(await restorePrefs(page, originalPrefs, BASE))) {
+      throw new Error("restore did not land on the account");
+    }
   });
 
   await b.close();
