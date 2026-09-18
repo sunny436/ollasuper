@@ -15,7 +15,14 @@ const buttonVariants = cva(
           // which reads as a second, lesser ENABLED button rather than a disabled
           // one. A muted surface with muted ink is unmistakable, and it stays on
           // the palette instead of inventing a tone between the two ends.
-          "bg-primary text-primary-foreground hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+          // ACCENT, not --primary. These two lived apart: 61 hand-rolled primary
+          // buttons use `bg-brand`, while every <Button> default sat on
+          // `--primary` - so under a non-neutral accent the Save button in
+          // Settings would have stayed pure ink beside a coloured one in chat.
+          // --primary cannot simply be accented instead: it is the app's body
+          // ink behind ~494 text-primary usages, so tinting it would colour all
+          // prose. One variant moves; 14 consumers inherit.
+          "bg-brand text-brand-foreground hover:bg-brand/90 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
         destructive:
           "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline:

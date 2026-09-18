@@ -4,6 +4,14 @@ import { api } from "@v1/backend/convex/_generated/api";
 import { useMutation, useQuery } from "convex/react";
 import { useEffect, useRef } from "react";
 import { useWorkspace } from "@/lib/workspace-provider";
+import {
+  type AccentName,
+  applyAccent,
+  currentAccent,
+  isAccent,
+  readCachedAccentAt,
+  writeCachedAccent,
+} from "./accent";
 import { legacyFromMode, modeFromLegacy } from "./legacy-ambience";
 import { applyMode, currentMode, readCachedAt, writeCachedMode } from "./mode";
 import { useTheme } from "./theme-provider";
@@ -32,7 +40,7 @@ import { useTheme } from "./theme-provider";
  */
 export function ThemeSync() {
   const { current } = useWorkspace();
-  const { setMode } = useTheme();
+  const { setMode, setAccent } = useTheme();
   const settings = useQuery(
     api.chat.settings.get,
     current ? { workspaceId: current } : "skip",
@@ -91,6 +99,67 @@ export function ThemeSync() {
     writeCachedMode(mode);
     upsert({ workspaceId: current, ambience: value }).catch(() => undefined);
   }, [mode, current, upsert]);
+
+  // ---------------------------------------------------------------- accent
+  //
+  // Deliberately its OWN effect with its OWN refs and its OWN timestamp. Accent
+  // and mode are independent settings, and sharing a decision path is how one
+  // ends up resetting the other: a single "settings changed" branch cannot tell
+  // which field moved, because `updatedAt` is per-row, not per-field.
+  //
+  // Same three refusals as the mode sync above: `undefined` is IN FLIGHT, not
+  // "no preference"; an unknown name is ignored rather than adopted; and an
+  // unreachable backend simply leaves the local accent alone.
+  const serverAccent = isAccent(settings?.accentColor)
+    ? settings.accentColor
+    : null;
+  const lastServerAccent = useRef<string | null>(null);
+  const accentDecided = useRef(false);
+
+  useEffect(() => {
+    if (!current || settings === undefined) return; // still loading: keep local
+    const local = currentAccent();
+
+    if (!accentDecided.current) {
+      accentDecided.current = true;
+      if (serverAccent && serverTs > readCachedAccentAt()) {
+        lastServerAccent.current = serverAccent;
+        writeCachedAccent(serverAccent, serverTs);
+        applyAccent(serverAccent);
+        setAccent(serverAccent);
+      } else if (serverAccent && serverAccent !== local) {
+        lastServerAccent.current = local;
+        upsert({ workspaceId: current, accentColor: local }).catch(
+          () => undefined,
+        );
+      } else {
+        lastServerAccent.current = settings.accentColor ?? null;
+      }
+      return;
+    }
+
+    const raw = settings.accentColor ?? null;
+    if (
+      serverAccent &&
+      raw !== lastServerAccent.current &&
+      serverTs > readCachedAccentAt()
+    ) {
+      lastServerAccent.current = raw;
+      writeCachedAccent(serverAccent, serverTs);
+      applyAccent(serverAccent);
+      setAccent(serverAccent);
+    }
+  }, [settings, current, serverAccent, serverTs, setAccent, upsert]);
+
+  // A local accent change: persist it, skipping the value we just adopted.
+  const { accent } = useTheme();
+  useEffect(() => {
+    if (!accentDecided.current || !current) return;
+    if (accent === lastServerAccent.current) return;
+    lastServerAccent.current = accent;
+    writeCachedAccent(accent);
+    upsert({ workspaceId: current, accentColor: accent }).catch(() => undefined);
+  }, [accent, current, upsert]);
 
   return null;
 }

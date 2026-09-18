@@ -944,6 +944,12 @@ export default defineSchema({
     // Ambience theme intensity (0-100), synced across a user's devices. Optional
     // and additive so pre-migration rows validate on the live deployment.
     ambience: v.optional(v.number()),
+    // Accent colour, stored as the NAME of a palette entry ("blue", "green", …),
+    // never as a colour value. Additive and optional like its neighbours, so
+    // pre-existing rows validate untouched; absent means "product default".
+    // The string is re-validated in chat/settings.ts on write — a client is not
+    // trusted to have sent one of the seven.
+    accentColor: v.optional(v.union(v.string(), v.null())),
     // Fixed-window generation counter. Lives here rather than in its own table
     // because this row is per-user-per-workspace, already indexed on exactly
     // that key, and already loaded on the dispatch path — so the rate check

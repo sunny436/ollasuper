@@ -52,9 +52,9 @@
     /* "Brand" is now simply ink: black fills with white text on light, inverted
        on dark. The three-token split is kept so 170 existing call sites keep
        working unchanged. */
-    --brand: 0 0% 0%;
+    --brand: 221.2 83.2% 53.3%;
     --brand-foreground: 0 0% 100%;
-    --brand-ink: 0 0% 0%;
+    --brand-ink: 224.3 76.3% 48%;
   }
 
   .dark {
@@ -87,6 +87,99 @@
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
 
+    --brand: 213.1 93.9% 67.8%;
+    --brand-foreground: 0 0% 0%;
+    --brand-ink: 213.1 93.9% 67.8%;
+  }
+}
+
+@layer base {
+  /*
+    ACCENT COLOUR. Re-points the three brand tokens; nothing else.
+
+    NOT TO BE CONFUSED WITH `--accent` ABOVE. That token is the neutral HOVER
+    SURFACE (#F0F0F0 / #1A1A1A) behind 37 `hover:bg-accent` sites and has nothing
+    to do with this feature. They collide only in English. The user-facing accent
+    lives in `data-accent` on <html> and the `--brand*` trio.
+
+    Blue is the product default, so it lives in :root/.dark above rather than in a
+    block here - a page that never gets the attribute still renders the default
+    instead of falling back to ink. Only the other six need an override.
+
+    Three tokens because they do three jobs, and one value cannot serve all three:
+      --brand            a FILL
+      --brand-foreground text ON that fill      >= 4.5:1 against --brand
+      --brand-ink        accent text on the page >= 4.5:1 against --background AND
+                         against --brand at 10% over it (the selected-row ground)
+    Every value here was solved against those three constraints, not chosen by eye;
+    monochrome.test.ts re-checks all 42 on every run. Yellow is why the trio exists:
+    the only yellow dark enough to carry white text is a brown, so it takes a bright
+    fill with BLACK text instead.
+
+    ADDING AN ACCENT: one block pair here + one entry in lib/theme/accent.ts. A test
+    fails if the two lists drift.
+  */
+  :root[data-accent="green"] {
+    --brand: 142.4 71.8% 29.2%;
+    --brand-foreground: 0 0% 100%;
+    --brand-ink: 142.8 64.2% 24.1%;
+  }
+  :root.dark[data-accent="green"] {
+    --brand: 141.9 69.2% 58%;
+    --brand-foreground: 0 0% 0%;
+    --brand-ink: 141.9 69.2% 58%;
+  }
+
+  :root[data-accent="yellow"] {
+    --brand: 47.9 95.8% 53.1%;
+    --brand-foreground: 0 0% 0%;
+    --brand-ink: 35.5 91.7% 32.9%;
+  }
+  :root.dark[data-accent="yellow"] {
+    --brand: 47.9 95.8% 53.1%;
+    --brand-foreground: 0 0% 0%;
+    --brand-ink: 47.9 95.8% 53.1%;
+  }
+
+  :root[data-accent="pink"] {
+    --brand: 333.3 71.4% 50.6%;
+    --brand-foreground: 0 0% 100%;
+    --brand-ink: 335.1 77.6% 42%;
+  }
+  :root.dark[data-accent="pink"] {
+    --brand: 328.6 85.5% 70.2%;
+    --brand-foreground: 0 0% 0%;
+    --brand-ink: 328.6 85.5% 70.2%;
+  }
+
+  :root[data-accent="orange"] {
+    --brand: 17.5 88.3% 40.4%;
+    --brand-foreground: 0 0% 100%;
+    --brand-ink: 15 79.1% 33.7%;
+  }
+  :root.dark[data-accent="orange"] {
+    --brand: 27 96% 61%;
+    --brand-foreground: 0 0% 0%;
+    --brand-ink: 27 96% 61%;
+  }
+
+  :root[data-accent="purple"] {
+    --brand: 271.5 81.3% 55.9%;
+    --brand-foreground: 0 0% 100%;
+    --brand-ink: 272.1 71.7% 47.1%;
+  }
+  :root.dark[data-accent="purple"] {
+    --brand: 270 95.2% 75.3%;
+    --brand-foreground: 0 0% 0%;
+    --brand-ink: 270 95.2% 75.3%;
+  }
+
+  :root[data-accent="neutral"] {
+    --brand: 0 0% 0%;
+    --brand-foreground: 0 0% 100%;
+    --brand-ink: 0 0% 0%;
+  }
+  :root.dark[data-accent="neutral"] {
     --brand: 0 0% 100%;
     --brand-foreground: 0 0% 0%;
     --brand-ink: 0 0% 100%;

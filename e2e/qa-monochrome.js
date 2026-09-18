@@ -200,12 +200,23 @@ const STATUS_RGB = [
  * made a whole "light" pass silently render dark, and every assertion in it
  * still passed — which is the worst kind of green.
  */
+/**
+ * Force the NEUTRAL accent alongside the mode.
+ *
+ * Accent colour re-points --brand, so under any other accent this suite would
+ * (correctly) report the accent on every primary button. Pinning Neutral is what
+ * keeps the original guarantee provable on a real page: with Neutral selected the
+ * chrome must still be pure greyscale, exactly as it was before accent shipped.
+ * e2e/qa-accent.js covers the six coloured accents.
+ */
 async function setMode(page, mode) {
   await page.evaluate(
     ([m, ts]) => {
       try {
         localStorage.setItem("theme", m);
         localStorage.setItem("theme_ts", String(ts));
+        localStorage.setItem("accent", "neutral");
+        localStorage.setItem("accent_ts", String(ts));
       } catch {}
     },
     [mode, Date.now()],

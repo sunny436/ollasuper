@@ -13,6 +13,7 @@
     "scheduled": "node p-scheduled.js",
     "skills": "node qa-skills.js",
     "branding": "node qa-branding.js",
+    "accent": "node qa-accent.js",
     "monochrome": "node qa-monochrome.js",
     "theme": "node qa-theme-persistence.js"
   },

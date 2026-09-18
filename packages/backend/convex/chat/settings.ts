@@ -86,12 +86,33 @@ const DEFAULTS = {
   personalization: PERSONALIZATION_DEFAULTS,
   sendOnEnter: true,
   ambience: null as number | null,
+  // Absent means "product default" (blue), resolved on the client.
+  accentColor: null as string | null,
   // Memory is on unless explicitly turned off (null = default-on at read time).
   memoryEnabled: null as boolean | null,
   updatedAt: 0,
 };
 
 const clampAmbience = (n: number) => Math.min(100, Math.max(0, Math.round(n)));
+
+/**
+ * The accent names the product ships. Duplicated from the frontend's ACCENTS on
+ * purpose: this is a TRUST BOUNDARY, and a server that imports its allowlist from
+ * the client is not validating anything. An unknown name is stored as null —
+ * "no preference" — rather than rejected, so a newer client naming an accent this
+ * deployment does not have degrades to the default instead of failing the write.
+ */
+const ACCENT_NAMES = new Set([
+  "blue",
+  "green",
+  "yellow",
+  "pink",
+  "orange",
+  "purple",
+  "neutral",
+]);
+const cleanAccent = (v: string | null) =>
+  v !== null && ACCENT_NAMES.has(v) ? v : null;
 
 /**
  * Returns defaults when no row exists — a query must never insert. The row is
@@ -120,6 +141,7 @@ export const get = query({
       personalization: row.personalization ?? PERSONALIZATION_DEFAULTS,
       sendOnEnter: row.sendOnEnter,
       ambience: row.ambience ?? null,
+      accentColor: row.accentColor ?? null,
       memoryEnabled: row.memoryEnabled ?? null,
       updatedAt: row.updatedAt,
     };
@@ -199,6 +221,7 @@ export const upsert = mutation({
     ),
     sendOnEnter: v.optional(v.boolean()),
     ambience: v.optional(v.union(v.number(), v.null())),
+    accentColor: v.optional(v.union(v.string(), v.null())),
     memoryEnabled: v.optional(v.union(v.boolean(), v.null())),
   },
   handler: async (ctx, args) => {
@@ -272,6 +295,10 @@ export const upsert = mutation({
             ? undefined
             : clampAmbience(args.ambience)
           : existing?.ambience,
+      accentColor:
+        args.accentColor !== undefined
+          ? cleanAccent(args.accentColor)
+          : existing?.accentColor,
       updatedAt: Date.now(),
     };
 

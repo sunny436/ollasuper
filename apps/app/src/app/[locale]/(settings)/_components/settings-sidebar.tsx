@@ -4,6 +4,7 @@ import {
   Archive,
   Brain,
   FolderClosed,
+  Palette,
   Link2,
   Plug,
   Sparkles,
@@ -23,6 +24,7 @@ import { useState } from "react";
  */
 const NAV = [
   { href: "/settings", label: "Profile", icon: User },
+  { href: "/settings/appearance", label: "Appearance", icon: Palette },
   { href: "/settings/personalization", label: "Personalization", icon: Sparkles },
   { href: "/settings/memories", label: "Memories", icon: Brain },
   { href: "/settings/skills", label: "My Skills", icon: Wand2 },

@@ -24,6 +24,7 @@ import { join } from "node:path";
 
 const REPO = join(import.meta.dir, "..", "..", "..", "..", "..");
 const CSS = join(REPO, "packages", "ui", "src", "globals.css");
+const APP_SRC = join(REPO, "apps", "app", "src");
 const SOURCE_ROOTS = [
   join(REPO, "apps", "app", "src"),
   join(REPO, "packages", "ui", "src"),
@@ -42,6 +43,8 @@ const STATUS = new Set([
   "--success",
 ]);
 const NON_COLOUR = new Set(["--radius"]);
+/** The accent trio. Governed by the accent suite, not by the grey allowlist. */
+const BRAND = new Set(["--brand", "--brand-ink", "--brand-foreground"]);
 
 /** Exact status values, both modes. A drift here is a real design change. */
 const STATUS_HEX: Record<"light" | "dark", Record<string, string>> = {
@@ -131,6 +134,11 @@ function contrast(a: string, b: string): number {
 
 const css = readFileSync(CSS, "utf8");
 
+/** Source with comments removed — several assertions below would otherwise match
+ *  the prose that explains them. */
+const stripComments = (src: string) =>
+  src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
 /** Pull one selector's declarations out of the stylesheet, by exact selector. */
 function block(selector: string): Record<string, string> {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -164,6 +172,7 @@ describe("palette", () => {
       const offenders: string[] = [];
       for (const [token, value] of Object.entries(tokens)) {
         if (NON_COLOUR.has(token) || STATUS.has(token) || CHART.test(token)) continue;
+        if (BRAND.has(token)) continue; // accent layer — see the accent suite
         const t = parseTriple(value);
         if (!t) {
           offenders.push(`${token}: ${value} (not an HSL triple)`);
@@ -185,15 +194,14 @@ describe("palette", () => {
     expect(dark["--foreground"]).toBe("0 0% 100%");
   });
 
-  test("brand is ink, not a hue", () => {
-    for (const [name, tokens] of [
-      ["light", root],
-      ["dark", dark],
-    ] as const) {
+  test("brand is the ACCENT layer, so it is exempt from the grey allowlist", () => {
+    // This used to assert --brand saturation === 0. Accent colour is exactly the
+    // feature that makes that false, so the guarantee moved: brand is checked by
+    // the accent suite below (palette completeness + 42 contrast assertions),
+    // and the allowlist above still governs every OTHER chrome token.
+    for (const tokens of [root, dark]) {
       for (const t of ["--brand", "--brand-ink", "--brand-foreground"]) {
-        const v = parseTriple(tokens[t]);
-        expect(`${name} ${t} saturation`).toBe(`${name} ${t} saturation`);
-        expect(v?.s).toBe(0);
+        expect(parseTriple(tokens[t])).not.toBeNull();
       }
     }
   });
@@ -231,7 +239,6 @@ describe("contrast", () => {
     ["--primary-foreground", "--primary"],
     ["--secondary-foreground", "--secondary"],
     ["--accent-foreground", "--accent"],
-    ["--brand-foreground", "--brand"],
     ["--muted-foreground", "--background"],
     ["--muted-foreground", "--muted"],
     ["--destructive-foreground", "--destructive"],
@@ -322,5 +329,118 @@ describe("no decorative effects", () => {
     };
     for (const r of SOURCE_ROOTS) walk(r);
     expect(hits).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------- accent colour
+
+/** Composite a foreground over a background at alpha, in sRGB. */
+function composite(fg: string, bg: string, alpha: number): Rgb {
+  const f = parseTriple(fg);
+  const b = parseTriple(bg);
+  if (!f || !b) throw new Error("bad triple");
+  const F = hslToRgb(f.h, f.s, f.l);
+  const B = hslToRgb(b.h, b.s, b.l);
+  return [0, 1, 2].map((i) =>
+    Math.round(F[i] * alpha + B[i] * (1 - alpha)),
+  ) as Rgb;
+}
+
+function ratio(a: Rgb, b: Rgb): number {
+  const [la, lb] = [luminance(a), luminance(b)];
+  const [hi, lo] = la > lb ? [la, lb] : [lb, la];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+const rgbOf = (triple: string): Rgb => {
+  const t = parseTriple(triple);
+  if (!t) throw new Error(`bad triple: ${triple}`);
+  return hslToRgb(t.h, t.s, t.l);
+};
+
+describe("accent colour", () => {
+  // The seven names the product ships, duplicated from lib/theme/accent.ts. The
+  // sync test below is what stops the duplication rotting.
+  const NAMES = ["blue", "green", "yellow", "pink", "orange", "purple", "neutral"];
+
+  /** Blue lives in :root/.dark; the other six in [data-accent] blocks. */
+  const accentTokens = (name: string, mode: "light" | "dark") => {
+    if (name === "blue") return mode === "light" ? root : dark;
+    return block(
+      mode === "light"
+        ? `:root[data-accent="${name}"]`
+        : `:root.dark[data-accent="${name}"]`,
+    );
+  };
+
+  test("the CSS blocks and accent.ts list the same seven names", () => {
+    const ts = readFileSync(join(APP_SRC, "lib", "theme", "accent.ts"), "utf8");
+    const inTs = [...ts.matchAll(/name: "([a-z]+)"/g)].map((m) => m[1]);
+    expect(inTs).toEqual(NAMES);
+    // Every non-default accent must have BOTH blocks; blue must have NEITHER,
+    // because it is the :root default.
+    for (const n of NAMES) {
+      const has = css.includes(`:root[data-accent="${n}"]`);
+      expect(`${n} light block: ${has}`).toBe(`${n} light block: ${n !== "blue"}`);
+    }
+  });
+
+  test("the pre-paint script validates against the same seven names", () => {
+    // The script inlines the list as literals because it runs before any module
+    // graph exists. If the two drift, an accent silently falls back to blue.
+    const sc = readFileSync(join(APP_SRC, "lib", "theme", "theme-script.tsx"), "utf8");
+    for (const n of NAMES) expect(sc).toContain(`'${n}'`);
+  });
+
+  for (const name of NAMES) {
+    for (const mode of ["light", "dark"] as const) {
+      const label = `${name}/${mode}`;
+      test(`${label}: on-fill text is legible on the accent fill`, () => {
+        const t = accentTokens(name, mode);
+        const r = ratio(rgbOf(t["--brand-foreground"]), rgbOf(t["--brand"]));
+        expect(`${label} on-fill ${r.toFixed(2)}:1`).toBe(`${label} on-fill ${r.toFixed(2)}:1`);
+        expect(r).toBeGreaterThanOrEqual(4.5);
+      });
+
+      test(`${label}: accent text is legible on the page`, () => {
+        const t = accentTokens(name, mode);
+        const bg = mode === "light" ? root["--background"] : dark["--background"];
+        const r = ratio(rgbOf(t["--brand-ink"]), rgbOf(bg));
+        expect(r).toBeGreaterThanOrEqual(4.5);
+      });
+
+      test(`${label}: accent text is legible on a 10% accent ground`, () => {
+        // The pair that actually renders at the 16 `bg-brand/10 text-brand-ink`
+        // selected-row sites. A tinted ground is darker than the page, so this is
+        // the strictly harder case — and the one a page-only assertion misses.
+        const t = accentTokens(name, mode);
+        const bg = mode === "light" ? root["--background"] : dark["--background"];
+        const r = ratio(rgbOf(t["--brand-ink"]), composite(t["--brand"], bg, 0.1));
+        expect(`${label} on-tint ${r.toFixed(2)}:1`).toBe(`${label} on-tint ${r.toFixed(2)}:1`);
+        expect(r).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+
+  test("neutral restores the monochrome palette exactly", () => {
+    // The promise that the monochrome design survives as a first-class option.
+    const l = accentTokens("neutral", "light");
+    const d = accentTokens("neutral", "dark");
+    expect(l["--brand"]).toBe("0 0% 0%");
+    expect(l["--brand-foreground"]).toBe("0 0% 100%");
+    expect(l["--brand-ink"]).toBe("0 0% 0%");
+    expect(d["--brand"]).toBe("0 0% 100%");
+    expect(d["--brand-foreground"]).toBe("0 0% 0%");
+    expect(d["--brand-ink"]).toBe("0 0% 100%");
+  });
+
+  test("an accent is a NAME, never a colour string", () => {
+    // The safety property: nothing user-supplied is interpolated into styling.
+    const ts = stripComments(
+      readFileSync(join(APP_SRC, "lib", "theme", "accent.ts"), "utf8"),
+    );
+    expect(ts).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+    expect(ts).not.toContain("hsl(");
+    expect(ts).not.toContain("style");
   });
 });

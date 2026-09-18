@@ -9,6 +9,13 @@ import {
   useState,
 } from "react";
 import {
+  type AccentName,
+  applyAccent,
+  currentAccent,
+  readCachedAccent,
+  writeCachedAccent,
+} from "./accent";
+import {
   type ThemeMode,
   applyMode,
   currentMode,
@@ -21,12 +28,16 @@ type ThemeCtx = {
   mode: ThemeMode;
   setMode: (mode: ThemeMode) => void;
   toggle: () => void;
+  accent: AccentName;
+  setAccent: (accent: AccentName) => void;
 };
 
 const Ctx = createContext<ThemeCtx>({
   mode: "light",
   setMode: () => undefined,
   toggle: () => undefined,
+  accent: "blue",
+  setAccent: () => undefined,
 });
 
 export function useTheme(): ThemeCtx {
@@ -39,15 +50,29 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // has already stamped the class, so nothing visibly changes — this only
   // teaches React what is on screen.
   const [mode, setModeState] = useState<ThemeMode>("light");
+  // Same SSR-safe shape as mode: the default on the server and the first client
+  // render, adopted from the DOM in the effect. The pre-paint script has already
+  // stamped the attribute, so nothing visibly changes — this only tells React
+  // what is on screen.
+  const [accent, setAccentState] = useState<AccentName>("blue");
 
   useEffect(() => {
     setModeState(currentMode());
+    setAccentState(currentAccent());
   }, []);
 
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next);
     applyMode(next);
     writeCachedMode(next);
+  }, []);
+
+  // Accent is written and compared entirely separately from mode — different
+  // storage keys, different DOM hook — so setting one cannot disturb the other.
+  const setAccent = useCallback((next: AccentName) => {
+    setAccentState(next);
+    applyAccent(next);
+    writeCachedAccent(next);
   }, []);
 
   const toggle = useCallback(() => {
@@ -93,17 +118,32 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // validated in readCachedMode, so a corrupt write cannot paint a broken theme.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      if (e.key !== "theme") return;
-      const next = readCachedMode();
-      if (next && next !== currentMode()) {
-        setModeState(next);
-        applyMode(next);
+      if (e.key === "theme") {
+        const next = readCachedMode();
+        if (next && next !== currentMode()) {
+          setModeState(next);
+          applyMode(next);
+        }
+        return;
+      }
+      // Accent crosses tabs the same way, and is validated on the way in for the
+      // same reason: a storage event carries whatever another tab wrote, and a
+      // value that is not one of the literals must never reach the attribute.
+      if (e.key === "accent") {
+        const next = readCachedAccent();
+        if (next && next !== currentAccent()) {
+          setAccentState(next);
+          applyAccent(next);
+        }
       }
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  const value = useMemo(() => ({ mode, setMode, toggle }), [mode, setMode, toggle]);
+  const value = useMemo(
+    () => ({ mode, setMode, toggle, accent, setAccent }),
+    [mode, setMode, toggle, accent, setAccent],
+  );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
