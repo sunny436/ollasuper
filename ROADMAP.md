@@ -31,6 +31,33 @@ One finding is verified by unit test only, and deliberately so:
   on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
   surface is built, add the prod check with it.
 
+## Embeddings restored + quiet scrollbar (2026-09-18) - LIVE, prod-verified
+
+- **Embeddings were dead, and it was the KEY, not the code.** `OPENROUTER_API_KEY`
+  returned `401 "User not found"` on every endpoint including `/key`, so knowledge
+  search answered "temporarily unavailable", and title generation fell back to the raw
+  prompt. The operator's key file held TWO keys; the live one is on the labelled line.
+  Installed into `/opt/myos/services/ai/.env` (0600, backup kept) over stdin so it never
+  reached a command line or a log. Verified: `/v1/embeddings` returns 3072 dimensions -
+  matching `embedding_dimensions: 3072` - and `p-knowledge-allformats.js` recalls facts
+  from an uploaded .txt and .md in a BRAND-NEW chat (2/2, parse -> chunk -> embed ->
+  cross-chat retrieval). Title generation now produces real titles ("Cat Desk Problem").
+  Nothing in `app/ingest/embed.py` changed.
+- **Sidebar scroll boundary.** The docked rail was already correct; the MOBILE DRAWER
+  nav computed `overflow-y: visible`, so on a phone in landscape (342px usable) the whole
+  sidebar became the scroller, the account row sat below the fold and the list was
+  squeezed to 16px. Drawer nav now clips like the docked rail, and brand / nav block /
+  account row are `shrink-0`. Verified at 12 viewports incl. landscape, with 390 real
+  conversations: nav never scrolls, one scroller, no fixed item moves, 0 horizontal
+  overflow, width 272.
+- **`.scrollbar-quiet`** (packages/ui/src/globals.css): 8px, transparent track, rounded
+  thumb inset by a 2px transparent border. The standard `scrollbar-width/color` sit behind
+  `@supports not selector(::-webkit-scrollbar)` because Chromium supports both and, with
+  the standard property set, ignores the ::-webkit- rules (measured: 10px and no pill;
+  8px after the gate). Applied to all 23 of the app's own scroll containers - chat rail,
+  transcript, files, settings, projects, scheduled, dialogs, menus, login. 7/7 routes show
+  zero native scrollers.
+
 ## Skill QA remediation (tester report 17-09-2026) - LIVE, prod-verified
 
 Fixed at shared layers only; every claim was checked against the code AND the live
