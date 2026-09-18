@@ -16,6 +16,22 @@ const I18nMiddleware = createI18nMiddleware({
 const isSignInPage = createRouteMatcher(["/login"]);
 // Public shared-conversation pages — read-only, token-gated, no auth.
 const isPublicShare = createRouteMatcher(["/share", "/share/(.*)"]);
+// The SAME subtree, already carrying its locale segment.
+//
+// next-international hides the locale (urlMappingStrategy "rewrite"), so a human
+// only ever sees /share/<token>. But Next generates metadata URLs from the route
+// path, and the route lives under [locale] — so the og:image it emits is
+// /en/share/<token>/opengraph-image-…, which the unprefixed matcher above does
+// NOT cover. Measured on production: that URL 307'd to /login, meaning every
+// social scraper got the sign-in page instead of the card.
+//
+// Handled separately from isPublicShare because these paths must NOT be run
+// through I18nMiddleware: the locale is already resolved, the route exists at
+// exactly this path, and rewriting it again only adds a redirect hop.
+const isLocalisedShare = createRouteMatcher([
+  "/(en|fr|es)/share",
+  "/(en|fr|es)/share/(.*)",
+]);
 // Public documents a signed-out visitor (or an app-marketplace reviewer) must be
 // able to open: static, server-rendered, no Convex, nothing per-user.
 const isPublicDoc = createRouteMatcher(["/privacy", "/terms", "/support", "/slack"]);
@@ -191,6 +207,12 @@ const authMiddleware = convexAuthNextjsMiddleware(
   async (request, { convexAuth }) => {
     // Public share pages bypass the auth gate entirely (still get the locale
     // rewrite). Access is authorized server-side by the token + expiry/revocation.
+    if (isLocalisedShare(request)) {
+      if (limited(shareHits, trustedIp(request), SHARE_WINDOW_MS, SHARE_MAX)) {
+        return new Response("Too many requests", { status: 429 });
+      }
+      return; // already localised — serve the route as-is
+    }
     if (isPublicShare(request) || isPublicDoc(request)) {
       if (
         limited(shareHits, trustedIp(request), SHARE_WINDOW_MS, SHARE_MAX)
