@@ -261,13 +261,23 @@ async function main() {
     document.body.appendChild(probe);
     const expected = getComputedStyle(probe).backgroundColor;
     probe.remove();
-    const filled = [...document.querySelectorAll("button, a")].filter(
-      (b) => /bg-brand/.test(b.className || "") && b.offsetParent !== null,
+    // Visibility by geometry, not offsetParent: the send button sits inside a
+    // framer-motion layout container, and offsetParent can be null under a
+    // transformed ancestor - which would make a visibly painted button
+    // "invisible" to this filter.
+    const all = [...document.querySelectorAll("button, a")].filter((b) =>
+      /(^|\s)bg-brand(\s|$)/.test(String(b.className || "")),
     );
+    const filled = all.filter((b) => {
+      const r = b.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
     return {
       hsl,
       expected,
+      total: all.length,
       found: filled.length,
+      sample: filled.slice(0, 3).map((b) => b.getAttribute("aria-label") || b.tagName),
       mismatched: filled
         .map((b) => getComputedStyle(b).backgroundColor)
         .filter((c) => c !== expected),
@@ -276,8 +286,93 @@ async function main() {
   check(
     "the shared bg-brand surface paints the resolved accent",
     buttons.found > 0 && buttons.mismatched.length === 0,
-    `found=${buttons.found} expected=${buttons.expected} mismatched=${buttons.mismatched.join(", ") || "none"}`,
+    `found=${buttons.found} of ${buttons.total} [${buttons.sample.join(", ")}] expected=${buttons.expected} mismatched=${buttons.mismatched.join(", ") || "none"}`,
   );
+
+  // ------------------------------------ the settings <Button> specifically
+  //
+  // The one component edit in this feature. The 404 page renders "Go home" as a
+  // bare <Button> - the shadcn default variant that used to sit on --primary -
+  // and it is always enabled, unlike the Save buttons that sit disabled until a
+  // form is dirty. It must paint the same accent the chat send button does.
+  // Probing a 404 page makes the browser log the 404 for the document itself.
+  // That is the route doing its job, not the app failing, so exactly that one
+  // resource error is dropped from the gate - and nothing else.
+  const errsBefore404 = errs.length;
+  await page.goto(`${BASE}/this-route-does-not-exist`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2200);
+  const upload = await page.evaluate(() => {
+    const btn = [...document.querySelectorAll("button")].find((b) =>
+      /go home/i.test(b.textContent || ""),
+    );
+    if (!btn) return null;
+    const hsl = getComputedStyle(document.documentElement).getPropertyValue("--brand").trim();
+    const probe = document.createElement("div");
+    probe.style.cssText = `position:absolute;visibility:hidden;background:hsl(${hsl})`;
+    document.body.appendChild(probe);
+    const expected = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return {
+      onBrand: /(^|\s)bg-brand(\s|$)/.test(btn.className),
+      onPrimary: /(^|\s)bg-primary(\s|$)/.test(btn.className),
+      bg: getComputedStyle(btn).backgroundColor,
+      expected,
+    };
+  });
+  check(
+    "the shared <Button> default variant moved off --primary",
+    !!upload && upload.onBrand && !upload.onPrimary && upload.bg === upload.expected,
+    upload ? `bg=${upload.bg} expected=${upload.expected} brand=${upload.onBrand} primary=${upload.onPrimary}` : "Go home button not found",
+  );
+  for (let i = errs.length - 1; i >= errsBefore404; i--) {
+    if (/Failed to load resource: the server responded with a status of 404/.test(errs[i])) {
+      errs.splice(i, 1);
+    }
+  }
+
+  // ------------------------------------------- logout -> login, no local cache
+  //
+  // The local cache is wiped between the two so the ONLY way the accent comes
+  // back is from the account row. That is the account-scoped guarantee.
+  await page.goto(`${BASE}/settings/appearance`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2000);
+  await page.locator('input[name="accent"][value="yellow"]').check({ force: true });
+  await page.waitForTimeout(2600); // let the upsert land
+  await ctx.clearCookies();
+  await page.evaluate(() => {
+    try {
+      localStorage.clear();
+    } catch {}
+  });
+  await signIn(page, who);
+  await page.waitForTimeout(2800);
+  s = await readState(page);
+  check("logout -> login restores the account accent with no cache", s.accent === "yellow", `data-accent=${s.accent}`);
+
+  // ---------------------------------------------- the backend is unreachable
+  //
+  // A device that cannot reach Convex sees settings stay undefined forever.
+  // Treating that as "no preference" would repaint the app blue on every flaky
+  // connection. The local accent must be KEPT.
+  {
+    const offline = await browser.newContext({
+      viewport: { width: 1280, height: 820 },
+      storageState: await ctx.storageState(),
+    });
+    await offline.addInitScript(() => {
+      try {
+        localStorage.setItem("accent", "purple");
+        localStorage.setItem("accent_ts", String(Date.now()));
+      } catch {}
+    });
+    const off = await offline.newPage();
+    await off.routeWebSocket(/.*/, (ws) => ws.close());
+    await off.goto(`${BASE}/chat`, { waitUntil: "domcontentloaded" });
+    await off.waitForTimeout(6000);
+    const o = await readState(off);
+    check("backend unreachable: the local accent is kept, not flipped", o.accent === "purple", `data-accent=${o.accent}`);
+    await offline.close();
+  }
 
   check("zero console errors", errs.length === 0, errs.slice(0, 3).join(" | "));
 
