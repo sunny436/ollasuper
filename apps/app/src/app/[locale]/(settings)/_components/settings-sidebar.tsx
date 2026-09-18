@@ -85,7 +85,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search settings"
           aria-label="Search settings"
-          className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-primary/80 outline-none transition placeholder:text-primary/35 focus:border-brand/40"
+          className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-primary/80 outline-none transition placeholder:text-muted-foreground focus:border-brand/40"
         />
       </div>
 

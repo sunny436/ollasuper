@@ -121,7 +121,7 @@ export default function ConnectorsPage() {
           onChange={(e) => setQuery(e.target.value)}
           placeholder={PAGE.searchPlaceholder}
           aria-label={PAGE.searchPlaceholder}
-          className="min-w-0 flex-1 rounded-lg border border-border bg-card px-3 py-2 text-sm text-primary/80 outline-none transition placeholder:text-primary/35 focus:border-brand/40"
+          className="min-w-0 flex-1 rounded-lg border border-border bg-card px-3 py-2 text-sm text-primary/80 outline-none transition placeholder:text-muted-foreground focus:border-brand/40"
         />
       </div>
 

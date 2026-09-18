@@ -97,54 +97,73 @@ const step = async (n, f) => {
   const settleTheme = async (want) => {
     await page
       .waitForFunction(
-        (w) => document.documentElement.dataset.ambience === w,
+        (w) => document.documentElement.dataset.theme === w,
         want,
         { timeout: 10000, polling: "raf" },
       )
       .catch(() => {});
   };
 
-  await step("theme toggle themes the whole app", async () => {
-    // The header theme toggle replaced the Ambience slider; it drives the SAME
-    // engine, so the guarantees asserted here are unchanged — ~31 --amb-* vars
-    // on <html>, `.dark` toggled by the interpolated background luminance, and
-    // the dataset kept in step. Only the input changed: one click instead of
-    // keyboarding a native range. Click back to light so later steps render light.
+  const themeState = () =>
+    page.evaluate(() => ({
+      dark: document.documentElement.classList.contains("dark"),
+      ds: document.documentElement.dataset.theme,
+      bg: getComputedStyle(document.body).backgroundColor,
+      cached: (() => {
+        try {
+          return localStorage.getItem("theme");
+        } catch {
+          return null;
+        }
+      })(),
+    }));
+
+  await step("theme toggle themes the whole app, and it survives a reload", async () => {
+    // REWRITTEN for the monochrome system. This used to assert ~31 --amb-* vars
+    // on <html> and a numeric dataset, because the toggle drove a continuous
+    // day->night colour ramp. There is no ramp: there are two modes, the class
+    // is the whole mechanism, and the tokens are literals in globals.css.
+    //
+    // So the contract asserted here is now the one that actually matters —
+    // .dark, data-theme and the localStorage cache agree, the page really
+    // repaints to pure white / pitch black, and the choice is still there after
+    // a reload (the no-flash path, which is what a user notices).
     const toggle = page.locator('button[aria-label="Toggle dark and light theme"]');
     if ((await toggle.count()) === 0) throw new Error("no theme toggle");
 
-    const before = await page.evaluate(() =>
-      document.documentElement.classList.contains("dark"),
-    );
-    if (before) {
+    if ((await themeState()).dark) {
       // Start from light so the assertions below describe a real transition.
       await toggle.first().click();
-      await settleTheme("0");
+      await settleTheme("light");
     }
 
     await toggle.first().click();
-    await settleTheme("100");
-    const midnight = await page.evaluate(() => ({
-      amb: getComputedStyle(document.documentElement)
-        .getPropertyValue("--amb-background")
-        .trim(),
-      dark: document.documentElement.classList.contains("dark"),
-      ds: document.documentElement.dataset.ambience,
-    }));
-    if (!midnight.amb) throw new Error("no --amb-background applied");
-    if (!midnight.dark) throw new Error("the toggle did not turn .dark on");
-    if (midnight.ds !== "100")
-      throw new Error(`dataset.ambience expected 100, got ${midnight.ds}`);
+    await settleTheme("dark");
+    const night = await themeState();
+    if (!night.dark) throw new Error("the toggle did not turn .dark on");
+    if (night.ds !== "dark")
+      throw new Error(`data-theme expected dark, got ${night.ds}`);
+    if (night.cached !== "dark")
+      throw new Error(`localStorage.theme expected dark, got ${night.cached}`);
+    if (night.bg !== "rgb(0, 0, 0)")
+      throw new Error(`dark background expected pitch black, got ${night.bg}`);
+
+    // Persistence: the pre-paint script must read the cache back, so the mode
+    // survives a navigation with no flash of the other theme.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#chat-composer", { timeout: 20000 });
+    const reloaded = await themeState();
+    if (!reloaded.dark || reloaded.ds !== "dark")
+      throw new Error(`dark did not survive a reload: ${JSON.stringify(reloaded)}`);
 
     await toggle.first().click();
-    await settleTheme("0");
-    const day = await page.evaluate(() => ({
-      dark: document.documentElement.classList.contains("dark"),
-      ds: document.documentElement.dataset.ambience,
-    }));
+    await settleTheme("light");
+    const day = await themeState();
     if (day.dark) throw new Error("the toggle did not turn .dark back off");
-    if (day.ds !== "0")
-      throw new Error(`dataset.ambience expected 0, got ${day.ds}`);
+    if (day.ds !== "light")
+      throw new Error(`data-theme expected light, got ${day.ds}`);
+    if (day.bg !== "rgb(255, 255, 255)")
+      throw new Error(`light background expected pure white, got ${day.bg}`);
   });
 
   await step("send a message and receive a streamed reply", async () => {

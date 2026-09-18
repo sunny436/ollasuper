@@ -70,6 +70,25 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
+  // Ctrl/Cmd+Shift+L, app-wide.
+  //
+  // This lived inside ThemeToggle, which is only mounted in the chat header, the
+  // dashboard sidebar and the settings rail — so the shortcut silently did
+  // nothing on /projects, /scheduled and /files, the three routes where the
+  // button is not rendered either. A shortcut that works on some routes is worse
+  // than one that works on none, because the user learns it and then it fails.
+  // The provider wraps every route, so here it is simply global.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        toggle();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggle]);
+
   // Another TAB changed it. Same-origin storage events only; the value is
   // validated in readCachedMode, so a corrupt write cannot paint a broken theme.
   useEffect(() => {

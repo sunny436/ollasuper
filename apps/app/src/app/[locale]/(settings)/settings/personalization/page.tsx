@@ -376,7 +376,7 @@ export default function PersonalizationSection() {
           />
           <p
             id="about-count"
-            className="mt-1 text-right text-[11px] text-primary/35"
+            className="mt-1 text-right text-[11px] text-muted-foreground"
           >
             {[...about].length}/{MAX_ABOUT}
           </p>

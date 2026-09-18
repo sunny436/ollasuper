@@ -113,7 +113,7 @@ function CitationCard({
 
   return (
     <li className="flex items-center gap-2 rounded-md border border-border/50 bg-card px-2 py-1 text-xs">
-      <span className="shrink-0 text-primary/30 tabular-nums">{index}.</span>
+      <span className="shrink-0 text-muted-foreground tabular-nums">{index}.</span>
       {href ? (
         <a
           href={href}

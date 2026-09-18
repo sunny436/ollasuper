@@ -81,7 +81,7 @@ export function CapabilityPicker({
         <label className="text-sm font-medium text-primary/80">
           Capabilities
         </label>
-        <span className="text-[11px] text-primary/35">
+        <span className="text-[11px] text-muted-foreground">
           {value.length}/{max}
         </span>
       </div>

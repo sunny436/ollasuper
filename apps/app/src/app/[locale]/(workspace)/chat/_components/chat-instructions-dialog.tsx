@@ -131,9 +131,9 @@ export function ChatInstructionsDialog({
           aria-label="Instructions for this chat"
           onChange={(e) => setText(e.target.value)}
           placeholder="e.g. You are reviewing a legal contract. Be precise and flag anything ambiguous."
-          className="mt-4 min-h-40 flex-1 resize-y rounded-lg border border-border bg-transparent p-3 text-sm text-primary outline-none transition placeholder:text-primary/35 focus:border-brand/40"
+          className="mt-4 min-h-40 flex-1 resize-y rounded-lg border border-border bg-transparent p-3 text-sm text-primary outline-none transition placeholder:text-muted-foreground focus:border-brand/40"
         />
-        <p className="mt-1 text-right text-[11px] text-primary/35">
+        <p className="mt-1 text-right text-[11px] text-muted-foreground">
           {[...text].length}/{MAX}
         </p>
 
@@ -149,7 +149,7 @@ export function ChatInstructionsDialog({
             type="button"
             onClick={() => void save()}
             disabled={saving || !hydrated}
-            className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:bg-brand/90 disabled:opacity-40"
+            className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:bg-brand/90 disabled:bg-muted disabled:text-muted-foreground"
           >
             {saving ? "Saving…" : "Save"}
           </button>

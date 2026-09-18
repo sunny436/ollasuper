@@ -104,7 +104,7 @@ export function ProjectInstructions({
             type="button"
             onClick={() => void save()}
             disabled={!dirty || tooLong || saving}
-            className="rounded-lg bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-40"
+            className="rounded-lg bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground"
           >
             {saving ? "Saving…" : "Save"}
           </button>
@@ -194,7 +194,7 @@ function ProjectMemories({ projectId }: { projectId: Id<"projects"> }) {
                 type="button"
                 aria-label="Forget this memory"
                 onClick={() => void forget(m._id)}
-                className="shrink-0 rounded p-1 text-primary/30 opacity-0 transition hover:bg-primary/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+                className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-primary/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>

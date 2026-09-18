@@ -333,7 +333,7 @@ export function ExploreMenu({
               <LayoutGrid className="h-3.5 w-3.5" />
               AI capabilities
             </span>
-            <span className="rounded bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary/35">
+            <span className="rounded bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               ESC to close
             </span>
           </div>
@@ -350,7 +350,7 @@ export function ExploreMenu({
               if (items.length === 0) return null;
               return (
                 <div key={col.key} className="min-w-0">
-                  <div className="px-3 py-2 text-[11px] font-semibold text-primary/35">
+                  <div className="px-3 py-2 text-[11px] font-semibold text-muted-foreground">
                     {col.title}
                   </div>
                   {items.map((c) => {
@@ -405,7 +405,7 @@ export function ExploreMenu({
           <div className="flex min-h-[2.75rem] items-center border-t border-border bg-primary/[0.03] px-4 py-2.5">
             <p className="line-clamp-2 text-[12px] leading-snug text-primary/60">
               {hint ?? (
-                <span className="flex items-center gap-1.5 italic text-primary/35">
+                <span className="flex items-center gap-1.5 italic text-muted-foreground">
                   <Sparkles className="h-3.5 w-3.5" />
                   {FALLBACK_HINT}
                 </span>

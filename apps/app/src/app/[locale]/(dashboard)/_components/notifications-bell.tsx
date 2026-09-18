@@ -140,7 +140,7 @@ function NotificationRow({
             {n.body}
           </p>
         )}
-        <p className="mt-1 text-[10px] text-primary/35">
+        <p className="mt-1 text-[10px] text-muted-foreground">
           {relative(n.createdAt)}
           {href ? "" : " · no details"}
         </p>
@@ -154,7 +154,7 @@ function NotificationRow({
             e.stopPropagation();
             onRead(n._id);
           }}
-          className="mt-0.5 shrink-0 rounded-md p-1 text-primary/30 transition hover:bg-primary/5 hover:text-primary"
+          className="mt-0.5 shrink-0 rounded-md p-1 text-muted-foreground transition hover:bg-primary/5 hover:text-primary"
         >
           <Check className="h-3.5 w-3.5" />
         </button>

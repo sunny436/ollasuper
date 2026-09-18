@@ -533,7 +533,7 @@ function ThreadMenu({
         type="button"
         aria-label="Conversation actions"
         onClick={() => setOpen((v) => !v)}
-        className="rounded p-0.5 text-primary/30 opacity-0 transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+        className="rounded p-0.5 text-muted-foreground opacity-0 transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
       >
         <MoreHorizontal className="h-3.5 w-3.5" />
       </button>

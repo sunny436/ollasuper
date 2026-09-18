@@ -101,7 +101,7 @@ export function FilesSection() {
           )}
 
           {results.length === 0 && status !== "LoadingFirstPage" && (
-            <p className="px-2 py-2 text-[11px] leading-relaxed text-primary/35">
+            <p className="px-2 py-2 text-[11px] leading-relaxed text-muted-foreground">
               No files yet. Attach a file in chat and it becomes knowledge the
               assistant can use across every conversation.
             </p>
@@ -188,7 +188,7 @@ function FileItem({
         title="Delete file?"
         description={file.name}
         confirmLabel="Delete"
-        className="text-primary/30 opacity-0 transition hover:text-destructive group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+        className="text-muted-foreground opacity-0 transition hover:text-destructive group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
         onConfirm={onDelete}
       />
     </div>

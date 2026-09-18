@@ -113,7 +113,7 @@ export default function SharedChatsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by title…"
-            className="ml-auto w-full max-w-56 rounded-lg border border-border bg-secondary px-3 py-1.5 text-sm text-primary/80 placeholder:text-primary/35"
+            className="ml-auto w-full max-w-56 rounded-lg border border-border bg-secondary px-3 py-1.5 text-sm text-primary/80 placeholder:text-muted-foreground"
           />
         </div>
 

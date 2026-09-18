@@ -9,7 +9,13 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        default:
+          // Disabled is a FLAT inert surface, not the base fill at 50%. With a pure
+          // black primary, `opacity-50` paints a mid-grey button with white text -
+          // which reads as a second, lesser ENABLED button rather than a disabled
+          // one. A muted surface with muted ink is unmistakable, and it stays on
+          // the palette instead of inventing a tone between the two ends.
+          "bg-primary text-primary-foreground hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
         destructive:
           "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline:

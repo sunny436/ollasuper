@@ -35,7 +35,7 @@ export function AttachmentChip({
           Upload failed
         </span>
       ) : (
-        <span className="shrink-0 text-primary/35">{fmtSize(item.size)}</span>
+        <span className="shrink-0 text-muted-foreground">{fmtSize(item.size)}</span>
       )}
 
       {item.status === "error" && (
@@ -58,7 +58,7 @@ export function AttachmentChip({
         type="button"
         onClick={() => onRemove(item.localId)}
         aria-label={`Remove ${item.name}`}
-        className="shrink-0 rounded p-0.5 text-primary/35 transition hover:bg-primary/10 hover:text-primary/70"
+        className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-primary/10 hover:text-primary/70"
       >
         <X className="h-3 w-3" />
       </button>

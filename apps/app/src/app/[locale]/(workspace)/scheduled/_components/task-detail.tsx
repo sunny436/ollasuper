@@ -313,7 +313,7 @@ function EmptyPanel({
 }) {
   return (
     <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-      <Icon className="h-5 w-5 text-primary/30" />
+      <Icon className="h-5 w-5 text-muted-foreground" />
       <p className="mt-3 text-sm text-primary/70">{title}</p>
       <p className="mt-1 text-xs text-muted-foreground">{body}</p>
     </div>

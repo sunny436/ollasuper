@@ -42,7 +42,7 @@ const ComposerTextarea = forwardRef<
     rows={1}
     // text-base (16px) on mobile prevents iOS auto-zooming the whole page on
     // focus. This one class saves the entire mobile layout.
-    className="max-h-[40vh] w-full resize-none bg-transparent px-1 py-1 text-base leading-6 text-primary outline-none placeholder:text-primary/35 md:text-sm"
+    className="max-h-[40vh] w-full resize-none bg-transparent px-1 py-1 text-base leading-6 text-primary outline-none placeholder:text-muted-foreground md:text-sm"
     autoComplete="off"
     autoCorrect="on"
     autoCapitalize="sentences"

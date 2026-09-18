@@ -313,7 +313,7 @@ function Field({
       {children}
       <p
         className={`text-right text-[11px] ${
-          used > max * 0.9 ? "text-primary/60" : "text-primary/35"
+          used > max * 0.9 ? "text-primary/60" : "text-muted-foreground"
         }`}
       >
         {used}/{max}

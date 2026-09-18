@@ -215,7 +215,7 @@ function TaskListSkeleton() {
 function EmptyState({ filter }: { filter: Filterish }) {
   return (
     <div className="rounded-xl border border-dashed border-border px-6 py-12 text-center">
-      <CalendarClock className="mx-auto h-6 w-6 text-primary/30" />
+      <CalendarClock className="mx-auto h-6 w-6 text-muted-foreground" />
       <p className="mt-3 text-sm font-medium text-primary/80">
         {filter === "active"
           ? "No active tasks"

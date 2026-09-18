@@ -438,7 +438,7 @@ Its chats are kept and move back to your conversation list. You can restore the 
                         aria-label={`Remove ${t.title} from project`}
                         title="Removes it from this project. The chat is kept."
                         onClick={() => void onRemoveChat(t._id, t.title)}
-                        className="mr-1.5 shrink-0 rounded p-1 text-primary/30 opacity-0 transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+                        className="mr-1.5 shrink-0 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
                       >
                         <FolderMinus className="h-3.5 w-3.5" />
                       </button>

@@ -213,7 +213,7 @@ export function EditTaskDialog({
             disabled={busy || !dirty || gaps.length > 0}
             title={gaps.length > 0 ? "Pick a day" : undefined}
             onClick={save}
-            className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:bg-brand/90 disabled:opacity-40"
+            className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:bg-brand/90 disabled:bg-muted disabled:text-muted-foreground"
           >
             {busy ? "Saving…" : duplicate ? "Create" : "Save"}
           </button>

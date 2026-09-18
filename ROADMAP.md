@@ -31,6 +31,42 @@ One finding is verified by unit test only, and deliberately so:
   on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
   surface is built, add the prod check with it.
 
+## Monochrome design system (2026-09-18) - LIVE, prod-verified
+
+Strict pure white `#FFFFFF` / pitch black `#000000`, neutral grayscale for everything
+between, **no gradients, glass, glow or WebGL**. Replaces the continuous
+day→amber→dusk→night "ambience" engine (see §0c below, now superseded) with a plain
+light/dark toggle. 101 files, -895 net lines, 19 files deleted.
+
+- **`ThemeMode = "light" | "dark"` is the only vocabulary.** The legacy 0-100
+  `chatSettings.ambience` number lives in one adapter (`lib/theme/legacy-ambience.ts`).
+  No schema change, no migration.
+- **The legacy mapping came from the data, not a guess.** 53 of 97 production rows sat
+  at exactly `15` — `DEFAULT_INTENSITY`, auto-written whenever the server value was null
+  and the user never touched the slider. `15` and `null` both mean "no preference" and
+  fall through to the OS; a naive `0-49 → light` would have pinned 55% of accounts to
+  light against their system setting. Honest caveat: someone who deliberately dragged to
+  exactly 15 is indistinguishable from the default and gets OS-follow.
+- **Precedence:** explicit account preference > localStorage cache > OS > light. The
+  cache wins the pre-paint render (that is what kills the flash) and is corrected within
+  a frame if the account disagrees. An unreachable backend keeps the local theme.
+- **Two deliberate deviations, argued not assumed.** The user bubble is a muted surface
+  with a 1px border rather than a solid ink slab; chart series are decoupled from
+  `--brand`, which would otherwise have painted series 1 in the chrome ink.
+- **Colour survives in three places only:** status (text/icon/1px border, never a fill),
+  content (shiki, `--chart-*`, mermaid), and third-party trademarks (Google, Microsoft).
+- **Breaks the sweep surfaced:** `hover:brightness-110` on 14 primary buttons became a
+  no-op the moment the brand went pure black; the unread badge was white-on-light-grey;
+  the OAuth buttons were white-on-white; 50 text greys below 4.5:1 in light mode; a
+  `disabled:opacity-50` black button reads as a second enabled button.
+- **Regression net:** `apps/app/src/lib/theme/monochrome.test.ts` (38 assertions over
+  `globals.css` + a source scan) and `e2e/qa-monochrome.js` (every route × both themes in
+  a real browser: computed colour, pseudo-elements, third-party CSS).
+  `e2e/qa-mobile-smoke.js` asserted *"glass kept on desktop"* — inverted, since it would
+  now pass only on a regression. `e2e/qa-theme-persistence.js` covers the precedence
+  matrix including "Convex unreachable must not flip the theme".
+- Drops `three` and `@types/three`, orphaned by the orb's removal.
+
 ## Embeddings restored + quiet scrollbar (2026-09-18) - LIVE, prod-verified
 
 - **Embeddings were dead, and it was the KEY, not the code.** `OPENROUTER_API_KEY`
@@ -1332,7 +1368,7 @@ time, so later edits never change a live share), revocable, read-only. Engine in
 - Tests: 8 convex-test cases (snapshot fidelity, turn + cross-user isolation, expiry, revocation,
   dedup, rate-limit) + `e2e/p-share.js` (create → open unauthenticated → revoke → invalid).
 
-## 0c. Ambience theme (2026-08-19) — continuous slider replaces Light/Dark/System
+## 0c. Ambience theme (2026-08-19) — SUPERSEDED 2026-09-18 by the monochrome design system above. Kept as the record of what was removed and why.
 The discrete next-themes control was replaced by a continuous **Ambience slider (0–100)**
 that themes the whole app through **Daylight → warm Amber → Midnight**, plus a Gemini-style
 empty-`/chat` landing (parallax glow orbs + a starfield). Engine in `apps/app/src/lib/ambience`.

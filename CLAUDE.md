@@ -233,9 +233,41 @@ There is **deliberately no workspace-only index** on `chatThreads`/`chatMessages
 - **Never pass `budget_tokens` or `temperature` to Claude 5-series models** — they reject non-default sampling params with a 400. `services/ai/app/agent/llm.py` sets `temperature=None` for this reason.
 - **New Convex tables must be additive.** The live deployment has pre-migration rows; a required field on an existing table fails schema validation on push.
 - `/chat` lives in the **`(workspace)` route group**, not `(dashboard)` — it is full-bleed and renders neither the app sidebar nor the topbar. Route groups do not affect URLs. The routes that kept the dashboard shell (`/files`, `/settings`, `/settings/billing`) are reachable from the account menu at the foot of the conversation rail, which is their ONLY route out of the workspace.
-- Chat UI uses `.h-dvh-safe` (in `packages/ui/src/globals.css`), not `h-screen` — Tailwind cannot express the `vh`/`dvh` fallback pair and `tailwind-merge` collapses it. The workspace accent is three tokens (`--brand` fills, `--brand-ink` text, `--brand-foreground` text-on-fill); one shade cannot be both a legible fill and legible text. Blue is much darker than green at equal HSL lightness, so unlike the old green theme the light fill takes NEAR-WHITE text.
+- Chat UI uses `.h-dvh-safe` (in `packages/ui/src/globals.css`), not `h-screen` — Tailwind cannot express the `vh`/`dvh` fallback pair and `tailwind-merge` collapses it. There is no accent hue any more (see **The monochrome system** below); `--brand`/`--brand-ink` are pure ink and `--brand-foreground` its inverse, and the three-token split is kept only so ~170 existing call sites still work.
 - **`.workspace` in `globals.css` re-points the existing surface tokens** (`--card`, `--border`, `--background` …) for the chat subtree, so components re-skin without className churn. Radix portals mount outside it — any portalled surface needs `className="workspace"` or it renders against the base palette.
 - New functionality is written in **Python** (LangChain / LangGraph / Pydantic / FastAPI) unless it is inherently Convex data-plane work. This is a standing repo policy.
+
+### The monochrome system (2026-09-18)
+
+Pure white `#FFFFFF` and pitch black `#000000`, one neutral grayscale between
+them, and **no gradients, glass, glow or WebGL anywhere**. The continuous
+day→amber→dusk→night "ambience" engine that used to drive every token at runtime
+is gone; the tokens in `globals.css` are literals again.
+
+- The frontend speaks only `ThemeMode = "light" | "dark"` (`lib/theme/mode.ts`).
+  The legacy `chatSettings.ambience` 0-100 number survives in exactly ONE
+  adapter, `lib/theme/legacy-ambience.ts`. Nothing else may reference it.
+- Precedence is `explicit account preference > localStorage cache > OS > light`.
+  localStorage is a **cache**, never a source of truth; a fresh local choice
+  beats a stale server one by timestamp, and an unreachable backend keeps the
+  local theme rather than flipping it.
+- **`15` and `null` both mean "no preference."** 53 of the 97 production rows sat
+  at exactly `15` — the old engine's `DEFAULT_INTENSITY`, auto-written whenever
+  the server value was null and the user never touched the slider. Mapping
+  "0-49 → light" would have pinned 55% of accounts to light against their OS
+  setting. No row is rewritten until the user actually toggles.
+- Colour survives in exactly three places, all deliberate: **status** (error /
+  warning / success, as text, icons and 1px borders — never a fill), **content**
+  (shiki, `--chart-*`, mermaid — five series in one greyscale ramp cannot be told
+  apart), and **third-party identity marks** (the Google and Microsoft logos are
+  trademarks whose brand terms require their colourways).
+- Elevation is a 1px border for inline surfaces and ONE subtle shadow for
+  overlays. `shadow-lg/xl/2xl` are banned, and so is `hover:brightness-*` —
+  brightness on pure black is a no-op, so it silently removes the hover state.
+- Two tests defend this and they are not redundant: `monochrome.test.ts` reads
+  `globals.css` and greps the source; `e2e/qa-monochrome.js` walks every route in
+  both themes in a real browser, which is the only way to see computed colour,
+  pseudo-elements and third-party CSS.
 
 ## Cost controls (do not remove)
 

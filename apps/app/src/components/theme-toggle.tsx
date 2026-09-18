@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect } from "react";
 import { useTheme } from "@/lib/theme/theme-provider";
 
 /**
@@ -15,22 +14,10 @@ import { useTheme } from "@/lib/theme/theme-provider";
  * ink on one surface in either theme — no amber sun, no indigo moon.
  */
 export function ThemeToggle() {
+  // Ctrl/Cmd+Shift+L lives in ThemeProvider, not here: this button is not
+  // rendered on /projects, /scheduled or /files, and the shortcut has to work
+  // there too.
   const { toggle } = useTheme();
-
-  useEffect(() => {
-    // No centralized shortcut system exists in this app — every other keydown
-    // handler is component-local — so there is nothing to register with. Only
-    // one instance mounts at a time: the chat, settings and dashboard shells are
-    // separate route groups and never render together.
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "l") {
-        e.preventDefault();
-        toggle();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [toggle]);
 
   return (
     <button

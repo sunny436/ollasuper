@@ -147,7 +147,7 @@ export function ProjectSources({
               type="button"
               onClick={() => inputRef.current?.click()}
               disabled={uploading || !workspaceId}
-              className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-full bg-brand px-3 py-1.5 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground"
             >
               {uploading ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -206,7 +206,7 @@ export function ProjectSources({
               type="button"
               onClick={() => inputRef.current?.click()}
               disabled={uploading || !workspaceId}
-              className="mt-5 rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-40"
+              className="mt-5 rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground"
             >
               {uploading ? "Uploading…" : "Add sources"}
             </button>
@@ -247,7 +247,7 @@ export function ProjectSources({
                 aria-label={`Remove ${f.name} from project`}
                 title="Removes it from this project. The file itself is kept."
                 onClick={() => void onUnlink(f._id, f.name)}
-                className="shrink-0 rounded p-1 text-primary/30 opacity-0 transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+                className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
               >
                 <FolderMinus className="h-3.5 w-3.5" />
               </button>

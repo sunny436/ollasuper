@@ -141,7 +141,7 @@ export function ProjectSettingsDialog({
                 type="button"
                 onClick={() => void saveName()}
                 disabled={savingName}
-                className="shrink-0 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-40"
+                className="shrink-0 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground"
               >
                 {savingName ? "Saving…" : "Save"}
               </button>

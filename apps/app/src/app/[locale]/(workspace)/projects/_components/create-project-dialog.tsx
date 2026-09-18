@@ -154,7 +154,7 @@ export function CreateProjectDialog({
             type="button"
             onClick={() => void submit()}
             disabled={!canSubmit}
-            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 active:scale-95 disabled:opacity-40"
+            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 active:scale-95 disabled:bg-muted disabled:text-muted-foreground"
           >
             {submitting ? "Creating…" : "Create project"}
           </button>

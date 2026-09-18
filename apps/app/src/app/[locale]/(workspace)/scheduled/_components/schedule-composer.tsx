@@ -437,7 +437,7 @@ export function ScheduleComposer({
               void send();
             }
           }}
-          className="max-h-40 min-h-[24px] flex-1 resize-none bg-transparent py-1 text-sm text-primary outline-none placeholder:text-primary/35 disabled:opacity-60"
+          className="max-h-40 min-h-[24px] flex-1 resize-none bg-transparent py-1 text-sm text-primary outline-none placeholder:text-muted-foreground disabled:opacity-60"
         />
         {/*
           While parsing this is a CANCEL, not a dead spinner. Nothing bounds a
@@ -470,7 +470,7 @@ export function ScheduleComposer({
             onClick={() => void send()}
             disabled={!text.trim() || phase === "creating"}
             aria-label="Interpret schedule"
-            className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand text-brand-foreground transition disabled:opacity-30"
+            className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand text-brand-foreground transition disabled:bg-muted disabled:text-muted-foreground"
           >
             <ArrowUp className="h-4 w-4" />
           </button>
@@ -525,7 +525,7 @@ export function ScheduleComposer({
                 placeholder="Name this task"
                 aria-label="Task name"
                 maxLength={200}
-                className={`w-full bg-transparent text-sm font-medium text-primary outline-none placeholder:text-primary/35 ${
+                className={`w-full bg-transparent text-sm font-medium text-primary outline-none placeholder:text-muted-foreground ${
                   draft.unresolved.includes("title")
                     ? "rounded-md bg-brand/10 px-1.5 py-0.5"
                     : ""
@@ -620,7 +620,7 @@ export function ScheduleComposer({
               onClick={() => void confirm()}
               disabled={phase === "creating" || blocking.length > 0}
               title={reason ?? undefined}
-              className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:bg-brand/90 disabled:opacity-40"
+              className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition hover:bg-brand/90 disabled:bg-muted disabled:text-muted-foreground"
             >
               {phase === "creating" ? "Creating…" : "Create task"}
             </button>

@@ -111,7 +111,7 @@ function FeatureCard({
         <Icon className={`h-4 w-4 ${accent}`} />
       </span>
       <p className="font-semibold text-[13px] text-foreground">{title}</p>
-      <p className="text-[11px] leading-snug text-foreground/45">{desc}</p>
+      <p className="text-[11px] leading-snug text-muted-foreground">{desc}</p>
     </div>
   );
 }
@@ -141,7 +141,7 @@ function PanelFrame({
 }
 
 function Hint({ children }: { children: React.ReactNode }) {
-  return <p className="text-foreground/45 text-xs">{children}</p>;
+  return <p className="text-muted-foreground text-xs">{children}</p>;
 }
 
 /** Shared shell for a labelled input so every field looks identical. */
@@ -402,7 +402,7 @@ export function AuthPanel() {
               <p className="font-semibold text-[20px] text-foreground">
                 All-in-One Super Intelligence Workspace
               </p>
-              <p className="mt-2 text-[15px] text-foreground/45">
+              <p className="mt-2 text-[15px] text-muted-foreground">
                 AI tools for creators, builders &amp; dreamers.
               </p>
             </div>
@@ -455,7 +455,7 @@ export function AuthPanel() {
               <h1 className="font-bold text-[40px] leading-tight text-foreground">
                 {copy[mode].title}
               </h1>
-              <p className="mt-2 text-[15px] text-foreground/45">{copy[mode].sub}</p>
+              <p className="mt-2 text-[15px] text-muted-foreground">{copy[mode].sub}</p>
             </div>
 
             {/* mode="wait" is load-bearing, not decorative: e2e/p2-auth.js fills
@@ -467,7 +467,7 @@ export function AuthPanel() {
                   <signInForm.Field name="email" validators={{ onSubmit: signInSchema.shape.email }}>
                     {(field) => (
                       <FieldShell label="Email address" htmlFor="email" errors={field.state.meta.errors}>
-                        <Mail className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="email"
                           name="email"
@@ -498,7 +498,7 @@ export function AuthPanel() {
                           </button>
                         }
                       >
-                        <Lock className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <Lock className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="password"
                           name="password"
@@ -514,7 +514,7 @@ export function AuthPanel() {
                           type="button"
                           aria-label={reveal ? "Hide password" : "Show password"}
                           onClick={() => setReveal((v) => !v)}
-                          className="shrink-0 text-foreground/35 transition-colors hover:text-muted-foreground"
+                          className="shrink-0 text-muted-foreground transition-colors hover:text-muted-foreground"
                         >
                           {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -534,7 +534,7 @@ export function AuthPanel() {
                   <signUpForm.Field name="name" validators={{ onSubmit: signUpSchema.shape.name }}>
                     {(field) => (
                       <FieldShell label="Full name" htmlFor="name" errors={field.state.meta.errors}>
-                        <User className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <User className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="name"
                           name="name"
@@ -557,7 +557,7 @@ export function AuthPanel() {
                         htmlFor="signup-email"
                         errors={field.state.meta.errors}
                       >
-                        <Mail className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="signup-email"
                           name="email"
@@ -583,7 +583,7 @@ export function AuthPanel() {
                         htmlFor="signup-password"
                         errors={field.state.meta.errors}
                       >
-                        <Lock className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <Lock className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="signup-password"
                           name="password"
@@ -599,7 +599,7 @@ export function AuthPanel() {
                           type="button"
                           aria-label={reveal ? "Hide password" : "Show password"}
                           onClick={() => setReveal((v) => !v)}
-                          className="shrink-0 text-foreground/35 transition-colors hover:text-muted-foreground"
+                          className="shrink-0 text-muted-foreground transition-colors hover:text-muted-foreground"
                         >
                           {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -636,7 +636,7 @@ export function AuthPanel() {
                         htmlFor="verify-code"
                         errors={field.state.meta.errors}
                       >
-                        <KeyRound className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <KeyRound className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="verify-code"
                           name="code"
@@ -667,7 +667,7 @@ export function AuthPanel() {
                         htmlFor="forgot-email"
                         errors={field.state.meta.errors}
                       >
-                        <Mail className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="forgot-email"
                           name="email"
@@ -701,7 +701,7 @@ export function AuthPanel() {
                         htmlFor="reset-code"
                         errors={field.state.meta.errors}
                       >
-                        <KeyRound className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <KeyRound className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="reset-code"
                           name="code"
@@ -726,7 +726,7 @@ export function AuthPanel() {
                         htmlFor="reset-password"
                         errors={field.state.meta.errors}
                       >
-                        <Lock className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <Lock className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="reset-password"
                           name="newPassword"
@@ -742,7 +742,7 @@ export function AuthPanel() {
                           type="button"
                           aria-label={reveal ? "Hide password" : "Show password"}
                           onClick={() => setReveal((v) => !v)}
-                          className="shrink-0 text-foreground/35 transition-colors hover:text-muted-foreground"
+                          className="shrink-0 text-muted-foreground transition-colors hover:text-muted-foreground"
                         >
                           {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -768,7 +768,7 @@ export function AuthPanel() {
                         htmlFor="otp-email"
                         errors={field.state.meta.errors}
                       >
-                        <Mail className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="otp-email"
                           name="email"
@@ -802,7 +802,7 @@ export function AuthPanel() {
                         htmlFor="otp-code"
                         errors={field.state.meta.errors}
                       >
-                        <KeyRound className="h-4 w-4 shrink-0 text-foreground/35" />
+                        <KeyRound className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <input
                           id="otp-code"
                           name="code"
@@ -846,7 +846,7 @@ export function AuthPanel() {
             {/* Mode-aware bottom link — replaces the removed Login/Sign-up tabs.
                 Only calls setMode; lives outside AnimatePresence. */}
             {mode === "signIn" && (
-              <p className="mt-6 text-center text-[13px] text-foreground/45">
+              <p className="mt-6 text-center text-[13px] text-muted-foreground">
                 New to OllaSuper?{" "}
                 <button type="button" className={LINK} onClick={() => setMode("signUp")}>
                   Create an account →
@@ -854,7 +854,7 @@ export function AuthPanel() {
               </p>
             )}
             {mode === "signUp" && (
-              <p className="mt-6 text-center text-[13px] text-foreground/45">
+              <p className="mt-6 text-center text-[13px] text-muted-foreground">
                 Already have an account?{" "}
                 <button type="button" className={LINK} onClick={() => setMode("signIn")}>
                   Sign in
