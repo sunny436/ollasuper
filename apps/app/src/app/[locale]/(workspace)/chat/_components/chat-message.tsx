@@ -107,9 +107,9 @@ function MessageMeta({
  * `text-brand-foreground` is the per-accent on-fill text, already asserted at
  * >= 4.5:1 against `--brand` for every accent in both modes.
  *
- * CLAMP. Beyond ~20 lines the bubble is cut with a fade and a "Show more"
+ * CLAMP. Beyond 12 lines the bubble is cut with a fade and a "Show more"
  * affordance, so a pasted document does not push the reply off screen. The cut
- * is `max-h-[34em]` (20 lines x 1.7 line-height) with overflow hidden, NOT
+ * is `max-h-[20.4em]` (12 lines x 1.7 line-height) with overflow hidden, NOT
  * -webkit-line-clamp: line-clamp draws an ellipsis on the final line, which is
  * wrong under a fade. The fade is a `mask-image` — an alpha ramp on the text
  * itself, so it needs no knowledge of the bubble colour and works on all seven
@@ -138,7 +138,7 @@ function UserBubble({ content }: { content: string }) {
       <p
         ref={ref}
         className={`whitespace-pre-wrap break-words ${
-          expanded ? "" : "max-h-[34em] overflow-hidden"
+          expanded ? "" : "max-h-[20.4em] overflow-hidden"
         } ${clamped ? "[mask-image:linear-gradient(to_bottom,black_78%,transparent)]" : ""}`}
       >
         {content}
