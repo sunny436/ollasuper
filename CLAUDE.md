@@ -269,6 +269,42 @@ is gone; the tokens in `globals.css` are literals again.
   both themes in a real browser, which is the only way to see computed colour,
   pseudo-elements and third-party CSS.
 
+### Accent colour (2026-09-18)
+
+Blue · Green · Yellow · Pink · Orange · Purple · Neutral, default Blue, at Settings →
+Appearance. It is **the `--brand` trio re-pointed**, nothing more — the same three
+variables the monochrome system left at pure ink still drive ~162 brand-* utilities.
+
+- **`--accent` is NOT the accent colour.** That token predates this feature and is the
+  neutral hover surface behind `hover:bg-accent`. The accent colour is `data-accent` on
+  `<html>` plus `--brand` / `--brand-ink` / `--brand-foreground`. They collide only in
+  English.
+- **`--primary` is NOT the accent either**, and must never become it: it is the body ink
+  behind ~494 `text-primary*` usages. The shadcn `<Button>` default variant was moved
+  from `bg-primary` to `bg-brand` for exactly this reason — one line, 14 consumers.
+- **An accent is an enum, never a colour string.** The only value reaching the DOM is
+  one of seven literals; every colour lives in `globals.css`. The server re-validates
+  on write against its OWN copy of the list — a server that imports its allowlist
+  from the client is not validating anything.
+- **Selectors key on the bare attribute** (`[data-accent="x"]`, and `.dark [data-accent]`
+  for descendants), not `:root[data-accent]`. `<html>` sets the page accent; a nested
+  element can scope the palette to itself, which is how the picker swatches paint
+  their own colours with no colour in the component. The `:root`-scoped version
+  shipped first and made every swatch the same colour.
+- **Blue is written twice on purpose**: `:root`/`.dark` as the no-attribute fallback,
+  `[data-accent="blue"]` as the opt-in. A test pins them identical.
+- Three tokens because they do three jobs; every value was solved against three
+  contrast pairs (on-fill, on-page, on a 10% tint) at ≥ 4.5:1 in both modes, and
+  `monochrome.test.ts` re-checks all 42. **Yellow takes black on-fill text** — the only
+  yellow dark enough to carry white is a brown.
+- Not accented, deliberately: `--ring`, status colours, `--chart-*`, the OllaSuper mark
+  (renders from `text-foreground`), and the user bubble (`bg-brand/10` would composite
+  to #E6E6E6 at Neutral against today's #F5F5F5, breaking "Neutral restores the
+  monochrome appearance").
+- Persistence is **per user per workspace** (`chatSettings` `by_user_workspace`), the
+  same as light/dark. `qa-monochrome.js` pins Neutral so the greyscale guarantee stays
+  provable on a real page; `qa-accent.js` covers the rest.
+
 ### Branding (2026-09-18)
 
 One mark, one wordmark, one component — `src/components/branding/`.

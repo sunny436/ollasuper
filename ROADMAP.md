@@ -31,6 +31,30 @@ One finding is verified by unit test only, and deliberately so:
   on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
   surface is built, add the prod check with it.
 
+## Accent colour (2026-09-18) - LIVE, prod-verified
+
+ChatGPT-style accent, independent of light/dark. Seven options, default Blue, at
+Settings → Appearance. Shipped by re-pointing the existing `--brand` trio per accent —
+the layer the monochrome work left at pure ink — so ~162 call sites inherit with one
+component edit (the shadcn `<Button>` default variant, which sat on `--primary`).
+
+- **Palette solved, not picked:** every value satisfies on-fill, on-page AND on-10%-tint
+  contrast at ≥ 4.5:1 in both modes; the tint pair is the one a page-only assertion
+  misses and is what decided orange and yellow. Neutral is today's exact ink values.
+- **Two traps the second pass caught:** `--accent` already existed (the hover surface);
+  `--primary` is body ink and cannot be the accent.
+- **One bug the deploy caught:** `:root[data-accent]` selectors meant the picker
+  swatches all inherited the page accent. Now keyed on the bare attribute.
+- **Three vacuous passes fixed in the harness**, including a regex that had a literal
+  backspace in it and matched nothing while the surfaces painted correctly.
+- Verified on prod: `qa-accent` 32/32 (first-time default, account restore with no
+  cache, all 7 × 2 modes distinct, independence both ways, reload, new tab, logout →
+  login, Convex unreachable keeps local, hostile stored value → blue with no injected
+  style, the shared Button paints the accent, 0 console errors) · `qa-monochrome`
+  PASS at Neutral · `qa-branding` 20/20 (logo stays ink) · `p-chat` 17/17 · coverage
+  sweep under orange: 0 unexplained colour outside the picker · `monochrome.test.ts`
+  38 → 83.
+
 ## OllaSuper branding system (2026-09-18) - LIVE, prod-verified
 
 The real mark and wordmark, as code. No raster brand asset survives: `logo.png`
