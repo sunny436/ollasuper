@@ -333,7 +333,10 @@ export function ExploreMenu({
               <LayoutGrid className="h-3.5 w-3.5" />
               AI capabilities
             </span>
-            <span className="rounded bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {/* No fill of its own. Stacked on the header's own 3% wash it made a
+                #EBEBEB chip, and #6B6B6B on that is 4.47:1 - three hundredths under
+                the bar, which is the kind of miss only a measurement finds. */}
+            <span className="px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               ESC to close
             </span>
           </div>

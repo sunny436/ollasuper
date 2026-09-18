@@ -85,7 +85,16 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
       {centred && exploreOpen && (
         <div
           aria-hidden
-          className="absolute inset-0 z-30 bg-background"
+          // A VEIL, not a blackout. This was `bg-background/40 backdrop-blur-[2px]`
+          // and the glass sweep took the alpha off with the blur - which turned a
+          // dim into an opaque white sheet that hid the transcript completely and
+          // left the faded greeting floating on solid white at 2.09:1.
+          //
+          // A modal scrim is inherently translucent; that is what makes it a scrim
+          // rather than a page. The design rule bans decorative glass, not the dim
+          // that tells you a menu is in front. 70% compensates for the blur that is
+          // not coming back.
+          className="absolute inset-0 z-30 bg-background/70"
         />
       )}
 
@@ -136,7 +145,10 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
                     // this element already animates opacity, so the inline
                     // style it writes wins over any class and the greeting
                     // stayed at full opacity on production.
-                    animate={{ opacity: exploreOpen ? 0.3 : 1, y: 0 }}
+                    // 0.45, not 0.3: the greeting is 36px, so WCAG asks 3:1 and
+                    // 0.3 measured 2.09:1 against the veil. 0.45 is 3.36:1 and
+                    // recedes just as clearly.
+                    animate={{ opacity: exploreOpen ? 0.45 : 1, y: 0 }}
                     exit={coarsePointer ? HERO_EXIT_TOUCH : HERO_EXIT}
                     transition={ITEM_SPRING}
                     // my-auto: with the column filling the height on touch, this
