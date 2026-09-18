@@ -576,13 +576,20 @@ class Settings(BaseSettings):
     # select() falls back to ModelProfile() = ttft 99s, tier 0, so it loses
     # every comparison at floor 0 and is excluded at floors 1-2 — reachable only
     # when all three profiled models are filtered out as unhealthy.
+    #
+    # `vision` is the one capability the catalogue cannot supply: it reports
+    # `vision: true` for every entry as a cosmetic default. deepseek-v4-flash is
+    # marked false because production proved it — an image attachment routed
+    # there and the provider answered 400 "this model does not support image
+    # input", which reached the user as "Something went wrong". Absent = true, so
+    # only a model KNOWN to refuse images is excluded from an image turn.
     ai_router_profiles: str = (
         '{"gemini-3.7-flash-high": {"ttft_s": 2.97, "tok_per_s": 529,'
-        ' "reasoning_tier": 0},'
+        ' "reasoning_tier": 0, "vision": true},'
         ' "deepseek-v4-flash": {"ttft_s": 3.68, "tok_per_s": 159,'
-        ' "reasoning_tier": 1},'
+        ' "reasoning_tier": 1, "vision": false},'
         ' "gemini-3.8-flash-high": {"ttft_s": 5.23, "tok_per_s": 571,'
-        ' "reasoning_tier": 2}}'
+        ' "reasoning_tier": 2, "vision": true}}'
     )
     # Estimated prompt+history tokens at or above which a turn routes to the
     # deepest reasoner instead of the fastest model.

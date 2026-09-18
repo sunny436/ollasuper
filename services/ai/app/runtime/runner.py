@@ -1816,6 +1816,9 @@ async def run_generation(
             upstream_of=model_health.upstream_of,
             is_available=lambda m: not model_health.is_exhausted(m),
             preferred=settings.ai_quota_fallback_model,
+            needs_vision=any(
+                a.kind == "image" for a in (latest.attachments if latest else [])
+            ),
         )
         log.info(
             "router.failover_candidate",

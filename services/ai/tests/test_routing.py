@@ -489,7 +489,12 @@ def test_structural_signals_promote_without_any_keyword(shipped):
     assert _ship(shipped, bland) == SIMPLE_MODEL
     assert _ship(shipped, bland, has_document=True) == MODERATE_MODEL
     assert _ship(shipped, bland, open_loops=2) == MODERATE_MODEL
-    assert _ship(shipped, bland, has_image=True) == MODERATE_MODEL
+    # An image promotes the CLASSIFICATION the same way, but the moderate model
+    # cannot take images, so the promotion is served by the vision-capable model
+    # at that floor. This line used to assert MODERATE_MODEL, which is precisely
+    # the production failure: the provider answered 400 for every image.
+    assert classify(Signals(text=bland, has_image=True), 1200).reasoning >= MODERATE
+    assert shipped.profiles[_ship(shipped, bland, has_image=True)].vision
 
 
 def test_the_speed_preference_leans_but_never_overrides(shipped):
@@ -546,3 +551,70 @@ def test_the_python_default_model_is_one_of_the_shipped_three():
     from app.config import Settings
 
     assert Settings().ai_default_model == MODERATE_MODEL
+
+
+# --------------------------------------------------------------- image turns
+# Production: an image attachment routed to the text-only moderate model and the
+# provider answered 400 "this model does not support image input", which reached
+# the user as "Something went wrong". Capability comes before latency, so an
+# image turn may only land on a model that accepts images.
+
+
+def test_an_image_turn_never_routes_to_a_text_only_model(shipped):
+    assert shipped.profiles[MODERATE_MODEL].vision is False
+    for text in ("what is this", "describe the attached screenshot", "read this"):
+        chosen = _ship(shipped, text, has_image=True)
+        assert shipped.profiles[chosen].vision, f"{text!r} -> {chosen}"
+
+
+def test_an_image_turn_pays_for_the_cheapest_model_that_can_actually_see(shipped):
+    """An image promotes the turn to MODERATE, and of the two vision-capable
+    models only the heavy one meets that floor — so image turns cost ~2.3s more
+    TTFT than a plain question. That is the existing "capability before speed"
+    rule applied to a capability that was previously unmodelled; the alternative
+    is the 400 that shipped."""
+    chosen = _ship(shipped, "what is in this picture", has_image=True)
+    assert chosen == HEAVY_MODEL
+    assert shipped.profiles[chosen].vision
+
+
+def test_a_text_turn_is_unaffected_by_the_vision_filter(shipped):
+    assert _ship(shipped, "summarise the attached notes", has_document=True) == (
+        MODERATE_MODEL
+    )
+
+
+def test_the_shortfall_is_recorded_when_nothing_takes_images(shipped):
+    """Every candidate text-only: the turn is still answered, and says so."""
+    only_text = [c for c in SHIPPED if c.id == MODERATE_MODEL]
+    d = select(
+        cfg=shipped,
+        candidates=only_text,
+        fallback=MODERATE_MODEL,
+        signals=Signals(text="what is this", has_image=True),
+    )
+    assert d.model == MODERATE_MODEL
+    assert "vision_unmet" in d.reason
+
+
+def test_an_image_turn_does_not_fail_over_to_a_text_only_model(shipped):
+    from app.routing import select_failover
+
+    target = select_failover(
+        cfg=shipped,
+        candidates=SHIPPED,
+        primary=SIMPLE_MODEL,
+        floor=SIMPLE,
+        upstream_of=lambda m: "",
+        is_available=lambda m: True,
+        needs_vision=True,
+    )
+    assert target == HEAVY_MODEL, target
+
+
+def test_a_profile_without_the_vision_key_is_not_excluded():
+    """Profiles written before this field existed must keep routing."""
+    cfg = RouterConfig.from_settings(
+        True, '{"m": {"ttft_s": 1.0, "tok_per_s": 10, "reasoning_tier": 0}}'
+    )
+    assert cfg.profiles["m"].vision is True

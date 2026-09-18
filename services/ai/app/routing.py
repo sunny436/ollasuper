@@ -270,6 +270,15 @@ class ModelProfile:
     tok_per_s: float = 0.0
     # 0 = no hidden reasoning, 1 = moderate, 2 = heavy. Ordering only.
     reasoning_tier: int = 0
+    # Whether the model accepts IMAGE input. Not read from the catalogue, which
+    # reports `vision: true` for everything as a cosmetic default (see the module
+    # docstring): routing on a constant is not routing, so the fact lives here
+    # with the other measured per-model facts. Defaults TRUE so an unprofiled
+    # model is never excluded on an assumption; a model known to refuse images is
+    # marked false in `ai_router_profiles`. Text-only models answering an image
+    # turn is not a preference — the provider returns 400 and the user sees
+    # "Something went wrong".
+    vision: bool = True
 
 
 @dataclass(frozen=True)
@@ -343,6 +352,10 @@ class RouterConfig:
                         ttft_s=float(p.get("ttft_s", 99.0)),
                         tok_per_s=float(p.get("tok_per_s", 0.0)),
                         reasoning_tier=int(p.get("reasoning_tier", 0)),
+                        # Absent means "not known to refuse images", matching the
+                        # dataclass default: a profile written before this field
+                        # existed must not start excluding its model.
+                        vision=bool(p.get("vision", True)),
                     )
             except (ValueError, TypeError, AttributeError) as e:
                 log.warning("router.profiles_invalid", extra={"error": str(e)[:200]})
@@ -570,6 +583,22 @@ def select(
     def profile(c: Candidate) -> ModelProfile:
         return cfg.profiles.get(c.id, ModelProfile())
 
+    # An image turn can only be answered by a model that accepts images. This is
+    # a CAPABILITY filter, so it runs before the reasoning floor and before any
+    # latency tie-break: a faster model that returns 400 has not answered.
+    # Observed on production — an image attachment routed to deepseek-v4-flash
+    # and came back "this model does not support image input".
+    vision_unmet = False
+    if sig.has_image:
+        with_vision = [c for c in healthy if profile(c).vision]
+        if with_vision:
+            healthy = with_vision
+        else:
+            # Nothing on offer takes images. The turn still gets an answer (the
+            # caller's fallback would have been used anyway) and the shortfall is
+            # recorded rather than hidden.
+            vision_unmet = True
+
     # --- capability floor --------------------------------------------------
     capable = [c for c in healthy if profile(c).reasoning_tier >= cls.reasoning]
     if not capable:
@@ -596,6 +625,8 @@ def select(
     best = min(capable, key=lambda c: profile(c).ttft_s)
 
     tag = "g" if cls.grounded else "s"
+    if vision_unmet:
+        tag += "|vision_unmet"
     if profile(best).reasoning_tier < cls.reasoning:
         # Capability was unavailable (e.g. every tier-2 model unhealthy): the best
         # on offer answers, and the shortfall is recorded, never hidden.
@@ -614,6 +645,7 @@ def select_failover(
     upstream_of: Callable[[str], str],
     is_available: Callable[[str], bool],
     preferred: str = "",
+    needs_vision: bool = False,
 ) -> str:
     """The model a turn fails over to if `primary` refuses. "" = none worth trying.
 
@@ -636,6 +668,9 @@ def select_failover(
         if m
         and m != primary
         and is_available(m)
+        # Failing an image turn over to a text-only model trades one refusal for
+        # another, so a model that cannot take images is not a failover target.
+        and (not needs_vision or cfg.profiles.get(m, ModelProfile()).vision)
         and not (primary_up and upstream_of(m) == primary_up)
     ]
     if not eligible:
