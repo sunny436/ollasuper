@@ -131,7 +131,14 @@ export function ChatInstructionsDialog({
           aria-label="Instructions for this chat"
           onChange={(e) => setText(e.target.value)}
           placeholder="e.g. You are reviewing a legal contract. Be precise and flag anything ambiguous."
-          className="mt-4 min-h-40 flex-1 resize-y rounded-lg border border-border bg-transparent p-3 text-sm text-primary outline-none transition placeholder:text-muted-foreground focus:border-brand/40"
+          // h-40 + min-h-0, NOT min-h-40. `flex-1` on a flex child defaults to
+          // min-height:auto, so a floor of 160px made this textarea unshrinkable:
+          // on a landscape phone (844x390) the panel caps at 70vh = 273px, the
+          // content needed ~290px, and the counter and buttons rendered OUTSIDE
+          // the panel background - on the scrim. axe caught it as 1.34:1 text,
+          // which is what "painting on a 50% black overlay" looks like from the
+          // outside. Every sibling dialog already uses the min-h-0 pattern.
+          className="mt-4 h-40 min-h-0 flex-1 resize-y rounded-lg border border-border bg-transparent p-3 text-sm text-primary outline-none transition placeholder:text-muted-foreground focus:border-brand/40"
         />
         <p className="mt-1 text-right text-[11px] text-muted-foreground">
           {[...text].length}/{MAX}
