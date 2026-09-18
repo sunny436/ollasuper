@@ -496,7 +496,7 @@ export function ChatInput({
             className={
               centred
                 ? "hidden"
-                : "order-3 ml-auto hidden text-[11px] text-primary/30 sm:inline"
+                : "order-3 ml-auto hidden text-[11px] text-primary/60 sm:inline"
             }
           >
             Enter to send · Shift+Enter for a new line

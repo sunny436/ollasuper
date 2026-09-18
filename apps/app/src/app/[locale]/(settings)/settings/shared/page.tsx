@@ -27,7 +27,7 @@ const FILTERS: { key: Filter; label: string }[] = [
 ];
 
 const STATUS_STYLE: Record<string, string> = {
-  active: "text-emerald-600 dark:text-emerald-400",
+  active: "text-emerald-700 dark:text-emerald-400",
   expired: "text-primary/60",
   revoked: "text-red-600",
 };
