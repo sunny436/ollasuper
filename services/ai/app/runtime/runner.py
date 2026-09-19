@@ -37,6 +37,7 @@ from app.agent.executor import (
     execute_tool_calls,
 )
 from app.agent.filegen_tool import GENERATE_FILE_TOOL_SPEC
+from app.agent.freshness import detect_requirement, prefetch_query, render_directive
 from app.agent.graph import build_graph
 from app.agent.harmony import HarmonyStreamFilter
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
@@ -55,6 +56,7 @@ from app.agent.orchestration_tools import (
 )
 from app.agent.personalization import compile_personalization
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE
+from app.agent.search_guard import SEARCH_TOOL_IDS
 from app.agent.taint import REJECTED_EARLIER, source_of_id
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
@@ -90,7 +92,6 @@ from app.routing import Signals as RouteSignals
 from app.routing import select as route_select
 from app.runtime import compaction, suggestions
 from app.runtime.capabilities import render_capability_overview
-from app.runtime.claims import render_correction as render_claim_correction
 from app.runtime.context_manager import (
     ANSWER,
     classify_operation,
@@ -102,7 +103,8 @@ from app.runtime.context_tool import (
     ContextToolState,
 )
 from app.runtime.env_factory import build_live_agent_env
-from app.runtime.ledger import build_ledger, render_standalone_notices
+from app.runtime.ledger import build_ledger
+from app.runtime.notices import render_turn_notices
 from app.runtime.roster import (
     build_delegate_spec,
     build_live_runtime,
@@ -706,6 +708,26 @@ async def run_generation(
                 extra={
                     "stream_id": req.streamId,
                     "requirements": len(ledger.requirements),
+                },
+            )
+        # FRESHNESS (18-09-2026 skill audit). The temporal requirement in the
+        # request — "last 30 days", "this week", "latest price" — detected
+        # deterministically from the user's own words, never from the model.
+        # Suppressed when the turn is about the user's own material: a message
+        # with attachments, or datasets in scope, asks about THAT data, and the
+        # freshness of the user's own file is not ours to gate.
+        temporal = None
+        if latest is not None and not latest.attachments and not req.datasets:
+            temporal = detect_requirement(latest.content)
+        writer.freshness.requirement = temporal
+        if temporal is not None:
+            log.info(
+                "agent.freshness_requirement",
+                extra={
+                    "stream_id": req.streamId,
+                    "kind": temporal.kind,
+                    "phrase": temporal.phrase,
+                    "cutoff": temporal.cutoff.isoformat() if temporal.cutoff else None,
                 },
             )
         # Capability self-awareness: an always-on, compact catalogue of what OllaSuper
@@ -2023,6 +2045,50 @@ async def run_generation(
         # is DEDUPED (no double-fire). Needs tools_ctx (adapter + full registry); if
         # it could not be rebuilt (rare discovery failure), the tool cannot run here
         # and the turn continues in text (degraded but safe).
+        # FRESHNESS (R3): a turn with a temporal requirement RETRIEVES before the
+        # model writes, by code, not by instruction. One web search with the
+        # user's own sentence (plus the month/year for a short strict window) runs
+        # through the same seam approved tools use, and lands in the messages as a
+        # real tool round the model reads first. Not on a resume: the completed
+        # tools already carry what ran, and are counted here so a resumed turn is
+        # never told "no search ran".
+        _fl = writer.freshness
+        _search_id = next(
+            (
+                tid
+                for tid in SEARCH_TOOL_IDS
+                if tools_ctx is not None and tid in tools_ctx.name_to_tool_id.values()
+            ),
+            None,
+        )
+        _fl.web_available = bool(web_active and tools_ctx is not None and _search_id)
+        for ct in req.completedTools:
+            if ct.toolId in SEARCH_TOOL_IDS:
+                _fl.search_calls += 1
+                _fl.search_ok += 1
+        if _fl.requirement is not None and _fl.web_available:
+            system = f"{system}\n\n{render_directive(_fl.requirement)}"
+            if not (req.completedTools or req.attemptedTools or req.approvedPending):
+                _bound = bound_name_for_tool_id(tools_ctx.name_to_tool_id, _search_id)
+                _q = prefetch_query(_fl.requirement)
+                _call = {
+                    "name": _bound,
+                    "args": {"query": _q},
+                    "id": "freshness_prefetch",
+                }
+                _out = await execute_tool_calls([_call], tools_ctx)
+                messages.append(AIMessage(content="", tool_calls=[_call]))
+                messages.extend(_out)
+                _fl.prefetched = True
+                log.info(
+                    "agent.freshness_prefetch",
+                    extra={
+                        "stream_id": req.streamId,
+                        "kind": _fl.requirement.kind,
+                        "search_ok": _fl.search_ok,
+                        "search_failed": _fl.search_failed,
+                    },
+                )
         if req.approvedPending and tools_ctx is not None:
             for j, ap in enumerate(req.approvedPending):
                 tools_ctx.approvals[ap.approvalId] = {
@@ -2445,60 +2511,58 @@ async def run_generation(
         # long". Reporting which requirements are still outstanding is what turns
         # that from a dead end into a checkpoint.
         _deadline_hit = status == "error" and (error or {}).get("code") == ERR_DEADLINE
-        if ledger is not None and (status == "done" or _deadline_hit):
-            with contextlib.suppress(Exception):  # never fail a finished turn
-                ledger.stopped_early = _deadline_hit
-                ledger.note_output_truncated(finish_reason)
-                ledger.assess(writer.text or "")
-                report = ledger.render_report()
-                if report:
-                    await writer.push(report)
-                log.info(
-                    "agent.ledger_closed",
-                    extra={
-                        "stream_id": req.streamId,
-                        "requirements": len(ledger.requirements),
-                        "unaddressed": len(ledger.unaddressed),
-                        "unverified": len(ledger.unverified),
-                        "tools_failed": ledger.tools_failed,
-                        "tools_truncated": ledger.tools_truncated,
-                        "output_truncated": ledger.output_truncated,
-                        "reported": bool(report),
-                    },
-                )
-        elif status == "done" or _deadline_hit:
-            # No ledger — a single-requirement turn, which is most of them. The two
-            # facts that must never be silent still are: the answer was CUT OFF, or
-            # retrieval came back empty. Measured: "write a 2,000-word article" is
-            # one requirement, so it built no ledger and truncated mid-sentence
-            # with nothing said about it.
-            with contextlib.suppress(Exception):  # never fail a finished turn
-                notice = render_standalone_notices(
-                    output_truncated=(finish_reason or "").lower() == "length",
-                    no_evidence=bool(getattr(writer, "search_returned_nothing", False)),
-                )
-                if notice:
-                    await writer.push(notice)
-        # CLAIM CHECK. Deliberately NOT gated on the ledger: "here is your
-        # report.pdf" with no file behind it happens on the simplest turn there
-        # is. System-authored from recorded state (ARTIFACT events, side-effecting
-        # executions), appended before finalize so it lands in the same message.
         if status == "done" or _deadline_hit:
             with contextlib.suppress(Exception):  # never fail a finished turn
-                correction = render_claim_correction(
+                if ledger is not None:
+                    ledger.stopped_early = _deadline_hit
+                    ledger.note_output_truncated(finish_reason)
+                    ledger.assess(writer.text or "")
+                    log.info(
+                        "agent.ledger_closed",
+                        extra={
+                            "stream_id": req.streamId,
+                            "requirements": len(ledger.requirements),
+                            "unaddressed": len(ledger.unaddressed),
+                            "unverified": len(ledger.unverified),
+                            "tools_failed": ledger.tools_failed,
+                            "tools_truncated": ledger.tools_truncated,
+                            "output_truncated": ledger.output_truncated,
+                        },
+                    )
+                # ONE system-authored block for everything the turn must say about
+                # itself — requirement coverage, retrieval/freshness, research
+                # coverage, traceability, claim correction, truncation — composed
+                # by notices.py from recorded state, each fact once, in order.
+                notices = render_turn_notices(
                     writer.text or "",
+                    ledger=ledger,
+                    freshness=getattr(writer, "freshness", None),
+                    research_coverage=getattr(writer, "research_coverage", None),
                     artifacts=list(getattr(writer, "artifacts", []) or []),
                     external_tool_succeeded=bool(
                         getattr(writer, "external_action_succeeded", False)
                     ),
+                    search_returned_nothing=bool(
+                        getattr(writer, "search_returned_nothing", False)
+                    ),
+                    finish_reason=finish_reason,
+                    deadline=_deadline_hit,
                 )
-                if correction:
-                    await writer.push(correction)
+                if notices:
+                    await writer.push(notices)
+                    _fl = getattr(writer, "freshness", None)
                     log.info(
-                        "agent.claim_corrected",
+                        "agent.notices",
                         extra={
                             "stream_id": req.streamId,
-                            "artifacts": len(getattr(writer, "artifacts", []) or []),
+                            "chars": len(notices),
+                            "freshness_kind": (
+                                _fl.requirement.kind
+                                if _fl is not None and _fl.requirement is not None
+                                else None
+                            ),
+                            "search_calls": _fl.search_calls if _fl else 0,
+                            "search_failed": _fl.search_failed if _fl else 0,
                         },
                     )
         if sec_state is not None and (status == "done" or _deadline_hit):

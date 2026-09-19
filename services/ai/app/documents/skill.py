@@ -38,9 +38,13 @@ _METHODOLOGY = (
     "PDF: for created PDFs never use Unicode super/subscript glyphs (they render as "
     "black boxes) — use markup. Extract text/tables with the read operations before "
     "reasoning over a PDF; OCR only scanned/image pages.\n"
-    "VISUAL QA (important decks): after creating/editing a deck, look at the returned "
-    "preview images and FIX any overflow, overlap, clipping, unreadable text, or "
-    "blank slide by editing and re-rendering before you call it done."
+    "VERIFICATION (every generated file): generate_file returns a `verification` "
+    "block read from the RENDERED file — page/slide count, blank pages, the chart "
+    "types actually embedded, whether page numbers and the table of contents were "
+    "verified, and whether the user was shown a faithful preview. Report from it, "
+    "never from the specification; if it names a problem, fix the spec and "
+    "re-generate before you call it done. You do not see the preview images "
+    "yourself — the user does."
 )
 
 _INSTRUCTIONS = (
@@ -89,7 +93,9 @@ _CONSTRAINTS = (
     "AUTHORING is unsupported (reading is); animations/transitions are unsupported; "
     "PDF compression/optimize/linearize/repair are unavailable; creating a fillable "
     "form from scratch is limited; pdf_to_pptx renders each page as a full-slide "
-    "IMAGE (not editable text)."
+    "IMAGE (not editable text); generated files CANNOT embed an uploaded image or "
+    "logo — leave a clearly labelled placement zone and say so, never claim the "
+    "logo is in the file."
 )
 
 _OUTPUT = (

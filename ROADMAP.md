@@ -31,6 +31,20 @@ One finding is verified by unit test only, and deliberately so:
   on prod would mean shipping a mutation that exists only for the test. When an admin/suspension
   surface is built, add the prod check with it.
 
+## Skills bug-fix pass — freshness, evidence, documents (2026-09-19) - LIVE, prod-verified
+
+From the 18.09.2026 capability audit, verified against the code first: R1–R3
+(recency) fixed by a date anchor, a deterministic temporal parser, snippet/
+dateline dating with ranked provenance, stale results moved out of what the
+model reads, a code-initiated prefetch search, and a system-authored notice for
+every retrieval outcome; R4/R6 by independence + coverage in `record_research`;
+R5 by URL-level provenance of citations; D1/D2 by one chart vocabulary with
+named errors (no silent substitution); D4 by real page numbers + a verified TOC
+in PDF and DOCX; D5 by verification read from the rendered file, one bounded
+repair, and refusal of a known-invalid artifact. R7 was already policy-level and
+test-pinned; D3 (image embedding) is documented as unsupported; the six Files &
+Knowledge fixtures were never executed and are not bugs.
+
 ## Poppins as the global font (2026-09-18) - LIVE, prod-verified
 
 One Tailwind `sans` entry, one `next/font/google` call (400–800, upright + italic,

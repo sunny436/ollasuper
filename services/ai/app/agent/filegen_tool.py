@@ -12,11 +12,26 @@ FILE_GEN_TOOL_NAME = "generate_file"
 
 _CHART = {
     "type": "object",
-    "description": "A chart to render/embed.",
+    "description": (
+        "A chart to render/embed. Flat shape: `type` + `labels` + `series[{name, "
+        "values}]` (or `values` for one series). The Chart.js shape (`type`, `data: "
+        "{labels, datasets:[{label, data}]}`) is accepted too. `doughnut` is the "
+        "same as `donut`. Unsupported types (radar, bubble, …) are rejected, never "
+        "substituted. Uploaded images/logos cannot be embedded."
+    ),
     "properties": {
         "type": {
             "type": "string",
-            "enum": ["bar", "line", "pie", "donut", "scatter", "area", "histogram"],
+            "enum": [
+                "bar",
+                "line",
+                "pie",
+                "donut",
+                "doughnut",
+                "scatter",
+                "area",
+                "histogram",
+            ],
         },
         "title": {"type": "string"},
         "x_label": {"type": "string"},
@@ -77,7 +92,12 @@ GENERATE_FILE_TOOL_SPEC: dict = {
             "'create a PowerPoint', 'export as CSV', 'draw a bar chart'). Provide the "
             "content as STRUCTURED data (never raw bytes). Choose the format the "
             "user asked for; put report/letter/article content in `sections`, tabular "
-            "data in `sheets`, slides in `slides`, and a single chart/image in `chart`."
+            "data in `sheets`, slides in `slides`, and a single chart/image in "
+            "`chart`. "
+            "For pdf/docx set `page_numbers: true` for 'Page X of Y' footers and "
+            "`toc: true` for a table of contents built from the section headings. "
+            "NOT supported: embedding an uploaded image or logo into a generated file "
+            "(say so; leave a labelled placement zone instead)."
         ),
         "parameters": {
             "type": "object",
@@ -166,6 +186,17 @@ GENERATE_FILE_TOOL_SPEC: dict = {
                 "body": {
                     "type": "string",
                     "description": "Plain body for txt/md/html when not sectioned.",
+                },
+                "page_numbers": {
+                    "type": "boolean",
+                    "description": "pdf/docx: 'Page X of Y' footer on every page.",
+                },
+                "toc": {
+                    "type": "boolean",
+                    "description": (
+                        "pdf/docx: a table of contents from the section headings "
+                        "(levels 1-3), with verified page numbers."
+                    ),
                 },
                 "data": {"description": "Raw payload for json/yaml/xml/csv exports."},
             },

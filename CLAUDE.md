@@ -381,6 +381,54 @@ same face at 800.
 - Named limits: the OPEN popup of a native `<select>`/date/time input is OS-drawn;
   the OG image is Satori with its own bundled font; email is out of scope.
 
+### Freshness, evidence and rendered verification (2026-09-19)
+
+The 18.09.2026 skill audit found a "last 30 days" question answered from a
+two-year-old source, live search skipped, a deck lost to two opaque schema
+errors, a doughnut delivered as a pie, and files called correct because
+generation succeeded. What was true in the code: no date anchor in the prompt,
+no temporal parsing, no source dating, search failures silent on simple turns,
+`"Invalid file specification."` with no field, `donut` accepted but `doughnut`
+rejected while the inline-chart guidance teaches `doughnut`, no page numbers or
+TOC in the renderers, and a preview the model never sees.
+
+- **`app/agent/freshness.py` is the deterministic half of freshness.** The
+  request's temporal requirement is parsed from the user's own words (`strict`
+  with a cutoff — "last 30 days", "this week", "since 1 Sep"; `live` without one
+  — "latest price", "what changed"); bare "now"/"currently" are not triggers,
+  and a sentence about this conversation or an attached file is not a
+  requirement. `today` is the UTC date and is in the system prompt on both
+  branches. Search results have NO date field — the engine puts one at the START
+  of the snippet; scraped pages carry a dateline in their markdown. Dates are
+  ranked (`published > updated > snippet > inferred > reported`); **an unknown
+  date never satisfies a strict window.** Under a strict window, explicitly
+  stale results are moved out of `results` into `excluded_stale` with the reason.
+- **Retrieval is initiated by code (R3).** A turn with a requirement runs ONE
+  search in the `approvedPending` seam before the first model step, injected as a
+  real tool round (`call_id: freshness_prefetch`); not on a resume, where
+  `completedTools` is counted instead. The search provider has no recency
+  filter; the month/year in the query is the only lever.
+- **`runtime/notices.py` renders ONE end-of-turn block**, in a fixed order, from
+  recorded state: requirement ledger → retrieval/freshness (no search ran /
+  provider failed / stale citation named with its date / no source inside the
+  window) → research coverage (uncovered or single-non-primary-source
+  sub-questions, a domain heuristic; one primary source is enough) →
+  traceability (a cited URL never retrieved this turn, zero links after
+  retrieval, dangling `[n]`, numeric tables with no source nearby) → claim
+  correction → truncation. Never author these in the model.
+- **Documents: one chart vocabulary.** `filegen/spec.py::normalize_chart` maps
+  `doughnut→donut` and the Chart.js shape onto `labels/series`; anything it
+  would have to guess at is an ERROR that names the field (`slides.0.chart:
+  unsupported chart type 'radar'…`). An empty chart in a slide/section is an
+  error, not a blank picture; a SHEET chart may plot its rows. `page_numbers`
+  and `toc` render a real TOC (reportlab `multiBuild` + outline; DOCX gets a
+  static TOC from a LibreOffice pass, or a field when soffice is off).
+  `filegen/verify.py` checks the RENDERED file — outline vs TOC, `Page X of Y`,
+  blank pages on faithful rasters only — and `_run_generate_file` returns a
+  `verification` block, repairs once (an empty page break), and refuses a
+  known-invalid file rather than attach it. Uploaded images cannot be embedded;
+  the skill says so.
+
 ## Cost controls (do not remove)
 
 Unbounded context is the default failure mode of a chat product. Four layers, all deliberate:

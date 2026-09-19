@@ -32,6 +32,16 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 #: The provider's web-search operation. Gated on this id so no other tool is
 #: touched by any of the logic in this module.
 SEARCH_TOOL_IDS = frozenset({"search_endpoint_v1_search_post"})
+#: The provider's read-a-page operations — what `freshness.annotate_read` dates.
+READ_TOOL_IDS = frozenset(
+    {
+        "scrape_endpoint_v1_scrape_post",
+        "scrape_llm_ready_endpoint_v1_scrape_llm_ready_post",
+        "extract_clean_endpoint_v1_extract_clean_post",
+        "batch_scrape_endpoint_v1_scrape_batch_post",
+        "extract_structured_endpoint_v1_extract_structured_post",
+    }
+)
 
 #: Params that identify a campaign/click, never a document.
 _TRACKING = re.compile(
@@ -56,6 +66,10 @@ _STOP = frozenset(
 
 def is_search_tool(tool_id: str, tool_name: str = "") -> bool:
     return tool_id in SEARCH_TOOL_IDS or tool_name in SEARCH_TOOL_IDS
+
+
+def is_read_tool(tool_id: str, tool_name: str = "") -> bool:
+    return tool_id in READ_TOOL_IDS or tool_name in READ_TOOL_IDS
 
 
 def distinctive_terms(text: str) -> set[str]:

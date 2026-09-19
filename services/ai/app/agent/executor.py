@@ -34,6 +34,13 @@ from langchain_core.messages import ToolMessage
 from app.agent.adapters import ToolAdapter
 from app.agent.binding import approval_id_for
 from app.agent.filegen_tool import FILE_GEN_TOOL_NAME
+from app.agent.freshness import (
+    SourceDate,
+    annotate_read,
+    annotate_search,
+    parse_date,
+    snippet_date,
+)
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, retrieve_knowledge
 from app.agent.memory import (
     FORGET_TOOL_NAME,
@@ -52,6 +59,7 @@ from app.agent.orchestration_tools import (
 from app.agent.policy import PolicyScope, check_tool_policy
 from app.agent.search_guard import (
     empty_query,
+    is_read_tool,
     is_search_tool,
     prepare_args,
     process_result,
@@ -1251,6 +1259,9 @@ async def _run_one(
                 "note": "The query contains no searchable terms.",
             }
             ctx.writer.search_returned_nothing = True
+            _fl = getattr(ctx.writer, "freshness", None)
+            if _fl is not None:
+                _fl.search_calls += 1
             return _tool_message(call_id, nothing, status="success")
         args, _filled = prepare_args(args, response_language=ctx.response_language)
         if _filled:
@@ -1388,6 +1399,13 @@ async def _run_one(
             )
 
     if result is None:
+        # FRESHNESS: a search that FAILED is recorded as such. Before this, a
+        # provider 502 on a "this week" question left nothing behind and the
+        # answer read as though it had been checked.
+        _fl = getattr(ctx.writer, "freshness", None)
+        if _fl is not None and is_search_tool(tool_id, tool.name):
+            _fl.search_calls += 1
+            _fl.search_failed += 1
         if ctx.security is not None:
             err_payload, _ = sec_secrets.redact_obj(err_payload)
             ctx.security.observe_registry(
@@ -1442,6 +1460,9 @@ async def _run_one(
         _data, _nothing = process_result(_data, args)
         if _nothing:
             ctx.writer.search_returned_nothing = True
+        _data = _note_search(ctx, _data, nothing=_nothing)
+    elif is_read_tool(tool_id, tool.name) and isinstance(_data, dict):
+        _data = _note_read(ctx, _data, args)
     if ctx.security is not None:
         # BEFORE bounding: a cut through the middle of a secret would leave a
         # prefix no rule can recognise.
@@ -1865,6 +1886,7 @@ async def _run_record_research(
     # --- validate + enforce ceilings per kind ------------------------------
     payload: dict
     citation: dict | None = None
+    independent = 0
     if kind == "plan":
         cleaned = clean_plan_args(args)
         if cleaned is None:
@@ -1880,6 +1902,8 @@ async def _run_record_research(
         rc.objective = cleaned["objective"]
         rc.plan_recorded = True
         rc.branch_count = len(subs)
+        rc.subquestions = list(subs)
+        rc.time_sensitive = bool(cleaned.get("timeSensitive"))
         payload = cleaned
     elif kind == "finding":
         cleaned = clean_finding_args(args)
@@ -1912,6 +1936,13 @@ async def _run_record_research(
                 status="error",
             )
         rc.seen_sources.add(cleaned["sourceUrl"])
+        independent = rc.add_finding(cleaned)
+        _fl = getattr(ctx.writer, "freshness", None)
+        if _fl is not None:
+            _d = parse_date(cleaned.get("sourceDate") or "")
+            _fl.note_url(
+                cleaned["sourceUrl"], SourceDate(_d, "reported") if _d else None
+            )
         citation = {
             "source_id": cleaned["sourceUrl"],
             "title": cleaned.get("sourceTitle") or cleaned["sourceUrl"],
@@ -1924,6 +1955,18 @@ async def _run_record_research(
         payload = cleaned
     else:  # complete
         payload = {}
+    # R6: what the record says is covered and what is not — told to the model at
+    # `complete` (before it synthesises) and rendered at the end of the turn.
+    _fl = getattr(ctx.writer, "freshness", None)
+    _strict = bool(
+        _fl is not None and _fl.requirement is not None and _fl.requirement.strict
+    )
+    coverage = (
+        rc.coverage(strict_window=_strict)
+        if rc.subquestions
+        else {"uncovered": [], "single_sourced": []}
+    )
+    ctx.writer.research_coverage = coverage
 
     dedup_key = json.dumps(
         {"k": kind, "o": rc.objective, "p": payload}, sort_keys=True, default=str
@@ -1955,11 +1998,24 @@ async def _run_record_research(
             status="success",
             result={"saved": True, "kind": kind, "sources": len(rc.seen_sources)},
         )
-        return _tool_message(
-            call_id,
-            {"status": "recorded", "kind": kind, "sources": len(rc.seen_sources)},
-            status="success",
-        )
+        out: dict = {
+            "status": "recorded",
+            "kind": kind,
+            "sources": len(rc.seen_sources),
+        }
+        if kind == "finding":
+            out["independent_sources_for_subquestion"] = independent
+        if kind == "complete" and (coverage["uncovered"] or coverage["single_sourced"]):
+            out["status"] = "recorded_with_gaps"
+            out["uncovered"] = coverage["uncovered"][:12]
+            out["single_sourced"] = coverage["single_sourced"][:12]
+            out["instruction"] = (
+                "Before synthesising: run a targeted search for each UNCOVERED "
+                "sub-question or state it as an explicit GAP; for each SINGLE-SOURCED "
+                "one add an independent source or say plainly that it rests on one "
+                "non-primary source. Never present either as established."
+            )
+        return _tool_message(call_id, out, status="success")
 
     reason = result.get("reason") or "not_saved"
     await ctx.writer.emit_event(
@@ -2325,6 +2381,71 @@ async def _run_mcp_read_resource(
     return ToolMessage(tool_call_id=call_id, content=body[: ctx.result_max_chars])
 
 
+def _note_search(ctx: ToolExecContext, data: dict, *, nothing: bool) -> dict:
+    """Record a search on the freshness ledger and, under a temporal requirement,
+    date its results from their snippets (stale ones leave `results`, with the
+    reason). Every result URL is remembered so a citation can later be checked
+    against what was actually retrieved."""
+    fl = getattr(ctx.writer, "freshness", None)
+    if fl is None:
+        return data
+    fl.search_calls += 1
+    results = data.get("results")
+    if isinstance(results, list) and results and not nothing:
+        fl.search_ok += 1
+    if fl.requirement is not None:
+        data, facts = annotate_search(data, fl.requirement)
+        fl.search_compliant += int(facts.get("compliant") or 0)
+        for u, sd in (facts.get("dates") or {}).items():
+            fl.note_url(u, sd)
+    for r in results if isinstance(results, list) else []:
+        if isinstance(r, dict) and r.get("url"):
+            fl.note_url(str(r["url"]), snippet_date(str(r.get("snippet") or "")))
+    return data
+
+
+def _note_read(ctx: ToolExecContext, data: dict, args: dict) -> dict:
+    """Record a page read on the freshness ledger, dated from its dateline."""
+    fl = getattr(ctx.writer, "freshness", None)
+    if fl is None:
+        return data
+    if fl.requirement is not None:
+        data, facts = annotate_read(data, fl.requirement)
+        for u, sd in (facts.get("dates") or {}).items():
+            fl.note_read(u, sd)
+    pages = data.get("results") if isinstance(data.get("results"), list) else [data]
+    urls: list[str] = []
+    for p in pages:
+        if isinstance(p, dict) and p.get("url"):
+            urls.append(str(p["url"]))
+    if isinstance(args, dict):
+        if args.get("url"):
+            urls.append(str(args["url"]))
+        if isinstance(args.get("urls"), list):
+            urls.extend(str(u) for u in args["urls"] if u)
+    for u in urls:
+        fl.note_read(u)
+    return data
+
+
+def _spec_error_message(e: Exception) -> str:
+    """'Invalid file specification: slides.2.chart.type: unsupported chart type …'
+    — the first three problems, bounded, never the raw traceback."""
+    errors = getattr(e, "errors", None)
+    items: list[str] = []
+    try:
+        for err in (errors() if callable(errors) else []) or []:
+            loc = ".".join(str(x) for x in err.get("loc") or ())
+            msg = str(err.get("msg") or "").removeprefix("Value error, ").strip()
+            items.append(f"{loc}: {msg}" if loc else msg)
+            if len(items) == 3:
+                break
+    except Exception:  # noqa: BLE001
+        items = []
+    detail = "; ".join(items) if items else str(e).splitlines()[0][:200]
+    return f"Invalid file specification: {detail}"[:400]
+
+
 async def _run_generate_file(
     ctx: ToolExecContext, call_id: str, args: dict
 ) -> ToolMessage:
@@ -2344,10 +2465,13 @@ async def _run_generate_file(
 
     try:
         spec = FileSpec.model_validate(args if isinstance(args, dict) else {})
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        # SAY WHAT IS WRONG. The 18.09.2026 audit lost a whole deck to two
+        # retries of an opaque "Invalid file specification." — the model could
+        # only guess. The field path and the message let it fix the spec.
         return _tool_message(
             call_id,
-            {"status": "error", "message": "Invalid file specification."},
+            {"status": "error", "message": _spec_error_message(e)},
             status="error",
         )
 
@@ -2372,36 +2496,124 @@ async def _run_generate_file(
             call_id, {"status": "error", "message": message}, status="error"
         )
 
-    spec_dict = spec.model_dump()
-    try:
+    spec_dict = spec.model_dump(by_alias=True)
+
+    async def _render(sd: dict) -> tuple[bytes, str, dict] | None:
         if needs_pool(spec):
             from app.ingest.pool import run_in_pool
 
-            result = await asyncio.wait_for(
+            return await asyncio.wait_for(
                 run_in_pool(
                     render_and_validate,
-                    spec_dict,
+                    sd,
                     workers=ctx.file_gen_pool_workers,
                     label="filegen",
                 ),
                 timeout=ctx.file_gen_timeout_s,
             )
-        else:
-            result = await asyncio.to_thread(render_and_validate, spec_dict)
-    except TimeoutError:
-        log.warning("agent.filegen_timeout", extra={"format": spec.format})
-        return await _fail("The file took too long to generate. Try a smaller request.")
-    except Exception:  # noqa: BLE001
-        log.exception("agent.filegen_render_failed")
-        return await _fail("The file could not be generated.")
+        return await asyncio.to_thread(render_and_validate, sd)
 
-    if result is None:  # pool worker crashed or the render raised inside it
-        return await _fail("The file could not be generated.")
-    data, mime, report = result
-    if not report.get("ok"):
-        return await _fail("The generated file failed validation and was discarded.")
-    if len(data) > ctx.file_max_bytes:
-        return await _fail("The generated file is too large.")
+    # RENDER → VERIFY → (one repair) → STORE. The 18.09.2026 audit found files
+    # described as correct because generation succeeded; from here on, what is
+    # reported comes from the rendered bytes, and a file that fails its own
+    # verification is not delivered.
+    from app.filegen.documents import toc_entries
+
+    entries = toc_entries(spec) if spec.toc and spec.format in ("pdf", "docx") else []
+    docx_two_pass = spec.format == "docx" and bool(entries) and ctx.doc_soffice_enabled
+    if spec.format == "docx" and entries:
+        # [] = static placeholder lines (pass 1); None = a TOC field (no LibreOffice)
+        spec_dict["_toc_pages"] = [] if docx_two_pass else None
+
+    verification: dict = {}
+    repaired = False
+    for attempt in range(2):
+        try:
+            result = await _render(spec_dict)
+        except TimeoutError:
+            log.warning("agent.filegen_timeout", extra={"format": spec.format})
+            return await _fail(
+                "The file took too long to generate. Try a smaller request."
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("agent.filegen_render_failed")
+            return await _fail("The file could not be generated.")
+        if result is None:  # pool worker crashed or the render raised inside it
+            return await _fail("The file could not be generated.")
+        data, mime, report = result
+        if not report.get("ok"):
+            return await _fail(
+                "The generated file failed validation and was discarded."
+            )
+        if len(data) > ctx.file_max_bytes:
+            return await _fail("The generated file is too large.")
+
+        rendered_pdf: bytes | None = data if spec.format == "pdf" else None
+        if docx_two_pass:
+            # Pass 1 laid the document out with placeholder TOC lines; LibreOffice
+            # tells us the page each heading landed on; pass 2 prints those numbers.
+            from app.filegen.verify import heading_pages
+
+            pdf1 = await _docx_to_pdf(ctx, data)
+            pages, how = (None, "LibreOffice conversion failed")
+            if pdf1 is not None:
+                pages, how = await asyncio.to_thread(heading_pages, pdf1, entries)
+            if pages and spec_dict.get("_toc_pages") != pages:
+                spec_dict["_toc_pages"] = pages
+                try:
+                    result = await _render(spec_dict)
+                except Exception:  # noqa: BLE001
+                    result = None
+                if result is None or not result[2].get("ok"):
+                    return await _fail("The file could not be generated.")
+                data, mime, report = result
+            elif not pages:
+                verification["toc_note"] = how
+            rendered_pdf = await _docx_to_pdf(ctx, data)
+        elif spec.format == "docx" and ctx.doc_soffice_enabled:
+            rendered_pdf = await _docx_to_pdf(ctx, data)
+
+        pngs, total, faithful, note = await _render_preview(
+            ctx, data, spec.format, spec_dict=spec_dict, rendered_pdf=rendered_pdf
+        )
+        verification.update(
+            await asyncio.to_thread(
+                _verify_rendered,
+                spec,
+                spec_dict,
+                report,
+                rendered_pdf,
+                pngs if faithful else [],  # never judge blankness from a sketch
+                total,
+                entries,
+            )
+        )
+        verification["preview"] = (
+            f"{len(pngs)} faithful page image(s) shown to the user"
+            if pngs and faithful
+            else "approximate preview shown to the user"
+            if pngs
+            else "none"
+        )
+        problems = _verification_problems(verification)
+        if not problems:
+            break
+        if attempt == 0 and _repair_spec(spec_dict, verification):
+            repaired = True
+            verification = {}
+            continue
+        # A known-invalid file is not delivered. Say what is wrong instead.
+        log.warning(
+            "agent.filegen_verification_failed",
+            extra={"format": spec.format, "problems": problems},
+        )
+        return await _fail(
+            "The generated file failed verification and was not attached: "
+            + "; ".join(problems)
+            + ". Fix the specification and try again."
+        )
+    if repaired:
+        verification["repaired"] = "an empty page break was removed"
 
     filename = artifact_filename(spec)
     try:
@@ -2416,10 +2628,8 @@ async def _run_generate_file(
         return await _fail("The file was generated but could not be saved.")
 
     size = len(data)
-    # Documents: attach a bounded inline preview for pptx/pdf. For a generated deck the
-    # spec is the labeled-approximate fallback source when LibreOffice is unavailable.
-    preview = await _store_preview(
-        ctx, str(artifact_id), data, spec.format, spec_dict=spec_dict
+    preview = await _store_thumbs(
+        ctx, str(artifact_id), pngs, total=total, faithful=faithful, note=note
     )
     meta = {
         "title": spec.title or filename,
@@ -2454,31 +2664,153 @@ async def _run_generate_file(
             "filename": filename,
             "format": spec.format,
             "size": size,
-            "note": "The file is attached to the chat and ready to download.",
+            "verification": verification,
+            "note": (
+                "The file is attached to the chat and ready to download. "
+                "`verification` was read from the RENDERED file — report from it, "
+                "not from the specification."
+            ),
         },
         status="success",
     )
 
 
-async def _store_preview(
+def _chart_types(spec_dict: dict) -> tuple[list[str], list[str]]:
+    """The chart types actually embedded, and the Chart.js options dropped."""
+    types: list[str] = []
+    ignored: list[str] = []
+    holders = (
+        [spec_dict.get("chart")]
+        + [s.get("chart") for s in spec_dict.get("sections") or []]
+        + [s.get("chart") for s in spec_dict.get("sheets") or []]
+        + [s.get("chart") for s in spec_dict.get("slides") or []]
+    )
+    for c in holders:
+        if isinstance(c, dict) and c.get("type"):
+            types.append(str(c["type"]))
+            dropped = c.get("_ignored") or c.get("ignored") or []
+            ignored.extend(str(x) for x in dropped)
+    return types, sorted(set(ignored))
+
+
+def _verify_rendered(
+    spec,
+    spec_dict: dict,
+    report: dict,
+    rendered_pdf: bytes | None,
+    pngs: list[bytes],
+    total: int,
+    entries: list,
+) -> dict:
+    """Facts about the RENDERED artifact (sync; runs in a thread)."""
+    from app.filegen.verify import blank_pages, page_numbers_ok, verify_toc
+
+    v: dict = {}
+    if spec.format == "pptx":
+        v["slides"] = report.get("slides")
+    elif spec.format in ("pdf", "docx"):
+        v["pages"] = report.get("pages") if spec.format == "pdf" else total or None
+    charts, ignored = _chart_types(spec_dict)
+    if charts:
+        v["charts"] = charts
+    if ignored:
+        v["chart_options_ignored"] = ignored
+    if pngs:
+        v["checked_pages"] = len(pngs)
+        v["blank_pages"] = blank_pages(pngs)
+    if spec.format in ("pdf", "docx"):
+        v["page_numbers"] = bool(spec.page_numbers)
+        v["toc"] = bool(entries)
+        if rendered_pdf is not None:
+            if spec.page_numbers:
+                v["page_numbers_verified"] = page_numbers_ok(rendered_pdf)
+            if entries:
+                expected = (
+                    spec_dict.get("_toc_pages") if spec.format == "docx" else None
+                )
+                v.update(
+                    verify_toc(
+                        rendered_pdf,
+                        entries,
+                        expected if isinstance(expected, list) and expected else None,
+                    )
+                )
+        elif spec.format == "docx":
+            v["toc_verified"] = None
+            v["page_numbers_verified"] = None
+            v["render_note"] = (
+                "LibreOffice is unavailable: page numbers and the table of contents "
+                "are Word fields that populate when the file is opened; they could "
+                "not be verified here."
+            )
+    return v
+
+
+def _verification_problems(v: dict) -> list[str]:
+    problems: list[str] = []
+    if v.get("blank_pages"):
+        problems.append(f"blank page(s) {v['blank_pages']}")
+    if v.get("toc_verified") is False:
+        problems.append(
+            f"table of contents does not match the pages ({v.get('toc_note')})"
+        )
+    if v.get("page_numbers_verified") is False:
+        problems.append("page numbers did not render as 'Page X of Y'")
+    return problems
+
+
+def _repair_spec(spec_dict: dict, v: dict) -> bool:
+    """ONE deterministic repair: a page break on a section with nothing in it
+    produces a blank page — drop that break. Anything else is not guessed at."""
+    if not v.get("blank_pages"):
+        return False
+    changed = False
+    for sec in spec_dict.get("sections") or []:
+        if not isinstance(sec, dict) or not sec.get("page_break_before"):
+            continue
+        empty = not any(
+            sec.get(k)
+            for k in ("heading", "text", "bullets", "table", "chart", "caption")
+        )
+        if empty:
+            sec["page_break_before"] = False
+            changed = True
+    return changed
+
+
+async def _docx_to_pdf(ctx: ToolExecContext, data: bytes) -> bytes | None:
+    from app.documents import soffice
+
+    try:
+        return await soffice.convert(
+            data,
+            to="pdf",
+            src_ext="docx",
+            enabled=ctx.doc_soffice_enabled,
+            timeout_s=ctx.doc_soffice_timeout_s,
+            concurrency=ctx.doc_soffice_concurrency,
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("agent.docx_pdf_render_failed")
+        return None
+
+
+async def _render_preview(
     ctx: ToolExecContext,
-    parent_id: str,
     data: bytes,
     fmt: str,
     *,
     spec_dict: dict | None = None,
-) -> dict | None:
-    """Render + store a bounded inline preview for a pdf/pptx artifact and return the
-    manifest for the ARTIFACT metadata: {pages, shown, faithful, note, thumbs:[ids]}.
-
-    PDF => pypdfium page images (faithful). PPTX => LibreOffice->PDF->images (faithful)
-    when soffice is enabled; else the generated deck's SPEC via Pillow, clearly LABELED
-    approximate; an uploaded deck with soffice off gets NO preview (never a faked one).
-    Preview images are stored as child artifacts (role=preview, parent,
-    page). Failure is
-    swallowed — a missing preview never fails the artifact (download still works)."""
-    if fmt not in ("pdf", "pptx"):
-        return None
+    rendered_pdf: bytes | None = None,
+) -> tuple[list[bytes], int, bool, str]:
+    """Bounded page images for a pdf/pptx/docx artifact: (pngs, total, faithful,
+    note). PDF => pypdfium (faithful). PPTX/DOCX => LibreOffice->PDF->images
+    (faithful) when soffice is enabled; a generated deck without soffice falls back
+    to its SPEC via Pillow, LABELED approximate; an uploaded deck with soffice off
+    gets nothing (never a faked preview). `rendered_pdf` skips a second conversion
+    when the caller already has the LibreOffice PDF."""
+    if fmt not in ("pdf", "pptx", "docx"):
+        return [], 0, True, ""
     from app.documents import soffice
     from app.documents.preview import pdf_preview_pngs, spec_preview_pngs
     from app.ingest.pool import run_in_pool
@@ -2500,15 +2832,17 @@ async def _store_preview(
                 workers=workers,
                 label="doc:preview",
             )
-        else:  # pptx
-            pdf = await soffice.convert(
-                data,
-                to="pdf",
-                src_ext="pptx",
-                enabled=ctx.doc_soffice_enabled,
-                timeout_s=ctx.doc_soffice_timeout_s,
-                concurrency=ctx.doc_soffice_concurrency,
-            )
+        else:  # pptx / docx
+            pdf = rendered_pdf
+            if pdf is None:
+                pdf = await soffice.convert(
+                    data,
+                    to="pdf",
+                    src_ext=fmt,
+                    enabled=ctx.doc_soffice_enabled,
+                    timeout_s=ctx.doc_soffice_timeout_s,
+                    concurrency=ctx.doc_soffice_concurrency,
+                )
             if pdf is not None:
                 pngs, total = await run_in_pool(
                     pdf_preview_pngs,
@@ -2518,7 +2852,7 @@ async def _store_preview(
                     workers=workers,
                     label="doc:preview",
                 )
-            elif spec_dict is not None:
+            elif fmt == "pptx" and spec_dict is not None:
                 pngs = await run_in_pool(
                     spec_preview_pngs,
                     spec_dict,
@@ -2532,11 +2866,41 @@ async def _store_preview(
                 note = (
                     "approximate preview — download the .pptx for the exact rendering"
                 )
-            else:
-                return None  # uploaded deck, no soffice → no faked preview
     except Exception:  # noqa: BLE001
         log.warning("agent.doc_preview_render_failed", extra={"format": fmt})
-        return None
+        return [], 0, True, ""
+    return pngs, total, faithful, note
+
+
+async def _store_preview(
+    ctx: ToolExecContext,
+    parent_id: str,
+    data: bytes,
+    fmt: str,
+    *,
+    spec_dict: dict | None = None,
+) -> dict | None:
+    """Render + store the inline preview (document_ops path). Failure is swallowed —
+    a missing preview never fails the artifact (download still works)."""
+    pngs, total, faithful, note = await _render_preview(
+        ctx, data, fmt, spec_dict=spec_dict
+    )
+    return await _store_thumbs(
+        ctx, parent_id, pngs, total=total, faithful=faithful, note=note
+    )
+
+
+async def _store_thumbs(
+    ctx: ToolExecContext,
+    parent_id: str,
+    pngs: list[bytes],
+    *,
+    total: int,
+    faithful: bool,
+    note: str,
+) -> dict | None:
+    """Store page images as child artifacts (role=preview, parent, page) and return
+    the manifest for the ARTIFACT metadata: {pages, shown, faithful, note, thumbs}."""
     if not pngs:
         return None
 

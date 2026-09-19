@@ -13,6 +13,8 @@ message. 32k holds roughly 60 turns of ordinary chat.
 
 from __future__ import annotations
 
+from datetime import date
+
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
@@ -168,6 +170,12 @@ CHART_GUIDANCE = (
 )
 
 
+def date_line(today: date | None = None) -> str:
+    from app.agent.freshness import today_utc
+
+    return f"Today's date: {(today or today_utc()).isoformat()} (UTC)."
+
+
 def build_system_prompt(
     *,
     custom: str | None,
@@ -178,6 +186,7 @@ def build_system_prompt(
     rag: str | None = None,
     agentic: bool = False,
     project_instructions: str | None = None,
+    today: date | None = None,
 ) -> str:
     # SYSTEM_BASE IS UNCONDITIONAL.
     #
@@ -207,6 +216,11 @@ def build_system_prompt(
         if agentic
         else [GROUNDING_POLICY, SYSTEM_BASE]
     )
+    # THE DATE ANCHOR, on both branches. Measured (18-09-2026 skill audit): a
+    # "this week" request had no idea what week it was, because nothing in the
+    # prompt said what day it is. "Last 30 days" is unresolvable without this.
+    # UTC, and said so — the request carries no time zone.
+    parts.append(date_line(today))
     if custom and custom.strip():
         parts.append("<user_persona>\n" + custom.strip() + "\n</user_persona>")
     if about and about.strip():

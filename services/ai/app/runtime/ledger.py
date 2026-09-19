@@ -181,13 +181,10 @@ class TurnLedger:
         lines.append("</execution_state>")
         return "\n".join(lines)
 
-    def render_report(self) -> str:
-        """The backstop, appended AFTER the answer. System-authored from recorded
-        state, so a model that would rather say "done" cannot override it.
-
-        Empty when everything checks out — a clean turn gets no chrome."""
-        if self.complete:
-            return ""
+    def render_sections(self) -> list[str]:
+        """The requirement sections only (coverage + evidence). Truncation and the
+        time-limit line are rendered ONCE by `notices.py`, which composes every
+        end-of-turn notice in one block."""
         parts: list[str] = []
         if self.unaddressed:
             parts.append(
@@ -202,16 +199,29 @@ class TurnLedger:
                 "be partial:\n"
                 + "\n".join(f"- {r.text}" for r in self.unverified)
             )
+        return parts
+
+    def render_stopped_early(self) -> str:
+        done = len(self.requirements) - len(self.unaddressed)
+        return (
+            f"**This run was stopped at its time limit** after covering "
+            f"{done} of {len(self.requirements)} requirements. The completed "
+            "work is saved — retrying continues from here rather than "
+            "starting over, and already-executed steps are not repeated."
+        )
+
+    def render_report(self) -> str:
+        """The backstop, appended AFTER the answer. System-authored from recorded
+        state, so a model that would rather say "done" cannot override it.
+
+        Empty when everything checks out — a clean turn gets no chrome."""
+        if self.complete:
+            return ""
+        parts = self.render_sections()
         if self.output_truncated:
             parts.append(TRUNCATION_NOTICE)
         if self.stopped_early:
-            done = len(self.requirements) - len(self.unaddressed)
-            parts.append(
-                f"**This run was stopped at its time limit** after covering "
-                f"{done} of {len(self.requirements)} requirements. The completed "
-                "work is saved — retrying continues from here rather than "
-                "starting over, and already-executed steps are not repeated."
-            )
+            parts.append(self.render_stopped_early())
         return "\n\n---\n\n" + "\n\n".join(parts)
 
 

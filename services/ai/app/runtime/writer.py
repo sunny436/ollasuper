@@ -115,6 +115,14 @@ class DeltaWriter:
         # matches the query. Reported once, at the end of the turn, so an answer
         # built on no evidence does not look like one built on evidence.
         self.search_returned_nothing = False
+        # What the request asked for in TIME and how old what was retrieved is —
+        # recorded by the executor's search/read paths, rendered by notices.py.
+        from app.agent.freshness import FreshnessLedger
+
+        self.freshness = FreshnessLedger()
+        # R4/R6: {uncovered, single_sourced} from the research checkpoint, when a run
+        # was active this turn; rendered by notices.py.
+        self.research_coverage: dict | None = None
         self._buf: list[str] = []
         self._buf_len = 0
         self._seq = 0

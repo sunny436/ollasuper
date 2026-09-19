@@ -22,7 +22,9 @@ is derived server-side from the stream's thread, never client-sent.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 RECORD_RESEARCH_TOOL_NAME = "record_research"
 
@@ -161,6 +163,79 @@ def clean_finding_args(args: dict) -> dict | None:
     }
 
 
+# --- independence (R4) -------------------------------------------------------
+#
+# HEURISTIC, and labelled as one everywhere it is reported: two sources are
+# independent when they come from different registrable domains, unless one is a
+# syndicated copy of the other (the same headline on another domain) or comes
+# from an aggregator that republishes others' reporting. A single PRIMARY source
+# (the regulator, the vendor's own page, the paper, the filing) is sufficient on
+# its own — the audit asked for corroboration where evidence needs it, not for
+# three sources on every claim.
+_TWO_LEVEL_TLDS = frozenset(
+    "co.uk org.uk ac.uk gov.uk co.in org.in net.in gov.in ac.in com.au net.au org.au "
+    "gov.au co.nz co.za com.br com.mx com.sg com.hk co.jp co.kr com.cn".split()
+)
+_AGGREGATORS = frozenset(
+    {"msn.com", "news.yahoo.com", "yahoo.com", "news.google.com", "flipboard.com",
+     "apple.news", "feedly.com", "inshorts.com", "dailyhunt.in"}
+)
+PRIMARY_SOURCE_TYPES = frozenset(
+    {"official", "primary", "docs", "documentation", "paper", "regulator", "regulatory",
+     "filing", "government", "vendor", "standard", "law", "court"}
+)
+_TITLE_NOISE = re.compile(r"[^a-z0-9 ]+")
+_MIN_TITLE = 25
+
+
+def registrable_domain(url: str) -> str:
+    host = (urlsplit(url).hostname or "").lower().strip(".")
+    if not host:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    parts = host.split(".")
+    if len(parts) >= 3 and ".".join(parts[-2:]) in _TWO_LEVEL_TLDS:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def _norm_title(title: str) -> str:
+    t = _TITLE_NOISE.sub(" ", (title or "").lower())
+    return " ".join(t.split())
+
+
+@dataclass(slots=True)
+class Finding:
+    domain: str
+    title: str
+    source_type: str
+    supports: bool
+
+
+def independent_count(findings: list[Finding]) -> int:
+    """Distinct registrable domains among SUPPORTING findings, with syndicated
+    copies (same headline elsewhere) and aggregator re-posts collapsed."""
+    domains: set[str] = set()
+    titles: set[str] = set()
+    for f in findings:
+        if not f.supports or not f.domain:
+            continue
+        t = _norm_title(f.title)
+        if len(t) >= _MIN_TITLE and t in titles:
+            continue  # the same story again, on another domain
+        if f.domain in _AGGREGATORS and domains:
+            continue  # an aggregator never adds independence to a real source
+        if len(t) >= _MIN_TITLE:
+            titles.add(t)
+        domains.add(f.domain)
+    return len(domains)
+
+
+def has_primary(findings: list[Finding]) -> bool:
+    return any(f.supports and f.source_type in PRIMARY_SOURCE_TYPES for f in findings)
+
+
 @dataclass(slots=True)
 class ResearchContext:
     """Per-turn deep-research state for the `record_research` tool. `run_id` is the
@@ -174,6 +249,11 @@ class ResearchContext:
     plan_recorded: bool = False
     seen_sources: set[str] = field(default_factory=set)
     branch_count: int = 0
+    # R4/R6: the plan's sub-questions, whether the run is time-sensitive, and the
+    # findings recorded per sub-question — what `coverage()` reports on.
+    subquestions: list[str] = field(default_factory=list)
+    time_sensitive: bool = False
+    findings: dict[str, list[Finding]] = field(default_factory=dict)
 
     @property
     def max_sources(self) -> int:
@@ -182,6 +262,41 @@ class ResearchContext:
     @property
     def max_branches(self) -> int:
         return int(getattr(self.settings, "ai_research_max_branches", 8))
+
+    def add_finding(self, cleaned: dict) -> int:
+        """Record a finding under its sub-question; return the independent-source
+        count for that sub-question afterwards."""
+        key = (cleaned.get("subquestion") or "").strip().lower()[:_FIELD_MAX]
+        lst = self.findings.setdefault(key, [])
+        lst.append(
+            Finding(
+                domain=registrable_domain(cleaned.get("sourceUrl") or ""),
+                title=cleaned.get("sourceTitle") or "",
+                source_type=(cleaned.get("sourceType") or "").strip().lower(),
+                supports=bool(cleaned.get("supports", True)),
+            )
+        )
+        return independent_count(lst)
+
+    def coverage(self, *, strict_window: bool = False) -> dict:
+        """Sub-questions with no evidence, and sub-questions resting on ONE
+        non-primary source when the run is time-sensitive (or a strict window is
+        active). A single primary source is never flagged."""
+        uncovered: list[str] = []
+        single: list[str] = []
+        for sq in self.subquestions:
+            key = sq.strip().lower()[:_FIELD_MAX]
+            lst = [f for f in self.findings.get(key, []) if f.supports]
+            if not lst:
+                uncovered.append(sq)
+                continue
+            if (
+                (self.time_sensitive or strict_window)
+                and independent_count(lst) < 2
+                and not has_primary(lst)
+            ):
+                single.append(sq)
+        return {"uncovered": uncovered, "single_sourced": single}
 
     def sources_exhausted(self, next_url: str) -> bool:
         """True iff recording `next_url` would exceed the source ceiling (a NEW

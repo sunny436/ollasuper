@@ -69,12 +69,22 @@ def _register_fonts() -> str:
         return "Helvetica"
 
 
+def toc_entries(spec: FileSpec) -> list[tuple[int, str]]:
+    """(level, heading) for every heading a table of contents lists: levels 1-3."""
+    return [
+        (sec.level, sec.heading.strip())
+        for sec in spec.sections
+        if sec.heading and sec.heading.strip() and sec.level <= 3
+    ]
+
+
 def render_pdf(spec: FileSpec) -> tuple[bytes, str]:
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_LEFT
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
+    from reportlab.pdfgen import canvas as rl_canvas
     from reportlab.platypus import (
         Image,
         ListFlowable,
@@ -86,8 +96,52 @@ def render_pdf(spec: FileSpec) -> tuple[bytes, str]:
         Table,
         TableStyle,
     )
+    from reportlab.platypus.tableofcontents import TableOfContents
 
     from app.filegen.mime import mime_for
+
+    class Doc(SimpleDocTemplate):
+        """Notifies the TOC and writes the PDF OUTLINE on every heading, rewinds the
+        BytesIO before each pass (the canvas would otherwise append a second PDF to
+        the buffer), and remembers the page count of the pass that just finished —
+        which is what the NEXT pass prints as the 'of Y' in the footer."""
+
+        total_pages: int | None = None
+
+        def build(self, flowables, **kw):  # noqa: D102
+            f = getattr(self, "filename", None)
+            if hasattr(f, "seek") and hasattr(f, "truncate"):
+                f.seek(0)
+                f.truncate()
+            self._outline_n = 0
+            out = super().build(flowables, **kw)
+            self.total_pages = self.page
+            return out
+
+        def afterFlowable(self, flowable):  # noqa: N802 — reportlab's hook
+            entry = getattr(flowable, "_toc", None)
+            if entry is None:
+                return
+            level, text = entry
+            self.notify("TOCEntry", (level, text, self.page))
+            self._outline_n = getattr(self, "_outline_n", 0) + 1
+            key = f"h{self._outline_n}"
+            self.canv.bookmarkPage(key)
+            self.canv.addOutlineEntry(text, key, level=level, closed=False)
+
+    def footer(canv: rl_canvas.Canvas, doc: Doc) -> None:
+        """'Page X of Y'. Y comes from the previous layout pass (the page count
+        of a converged multiBuild is stable), so the final pass prints it right.
+        NOT the buffered-canvas recipe: that one draws every page on save() and
+        pins every bookmark to page 1, which would break the outline."""
+        total = doc.total_pages
+        canv.saveState()
+        canv.setFont(font, 8.5)
+        canv.setFillColorRGB(0.39, 0.45, 0.55)
+        canv.drawRightString(
+            A4[0] - 2 * cm, 1.1 * cm, f"Page {doc.page} of {total or '?'}"
+        )
+        canv.restoreState()
 
     font = _register_fonts()
     bold = f"{font}-Bold" if font == "DejaVuSans" else "Helvetica-Bold"
@@ -116,6 +170,24 @@ def render_pdf(spec: FileSpec) -> tuple[bytes, str]:
     }
 
     flow: list = []
+    # THE TABLE OF CONTENTS is a real flowable whose page numbers come from the
+    # pages the headings actually land on: `Doc.afterFlowable` notifies it on
+    # every heading and `multiBuild` re-runs the layout until the numbers are
+    # stable. The same hook writes the PDF OUTLINE, which is what verification
+    # reads back — an exact page per heading, not a text match.
+    toc = None
+    if spec.toc and toc_entries(spec):
+        toc = TableOfContents()
+        toc.levelStyles = [
+            style("toc1", 11, space_before=4, space_after=2, bold_=True),
+            ParagraphStyle(
+                "toc2", parent=style("toc2b", 10, space_after=1), leftIndent=14
+            ),
+            ParagraphStyle(
+                "toc3", parent=style("toc3b", 9.5, space_after=1), leftIndent=28
+            ),
+        ]
+        toc.dotsMinLevel = 0
     if spec.title:
         flow.append(
             Paragraph(_esc(spec.title), style("title", 22, bold_=True, space_after=4))
@@ -128,12 +200,21 @@ def render_pdf(spec: FileSpec) -> tuple[bytes, str]:
         )
     elif spec.title:
         flow.append(Spacer(1, 0.4 * cm))
+    if toc is not None:
+        flow.append(Paragraph("Contents", heads[1]))
+        flow.append(toc)
+        flow.append(PageBreak())
 
     for sec in spec.sections:
         if sec.page_break_before and flow:
             flow.append(PageBreak())
         if sec.heading:
-            flow.append(Paragraph(_esc(sec.heading), heads[sec.level]))
+            head = Paragraph(_esc(sec.heading), heads[sec.level])
+            if toc is not None and sec.level <= 3:
+                # What afterFlowable reads: the TOC level and the plain text.
+                # Only with a TOC: a plain document stays byte-identical.
+                head._toc = (sec.level - 1, sec.heading.strip())
+            flow.append(head)
         for p in _paras(sec.text):
             flow.append(Paragraph(_esc(p), body))
         if sec.bullets:
@@ -203,7 +284,7 @@ def render_pdf(spec: FileSpec) -> tuple[bytes, str]:
         flow.append(Paragraph("(empty document)", body))
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(
+    doc = Doc(
         buf,
         pagesize=A4,
         leftMargin=2 * cm,
@@ -213,7 +294,17 @@ def render_pdf(spec: FileSpec) -> tuple[bytes, str]:
         title=spec.title or None,
         author=spec.author or None,
     )
-    doc.build(flow)
+    pages = {"onFirstPage": footer, "onLaterPages": footer} if spec.page_numbers else {}
+    if toc is not None:
+        # Passes until the TOC entries are stable; the last pass therefore has the
+        # same page count as the one before it, so its footer total is right.
+        doc.multiBuild(flow, **pages)
+    elif spec.page_numbers:
+        # build() CONSUMES the story list; each pass gets its own copy.
+        doc.build(list(flow), **pages)  # pass 1: count
+        doc.build(list(flow), **pages)  # pass 2: draw with the real total
+    else:
+        doc.build(flow)  # byte-identical to before when neither flag is set
     return buf.getvalue(), mime_for("pdf")
 
 
@@ -223,8 +314,32 @@ def _esc(s: Any) -> str:
 
 
 # --- DOCX (python-docx, pool) ---------------------------------------------
+def _docx_field(paragraph, instr: str, placeholder: str) -> None:
+    """A Word FIELD (PAGE, NUMPAGES, TOC): begin / instrText / separate /
+    placeholder / end. Word and LibreOffice compute it at layout time."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    def _char(kind: str) -> None:
+        r = paragraph.add_run()
+        el = OxmlElement("w:fldChar")
+        el.set(qn("w:fldCharType"), kind)
+        r._r.append(el)
+
+    _char("begin")
+    r = paragraph.add_run()
+    it = OxmlElement("w:instrText")
+    it.set(qn("xml:space"), "preserve")
+    it.text = instr
+    r._r.append(it)
+    _char("separate")
+    paragraph.add_run(placeholder)
+    _char("end")
+
+
 def render_docx(spec: FileSpec) -> tuple[bytes, str]:
     from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
     from docx.shared import Inches, Pt, RGBColor
 
     from app.filegen.mime import mime_for
@@ -238,6 +353,45 @@ def render_docx(spec: FileSpec) -> tuple[bytes, str]:
         run.italic = True
         run.font.size = Pt(13)
         run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
+
+    # PAGE NUMBERS: real fields in the footer, computed by whatever opens the file.
+    if spec.page_numbers:
+        foot = doc.sections[0].footer.paragraphs[0]
+        foot.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        foot.add_run("Page ")
+        _docx_field(foot, " PAGE ", "1")
+        foot.add_run(" of ")
+        _docx_field(foot, " NUMPAGES ", "1")
+
+    # TABLE OF CONTENTS. python-docx cannot lay pages out, so the numbers come
+    # from a rendered pass: the executor converts a first pass with LibreOffice,
+    # reads the page each heading landed on, and re-renders with `toc_pages` so
+    # the TOC is STATIC text that every viewer shows the same way. Both passes
+    # emit one line per heading, so pagination cannot shift between them.
+    # `toc_pages is None` = no LibreOffice: a TOC FIELD that Word fills on open.
+    entries = toc_entries(spec) if spec.toc else []
+    if entries:
+        doc.add_heading("Contents", level=1)
+        pages = spec.toc_pages
+        if pages is None:
+            p = doc.add_paragraph()
+            _docx_field(
+                p,
+                ' TOC \\o "1-3" \\h \\z \\u ',
+                "Table of contents — press F9 (Word) or Tools ▸ Update (LibreOffice).",
+            )
+        else:
+            for i, (level, text) in enumerate(entries):
+                p = doc.add_paragraph()
+                p.paragraph_format.left_indent = Inches(0.25 * (level - 1))
+                p.paragraph_format.space_after = Pt(2)
+                p.paragraph_format.tab_stops.add_tab_stop(
+                    Inches(6.0), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS
+                )
+                p.add_run(text)
+                num = str(pages[i]) if i < len(pages) else "…"
+                p.add_run("\t" + num)
+        doc.add_page_break()
 
     for sec in spec.sections:
         if sec.page_break_before:
