@@ -7,7 +7,7 @@
 //          BEFORE the answer (the code-initiated prefetch) and the answer either
 //          cites dated sources inside the window or carries the explicit notice;
 //   R2     with the provider failing, the failure is stated, not hidden;
-//   ctrl   a historical question runs no search and carries no notice;
+//   ctrl   a historical question is not forced to retrieve and carries no notice;
 //   D1/D2  a deck with a line chart and a DOUGHNUT arrives on the first call, and
 //          the downloaded .pptx really contains a donut (hole at the centre);
 //   D4     a PDF with page numbers + TOC: the downloaded file has "Page X of Y",
@@ -192,26 +192,31 @@ const NOTICE_RECENCY = /Recency (check|not verified)/i;
 
   await step("[D2] the downloaded .pptx contains a real donut (hole at the centre) and the line chart", async () => {
     need(pptxPath, "no deck downloaded");
+    // A donut: white centre AND a coloured ring around it. A pie: coloured centre.
+    // A line chart: white centre, no ring. Centre alone cannot tell donut from line.
     const out = py(`
-import zipfile, io, sys
+import zipfile, io, math
 from PIL import Image
 z = zipfile.ZipFile(r"${pptxPath.replace(/\\/g, "\\\\")}")
 slides = [n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]
-imgs = [n for n in z.namelist() if n.startswith("ppt/media/") and n.lower().endswith(".png")]
-holes = []
-for n in imgs:
-    im = Image.open(io.BytesIO(z.read(n))).convert("RGB")
-    w, h = im.size
-    c = im.getpixel((w // 2, h // 2))
-    holes.append((n.split("/")[-1], c == (255, 255, 255)))
-print(len(slides), len(imgs), holes)
+kinds = []
+for n in [n for n in z.namelist() if n.startswith("ppt/media/") and n.lower().endswith(".png")]:
+    im = Image.open(io.BytesIO(z.read(n))).convert("RGB"); w, h = im.size
+    cx, cy = w // 2, h // 2
+    centre = im.getpixel((cx, cy))
+    R = int(min(w, h) * 0.36)
+    ring = [im.getpixel((int(cx + R * math.cos(a)), int(cy + R * math.sin(a)))) for a in [i * math.pi / 8 for i in range(16)]]
+    coloured = sum(1 for p in ring if max(p) - min(p) > 40)
+    kinds.append("donut" if centre == (255, 255, 255) and coloured >= 10 else "pie" if coloured >= 10 else "line/bar")
+print(len(slides), kinds)
 `);
-    const [nSlides, nImgs, holesRaw] = [out.split(" ")[0], out.split(" ")[1], out.slice(out.indexOf("["))];
-    need(Number(nSlides) >= 3, `slides = ${nSlides}, wanted >= 3 (a title slide may be added)`);
-    need(Number(nImgs) >= 2, `chart images = ${nImgs}, wanted 2`);
-    need(/True/.test(holesRaw), `no chart image has a white centre (a donut): ${holesRaw}`);
-    need(/False/.test(holesRaw), `no filled chart (the line chart) found: ${holesRaw}`);
-    return `slides=${nSlides} charts=${nImgs} centres=${holesRaw}`;
+    const nSlides = Number(out.split(" ")[0]);
+    const kinds = out.slice(out.indexOf("["));
+    need(nSlides >= 3, `slides = ${nSlides}, wanted >= 3 (a title slide may be added)`);
+    need(/donut/.test(kinds), `no donut among the embedded charts: ${kinds}`);
+    need(!/pie/.test(kinds), `a PIE was delivered where a doughnut was asked: ${kinds}`);
+    need(/line\/bar/.test(kinds), `no line chart among the embedded charts: ${kinds}`);
+    return `slides=${nSlides} charts=${kinds}`;
   });
 
   // ------------------------------------------------------------------ D4

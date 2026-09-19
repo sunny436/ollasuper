@@ -596,7 +596,17 @@ async def test_docx_falls_back_to_a_toc_field_when_the_render_pass_fails(monkeyp
     ctx, convex = _ctx()
     ctx.doc_soffice_enabled = True
     msgs = await execute_tool_calls(
-        [_gen({"format": "docx", "title": "R", "sections": _long_sections(3), "toc": True})], ctx
+        [
+            _gen(
+                {
+                    "format": "docx",
+                    "title": "R",
+                    "sections": _long_sections(3),
+                    "toc": True,
+                }
+            )
+        ],
+        ctx,
     )
     body = msgs[0].content
     assert '"status": "generated"' in body
