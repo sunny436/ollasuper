@@ -428,6 +428,10 @@ TOC in the renderers, and a preview the model never sees.
   `verification` block, repairs once (an empty page break), and refuses a
   known-invalid file rather than attach it. Uploaded images cannot be embedded;
   the skill says so.
+- **The VM needs `libreoffice-writer` as well as `-impress`.** Impress alone was
+  installed for decks; DOCX→PDF failed silently (`source file could not be
+  loaded`) until Writer was added on 19-09 (`apt-get install -y
+  --no-install-recommends libreoffice-writer`). A rebuilt VM must install both.
 
 ## Cost controls (do not remove)
 
