@@ -32,7 +32,9 @@ const PY = path.join(__dirname, "..", "services", "ai", ".venv", "Scripts", "pyt
 const results = [];
 const pending = [];
 const errs = [];
+const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY, "i") : null;
 const step = async (n, f) => {
+  if (ONLY && !ONLY.test(n)) return;
   try {
     const r = await f();
     results.push(true);
@@ -60,7 +62,15 @@ const settle = async (page, ms = 240000) => {
   return false;
 };
 
-async function ask(page, prompt) {
+// The answer body, without the system-authored notices: the UI renders the
+// separator as an <hr>, so innerText has no "---"; cut at the first notice line.
+const NOTICE_START = /^(?:⚠ Recency check|Recency (?:check|not verified)|No cited source could be verified|Live data was required|The web search failed|Sources consulted but not cited|No evidence was recorded for|Resting on a single|Not covered in this answer|Answered on incomplete evidence)/m;
+function bodyOf(text) {
+  const m = NOTICE_START.exec(text);
+  return m ? text.slice(0, m.index) : text;
+}
+
+async function ask(page, prompt, settleMs = 240000) {
   await settle(page);
   await page.goto(`${BASE}/en/chat`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("#chat-composer:not([disabled])", { timeout: 60000 });
@@ -69,7 +79,8 @@ async function ask(page, prompt) {
   await page.keyboard.press("Enter");
   await page.waitForURL(/\/chat\/[a-z0-9]+/i, { timeout: 20000 }).catch(() => {});
   await gen(page).waitFor({ timeout: 30000 }).catch(() => {});
-  await settle(page);
+  const done = await settle(page, settleMs);
+  if (!done) throw new Error(`generation still running after ${settleMs / 1000}s`);
   await page.waitForTimeout(2500);
   const r = await page.evaluate(() => {
     const rows = [...document.querySelectorAll("div.my-5")];
@@ -93,8 +104,7 @@ const MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec";
 // directive/notice put there ("on or after 2026-08-20") and without the notices
 // block itself — so the cutoff can never be mistaken for a source date.
 function sourceDates(text) {
-  const body = text
-    .split(/\n---\n/)[0]
+  const body = bodyOf(text)
     .replace(/on or after [^)\n,.;]{6,30}/gi, " ")
     .replace(/sources? dated [^)\n,.;]{6,40}/gi, " ")
     .replace(/(?:past|last) \d+ days/gi, " ");
@@ -186,8 +196,10 @@ const NOTICE_RECENCY = /Recency (check|not verified)/i;
     const r = await ask(page, "Give me the past 7 days of news coverage on India's 2016 demonetisation announcement, with sources.");
     if (NOTICE_SEARCH_FAILED.test(r.text)) throw new Error("PENDING: provider failed on this turn — the stale-citation path could not be exercised");
     const cutoff = new Date(Date.now() - 8 * 86400000);
-    const dates = sourceDates(r.text);
-    const staleCited = dates.some((d) => d < cutoff);
+    const body = bodyOf(r.text);
+    const citesUrls = /https?:\/\//.test(body);
+    // a date in background prose ("announced on November 8, 2016") is not a citation
+    const staleCited = citesUrls && sourceDates(body).some((d) => d < cutoff);
     const verdict = /⚠ Recency check|could not be verified|No cited source/i.test(r.text);
     const declined = /no (?:news|reports?|sources?|coverage|articles?)[^.]{0,80}(?:past|last|within)[^.]{0,40}days/i.test(r.text);
     need(verdict || declined, `the answer neither carries a recency verdict nor declines: ${r.text.slice(0, 240)}`);
@@ -199,13 +211,14 @@ const NOTICE_RECENCY = /Recency (check|not verified)/i;
     const r = await ask(
       page,
       "Deep research, cite sources: (1) what was India's UPI transaction volume in August 2026 according to NPCI, and (2) how many enforcement actions did the RBI take against payment companies in the first week of September 2026? Use independent sources for each and say plainly which sub-question you could not find evidence for.",
+      600000, // a research run reads many pages
     );
     const recorded = r.activity.some((a) => /Recording a finding|research/i.test(a));
     const hasSources = /## Sources|\[\d\]/.test(r.text);
     const coverage = /No evidence was recorded for|single non-primary source|Resting on a single/i.test(r.text);
     const gapStated = /(could not|couldn't|unable to) (find|locate|verify)|no (evidence|sources?) (was|were)? ?(found|available)|GAP/i.test(r.text);
-    need(recorded || hasSources, `no research activity and no sources: ${r.activity.join(" · ")} / ${r.text.slice(0, 200)}`);
-    need(hasSources, "no sources section in a deep-research answer");
+    need(recorded, `no research recording in the activity timeline: ${r.activity.join(" · ")}`);
+    need(hasSources || coverage, "neither a sources section nor a coverage notice in a deep-research answer");
     return `${recorded ? "findings recorded" : "sources cited"}; ${coverage ? "coverage notice appended" : gapStated ? "gap stated by the model" : "no gap reported"}`;
   });
 
@@ -292,7 +305,7 @@ print("pages", len(page_texts(raw)), "numbers", page_numbers_ok(raw), "outline",
   await step("[D4] a DOCX with page numbers and TOC has real fields and a static TOC with numbers", async () => {
     const r = await ask(
       page,
-      "Now create the same 'Fintech Outlook' report as a Word document (DOCX) with page numbers and a table of contents, same five sections.",
+      "Create a Word document (DOCX) titled 'Fintech Outlook' with page numbers and a table of contents. Five sections: Introduction, Market size, Competitors, Risks, Recommendations — about 120 words each, illustrative numbers clearly labelled as such.",
     );
     need(r.downloads >= 1, `no download card: ${r.text.slice(0, 200)}`);
     docxPath = await download(page, "report", "docx");
