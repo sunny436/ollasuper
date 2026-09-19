@@ -581,3 +581,26 @@ async def test_docx_without_libreoffice_says_the_toc_is_a_field_and_unverified()
     assert '"status": "generated"' in body
     assert '"toc_verified": null' in body and "LibreOffice is unavailable" in body
     assert '"preview": "none"' in body
+
+
+async def test_docx_falls_back_to_a_toc_field_when_the_render_pass_fails(monkeypatch):
+    """LibreOffice enabled but the conversion fails (e.g. Writer not installed —
+    the prod state on 19-09): the delivered file must carry a TOC FIELD, never
+    the pass-1 placeholder lines, and say why."""
+    from docx import Document
+
+    async def broken_convert(data, **kw):
+        return None
+
+    monkeypatch.setattr("app.documents.soffice.convert", broken_convert)
+    ctx, convex = _ctx()
+    ctx.doc_soffice_enabled = True
+    msgs = await execute_tool_calls(
+        [_gen({"format": "docx", "title": "R", "sections": _long_sections(3), "toc": True})], ctx
+    )
+    body = msgs[0].content
+    assert '"status": "generated"' in body
+    assert "LibreOffice conversion failed" in body and "populates" in body
+    d = Document(io.BytesIO(convex.stored[0]["blob"]))
+    assert "TOC" in d.element.body.xml
+    assert not any("…" in p.text for p in d.paragraphs)

@@ -2558,18 +2558,25 @@ async def _run_generate_file(
             pages, how = (None, "LibreOffice conversion failed")
             if pdf1 is not None:
                 pages, how = await asyncio.to_thread(heading_pages, pdf1, entries)
-            if pages and spec_dict.get("_toc_pages") != pages:
-                spec_dict["_toc_pages"] = pages
-                try:
-                    result = await _render(spec_dict)
-                except Exception:  # noqa: BLE001
-                    result = None
-                if result is None or not result[2].get("ok"):
-                    return await _fail("The file could not be generated.")
-                data, mime, report = result
-            elif not pages:
-                verification["toc_note"] = how
-            rendered_pdf = await _docx_to_pdf(ctx, data)
+            if pages:
+                spec_dict["_toc_pages"] = pages  # pass 2 prints real numbers
+            else:
+                # No rendered pages to print: NEVER ship the placeholder lines.
+                # Fall back to a TOC field, which Word/LibreOffice fill on open.
+                spec_dict["_toc_pages"] = None
+                verification["toc_note"] = (
+                    f"{how}; the table of contents is a field that populates "
+                    "when the file is opened"
+                )
+                docx_two_pass = False
+            try:
+                result = await _render(spec_dict)
+            except Exception:  # noqa: BLE001
+                result = None
+            if result is None or not result[2].get("ok"):
+                return await _fail("The file could not be generated.")
+            data, mime, report = result
+            rendered_pdf = await _docx_to_pdf(ctx, data) if pages else None
         elif spec.format == "docx" and ctx.doc_soffice_enabled:
             rendered_pdf = await _docx_to_pdf(ctx, data)
 
