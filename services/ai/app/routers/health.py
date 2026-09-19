@@ -59,7 +59,20 @@ async def readyz(request: Request, response: Response) -> dict:
     }
     mcp_ok = (not mcp_enabled) or mcp_pool_live
 
-    ready = configured and convex_ok and mcp_ok
+    # DOCUMENTS: the same rule as MCP — a third party's outage never gates
+    # readiness, a CONFIGURATION error does. LibreOffice enabled with a
+    # component missing is this deployment's fault: DOCX rendering would fail
+    # silently on every turn (which is exactly what happened on 19-09-2026).
+    from app.documents.soffice import soffice_components
+
+    docs_enabled = bool(getattr(state.settings, "ai_documents_soffice_enabled", False))
+    components = soffice_components() if docs_enabled else {}
+    docs_ok = (not docs_enabled) or all(
+        components.get(k) for k in ("binary", "writer", "impress")
+    )
+    documents = {"soffice_enabled": docs_enabled, "ok": docs_ok, **components}
+
+    ready = configured and convex_ok and mcp_ok and docs_ok
     if not ready:
         response.status_code = 503
     return {
@@ -68,4 +81,5 @@ async def readyz(request: Request, response: Response) -> dict:
         "convex": convex_ok,
         "active": state.registry.active,
         "mcp": mcp,
+        "documents": documents,
     }

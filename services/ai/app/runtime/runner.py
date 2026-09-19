@@ -37,7 +37,7 @@ from app.agent.executor import (
     execute_tool_calls,
 )
 from app.agent.filegen_tool import GENERATE_FILE_TOOL_SPEC
-from app.agent.freshness import detect_requirement, prefetch_query, render_directive
+from app.agent.freshness import detect_requirement, prefetch_queries, render_directive
 from app.agent.graph import build_graph
 from app.agent.harmony import HarmonyStreamFilter
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, KNOWLEDGE_TOOL_SPEC
@@ -2070,14 +2070,23 @@ async def run_generation(
             system = f"{system}\n\n{render_directive(_fl.requirement)}"
             if not (req.completedTools or req.attemptedTools or req.approvedPending):
                 _bound = bound_name_for_tool_id(tools_ctx.name_to_tool_id, _search_id)
-                _q = prefetch_query(_fl.requirement)
-                _call = {
-                    "name": _bound,
-                    "args": {"query": _q},
-                    "id": "freshness_prefetch",
-                }
-                _out = await execute_tool_calls([_call], tools_ctx)
-                messages.append(AIMessage(content="", tool_calls=[_call]))
+                # Two queries in one batch (the executor runs them concurrently):
+                # the dated one and a wider one, so an over-narrow date suffix
+                # is not the turn's only shot at current evidence.
+                _calls = [
+                    {
+                        "name": _bound,
+                        "args": {"query": _q},
+                        "id": (
+                            "freshness_prefetch"
+                            if i == 0
+                            else f"freshness_prefetch_{i + 1}"
+                        ),
+                    }
+                    for i, _q in enumerate(prefetch_queries(_fl.requirement))
+                ]
+                _out = await execute_tool_calls(_calls, tools_ctx)
+                messages.append(AIMessage(content="", tool_calls=_calls))
                 messages.extend(_out)
                 _fl.prefetched = True
                 log.info(

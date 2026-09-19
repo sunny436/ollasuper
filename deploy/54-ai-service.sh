@@ -37,6 +37,20 @@ case "$VENV_PY" in
   *) echo "  interpreter: $VENV_PY" ;;
 esac
 
+echo "[2b/5] LibreOffice for the documents capability (Writer AND Impress)"
+# Both components, always: the first VM had only Impress, and DOCX → PDF failed
+# silently ("source file could not be loaded") until Writer was added by hand on
+# 19-09-2026. /readyz reports `documents.{binary,writer,impress}` and refuses
+# readiness when AI_DOCUMENTS_SOFFICE_ENABLED=true with a component missing.
+if command -v apt-get >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libreoffice-impress libreoffice-writer >/dev/null
+  for lib in libswlo.so libsdlo.so; do
+    [ -e "/usr/lib/libreoffice/program/$lib" ] || { echo "FATAL: LibreOffice component $lib missing after install" >&2; exit 1; }
+  done
+  echo "  soffice: $(command -v soffice) (writer + impress present)"
+fi
+
 echo "[3/5] secrets (idempotent — never clobbers an existing .env)"
 if [ ! -f "$AI/.env" ]; then
   cat > "$AI/.env" <<EOF

@@ -247,7 +247,8 @@ def test_read_page_is_dated_from_its_dateline_and_flagged_when_stale():
         out["stale_for_request"] is True
         and "do not cite as current" in out["freshness_note"]
     )
-    assert out["content"] == page["content"]  # content is kept, only flagged
+    assert out["content_withheld"] is True  # the body is withheld, a preview stays
+    assert out["content"].startswith("Published: 2 Jan 2025")
     assert facts["dates"]["https://a.com/p"].kind == "published"
     fresh = {
         "status": "success",

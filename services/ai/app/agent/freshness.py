@@ -173,9 +173,20 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.?!])\s+|\n+")
 _STRICT: tuple[tuple[re.Pattern, str], ...] = (
     (
         re.compile(
-            r"\b(?:last|past|previous)\s+(\d{1,3})\s+(days?|weeks?|months?)\b", re.I
+            r"\b(?:last|past|previous)\s+(\d{1,3})\s+(hours?|days?|weeks?|months?)\b",
+            re.I,
         ),
         "n_units",
+    ),
+    (
+        re.compile(
+            r"\b(?:last|past)\s+(couple|few)\s+(?:of\s+)?(days|weeks|months)\b", re.I
+        ),
+        "few_units",
+    ),
+    (
+        re.compile(r"\b(?:this\s+(?:morning|afternoon|evening)|tonight)\b", re.I),
+        "today",
     ),
     (re.compile(r"\b(?:in\s+the\s+)?(?:this|past|last)\s+week\b", re.I), "week"),
     (re.compile(r"\bthis\s+month\b", re.I), "this_month"),
@@ -199,7 +210,11 @@ _LIVE = re.compile(
     r"status|standings|score|scores|report)"
     r"|current\s+(?:price|prices|rate|rates|status|weather|score|scores|standings|value|"
     r"exchange\s+rate|market|situation|state|version|ceo|leader|holder|holders|level|levels)"
-    r"|today'?s"
+    r"|latest\s+(?:on|about|from|for|regarding)\b|most\s+recent\b|\bnewest\b"
+    r"|any\s+updates?\s+(?:on|about|regarding)\b|what'?s\s+happening\s+(?:with|in|to)\b"
+    r"|\blately\b|\bthese\s+days\b|as\s+of\s+now\b"
+    r"|up[- ]to[- ]date\s+(?:info|information|figures|status|data|list|numbers)\b"
+    r"|(?:is|are)\s+(?:\w+\s+){1,6}still\s+(?:valid|current|available|in\s+effect|active|open)\b"
     r"|right\s+now|at\s+the\s+moment"
     r"|as\s+of\s+(?:today|now|this\s+morning|tonight)"
     r"|breaking\s+news|live\s+(?:price|prices|score|scores|rate|rates|data)"
@@ -229,11 +244,21 @@ _INFO_START = re.compile(
 _OWN = re.compile(
     r"\b(?:this\s+(?:conversation|chat|thread|file|document|csv|sheet|spreadsheet|dataset|"
     r"table|pdf|report|data)|our\s+(?:chat|conversation)|the\s+(?:attached|uploaded)|"
-    r"attached|uploaded|my\s+(?:data|file|files|notes|document|documents))\b",
+    r"attached|uploaded|my\s+(?:data|file|files|notes|document|documents)"
+    # "today's agenda / meeting / plan" is the user's day, not the world's news.
+    r"|(?:today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|week))'?s?\s+"
+    r"(?:agenda|meeting|meetings|plan|plans|schedule|to-?do|todo|tasks?|standup|"
+    r"lesson|call|calls|priorities|deadline|deadlines|workout|menu|dinner|lunch))\b",
     re.I,
 )
 _AS_OF_DATE = re.compile(
     r"\bas\s+of\s+(?=\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", re.I
+)
+
+_WEAK_LIVE = re.compile(r"(?:newest|most\s+recent|lately|these\s+days)", re.I)
+_PAST_FRAME = re.compile(
+    r"\b(?:was|were|did|had|used\s+to|back\s+in|in\s+(?:19|20)\d\d|during\s+(?:19|20)\d\d)\b",
+    re.I,
 )
 
 # Historical anchors cancel a LIVE reading (never a strict window).
@@ -258,6 +283,18 @@ def _strict_cutoff(rule: str, m: re.Match, today: date) -> date:
     if rule == "n_units":
         n = int(m.group(1))
         unit = m.group(2).lower()
+        if unit.startswith("hour"):
+            days = 1
+        elif unit.startswith("day"):
+            days = n
+        elif unit.startswith("week"):
+            days = n * 7
+        else:
+            days = n * 30
+        return today - timedelta(days=max(1, days))
+    if rule == "few_units":
+        n = 2 if m.group(1).lower() == "couple" else 3
+        unit = m.group(2).lower()
         days = (
             n
             if unit.startswith("day")
@@ -265,7 +302,7 @@ def _strict_cutoff(rule: str, m: re.Match, today: date) -> date:
             if unit.startswith("week")
             else n * 30
         )
-        return today - timedelta(days=max(1, days))
+        return today - timedelta(days=days)
     if rule == "week":
         return today - timedelta(days=7)
     if rule == "this_month":
@@ -350,14 +387,22 @@ def detect_requirement(
     m = _LIVE.search(body)
     if not m:
         return None
-    if _HISTORY.search(body) or _OWN.search(_sentence_of(body, m.start())):
+    sentence = _sentence_of(body, m.start())
+    if _HISTORY.search(body) or _OWN.search(sentence):
         return None
+    # Adjectives ("newest", "most recent", "lately") describe things in any
+    # sentence; they set a requirement only in one that asks for information.
+    if _WEAK_LIVE.fullmatch(m.group(0).strip()) and not (
+        "?" in sentence or _INFO.search(sentence) or _INFO_START.match(sentence)
+    ):
+        return None
+    # "What WAS the current price in 2019" is about the past; "is the 2024
+    # waiver STILL in effect" is about now. An old year cancels only with a
+    # past-tense frame.
     years = [int(y) for y in _YEAR.findall(body)]
-    if years and max(years) < today.year - 1:
-        return None  # "the current price in 2019" is a question about the past
-    return TemporalRequirement(
-        "live", m.group(0).strip(), None, _sentence_of(body, m.start())[:300]
-    )
+    if years and max(years) < today.year - 1 and _PAST_FRAME.search(sentence):
+        return None
+    return TemporalRequirement("live", m.group(0).strip(), None, sentence[:300])
 
 
 def satisfies_window(
@@ -375,6 +420,12 @@ def satisfies_window(
 
 # ------------------------------------------------------- where a source is from
 
+
+#: A `live` request has no cutoff to enforce, but "current" still means
+#: something: a cited source older than this is reported as old, and a turn
+#: that cites nothing newer is told so. 90 days: a quarter, the coarsest cadence
+#: at which prices, versions, rankings and policies are ordinarily republished.
+LIVE_WINDOW_DAYS = 90
 
 #: Ranked: how a date was found decides how much it is worth.
 DATE_RANK = {"published": 0, "updated": 1, "snippet": 2, "inferred": 3, "reported": 4}
@@ -407,6 +458,7 @@ _LABEL_UPDATED = re.compile(
     re.I,
 )
 _HEAD_CHARS = 2500
+_STALE_PREVIEW_CHARS = 400
 _MIN_READ = re.compile(r"\s*[\u2014\u2013\-\u00b7|]\s*\d+\s*min", re.I)
 
 
@@ -551,6 +603,13 @@ def annotate_search(
                     "date unknown — does not satisfy the requested window; "
                     "verify the date on the page before citing"
                 )
+        elif sd is not None and sd.explicit:
+            if sd.value < today - timedelta(days=LIVE_WINDOW_DAYS):
+                out["old_for_live"] = True
+            else:
+                compliant += 1
+        elif sd is None:
+            undated += 1
         kept.append(out)
     out_payload = dict(payload)
     out_payload["results"] = kept
@@ -577,9 +636,11 @@ def annotate_search(
                 "Cite only sources dated inside the window; include each source's date."
             )
     else:
+        block.update(recent=compliant, undated=undated)
         block["note"] = (
-            "Current information was requested: cite sources with their "
-            "publication dates."
+            "Current information was requested: prefer sources dated in the last "
+            f"{LIVE_WINDOW_DAYS} days (older results are marked old_for_live) and "
+            "cite each source with its publication date."
         )
     out_payload["freshness"] = block
     return out_payload, {
@@ -617,12 +678,18 @@ def annotate_read(
                 and satisfies_window(sd.value, req, today) is False
                 and sd.kind != "inferred"
             ):
+                # ENFORCED here, not advised: the body is withheld (a short
+                # preview stays so the model can name what it declined to use).
+                # A page this old cannot supply a "current" claim, whatever the
+                # model was going to do with it.
                 out["stale_for_request"] = True
+                out["content_withheld"] = True
+                out["content"] = (content or "")[:_STALE_PREVIEW_CHARS] + " […]"
                 out["freshness_note"] = (
                     f"dated {sd.value.isoformat()} ({sd.kind}) — older than the "
                     "requested window (on or after "
-                    f"{req.cutoff.isoformat() if req.cutoff else '?'}); "
-                    "do not cite as current"
+                    f"{req.cutoff.isoformat() if req.cutoff else '?'}); body "
+                    "withheld, do not cite as current"
                 )
         else:
             out["date"] = None
@@ -723,14 +790,15 @@ def render_freshness(
             elif ok and sd.explicit:
                 fresh += 1
         head = (
-            f"**Recency check — {req.phrase}: sources must be dated on or after "
+            f"**⚠ Recency check — {req.phrase}: sources must be dated on or after "
             f"{req.cutoff.isoformat()}.**"
         )
         if stale:
             parts.append(
                 head
-                + f" {len(stale)} cited source(s) are older than that; claims taken "
-                "from them do not satisfy the request:\n" + "\n".join(stale[:8])
+                + f" {len(stale)} cited source(s) are older than that. Do not rely on "
+                "any current-state claim the answer draws from them:\n"
+                + "\n".join(stale[:8])
             )
         if fresh == 0:
             if unknown and not stale:
@@ -751,6 +819,32 @@ def render_freshness(
             parts.append(
                 "No cited source could be verified as within the requested window "
                 f"({reason})."
+            )
+    elif not req.strict:
+        # LIVE: no cutoff to enforce, but "current" is checked against real dates.
+        cited = cited_urls(answer)
+        floor = today - timedelta(days=LIVE_WINDOW_DAYS)
+        old: list[str] = []
+        fresh = 0
+        unknown = 0
+        for k in cited:
+            sd = ledger.dates.get(k)
+            if sd is None:
+                unknown += 1 if k in ledger.retrieved_urls else 0
+            elif sd.explicit and sd.value >= floor:
+                fresh += 1
+            elif sd.explicit:
+                old.append(f"- {k} ({sd.value.isoformat()}, {sd.kind})")
+        if cited and fresh == 0 and (old or unknown):
+            what = (
+                f"the cited sources are dated older than {LIVE_WINDOW_DAYS} days"
+                if old
+                else "no cited source carries a verifiable date"
+            )
+            parts.append(
+                f"**⚠ Recency check — {req.phrase}:** {what}; nothing newer was "
+                "cited, so treat the answer's current-state claims with caution."
+                + ("\n" + "\n".join(old[:8]) if old else "")
             )
     return _join(parts)
 
@@ -779,13 +873,34 @@ def render_directive(req: TemporalRequirement) -> str:
     )
 
 
-def prefetch_query(req: TemporalRequirement, today: date | None = None) -> str:
-    """The query for the system-initiated search: the user's own sentence, plus the
-    month/year for a short strict window (engines have no recency filter; the date
-    in the query is the only lever). Bounded to the provider's 500 chars."""
+def prefetch_queries(req: TemporalRequirement, today: date | None = None) -> list[str]:
+    """The queries for the system-initiated search — TWO, so a date suffix that
+    narrows too far is not the only shot. Engines have no recency filter; the
+    date in the query is the only lever, and it can over-narrow, so the second
+    query widens: the previous month when the window crosses a month boundary,
+    otherwise the bare sentence. Bounded to the provider's 500 chars."""
     today = today or today_utc()
-    q = " ".join((req.sentence or req.phrase).split())[:280].rstrip("?.!")
+    base = " ".join((req.sentence or req.phrase).split())[:280].rstrip("?.!")
     if req.strict and req.cutoff is not None:
         span = (today - req.cutoff).days
-        q += " " + (_month_year(today) if span <= 45 else str(today.year))
-    return q[:500]
+        if span <= 45:
+            first = f"{base} {_month_year(today)}"
+            crosses = (req.cutoff.year, req.cutoff.month) != (today.year, today.month)
+            second = f"{base} {_month_year(req.cutoff)}" if crosses else base
+        else:
+            first = f"{base} {today.year}"
+            second = base
+    else:
+        first = base
+        second = f"{base} {today.year}"
+    out: list[str] = []
+    for q in (first, second):
+        q = q[:500]
+        if q not in out:
+            out.append(q)
+    return out
+
+
+def prefetch_query(req: TemporalRequirement, today: date | None = None) -> str:
+    """The first (narrowest) prefetch query — kept for callers that want one."""
+    return prefetch_queries(req, today)[0]

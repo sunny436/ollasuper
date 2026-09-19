@@ -96,7 +96,7 @@ def test_uncovered_and_single_sourced_are_reported_and_primary_is_exempt():
     rc.add_finding(
         {
             "subquestion": "pricing",
-            "sourceUrl": "https://vendor.com/p",
+            "sourceUrl": "https://www.rbi.org.in/p",  # a VERIFIED primary domain
             "sourceTitle": "Pricing",
             "sourceType": "official",
         }

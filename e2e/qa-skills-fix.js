@@ -89,6 +89,18 @@ let answerN = 0;
 
 // Dates as the model writes them: ISO, "12 September 2026", "Sep 12, 2026".
 const MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec";
+// Dates that belong to SOURCES: the answer body without the cutoff phrases the
+// directive/notice put there ("on or after 2026-08-20") and without the notices
+// block itself — so the cutoff can never be mistaken for a source date.
+function sourceDates(text) {
+  const body = text
+    .split(/\n---\n/)[0]
+    .replace(/on or after [^)\n,.;]{6,30}/gi, " ")
+    .replace(/sources? dated [^)\n,.;]{6,40}/gi, " ")
+    .replace(/(?:past|last) \d+ days/gi, " ");
+  return datesIn(body);
+}
+
 function datesIn(text) {
   const out = [];
   for (const m of text.matchAll(/\b(20\d\d)-(\d\d)-(\d\d)\b/g)) out.push(new Date(`${m[1]}-${m[2]}-${m[3]}`));
@@ -160,11 +172,41 @@ const NOTICE_RECENCY = /Recency (check|not verified)/i;
       throw new Error("PENDING: provider 502 on every search today — the compliant-source path could not be exercised; the failure was stated in the answer");
     }
     const cutoff = new Date(Date.now() - 31 * 86400000);
-    const datesInText = datesIn(r.text);
+    const datesInText = sourceDates(r.text);
     const anyFresh = datesInText.some((d) => d >= cutoff);
     const noticed = NOTICE_RECENCY.test(r.text) || /could not be verified/i.test(r.text);
-    need(anyFresh || noticed, "no dated source inside the window and no recency notice");
-    return anyFresh ? `dated sources inside the window (${datesInText.length} dates seen)` : "no compliant source — the answer says so";
+    const declined = /no (?:news|reports?|sources?|releases?|articles?)[^.]{0,80}(?:past|last|within)[^.]{0,40}days/i.test(r.text);
+    need(anyFresh || noticed || declined, "no dated source inside the window, no recency notice, no explicit decline");
+    return anyFresh
+      ? `source dates inside the window: ${datesInText.filter((d) => d >= cutoff).map((d) => d.toISOString().slice(0, 10)).join(", ")}`
+      : noticed ? "recency notice present" : "no compliant source — the answer says so explicitly";
+  });
+
+  await step("[R1-stale] a strict window on a topic with only old sources ends in a recency verdict, not a stale claim", async () => {
+    const r = await ask(page, "Give me the past 7 days of news coverage on India's 2016 demonetisation announcement, with sources.");
+    if (NOTICE_SEARCH_FAILED.test(r.text)) throw new Error("PENDING: provider failed on this turn — the stale-citation path could not be exercised");
+    const cutoff = new Date(Date.now() - 8 * 86400000);
+    const dates = sourceDates(r.text);
+    const staleCited = dates.some((d) => d < cutoff);
+    const verdict = /⚠ Recency check|could not be verified|No cited source/i.test(r.text);
+    const declined = /no (?:news|reports?|sources?|coverage|articles?)[^.]{0,80}(?:past|last|within)[^.]{0,40}days/i.test(r.text);
+    need(verdict || declined, `the answer neither carries a recency verdict nor declines: ${r.text.slice(0, 240)}`);
+    if (staleCited) need(/⚠ Recency check/.test(r.text), "a source older than the window was cited without the Recency check naming it");
+    return verdict ? `recency verdict present (${staleCited ? "old dates cited and named" : "no old date cited"})` : "declined explicitly: no coverage in the window";
+  });
+
+  await step("[R4/R6] a Deep Research run records findings and reports coverage gaps or a sourced answer", async () => {
+    const r = await ask(
+      page,
+      "Deep research, cite sources: (1) what was India's UPI transaction volume in August 2026 according to NPCI, and (2) how many enforcement actions did the RBI take against payment companies in the first week of September 2026? Use independent sources for each and say plainly which sub-question you could not find evidence for.",
+    );
+    const recorded = r.activity.some((a) => /Recording a finding|research/i.test(a));
+    const hasSources = /## Sources|\[\d\]/.test(r.text);
+    const coverage = /No evidence was recorded for|single non-primary source|Resting on a single/i.test(r.text);
+    const gapStated = /(could not|couldn't|unable to) (find|locate|verify)|no (evidence|sources?) (was|were)? ?(found|available)|GAP/i.test(r.text);
+    need(recorded || hasSources, `no research activity and no sources: ${r.activity.join(" · ")} / ${r.text.slice(0, 200)}`);
+    need(hasSources, "no sources section in a deep-research answer");
+    return `${recorded ? "findings recorded" : "sources cited"}; ${coverage ? "coverage notice appended" : gapStated ? "gap stated by the model" : "no gap reported"}`;
   });
 
   await step("[ctrl] a historical question is not forced to retrieve and carries no freshness notice", async () => {

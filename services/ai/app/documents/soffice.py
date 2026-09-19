@@ -48,6 +48,31 @@ def soffice_available() -> bool:
     )
 
 
+#: The components the documents capability actually needs. Impress alone was
+#: installed on the first VM and DOCX conversion failed silently for a week
+#: ("source file could not be loaded") — readiness now names each component.
+_COMPONENT_LIBS = {"writer": "libswlo.so", "impress": "libsdlo.so"}
+
+
+def soffice_components() -> dict:
+    """{binary, writer, impress}: what is installed, checked on disk (no process
+    is launched). The program dir is derived from the binary, with the Debian
+    default as the fallback."""
+    binary = shutil.which("soffice") or shutil.which("libreoffice")
+    dirs: list[Path] = [Path("/usr/lib/libreoffice/program")]
+    if binary:
+        try:
+            real = Path(binary).resolve()
+            dirs.insert(0, real.parent)
+            dirs.insert(1, real.parent.parent / "program")
+        except OSError:
+            pass
+    out = {"binary": binary is not None}
+    for name, lib in _COMPONENT_LIBS.items():
+        out[name] = any((d / lib).exists() for d in dirs)
+    return out
+
+
 async def convert(
     raw: bytes,
     *,

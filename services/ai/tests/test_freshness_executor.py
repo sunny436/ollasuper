@@ -292,9 +292,10 @@ async def test_a_temporal_request_is_searched_by_code_before_the_model_writes(
         )
     finally:
         await http.aclose()
-    assert len(seen) == 1, "exactly one prefetch search, by code"
+    assert len(seen) == 2, "two prefetch searches, by code: dated + wider"
     assert "fintech" in seen[0]["body"] and T.strftime("%B %Y") in seen[0]["body"]
-    assert len(_prefetch_calls(convex)) == 1
+    assert T.strftime("%B %Y") not in seen[1]["body"]  # the wider one
+    assert len(_prefetch_calls(convex)) == 1  # the first carries the canonical id
     assert "TOOL_RESULT" in _event_types(convex)
     # a compliant turn: the cited source is inside the window → no notice
     assert "Recency" not in _final_text(convex)

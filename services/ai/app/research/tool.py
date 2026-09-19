@@ -177,12 +177,34 @@ _TWO_LEVEL_TLDS = frozenset(
     "gov.au co.nz co.za com.br com.mx com.sg com.hk co.jp co.kr com.cn".split()
 )
 _AGGREGATORS = frozenset(
-    {"msn.com", "news.yahoo.com", "yahoo.com", "news.google.com", "flipboard.com",
-     "apple.news", "feedly.com", "inshorts.com", "dailyhunt.in"}
+    {
+        "msn.com",
+        "news.yahoo.com",
+        "yahoo.com",
+        "news.google.com",
+        "flipboard.com",
+        "apple.news",
+        "feedly.com",
+        "inshorts.com",
+        "dailyhunt.in",
+    }
 )
 PRIMARY_SOURCE_TYPES = frozenset(
-    {"official", "primary", "docs", "documentation", "paper", "regulator", "regulatory",
-     "filing", "government", "vendor", "standard", "law", "court"}
+    {
+        "official",
+        "primary",
+        "docs",
+        "documentation",
+        "paper",
+        "regulator",
+        "regulatory",
+        "filing",
+        "government",
+        "vendor",
+        "standard",
+        "law",
+        "court",
+    }
 )
 _TITLE_NOISE = re.compile(r"[^a-z0-9 ]+")
 _MIN_TITLE = 25
@@ -232,8 +254,87 @@ def independent_count(findings: list[Finding]) -> int:
     return len(domains)
 
 
+#: Domains whose PRIMARY status is decided by what they are, not by what the
+#: model says: governments, regulators, central banks, standards bodies,
+#: academic publishers, statistical agencies. The model's `source_type` is a
+#: claim; this list is the check. A vendor's own site cannot be recognised this
+#: way and therefore does not earn the exemption — it is flagged, not blocked.
+_PRIMARY_SUFFIXES = (
+    ".gov",
+    ".gov.in",
+    ".gov.uk",
+    ".gov.au",
+    ".gc.ca",
+    ".govt.nz",
+    ".gov.sg",
+    ".nic.in",
+    ".mil",
+    ".edu",
+    ".ac.uk",
+    ".ac.in",
+    ".edu.au",
+    ".int",
+    ".europa.eu",
+)
+_PRIMARY_DOMAINS = frozenset(
+    {
+        "rbi.org.in",
+        "npci.org.in",
+        "nseindia.com",
+        "bseindia.com",
+        "irdai.gov.in",
+        "sebi.gov.in",
+        "mospi.gov.in",
+        "who.int",
+        "imf.org",
+        "worldbank.org",
+        "oecd.org",
+        "un.org",
+        "bis.org",
+        "ecb.europa.eu",
+        "federalreserve.gov",
+        "sec.gov",
+        "arxiv.org",
+        "doi.org",
+        "nature.com",
+        "science.org",
+        "ncbi.nlm.nih.gov",
+        "ietf.org",
+        "w3.org",
+        "iso.org",
+        "eur-lex.europa.eu",
+        "legislation.gov.uk",
+        "gazette.gov.uk",
+        "indiacode.nic.in",
+        "egazette.gov.in",
+    }
+)
+
+
+def is_primary_domain(domain: str) -> bool:
+    d = (domain or "").lower()
+    if not d:
+        return False
+    if d in _PRIMARY_DOMAINS or any(d.endswith("." + p) for p in _PRIMARY_DOMAINS):
+        return True
+    return any(d == suf.lstrip(".") or d.endswith(suf) for suf in _PRIMARY_SUFFIXES)
+
+
+def primary_status(f: Finding) -> str:
+    """'verified' — the domain is a recognised primary; 'claimed' — the model
+    called it primary but the domain is not recognised; 'none' otherwise."""
+    if not f.supports:
+        return "none"
+    if is_primary_domain(f.domain):
+        return "verified"
+    if f.source_type in PRIMARY_SOURCE_TYPES:
+        return "claimed"
+    return "none"
+
+
 def has_primary(findings: list[Finding]) -> bool:
-    return any(f.supports and f.source_type in PRIMARY_SOURCE_TYPES for f in findings)
+    """Only a VERIFIED primary source earns the single-source exemption."""
+    return any(primary_status(f) == "verified" for f in findings)
 
 
 @dataclass(slots=True)
@@ -263,20 +364,19 @@ class ResearchContext:
     def max_branches(self) -> int:
         return int(getattr(self.settings, "ai_research_max_branches", 8))
 
-    def add_finding(self, cleaned: dict) -> int:
-        """Record a finding under its sub-question; return the independent-source
-        count for that sub-question afterwards."""
+    def add_finding(self, cleaned: dict) -> tuple[int, str]:
+        """Record a finding under its sub-question; return (independent-source
+        count for that sub-question, this finding's primary status)."""
         key = (cleaned.get("subquestion") or "").strip().lower()[:_FIELD_MAX]
         lst = self.findings.setdefault(key, [])
-        lst.append(
-            Finding(
-                domain=registrable_domain(cleaned.get("sourceUrl") or ""),
-                title=cleaned.get("sourceTitle") or "",
-                source_type=(cleaned.get("sourceType") or "").strip().lower(),
-                supports=bool(cleaned.get("supports", True)),
-            )
+        f = Finding(
+            domain=registrable_domain(cleaned.get("sourceUrl") or ""),
+            title=cleaned.get("sourceTitle") or "",
+            source_type=(cleaned.get("sourceType") or "").strip().lower(),
+            supports=bool(cleaned.get("supports", True)),
         )
-        return independent_count(lst)
+        lst.append(f)
+        return independent_count(lst), primary_status(f)
 
     def coverage(self, *, strict_window: bool = False) -> dict:
         """Sub-questions with no evidence, and sub-questions resting on ONE

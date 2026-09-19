@@ -40,6 +40,7 @@ from app.agent.freshness import (
     annotate_search,
     parse_date,
     snippet_date,
+    url_key,
 )
 from app.agent.knowledge import KNOWLEDGE_TOOL_NAME, retrieve_knowledge
 from app.agent.memory import (
@@ -1887,6 +1888,7 @@ async def _run_record_research(
     payload: dict
     citation: dict | None = None
     independent = 0
+    primary = "none"
     if kind == "plan":
         cleaned = clean_plan_args(args)
         if cleaned is None:
@@ -1936,7 +1938,7 @@ async def _run_record_research(
                 status="error",
             )
         rc.seen_sources.add(cleaned["sourceUrl"])
-        independent = rc.add_finding(cleaned)
+        independent, primary = rc.add_finding(cleaned)
         _fl = getattr(ctx.writer, "freshness", None)
         if _fl is not None:
             _d = parse_date(cleaned.get("sourceDate") or "")
@@ -2005,6 +2007,13 @@ async def _run_record_research(
         }
         if kind == "finding":
             out["independent_sources_for_subquestion"] = independent
+            out["primary_source"] = primary
+            if primary == "claimed":
+                out["note"] = (
+                    "source_type says primary/official but the domain is not a "
+                    "recognised primary (government, regulator, standards body, "
+                    "academic publisher); it is counted as a secondary source"
+                )
         if kind == "complete" and (coverage["uncovered"] or coverage["single_sourced"]):
             out["status"] = "recorded_with_gaps"
             out["uncovered"] = coverage["uncovered"][:12]
@@ -2409,10 +2418,24 @@ def _note_read(ctx: ToolExecContext, data: dict, args: dict) -> dict:
     fl = getattr(ctx.writer, "freshness", None)
     if fl is None:
         return data
+    # A URL the model produced from memory (never in a search result this turn)
+    # is exactly how a stale source bypasses the search-time exclusion. Under a
+    # temporal requirement it is marked, and its date must be proven on the page.
+    known = set(fl.retrieved_urls)
     if fl.requirement is not None:
         data, facts = annotate_read(data, fl.requirement)
         for u, sd in (facts.get("dates") or {}).items():
             fl.note_read(u, sd)
+        target = args.get("url") if isinstance(args, dict) else None
+        if isinstance(target, str) and target and url_key(target) not in known:
+            if isinstance(data, dict) and not isinstance(data.get("results"), list):
+                data = dict(data)
+                data["origin"] = "not from a search result this turn"
+                if data.get("date_kind") in (None, "unknown"):
+                    data["freshness_note"] = (
+                        "this URL did not come from a search this turn and carries "
+                        "no visible date — verify its date before citing it as current"
+                    )
     pages = data.get("results") if isinstance(data.get("results"), list) else [data]
     urls: list[str] = []
     for p in pages:
