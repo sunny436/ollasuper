@@ -440,6 +440,11 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                     onInstructions={() => setInstructThread(t._id)}
                     onDelete={async () => {
                       if (!window.confirm(`Delete “${t.title}”?`)) return;
+                      // The row was hovered to reach this menu, so its prefetch
+                      // is warm; drop it before the thread goes away rather than
+                      // let the held subscription re-run against a deleted
+                      // thread for its remaining TTL.
+                      releasePrefetch(t._id);
                       await guard(
                         () => removeThread({ threadId: t._id }),
                         "Couldn't delete that",

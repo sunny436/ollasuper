@@ -108,7 +108,18 @@ function warmThread(client: ConvexReactClient, threadId: string): void {
       });
       unsubs.push(
         w.onUpdate(() => {
-          const page = w.localQueryResult();
+          // localQueryResult() THROWS when the subscription is in an error
+          // state — e.g. the row was hovered and then deleted, so the held
+          // subscription re-ran listPaged on a thread that no longer exists
+          // ("Not found"). The no-op callback this replaced never observed
+          // that; an uncaught throw here is a console error in a flow that is
+          // perfectly normal. No seed for that thread is the right outcome.
+          let page: ReturnType<typeof w.localQueryResult>;
+          try {
+            page = w.localQueryResult();
+          } catch {
+            return;
+          }
           // listPaged is newest-first; the transcript displays oldest-first —
           // the same reversal message-list.tsx applies to the live result.
           if (page) setPrefetchedTranscript(threadId, [...page.page].reverse());
