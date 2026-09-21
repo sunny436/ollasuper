@@ -14,6 +14,13 @@ const I18nMiddleware = createI18nMiddleware({
 });
 
 const isSignInPage = createRouteMatcher(["/login"]);
+/**
+ * A Next.js Server Action call: always a POST carrying the `Next-Action` header
+ * (the action id). Next sets it on every action invocation and nothing else
+ * sends it; a request that spoofs it merely skips a UX redirect on /login.
+ */
+const isServerAction = (request: Request) =>
+  request.method === "POST" && request.headers.has("next-action");
 // Public shared-conversation pages — read-only, token-gated, no auth.
 const isPublicShare = createRouteMatcher(["/share", "/share/(.*)"]);
 // The SAME subtree, already carrying its locale segment.
@@ -244,7 +251,19 @@ const authMiddleware = convexAuthNextjsMiddleware(
     // Measured: with /login -> /chat here, the browser fetched /chat and then
     // sat on /login indefinitely. The post-login delay is fixed properly in
     // auth-panel.tsx instead, by navigating explicitly.
-    if (isSignIn && authed) return nextjsMiddlewareRedirect(request, "/");
+    // A Server Action POSTed to /login by a user who is ALREADY signed in is
+    // never a page view: it is @convex-dev/auth's `invalidateCache` — the
+    // action its client provider awaits right after a successful sign-in,
+    // before auth-panel.tsx can navigate. Redirecting it re-POSTed the action
+    // to "/", whose page redirect()s to /chat, so every password login
+    // serialised `POST /login → POST / → /chat` before `router.replace("/chat")`
+    // even ran (measured: 7 sequential dynamic requests per login). The action
+    // still runs, still clears the router cache, still answers with the
+    // re-rendered /login tree; only the detour is gone. A GET of /login while
+    // signed in is redirected exactly as before.
+    if (isSignIn && authed && !isServerAction(request)) {
+      return nextjsMiddlewareRedirect(request, "/");
+    }
     if (!isSignIn && !authed) return nextjsMiddlewareRedirect(request, "/login");
 
     return I18nMiddleware(request);
