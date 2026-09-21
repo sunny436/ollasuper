@@ -243,7 +243,7 @@ async function settle(page, timeout = 240000) {
   return false;
 }
 
-const HARNESS_TITLE = /^Reply with exactly the word: P(ONG|ING)/;
+const HARNESS_TITLE = /^Reply with exactly the word: [A-Z]+/;
 
 async function cleanupLeftovers(page) {
   let n = 0;
