@@ -94,6 +94,28 @@ export async function consumeWindow(
   limit: number,
   windowMs: number,
 ): Promise<WindowResult> {
+  const { result, commit } = await peekWindow(ctx, userId, kind, limit, windowMs);
+  if (result.ok) await commit();
+  return result;
+}
+
+/**
+ * The same check WITHOUT the write, plus a `commit` that performs it.
+ *
+ * For a mutation that must keep other writes when a LATER check fails (see
+ * chat/messages.ts createAndSend), the window increment has to wait until every
+ * check has passed — a mutation cannot roll back one write while keeping
+ * another. Peek-then-commit inside one mutation is equivalent to
+ * consumeWindow: Convex mutations are serialisable, so nothing can change the
+ * row in between.
+ */
+export async function peekWindow(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  kind: QuotaKind,
+  limit: number,
+  windowMs: number,
+): Promise<{ result: WindowResult; commit: () => Promise<void> }> {
   const now = Date.now();
   const row = await ctx.db
     .query("userQuotas")
@@ -105,16 +127,23 @@ export async function consumeWindow(
   const count = fresh ? 0 : (row?.windowCount ?? 0);
 
   if (count >= limit) {
-    return { ok: false, retryInMs: Math.max(0, start + windowMs - now) };
+    return {
+      result: { ok: false, retryInMs: Math.max(0, start + windowMs - now) },
+      commit: async () => {},
+    };
   }
 
   const next = { windowStart: fresh ? now : start, windowCount: count + 1 };
-  if (row) {
-    await ctx.db.patch(row._id, next);
-  } else {
-    await ctx.db.insert("userQuotas", { userId, kind, ...next });
-  }
-  return { ok: true };
+  return {
+    result: { ok: true },
+    commit: async () => {
+      if (row) {
+        await ctx.db.patch(row._id, next);
+      } else {
+        await ctx.db.insert("userQuotas", { userId, kind, ...next });
+      }
+    },
+  };
 }
 
 /**

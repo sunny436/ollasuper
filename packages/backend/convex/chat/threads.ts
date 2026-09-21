@@ -2,7 +2,12 @@ import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
-import { internalMutation, mutation, query } from "../_generated/server";
+import {
+  internalMutation,
+  mutation,
+  type MutationCtx,
+  query,
+} from "../_generated/server";
 import { audit } from "../auditLog";
 import { bump } from "../counters";
 import { requireMember } from "../orgs";
@@ -233,94 +238,115 @@ export const get = query({
   },
 });
 
+/** Validator shared by `create` and messages.createAndSend. */
+export const createThreadArgs = {
+  workspaceId: v.id("workspaces"),
+  title: v.optional(v.string()),
+  model: v.optional(v.string()),
+  // A STRING, not v.id("projects"): this value originates in a ?project= URL
+  // query param, so a malformed one must not reach a v.id() validator --
+  // that throws ArgumentValidationError, which the Convex client logs via
+  // console.error, which fails every e2e run. Resolved below instead.
+  projectId: v.optional(v.string()),
+};
+
 export const create = mutation({
-  args: {
-    workspaceId: v.id("workspaces"),
-    title: v.optional(v.string()),
-    model: v.optional(v.string()),
-    // A STRING, not v.id("projects"): this value originates in a ?project= URL
-    // query param, so a malformed one must not reach a v.id() validator --
-    // that throws ArgumentValidationError, which the Convex client logs via
-    // console.error, which fails every e2e run. Resolved below instead.
-    projectId: v.optional(v.string()),
-  },
+  args: createThreadArgs,
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
-    await requireMember(ctx, userId, args.workspaceId);
-
-    // Resolve the Project BEFORE creating anything. A bad, foreign or archived
-    // project THROWS rather than silently producing an unassigned chat -- the
-    // user asked for a chat inside a Project, and quietly giving them one
-    // outside it would be a lie they cannot see.
-    let projectId: Id<"projects"> | undefined;
-    if (args.projectId) {
-      const project = await requireProjectAccessByString(
-        ctx,
-        userId,
-        args.projectId,
-      );
-      // The same user can belong to two workspaces; a thread must never be
-      // linked to a Project across that boundary.
-      if (project.workspaceId !== args.workspaceId) {
-        throw new ConvexError("Not found");
-      }
-      // An archived Project accepts no NEW work. Its existing chats keep
-      // working exactly like any other chat.
-      if (project.status !== "active") {
-        throw new ConvexError("This project is archived or deleted");
-      }
-      projectId = project._id;
-    }
-
-    const settings = await ctx.db
-      .query("chatSettings")
-      .withIndex("by_user_workspace", (q) =>
-        q.eq("userId", userId).eq("workspaceId", args.workspaceId),
-      )
-      .unique();
-
-    // explicit only when the caller named a model: a stale saved default
-    // should re-home rather than block thread creation outright.
-    const model = await assertAllowedModel(
-      ctx,
-      args.model ?? settings?.defaultModel ?? DEFAULT_MODEL,
-      { explicit: args.model !== undefined },
-    );
-    const now = Date.now();
-    const threadId = await ctx.db.insert("chatThreads", {
-      workspaceId: args.workspaceId,
-      userId,
-      title: args.title ? cleanTitle(args.title) : "New chat",
-      titleSource: "auto",
-      status: "active",
-      ...(projectId ? { projectId } : {}),
-      pinned: false,
-      model,
-      // NOT snapshotted from settings any more.
-      //
-      // Copying the global prompt in here made every new thread carry its own
-      // copy, and `stream.ts` resolves `thread.systemPrompt ?? settings...` —
-      // so the copy always won and a later change to the global prompt never
-      // reached any existing chat. Leaving it unset means "follow the global
-      // setting", and the field now means what its name says: a deliberate
-      // per-chat OVERRIDE, written only by setSystemPrompt.
-      //
-      // Threads created before this keep their copy; nothing is rewritten.
-      nextSeq: 0,
-      messageCount: 0,
-      tokensIn: 0,
-      tokensOut: 0,
-      lastMessageAt: now,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await bump(ctx, args.workspaceId, "chatThreads", 1);
-    await audit(ctx, args.workspaceId, userId, "chat.thread.create", {
-      threadId,
-    });
-    return threadId;
+    return await createThreadForUser(ctx, userId, args);
   },
 });
+
+/**
+ * The body of `create`, for an already-authenticated caller. Also the first
+ * half of messages.createAndSend, which creates the thread and sends the first
+ * message in ONE round trip; this is the same code path, not a second one.
+ */
+export async function createThreadForUser(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  args: {
+    workspaceId: Id<"workspaces">;
+    title?: string;
+    model?: string;
+    projectId?: string;
+  },
+): Promise<Id<"chatThreads">> {
+  await requireMember(ctx, userId, args.workspaceId);
+
+  // Resolve the Project BEFORE creating anything. A bad, foreign or archived
+  // project THROWS rather than silently producing an unassigned chat -- the
+  // user asked for a chat inside a Project, and quietly giving them one
+  // outside it would be a lie they cannot see.
+  let projectId: Id<"projects"> | undefined;
+  if (args.projectId) {
+    const project = await requireProjectAccessByString(
+      ctx,
+      userId,
+      args.projectId,
+    );
+    // The same user can belong to two workspaces; a thread must never be
+    // linked to a Project across that boundary.
+    if (project.workspaceId !== args.workspaceId) {
+      throw new ConvexError("Not found");
+    }
+    // An archived Project accepts no NEW work. Its existing chats keep
+    // working exactly like any other chat.
+    if (project.status !== "active") {
+      throw new ConvexError("This project is archived or deleted");
+    }
+    projectId = project._id;
+  }
+
+  const settings = await ctx.db
+    .query("chatSettings")
+    .withIndex("by_user_workspace", (q) =>
+      q.eq("userId", userId).eq("workspaceId", args.workspaceId),
+    )
+    .unique();
+
+  // explicit only when the caller named a model: a stale saved default
+  // should re-home rather than block thread creation outright.
+  const model = await assertAllowedModel(
+    ctx,
+    args.model ?? settings?.defaultModel ?? DEFAULT_MODEL,
+    { explicit: args.model !== undefined },
+  );
+  const now = Date.now();
+  const threadId = await ctx.db.insert("chatThreads", {
+    workspaceId: args.workspaceId,
+    userId,
+    title: args.title ? cleanTitle(args.title) : "New chat",
+    titleSource: "auto",
+    status: "active",
+    ...(projectId ? { projectId } : {}),
+    pinned: false,
+    model,
+    // NOT snapshotted from settings any more.
+    //
+    // Copying the global prompt in here made every new thread carry its own
+    // copy, and `stream.ts` resolves `thread.systemPrompt ?? settings...` —
+    // so the copy always won and a later change to the global prompt never
+    // reached any existing chat. Leaving it unset means "follow the global
+    // setting", and the field now means what its name says: a deliberate
+    // per-chat OVERRIDE, written only by setSystemPrompt.
+    //
+    // Threads created before this keep their copy; nothing is rewritten.
+    nextSeq: 0,
+    messageCount: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    lastMessageAt: now,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await bump(ctx, args.workspaceId, "chatThreads", 1);
+  await audit(ctx, args.workspaceId, userId, "chat.thread.create", {
+    threadId,
+  });
+  return threadId;
+}
 
 export const rename = mutation({
   args: { threadId: v.id("chatThreads"), title: v.string() },

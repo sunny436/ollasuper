@@ -1,6 +1,6 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { consumeWindow } from "../quotas";
+import { peekWindow } from "../quotas";
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
@@ -19,7 +19,7 @@ import {
   requireThreadAccess,
   requireUserId,
 } from "./authz";
-import { titleFromText } from "./threads";
+import { createThreadArgs, createThreadForUser, titleFromText } from "./threads";
 
 const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
 
@@ -194,36 +194,49 @@ export const get = query({
 const MAX_GENERATIONS_PER_HOUR = 120;
 const RATE_WINDOW_MS = 60 * 60 * 1000;
 
+/**
+ * Checks the hourly window and returns the write that takes the unit. Every
+ * caller commits it before its own first write, so the outcome is exactly that
+ * of consumeWindow; the split exists for createAndSend, which must keep the
+ * thread it created when a check AFTER this one fails (see there).
+ */
 async function assertRateLimit(
   ctx: MutationCtx,
   userId: Id<"users">,
   workspaceId: Id<"workspaces">,
-) {
+): Promise<() => Promise<void>> {
   // workspaceId is no longer part of the key: the limit is per USER. It stays in
   // the signature because callers pass it and membership is still the caller's
   // concern. See convex/quotas.ts for why this moved off chatSettings.
   void workspaceId;
-  const res = await consumeWindow(
+  const { result, commit } = await peekWindow(
     ctx,
     userId,
     "chat",
     MAX_GENERATIONS_PER_HOUR,
     RATE_WINDOW_MS,
   );
-  if (!res.ok) {
-    const mins = Math.ceil(res.retryInMs / 60_000);
+  if (!result.ok) {
+    const mins = Math.ceil(result.retryInMs / 60_000);
     throw new ConvexError(
       `Hourly message limit reached — try again in ${mins} minute${mins === 1 ? "" : "s"}`,
     );
   }
+  return commit;
 }
 
-/** Reject a second concurrent generation, per-thread and per-user. */
+/**
+ * Reject a second concurrent generation, per-thread and per-user.
+ *
+ * Returns the rate-window write. Every caller commits it before its own first
+ * write — `await (await assertCanGenerate(...))()` — except createAndSend,
+ * which commits it only once every check has passed.
+ */
 async function assertCanGenerate(
   ctx: MutationCtx,
   userId: Id<"users">,
   thread: Doc<"chatThreads">,
-) {
+): Promise<() => Promise<void>> {
   // Scheduled Tasks (Phase 2). A scheduled task's execution thread is an
   // INTERNAL history mechanism, not a conversation. Every interactive
   // turn-start path — send, regenerate, retry, editUserMessage — funnels
@@ -255,7 +268,7 @@ async function assertCanGenerate(
   }
   // Last, so that a user who is merely clicking too fast gets the clearer
   // "already generating" message and does not burn window budget on it.
-  await assertRateLimit(ctx, userId, thread.workspaceId);
+  return await assertRateLimit(ctx, userId, thread.workspaceId);
 }
 
 /**
@@ -366,75 +379,115 @@ export async function startAssistantTurn(
   return { assistantMessageId, streamId };
 }
 
-export const send = mutation({
-  args: {
-    threadId: v.id("chatThreads"),
-    content: v.string(),
-    clientId: v.string(),
-    model: v.optional(v.string()),
-    attachmentIds: v.optional(v.array(v.id("chatAttachments"))),
-  },
-  handler: async (ctx, args) => {
-    const userId = await requireUserId(ctx);
-    const thread = await requireThreadAccess(ctx, userId, args.threadId);
+const sendArgs = {
+  content: v.string(),
+  clientId: v.string(),
+  model: v.optional(v.string()),
+  attachmentIds: v.optional(v.array(v.id("chatAttachments"))),
+};
+type SendArgs = {
+  content: string;
+  clientId: string;
+  model?: string;
+  attachmentIds?: Id<"chatAttachments">[];
+};
+type SendResult = {
+  userMessageId: Id<"chatMessages">;
+  assistantMessageId: Id<"chatMessages"> | null;
+  streamId: string | null;
+  deduped: boolean;
+};
 
-    // Idempotency: a network retry, a double-Enter, or React StrictMode's
-    // double-invoke must not produce two turns.
-    const dup = await ctx.db
-      .query("chatMessages")
-      .withIndex("by_client_id", (q) =>
-        q.eq("userId", userId).eq("clientId", args.clientId),
-      )
-      .first();
-    if (dup) {
-      const stream = thread.streamingMessageId
-        ? await ctx.db
-            .query("chatStreams")
-            .withIndex("by_message", (q) =>
-              q.eq(
-                "messageId",
-                thread.streamingMessageId as Id<"chatMessages">,
-              ),
-            )
-            .unique()
-        : null;
-      return {
+/**
+ * Everything `send` checks before its first write, in the order it always
+ * checked them. Throws the same ConvexErrors. Returns either the deduped result
+ * (an earlier send with this clientId already exists) or what commitSend needs,
+ * including the rate-window write that every check has now cleared.
+ */
+async function prepareSend(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  thread: Doc<"chatThreads">,
+  args: SendArgs,
+): Promise<
+  | { deduped: SendResult }
+  | {
+      deduped?: undefined;
+      content: string;
+      attachmentIds: Id<"chatAttachments">[];
+      attachments: Awaited<ReturnType<typeof bindAttachments>>;
+      model: string;
+      takeRateUnit: () => Promise<void>;
+    }
+> {
+  // Idempotency: a network retry, a double-Enter, or React StrictMode's
+  // double-invoke must not produce two turns.
+  const dup = await ctx.db
+    .query("chatMessages")
+    .withIndex("by_client_id", (q) =>
+      q.eq("userId", userId).eq("clientId", args.clientId),
+    )
+    .first();
+  if (dup) {
+    const stream = thread.streamingMessageId
+      ? await ctx.db
+          .query("chatStreams")
+          .withIndex("by_message", (q) =>
+            q.eq("messageId", thread.streamingMessageId as Id<"chatMessages">),
+          )
+          .unique()
+      : null;
+    return {
+      deduped: {
         userMessageId: dup._id,
         assistantMessageId: thread.streamingMessageId ?? null,
         streamId: stream?.streamId ?? null,
         deduped: true,
-      };
-    }
+      },
+    };
+  }
 
-    const content = args.content.trim();
-    const attachmentIds = args.attachmentIds ?? [];
-    if (!content && attachmentIds.length === 0) {
-      throw new ConvexError("Message cannot be empty");
-    }
-    if (content.length > MAX_CONTENT) {
-      throw new ConvexError("Message too long");
-    }
-    if (attachmentIds.length > MAX_ATTACHMENTS) {
-      throw new ConvexError(
-        `At most ${MAX_ATTACHMENTS} attachments per message`,
-      );
-    }
+  const content = args.content.trim();
+  const attachmentIds = args.attachmentIds ?? [];
+  if (!content && attachmentIds.length === 0) {
+    throw new ConvexError("Message cannot be empty");
+  }
+  if (content.length > MAX_CONTENT) {
+    throw new ConvexError("Message too long");
+  }
+  if (attachmentIds.length > MAX_ATTACHMENTS) {
+    throw new ConvexError(`At most ${MAX_ATTACHMENTS} attachments per message`);
+  }
 
-    await assertCanGenerate(ctx, userId, thread);
-    const attachments = await bindAttachments(
-      ctx,
-      userId,
-      thread._id,
-      attachmentIds,
-    );
+  const takeRateUnit = await assertCanGenerate(ctx, userId, thread);
+  const attachments = await bindAttachments(
+    ctx,
+    userId,
+    thread._id,
+    attachmentIds,
+  );
 
-    const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
-      // A re-sent, UNCHANGED stored model (e.g. a legacy OpenRouter id on a
-      // pre-migration thread) is treated as non-explicit, so it re-homes to
-      // DEFAULT_MODEL instead of throwing "Unsupported model". A genuine new
-      // pick (args.model !== thread.model) stays strict.
-      explicit: args.model !== undefined && args.model !== thread.model,
-    });
+  const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
+    // A re-sent, UNCHANGED stored model (e.g. a legacy OpenRouter id on a
+    // pre-migration thread) is treated as non-explicit, so it re-homes to
+    // DEFAULT_MODEL instead of throwing "Unsupported model". A genuine new
+    // pick (args.model !== thread.model) stays strict.
+    explicit: args.model !== undefined && args.model !== thread.model,
+  });
+  return { content, attachmentIds, attachments, model, takeRateUnit };
+}
+
+/** The writes of `send`, after prepareSend cleared every check. */
+async function commitSend(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  thread: Doc<"chatThreads">,
+  args: SendArgs,
+  prepared: Exclude<Awaited<ReturnType<typeof prepareSend>>, { deduped: SendResult }>,
+): Promise<SendResult> {
+  const { content, attachmentIds, attachments, model } = prepared;
+  await prepared.takeRateUnit();
+  {
     const now = Date.now();
     const userSeq = thread.nextSeq;
     const assistantSeq = userSeq + 1;
@@ -486,6 +539,87 @@ export const send = mutation({
     await bump(ctx, thread.workspaceId, "chatMessages", 2);
 
     return { userMessageId, assistantMessageId, streamId, deduped: false };
+  }
+}
+
+export const send = mutation({
+  args: { threadId: v.id("chatThreads"), ...sendArgs },
+  handler: async (ctx, args): Promise<SendResult> => {
+    const userId = await requireUserId(ctx);
+    const thread = await requireThreadAccess(ctx, userId, args.threadId);
+    const prepared = await prepareSend(ctx, userId, thread, args);
+    if (prepared.deduped) return prepared.deduped;
+    return await commitSend(ctx, userId, thread, args, prepared);
+  },
+});
+
+/**
+ * Create a thread and send its first message in ONE round trip.
+ *
+ * The browser used to await `threads.create`, then call `send` — two
+ * sequential mutations (two RTTs, two commits) before the first turn could be
+ * dispatched. Same code paths as those two mutations (createThreadForUser +
+ * prepareSend/commitSend), same validators, same limits, same errors.
+ *
+ * BEHAVIOUR IS PRESERVED EXACTLY, including the error path: when `send` was
+ * rejected (rate limit, a generation already running, a bad attachment or
+ * model), the thread already existed and the user was left in it with a toast.
+ * So a rejected send here does NOT throw — that would roll the thread back —
+ * it RETURNS `{ threadId, sendError }` and the client navigates and toasts as
+ * before. That is also why the rate-window write is deferred until every check
+ * has passed (prepareSend/takeRateUnit): a mutation cannot keep one write and
+ * drop another, and a rejected send never consumed hourly budget.
+ *
+ * Idempotency is checked FIRST, by clientId, before anything is created: a
+ * replayed request finds its earlier message and returns that thread, where
+ * the old create-then-send could leave a second, empty thread behind.
+ */
+export const createAndSend = mutation({
+  args: { ...createThreadArgs, ...sendArgs },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<
+    | ({ threadId: Id<"chatThreads">; sendError?: undefined } & SendResult)
+    | { threadId: Id<"chatThreads">; sendError: string }
+  > => {
+    const userId = await requireUserId(ctx);
+
+    const dup = await ctx.db
+      .query("chatMessages")
+      .withIndex("by_client_id", (q) =>
+        q.eq("userId", userId).eq("clientId", args.clientId),
+      )
+      .first();
+    if (dup) {
+      const thread = await requireThreadAccess(ctx, userId, dup.threadId);
+      const prepared = await prepareSend(ctx, userId, thread, args);
+      if (!prepared.deduped) throw new ConvexError("Not found"); // unreachable
+      return { threadId: thread._id, ...prepared.deduped };
+    }
+
+    const { workspaceId, title, model, projectId, ...send } = args;
+    const threadId = await createThreadForUser(ctx, userId, {
+      workspaceId,
+      title,
+      model,
+      projectId,
+    });
+    const thread = await ctx.db.get(threadId);
+    if (!thread) throw new ConvexError("Not found"); // unreachable
+
+    let prepared: Awaited<ReturnType<typeof prepareSend>>;
+    try {
+      prepared = await prepareSend(ctx, userId, thread, { ...send, model });
+    } catch (e) {
+      if (e instanceof ConvexError && typeof e.data === "string") {
+        return { threadId, sendError: e.data };
+      }
+      throw e;
+    }
+    if (prepared.deduped) return { threadId, ...prepared.deduped }; // unreachable
+    const result = await commitSend(ctx, userId, thread, { ...send, model }, prepared);
+    return { threadId, ...result };
   },
 });
 
@@ -511,7 +645,7 @@ export const regenerate = mutation({
     if (message.seq !== thread.nextSeq - 1) {
       throw new ConvexError("Only the latest reply can be regenerated");
     }
-    await assertCanGenerate(ctx, userId, thread);
+    await (await assertCanGenerate(ctx, userId, thread))();
 
     const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
       // A re-sent, UNCHANGED stored model (e.g. a legacy OpenRouter id on a
@@ -585,7 +719,7 @@ export const retry = mutation({
     if (message.status !== "error" && message.status !== "aborted") {
       throw new ConvexError("Only failed replies can be retried");
     }
-    await assertCanGenerate(ctx, userId, thread);
+    await (await assertCanGenerate(ctx, userId, thread))();
     const model = await assertAllowedModel(ctx, args.model ?? thread.model, {
       // A re-sent, UNCHANGED stored model (e.g. a legacy OpenRouter id on a
       // pre-migration thread) is treated as non-explicit, so it re-homes to
@@ -648,7 +782,7 @@ export const editUserMessage = mutation({
     const content = args.content.trim();
     if (!content) throw new ConvexError("Message cannot be empty");
     if (content.length > MAX_CONTENT) throw new ConvexError("Message too long");
-    await assertCanGenerate(ctx, userId, thread);
+    await (await assertCanGenerate(ctx, userId, thread))();
 
     const removed = await deleteFromSeq(ctx, thread._id, message.seq);
     if (removed === TAIL_BATCH) {

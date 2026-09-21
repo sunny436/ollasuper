@@ -18,7 +18,7 @@ export function useSendMessage(threadId: string | null) {
   const router = useRouter();
   const { current } = useWorkspace();
   const { setPendingUsers, pendingProjectId } = useChatSession();
-  const createThread = useMutation(api.chat.threads.create);
+  const createAndSend = useMutation(api.chat.messages.createAndSend);
   const sendMessage = useMutation(api.chat.messages.send);
   const [sending, setSending] = useState(false);
   // Checked SYNCHRONOUSLY: React state loses to two Enter keydowns batched
@@ -54,32 +54,42 @@ export function useSendMessage(threadId: string | null) {
         }
       };
       try {
-        let tid = threadId;
-        if (tid) {
+        if (threadId) {
           // Existing thread: echo instantly, before any round-trip.
-          echo(tid);
-        } else {
-          // Forwarded UNVALIDATED on purpose: threads.create declares
-          // projectId as v.string() and resolves it server-side, so a bad or
-          // foreign id is refused there rather than silently producing a chat
-          // outside the Project the user asked for.
-          tid = await createThread({
-            workspaceId: current,
-            ...(pendingProjectId ? { projectId: pendingProjectId } : {}),
+          echo(threadId);
+          await sendMessage({
+            threadId: threadId as Id<"chatThreads">,
+            content,
+            clientId,
+            ...(attachmentIds.length ? { attachmentIds } : {}),
           });
-          // New thread: echo the moment it exists, then navigate BEFORE the send
-          // resolves — the optimistic row is only VISIBLE once the docked
-          // transcript replaces the centred hero (which overlays an empty list).
-          // replace, not push: Back from the first message leaves chat.
-          echo(tid);
-          router.replace(`/chat/${tid}`);
+          return true;
         }
-        await sendMessage({
-          threadId: tid as Id<"chatThreads">,
+        // New chat: ONE mutation creates the thread and sends the first
+        // message (this used to be threads.create, then send — two sequential
+        // round trips before the turn could be dispatched).
+        //
+        // projectId is forwarded UNVALIDATED on purpose: the mutation declares
+        // it as v.string() and resolves it server-side, so a bad or foreign id
+        // is refused there rather than silently producing a chat outside the
+        // Project the user asked for.
+        const r = await createAndSend({
+          workspaceId: current,
+          ...(pendingProjectId ? { projectId: pendingProjectId } : {}),
           content,
           clientId,
           ...(attachmentIds.length ? { attachmentIds } : {}),
         });
+        // Echo the moment the thread exists, then navigate — the optimistic row
+        // is only VISIBLE once the docked transcript replaces the centred hero
+        // (which overlays an empty list). replace, not push: Back from the
+        // first message leaves chat.
+        echo(r.threadId);
+        router.replace(`/chat/${r.threadId}`);
+        // A rejected first send (limit, running generation, bad attachment…)
+        // still created the thread and lands the user in it with a toast —
+        // exactly what create-then-send did when send threw.
+        if (r.sendError !== undefined) throw new Error(r.sendError);
         return true;
       } catch (e) {
         // The optimistic row can never settle — drop it so it doesn't linger.
@@ -98,7 +108,7 @@ export function useSendMessage(threadId: string | null) {
     [
       threadId,
       current,
-      createThread,
+      createAndSend,
       sendMessage,
       router,
       setPendingUsers,
