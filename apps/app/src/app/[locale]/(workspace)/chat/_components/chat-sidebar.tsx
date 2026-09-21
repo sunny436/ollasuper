@@ -15,7 +15,7 @@ import {
 } from "convex/react";
 import { useCachedThreads, type CachedThread } from "../_hooks/use-cached-threads";
 import { useCachedUser } from "../_hooks/use-cached-user";
-import { prefetchThread, releasePrefetch } from "../_lib/prefetch";
+import { cancelPrefetch, prefetchThread, releasePrefetch } from "../_lib/prefetch";
 import {
   Archive,
   CalendarClock,
@@ -384,7 +384,9 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                     prefetch={false}
                     onClick={onNavigate}
                     onPointerEnter={() => prefetchThread(convex, t._id)}
+                    onPointerLeave={() => cancelPrefetch(t._id)}
                     onFocus={() => prefetchThread(convex, t._id)}
+                    onBlur={() => cancelPrefetch(t._id)}
                     className="flex min-w-0 flex-1 items-center gap-2.5 truncate [@media(pointer:coarse)]:min-h-11"
                   >
                     <MessageSquare

@@ -1,3 +1,4 @@
+import { setPrefetchedTranscript } from "@/lib/display-cache";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { ConvexReactClient } from "convex/react";
 
@@ -11,16 +12,36 @@ import type { ConvexReactClient } from "convex/react";
  * RETAIN a watchQuery subscription for a short while, so threads.get and
  * stream.active resolve synchronously on arrival with no skeleton flash.
  *
- * listPaged is warmed best-effort: usePaginatedQuery keys its first page on
- * internal paginationOpts, so the token may not match for synchronous reuse —
- * but the warm still pre-pays the round-trip. The reliable instant transcript
- * comes from the localStorage cache (use-cached-transcript), not this.
+ * listPaged: usePaginatedQuery keys its first page on a private per-mount id,
+ * so the warmed subscription is NEVER the one the transcript reads — measured
+ * on production, a hovered thread painted no sooner than an unhovered one and
+ * the ~200 KB page crossed the wire twice. So the page this warm receives is
+ * handed to use-cached-transcript through setPrefetchedTranscript, which seeds
+ * the transcript from it while the paginated query is still loading, the same
+ * way the localStorage copy seeds a reload.
  *
  * Held subscriptions are bounded: a TTL releases them, and an LRU cap keeps at
  * most MAX warm at once, so hovering the whole rail never leaks subscriptions.
+ *
+ * INTENT, NOT CONTACT: the fetch starts only after the pointer has rested on a
+ * row for INTENT_MS (cancelled on leave/blur). A sweep down the rail used to
+ * fire a prefetch per row — measured at ~600 KB over the socket for ten rows
+ * in under a second, competing with the click that followed. On a
+ * data-saver / 2G connection the transcript warm is skipped entirely; the two
+ * small warms (thread meta, stream) are kept.
  */
 const TTL_MS = 20_000;
 const MAX = 6;
+const INTENT_MS = 150;
+const PAGE = 30;
+
+const pending = new Map<string, ReturnType<typeof setTimeout>>();
+
+function constrained(): boolean {
+  const c = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } })
+    .connection;
+  return !!c && (c.saveData === true || c.effectiveType === "slow-2g" || c.effectiveType === "2g");
+}
 
 type Held = { unsubs: Array<() => void>; timer: ReturnType<typeof setTimeout> };
 const held = new Map<string, Held>();
@@ -37,10 +58,30 @@ function release(threadId: string): void {
   held.delete(threadId);
 }
 
+/** Arm a prefetch; it fires after INTENT_MS unless cancelPrefetch is called. */
 export function prefetchThread(
   client: ConvexReactClient,
   threadId: string,
 ): void {
+  if (held.has(threadId) || pending.has(threadId)) return; // already warm / armed
+  pending.set(
+    threadId,
+    setTimeout(() => {
+      pending.delete(threadId);
+      warmThread(client, threadId);
+    }, INTENT_MS),
+  );
+}
+
+/** The pointer left before INTENT_MS: nothing is fetched. */
+export function cancelPrefetch(threadId: string): void {
+  const t = pending.get(threadId);
+  if (t === undefined) return;
+  clearTimeout(t);
+  pending.delete(threadId);
+}
+
+function warmThread(client: ConvexReactClient, threadId: string): void {
   if (held.has(threadId)) return; // already warm
   if (held.size >= MAX) {
     const oldest = held.keys().next().value as string | undefined;
@@ -59,10 +100,22 @@ export function prefetchThread(
   };
   warm(api.chat.threads.get, { threadId });
   warm(api.chat.stream.active, { threadId });
-  warm(api.chat.messages.listPaged, {
-    threadId,
-    paginationOpts: { numItems: 30, cursor: null },
-  });
+  if (!constrained()) {
+    try {
+      const w = client.watchQuery(api.chat.messages.listPaged, {
+        threadId,
+        paginationOpts: { numItems: PAGE, cursor: null },
+      });
+      unsubs.push(
+        w.onUpdate(() => {
+          const page = w.localQueryResult();
+          // listPaged is newest-first; the transcript displays oldest-first —
+          // the same reversal message-list.tsx applies to the live result.
+          if (page) setPrefetchedTranscript(threadId, [...page.page].reverse());
+        }),
+      );
+    } catch {}
+  }
   held.set(threadId, {
     unsubs,
     timer: setTimeout(() => release(threadId), TTL_MS),
@@ -71,5 +124,6 @@ export function prefetchThread(
 
 /** Drop a thread's warm subs once its own components have taken over. */
 export function releasePrefetch(threadId: string): void {
+  cancelPrefetch(threadId);
   release(threadId);
 }

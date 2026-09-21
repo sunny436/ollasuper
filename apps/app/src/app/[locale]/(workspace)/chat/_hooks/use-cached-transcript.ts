@@ -1,6 +1,6 @@
 "use client";
 
-import { CACHE_KEYS } from "@/lib/display-cache";
+import { CACHE_KEYS, getPrefetchedTranscript } from "@/lib/display-cache";
 import { useEffect, useState } from "react";
 import type { ChatMessageDoc } from "../_components/chat-message";
 
@@ -23,6 +23,12 @@ type Entry = { threadId: string; msgs: ChatMessageDoc[] };
  * localStorage quota. Hydration is in an EFFECT (no hydration mismatch); the
  * write is guarded so the empty loading state never clobbers the cache; and it
  * is cleared on sign-out. The live in-flight row is never cached here.
+ *
+ * A thread the rail's hover prefetch has already fetched seeds the same way,
+ * from the in-memory copy (display-cache.ts setPrefetchedTranscript), read
+ * synchronously on mount: on a client-side navigation there is no hydration
+ * to disagree with, and on a full document load the map is empty by
+ * construction, so the server and client trees are identical.
  */
 export function useCachedTranscript(
   threadId: string | null,
@@ -30,6 +36,9 @@ export function useCachedTranscript(
   loadingFirst: boolean,
 ): ChatMessageDoc[] {
   const [cached, setCached] = useState<Entry | null>(null);
+  const [prefetched] = useState<ChatMessageDoc[] | null>(() =>
+    threadId ? getPrefetchedTranscript<ChatMessageDoc>(threadId) : null,
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -55,5 +64,6 @@ export function useCachedTranscript(
   }, [threadId, live, loadingFirst]);
 
   if (loadingFirst && cached?.threadId === threadId) return cached.msgs;
+  if (loadingFirst && prefetched) return prefetched;
   return live;
 }
