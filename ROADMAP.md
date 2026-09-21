@@ -2,6 +2,45 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Performance Phase 1 — round trips and cache lifetimes (2026-09-21) - LIVE, prod-verified
+
+Five isolated commits, each revertable alone, chosen from the measured audit (India-user latency;
+the VM is in the US, every dynamic request and every WebSocket message pays ~250-300 ms). Same
+features, same UX, same auth semantics, same models. Verified with `e2e/p-chat.js` (18/18),
+`e2e/perf-smoke.js` (10/10), backend suite 1,062 tests, and `e2e/perf-india.js` before/after
+(N=10 per profile; US, emulated India 260 ms / 20↓8↑ Mbps, emulated India-poor 400 ms / 4↓1↑).
+
+- **JWKS / OIDC discovery served with `max-age=3600`** (`convex/http.ts`). The backend honoured
+  the library's 15 s and re-fetched both documents through the public hostname on most
+  navigations (216 of the 220 slow middleware auth checks in a day coincided). Runtime knob:
+  `AUTH_WELLKNOWN_MAX_AGE_S` (`convex env set … 15` restores the old behaviour, no redeploy).
+  **Key-rotation runbook changed:** after setting a new `JWT_PRIVATE_KEY` + `JWKS`, restart the
+  backend container (`docker compose restart backend` in `self-hosted/`) to drop the cached
+  JWKS — the 15 s TTL used to do that on its own. The JWKS carries no `kid`, so there is no
+  overlap window either way; old-key tokens are rejected as soon as the cache refreshes, the
+  refresh-token flow re-issues under the new key.
+- **No redirect chain for a Server Action POSTed to `/login` by a signed-in user**
+  (`middleware.ts`). The library's `invalidateCache` used to be re-POSTed to `/` → `/chat`
+  before `router.replace("/chat")` even ran.
+- **Hover prefetch actually paints the transcript** (`chat/_lib/prefetch.ts`,
+  `use-cached-transcript.ts`, `lib/display-cache.ts`): the warmed page seeds the transcript
+  through an in-memory map (proved: rows painted with every incoming WebSocket frame held for
+  3 s). 150 ms hover-intent, cancelled on leave; the transcript warm is skipped on data-saver/2G;
+  released before a delete; cleared on sign-out.
+- **`messages.createAndSend`**: one mutation for a new chat's first message (was
+  `threads.create` then `send`). Same code paths, same errors; a rejected first send still leaves
+  the thread and toasts, and never consumes hourly budget (`quotas.peekWindow`).
+- **`users.lastActivityAt` written at most every 5 min** (`authSessions.heartbeat`), not on every
+  page mount — every authenticated query reads that row.
+
+Not done, deliberately: font preloads (already sent as a `Link:` response header — the audit
+item was wrong); the `AuthProvider` cannot take a custom `onChange`, so the `invalidateCache`
+round trip itself stays (one cheap request now). Known emulation limits are documented in
+`e2e/perf-india.js`. Phase 2 candidates, measured but untouched: the ~200 KB transcript page
+(`listPaged` returns `reasoning` + folded `events` for 30 rows), `stream.active` re-sending the
+whole answer per push, the 125 ms HTTP-action overhead per `/ai/ingress` POST (mutation itself
+11 ms), `chatStreams` OCC retries (three writers), `dispatchPayload` reading 518 KB per turn.
+
 ## Auth hardening — operator action still outstanding
 
 The second auth audit (Better Auth as the reference) is shipped and prod-verified, but two items

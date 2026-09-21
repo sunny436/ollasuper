@@ -84,6 +84,7 @@ const fmt = (x) => (x === null || x === undefined ? "  n/a" : String(Math.round(
  * bandwidth, through an ORDER-PRESERVING queue (a reordered frame would corrupt
  * the sync protocol). Bytes are counted in the same place.
  */
+const dropped = [];
 function delayQueue(oneWayMs, bytesPerSec, send) {
   // One serial drain loop per direction: strict FIFO. Independent setTimeouts
   // with near-equal due times can fire out of order, and one reordered frame
@@ -101,7 +102,9 @@ function delayQueue(oneWayMs, bytesPerSec, send) {
       q.shift();
       try {
         send(head.msg);
-      } catch {}
+      } catch (e) {
+        dropped.push(String(e).slice(0, 80));
+      }
     }
     draining = false;
   };
@@ -215,10 +218,22 @@ const ROW = `${CONVO} .group.my-5`;
 
 async function waitRows(page, min, timeout = 30000) {
   await page.waitForFunction(
-    ([sel, n]) => document.querySelectorAll(sel).length >= n,
+    ([sel, n]) => document.querySelectorAll(`${sel}:not([data-perf-old])`).length >= n,
     [ROW, min],
     { timeout, polling: "raf" },
   );
+}
+
+/**
+ * Tag the rows on screen BEFORE a thread switch. The App Router can commit the
+ * new URL while the previous segment is still in the DOM, so counting rows
+ * right after the URL changes could count the OLD transcript (seen: a "first
+ * row" 37 ms after click). New rows are new nodes and carry no tag.
+ */
+async function markOldRows(page) {
+  await page.evaluate((sel) => {
+    for (const el of document.querySelectorAll(sel)) el.setAttribute("data-perf-old", "1");
+  }, ROW);
 }
 
 async function waitAssistantText(page, timeout = 120000) {
@@ -226,11 +241,44 @@ async function waitAssistantText(page, timeout = 120000) {
     (sel) => {
       const rows = [...document.querySelectorAll(sel)];
       const last = rows[rows.length - 1];
-      return !!last && !last.classList.contains("items-end") && last.innerText.trim().length > 0;
+      if (!last || last.classList.contains("items-end")) return false;
+      // The assistant row renders its meta header ("Assistant" + time) BEFORE
+      // any token — and so does the optimistic placeholder — so only text past
+      // the first two lines counts as a token.
+      return last.innerText.trim().split(/\r?\n/).slice(2).join("").trim().length > 0;
     },
     ROW,
     { timeout, polling: "raf" },
   );
+}
+
+/**
+ * Server ack of a send = the streaming row exists = the composer shows Stop.
+ * A very short reply can finish before a 150 ms poll sees the button, so the
+ * assistant text itself also counts (a later, conservative estimate).
+ */
+async function waitAck(page, stop, timeout = 60000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    if ((await stop.count()) > 0) return;
+    // Fast-reply race: the whole turn can finish between two polls. Real
+    // text past the meta header means the turn was acked AND answered — the
+    // optimistic placeholder never has any (it shows a typing indicator).
+    const rows = await page.locator(ROW).count();
+    if (rows > 0) {
+      const done = await page
+        .locator(ROW)
+        .last()
+        .evaluate(
+          (r) =>
+            !r.classList.contains("items-end") &&
+            r.innerText.trim().split(/\r?\n/).slice(2).join("").trim().length > 0,
+        );
+      if (done) return;
+    }
+    await sleep(10);
+  }
+  throw new Error("no ack (no Stop button and no assistant text) within " + timeout + " ms");
 }
 
 async function settle(page, timeout = 240000) {
@@ -304,6 +352,7 @@ async function oneRunInner(browser, i, out0) {
   const rec = await instrument(context, page);
   await routeSocket(context, rec);
   const out = Object.assign(out0, { run: i, errors });
+  const droppedBefore = dropped.length;
   Object.defineProperty(out, "__page", { value: page, enumerable: false });
 
   // 1. cold /login
@@ -364,6 +413,7 @@ async function oneRunInner(browser, i, out0) {
       const href1 = await links.nth(1).getAttribute("href");
       await links.nth(1).hover();
       await sleep(900);
+      await markOldRows(page);
       let t0 = now();
       await links.nth(1).click();
       await page.waitForURL((u) => u.pathname === href1, { timeout: 30000 });
@@ -378,6 +428,7 @@ async function oneRunInner(browser, i, out0) {
       await page.mouse.move(700, 400);
       await sleep(300);
       const href = await links.nth(2).getAttribute("href");
+      await markOldRows(page);
       t0 = now();
       await page.evaluate((h) => {
         const a = document.querySelector(`a[href="${h}"]`);
@@ -411,7 +462,7 @@ async function oneRunInner(browser, i, out0) {
     await page.waitForURL(/\/chat\/[a-z0-9]+/i, { timeout: 30000 });
     out.newchat_url_ms = now() - t0;
     createdHref = new URL(page.url()).pathname;
-    await stop.waitFor({ timeout: 60000 });
+    await waitAck(page, stop);
     out.newchat_ack_ms = now() - t0;
     await waitAssistantText(page);
     out.newchat_first_token_ms = now() - t0;
@@ -435,7 +486,7 @@ async function oneRunInner(browser, i, out0) {
       { timeout: 30000, polling: "raf" },
     );
     out.send_echo_ms = now() - t0;
-    await stop.waitFor({ timeout: 60000 });
+    await waitAck(page, stop);
     out.send_ack_ms = now() - t0;
     await waitAssistantText(page);
     out.send_first_token_ms = now() - t0;
@@ -470,6 +521,8 @@ async function oneRunInner(browser, i, out0) {
     }
   }
 
+  out.ws_frames_dropped = dropped.length - droppedBefore;
+  if (out.ws_frames_dropped) out.ws_drop_samples = dropped.slice(droppedBefore, droppedBefore + 3);
   await context.close();
   return out;
 }
