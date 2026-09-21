@@ -65,6 +65,15 @@ export function setPrefetchedTranscript<T>(threadId: string, rows: T[]): void {
   prefetchedTranscripts.set(threadId, rows);
 }
 
-export function getPrefetchedTranscript<T>(threadId: string): T[] | null {
-  return (prefetchedTranscripts.get(threadId) as T[] | undefined) ?? null;
+/**
+ * Single use: the seed is consumed by the transcript that mounts for it. A
+ * later open of the same thread without a fresh hover must not paint a page
+ * from minutes ago — the live query paints it instead, exactly as before —
+ * and a bounded map that is also consumed on read never holds stale pages.
+ */
+export function takePrefetchedTranscript<T>(threadId: string): T[] | null {
+  const rows = prefetchedTranscripts.get(threadId) as T[] | undefined;
+  if (rows === undefined) return null;
+  prefetchedTranscripts.delete(threadId);
+  return rows;
 }

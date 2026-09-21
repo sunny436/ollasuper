@@ -1,6 +1,6 @@
 "use client";
 
-import { CACHE_KEYS, getPrefetchedTranscript } from "@/lib/display-cache";
+import { CACHE_KEYS, takePrefetchedTranscript } from "@/lib/display-cache";
 import { useEffect, useState } from "react";
 import type { ChatMessageDoc } from "../_components/chat-message";
 
@@ -37,7 +37,7 @@ export function useCachedTranscript(
 ): ChatMessageDoc[] {
   const [cached, setCached] = useState<Entry | null>(null);
   const [prefetched] = useState<ChatMessageDoc[] | null>(() =>
-    threadId ? getPrefetchedTranscript<ChatMessageDoc>(threadId) : null,
+    threadId ? takePrefetchedTranscript<ChatMessageDoc>(threadId) : null,
   );
 
   useEffect(() => {
