@@ -41,6 +41,9 @@ import { consumeWindow } from "./quotas";
  * until it expires (≤1h, a property of stateless JWTs that no server-side design
  * removes), but its refresh token is gone, so it cannot continue past that.
  */
+/** How often `users.lastActivityAt` is written by heartbeat (see below). */
+export const ACTIVITY_WRITE_INTERVAL_MS = 5 * 60_000;
+
 export const heartbeat = mutation({
   args: {},
   handler: async (ctx) => {
@@ -66,7 +69,19 @@ export const heartbeat = mutation({
 
     // Sliding-window bookkeeping. Enforcement is the refresh token's own
     // inactivity budget; this column is for display and anomaly review.
-    await ctx.db.patch(userId, { lastActivityAt: Date.now() });
+    // Activity is recorded at most once per ACTIVITY_WRITE_INTERVAL_MS, not on
+    // every mount. Every authenticated query reads the caller's `users` row
+    // (isActiveUser), so a patch here re-executes all of that user's live
+    // subscriptions at the exact moment they are being set up — measured on
+    // production as ~14 query executions in the second after a heartbeat.
+    // Nothing reads `lastActivityAt` at minute granularity (nothing reads it at
+    // all today), and session revocation above is unchanged.
+    const now = Date.now();
+    const user = await ctx.db.get(userId);
+    const last = user?.lastActivityAt ?? 0;
+    if (now - last >= ACTIVITY_WRITE_INTERVAL_MS) {
+      await ctx.db.patch(userId, { lastActivityAt: now });
+    }
     return { ok: true as const, revoked };
   },
 });
