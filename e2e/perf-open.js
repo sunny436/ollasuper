@@ -66,6 +66,9 @@ function delayQueue(oneWayMs, bytesPerSec, send) {
     await page.waitForURL(/\/chat\/?$/, { timeout: 15000 }).catch(() => {});
     await page.mouse.move(700, 400);
     await sleep(hover ? 21000 : 3000);
+    // no reload seed for either variant: the active-thread localStorage cache
+    // would otherwise seed the NOT-hovered open of a thread opened last iteration
+    await page.evaluate(() => { try { localStorage.removeItem("chat:transcript"); } catch {} });
     const link = page.locator(`a[href="${href}"]`).first();
     if (hover) { await link.hover(); await sleep(1200); }
     await page.evaluate((sel) => { for (const el of document.querySelectorAll(sel)) el.setAttribute("data-perf-old", "1"); }, ROW);
