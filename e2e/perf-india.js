@@ -9,7 +9,7 @@
 //   node perf-india.js --profile india       # 260 ms RTT, 20↓/8↑ Mbps, Mumbai
 //   node perf-india.js --profile india-poor  # 400 ms RTT, 4↓/1↑ Mbps
 //   node perf-india.js --self-check          # is the WebSocket throttled at all?
-//   node perf-india.js --measure-only --label real-india   # run from India as-is
+//   node perf-india.js --profile us --label real-india      # from India: unthrottled = the real path
 //
 // The Convex WebSocket is delayed by the harness itself (routeWebSocket) because
 // Chrome network conditions do not touch it — see routeSocket.
