@@ -10,7 +10,95 @@ import { isInlineSafeImageType, neutralizedBlobType } from "./blobSafety";
 
 const http = httpRouter();
 
-auth.addHttpRoutes(http);
+/**
+ * The OIDC discovery + JWKS routes, with a cache lifetime the backend can use.
+ *
+ * `@convex-dev/auth` serves both with `Cache-Control: max-age=15`, and the Convex
+ * backend honours that header when it validates a JWT: every token check that
+ * lands more than 15 s after the previous one re-fetches BOTH documents through
+ * `CONVEX_SITE_URL` — the public hostname, i.e. out through Cloudflare and back
+ * in through the tunnel. Measured on production: 137 ms + 126 ms, sequential,
+ * with no request coalescing (72 of 249 refetches in one day were <1 s apart),
+ * and 216 of the 220 middleware auth checks that took 200-500 ms coincided with
+ * one. That was ~15 % of every page/RSC request and every WebSocket
+ * re-authentication.
+ *
+ * The bodies below are byte-identical to the library's (same env vars, same
+ * fields); only `max-age` changes, and it is a runtime knob:
+ * `AUTH_WELLKNOWN_MAX_AGE_S` (default 3600) — `convex env set` it to 15 to get
+ * the library's behaviour back with no redeploy.
+ *
+ * SECURITY: caching a PUBLIC key longer does not weaken validation — the
+ * signature check, issuer and key are unchanged, and the library itself already
+ * permits a day-old JWKS under `stale-if-error=86400`. What changes is key
+ * ROTATION: the JWKS carries no `kid`, so after setting a new `JWT_PRIVATE_KEY`
+ * + `JWKS`, RESTART THE BACKEND CONTAINER to drop its cached copy (with 15 s the
+ * cache expired on its own). Old-key tokens are rejected as soon as the cache
+ * refreshes; the refresh-token flow re-issues under the new key, as before.
+ */
+const WELLKNOWN_DEFAULT_MAX_AGE_S = 3600;
+
+function wellKnownCacheControl(): string {
+  const raw = Number(process.env.AUTH_WELLKNOWN_MAX_AGE_S);
+  const maxAge =
+    Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : WELLKNOWN_DEFAULT_MAX_AGE_S;
+  return `public, max-age=${maxAge}, stale-while-revalidate=300, stale-if-error=86400`;
+}
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (value === undefined) throw new Error(`Missing environment variable \`${name}\``);
+  return value;
+}
+
+http.route({
+  path: "/.well-known/openid-configuration",
+  method: "GET",
+  handler: httpAction(async () => {
+    return new Response(
+      JSON.stringify({
+        issuer: requireEnv("CONVEX_SITE_URL"),
+        jwks_uri: `${requireEnv("CONVEX_SITE_URL")}/.well-known/jwks.json`,
+        authorization_endpoint: `${requireEnv("CONVEX_SITE_URL")}/oauth/authorize`,
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": wellKnownCacheControl(),
+        },
+      },
+    );
+  }),
+});
+
+http.route({
+  path: "/.well-known/jwks.json",
+  method: "GET",
+  handler: httpAction(async () => {
+    return new Response(requireEnv("JWKS"), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": wellKnownCacheControl(),
+      },
+    });
+  }),
+});
+
+// The library registers the two routes above itself and the router throws on a
+// duplicate path, so it gets a shim that drops just those two and forwards
+// everything else (the OAuth sign-in/callback routes) unchanged.
+const WELLKNOWN_PATHS = new Set([
+  "/.well-known/openid-configuration",
+  "/.well-known/jwks.json",
+]);
+auth.addHttpRoutes({
+  route: (spec: Parameters<typeof http.route>[0]) => {
+    if ("path" in spec && WELLKNOWN_PATHS.has(spec.path)) return;
+    http.route(spec);
+  },
+} as typeof http);
 
 // Register the webhook handler at /polar/events
 // biome-ignore lint/suspicious/noExplicitAny: <explanation>
