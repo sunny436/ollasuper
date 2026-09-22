@@ -20,6 +20,7 @@ import { loadThreadDatasets } from "./attachments";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
 import { deleteExecutions } from "./executions";
 import { loadContext } from "./context";
+import { stripForDisplay } from "./events";
 import { buildHistory } from "./messages";
 import { contextWindowFor, routableCandidates } from "./models";
 
@@ -155,15 +156,17 @@ export const active = query({
             .take(MAX_RESIDENT_EVENTS)
         )
           .sort((a, b) => a.seq - b.seq)
-          .map((e) => ({
-            eventId: e.eventId,
-            seq: e.seq,
-            type: e.type,
-            v: e.v,
-            ts: e.ts,
-            textOffset: e.textOffset,
-            payload: e.payload,
-          }))
+          .map((e) =>
+            stripForDisplay({
+              eventId: e.eventId,
+              seq: e.seq,
+              type: e.type,
+              v: e.v,
+              ts: e.ts,
+              textOffset: e.textOffset,
+              payload: e.payload,
+            }),
+          )
       : [];
 
     // Phase 8: the pending approval (if the turn is parked) rides this same hot

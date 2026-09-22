@@ -59,3 +59,35 @@ export const eventFields = {
 };
 
 export const eventObject = v.object(eventFields);
+
+/**
+ * The DISPLAY copy of an event.
+ *
+ * `TOOL_RESULT.content` is the verbatim, injection-framed model-context block
+ * (services/ai/app/models/events.py ToolResultPayload.content). It exists for
+ * ONE reader: durable resume, which rebuilds the tool's ToolMessage from the
+ * live `chatStreamEvents` row (stream.ts dispatchPayload → completedTools).
+ * The browser's parser drops it at parse time (chat/_lib/agent-events.ts,
+ * rule 1) so no component can render it — yet it was 74 % of every byte in
+ * `chatMessages` on production (35 MB of 47 MB of folded events, 60 MB total),
+ * re-sent with every transcript page and every stream.active push.
+ *
+ * So the live table keeps it and every DISPLAY path drops it: the fold into
+ * `chatMessages.events` at finalize (new messages shrink at the source, which
+ * is also what buildHistory reads), plus toPublic and stream.active for
+ * messages folded before this existed. Cheap: a substring check before any
+ * JSON work, and TOOL_RESULT only.
+ */
+export function stripForDisplay<T extends { type: string; payload: string }>(
+  e: T,
+): T {
+  if (e.type !== "TOOL_RESULT" || !e.payload.includes('"content"')) return e;
+  try {
+    const b: unknown = JSON.parse(e.payload);
+    if (!b || typeof b !== "object" || !("content" in b)) return e;
+    const { content: _dropped, ...rest } = b as Record<string, unknown>;
+    return { ...e, payload: JSON.stringify(rest) };
+  } catch {
+    return e;
+  }
+}

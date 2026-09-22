@@ -6,7 +6,7 @@ import { internalMutation } from "../_generated/server";
 import { audit } from "../auditLog";
 import { notify } from "../notifications";
 import { recordUsage } from "../usage";
-import { eventObject } from "./events";
+import { eventObject, stripForDisplay } from "./events";
 import { deleteExecutions } from "./executions";
 
 /**
@@ -197,7 +197,9 @@ async function foldEvents(
   const nextSeq = (events.at(-1)?.seq ?? -1) + 1;
   events.push({ ...terminal, seq: nextSeq });
   await deleteEvents(ctx, messageId);
-  return events;
+  // The folded copy is display-only (resume reads the live rows, which are
+  // gone after this) — drop the model-context blocks here, at the source.
+  return events.map(stripForDisplay);
 }
 
 /**

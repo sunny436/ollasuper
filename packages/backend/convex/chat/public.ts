@@ -1,5 +1,6 @@
 import type { Doc } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { stripForDisplay } from "./events";
 
 /**
  * The public shape of one chat message.
@@ -53,7 +54,9 @@ export async function toPublic(ctx: QueryCtx, m: Doc<"chatMessages">) {
     tokensOut: m.tokensOut ?? null,
     // Typed events (Phase 3). Empty for text-only / pre-Phase-3 messages, so
     // the client renders them exactly as before.
-    events: m.events ?? [],
+    // Messages folded before stripForDisplay existed still carry the
+    // model-context blocks; every display path drops them.
+    events: (m.events ?? []).map(stripForDisplay),
     createdAt: m.createdAt,
     // Exposed so the client can dedupe its optimistic user row against the
     // settled one (the browser minted this id; returning it to its own author
