@@ -4,6 +4,7 @@ import type { Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
 import { auth } from "./auth";
 import { EVENT_TYPES } from "./chat/events";
+import { applyHotOp, authorizeIngressKey, timingSafeEqual } from "./chat/ingress";
 import { env } from "./env";
 import { polar } from "./subscriptions";
 import { isInlineSafeImageType, neutralizedBlobType } from "./blobSafety";
@@ -157,19 +158,10 @@ const aiJson = (body: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-/** Constant-time compare — used by every secret check in this file. */
-function timingSafeEqual(a: string | null, b: string | undefined): boolean {
-  if (!a || !b || a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
+// timingSafeEqual (used by every secret check in this file) and the ingress
+// key check are shared with chat/ingress.ts so both entry points cannot drift.
 function authorizeIngress(req: Request): boolean {
-  return timingSafeEqual(
-    req.headers.get("x-ai-key"),
-    process.env.AI_INGRESS_SECRET,
-  );
+  return authorizeIngressKey(req.headers.get("x-ai-key"));
 }
 
 http.route({
@@ -188,107 +180,13 @@ http.route({
 
     const streamId = typeof body.streamId === "string" ? body.streamId : null;
 
+    // delta / event / heartbeat / finalize live in chat/ingress.ts, shared with
+    // the guarded public mutation `chat/ingress:apply` (the ~10 ms path the
+    // Python plane prefers over this ~136 ms HTTP action; see that file).
+    const hot = await applyHotOp(ctx, body);
+    if (hot) return aiJson(hot.body, hot.status);
+
     switch (body.op) {
-      case "delta": {
-        if (!streamId || !Array.isArray(body.deltas)) {
-          return aiJson({ error: "bad request" }, 400);
-        }
-        const deltas = body.deltas
-          .filter(
-            (d): d is { seq: number; text: string } =>
-              typeof d === "object" &&
-              d !== null &&
-              typeof (d as { seq?: unknown }).seq === "number" &&
-              typeof (d as { text?: unknown }).text === "string",
-          )
-          .map((d) => ({ seq: d.seq, text: d.text }));
-        const r = await ctx.runMutation(internal.chat.ingest.appendDeltas, {
-          streamId,
-          deltas,
-        });
-        // Unknown streamId => 404 and nothing written. Proves capability scoping.
-        if ("unknown" in r && r.unknown)
-          return aiJson({ error: "unknown stream" }, 404);
-        return aiJson(r);
-      }
-      case "heartbeat": {
-        if (!streamId) return aiJson({ error: "bad request" }, 400);
-        const r = await ctx.runMutation(internal.chat.ingest.heartbeat, {
-          streamId,
-        });
-        if ("unknown" in r && r.unknown)
-          return aiJson({ error: "unknown stream" }, 404);
-        return aiJson(r);
-      }
-      case "finalize": {
-        if (!streamId) return aiJson({ error: "bad request" }, 400);
-        // "cancelled" must NOT fall through to "done". When the user pressed
-        // Stop, stop() has already marked the stream aborted and finishStream
-        // short-circuits — but registry.shutdown() also cancels every in-flight
-        // task on a graceful systemd restart, and there the stream is still
-        // running. Mapping that to "done" would silently persist a truncated
-        // answer labelled complete, with no error badge, that retry() refuses
-        // because it only accepts error/aborted.
-        const status =
-          body.status === "error" || body.status === "cancelled"
-            ? "error"
-            : "done";
-        // Which model the Master Model Router actually ran, and why. Both
-        // branches persist it: a failed turn names its model or the router
-        // learns nothing from the failure.
-        const routedModel =
-          typeof body.model === "string" && body.model ? body.model : undefined;
-        const routedReason =
-          typeof body.routedReason === "string" && body.routedReason
-            ? body.routedReason
-            : undefined;
-        const text = typeof body.text === "string" ? body.text : "";
-        if (status === "error") {
-          const err = (body.error ?? {}) as Record<string, unknown>;
-          const cancelled = body.status === "cancelled";
-          const r = await ctx.runMutation(internal.chat.ingest.failStream, {
-            streamId,
-            error: cancelled
-              ? "Response was interrupted"
-              : typeof err.message === "string"
-                ? err.message
-                : "Generation failed",
-            errorCode: cancelled
-              ? "interrupted"
-              : typeof err.code === "string"
-                ? err.code
-                : undefined,
-            text,
-            model: routedModel,
-            routedReason,
-          });
-          if ("unknown" in r && r.unknown)
-            return aiJson({ error: "unknown stream" }, 404);
-          return aiJson(r);
-        }
-        const usage = (body.usage ?? {}) as Record<string, unknown>;
-        const num = (x: unknown) => (typeof x === "number" ? x : undefined);
-        const r = await ctx.runMutation(internal.chat.ingest.finishStream, {
-          streamId,
-          text,
-          model: routedModel,
-          routedReason,
-          finishReason:
-            typeof body.finishReason === "string"
-              ? body.finishReason
-              : undefined,
-          reasoning:
-            typeof body.reasoning === "string" ? body.reasoning : undefined,
-          tokensIn: num(usage.promptTokens),
-          tokensOut: num(usage.completionTokens),
-          costUsd: num(usage.costUsd),
-          firstTokenMs: num(body.firstTokenMs),
-          latencyMs: num(body.latencyMs),
-        });
-        if ("unknown" in r && r.unknown)
-          return aiJson({ error: "unknown stream" }, 404);
-        return aiJson(r);
-      }
       case "title": {
         if (!streamId || typeof body.title !== "string") {
           return aiJson({ error: "bad request" }, 400);
@@ -407,47 +305,6 @@ http.route({
               : {}),
           }),
         );
-      }
-      case "event": {
-        // Typed events (Phase 3). Defensively filter to well-formed events with
-        // a KNOWN type — malformed/unknown-type events are dropped at the edge
-        // (mirrors the delta filter) so the mutation validator never sees bad
-        // data. Scoped by the same streamId capability; nothing is executed.
-        if (!streamId || !Array.isArray(body.events)) {
-          return aiJson({ error: "bad request" }, 400);
-        }
-        const events = body.events
-          .filter(
-            (e): e is Record<string, unknown> =>
-              typeof e === "object" && e !== null,
-          )
-          .filter(
-            (e) =>
-              typeof e.eventId === "string" &&
-              typeof e.seq === "number" &&
-              typeof e.type === "string" &&
-              (EVENT_TYPES as readonly string[]).includes(e.type) &&
-              typeof e.payload === "string",
-          )
-          .map((e) => ({
-            eventId: e.eventId as string,
-            seq: e.seq as number,
-            type: e.type as (typeof EVENT_TYPES)[number],
-            v: typeof e.v === "number" ? (e.v as number) : 1,
-            ts: typeof e.ts === "number" ? (e.ts as number) : Date.now(),
-            textOffset:
-              typeof e.textOffset === "number"
-                ? (e.textOffset as number)
-                : undefined,
-            payload: e.payload as string,
-          }));
-        const r = await ctx.runMutation(internal.chat.ingest.appendEvent, {
-          streamId,
-          events,
-        });
-        if ("unknown" in r && r.unknown)
-          return aiJson({ error: "unknown stream" }, 404);
-        return aiJson(r);
       }
       case "seo-mutation-result": {
         // Phase 7: the auditable RESULT of one APPROVED SEO write (before→write→verify→

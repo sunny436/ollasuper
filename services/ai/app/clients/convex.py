@@ -40,10 +40,20 @@ class ConvexRejected(RuntimeError):
     """
 
 
+# The ops chat/ingress.ts serves as a guarded public mutation. Everything else
+# stays on the HTTP action.
+_HOT_OPS = frozenset({"delta", "event", "heartbeat", "finalize"})
+_MUTATION_PATH = "chat/ingress:apply"
+
+
 class ConvexClient:
     def __init__(self, settings: Settings, client: httpx.AsyncClient) -> None:
         self._s = settings
         self._c = client
+        # Flipped once if the deployment does not have chat/ingress:apply yet
+        # (deploy skew: Convex must ship before this build). Every hot op then
+        # takes the HTTP action, exactly as before this path existed.
+        self._mutation_path_ok = True
 
     @staticmethod
     def build_http_client() -> httpx.AsyncClient:
@@ -60,6 +70,96 @@ class ConvexClient:
         )
 
     async def ingress(self, body: dict) -> dict:
+        """Apply one ingress op. Raises ConvexUnavailable on failure.
+
+        A hot op (delta / event / heartbeat / finalize) goes to the guarded
+        mutation `chat/ingress:apply` over /api/mutation: measured on
+        production, the HTTP action path costs ~136 ms per POST of which the
+        mutation is ~11 ms, and /api/mutation round-trips in 8-14 ms — the
+        same secret check, the same capability-scoped mutations, the same
+        results. Anything else, or a deployment without the mutation, uses
+        /ai/ingress as always.
+        """
+        if body.get("op") in _HOT_OPS and self._mutation_path_ok:
+            out = await self._ingress_mutation(body)
+            if out is not None:
+                return out
+        return await self._ingress_http(body)
+
+    async def _ingress_mutation(self, body: dict) -> dict | None:
+        """The /api/mutation path. None => fall back to the HTTP action."""
+        payload = {
+            "path": _MUTATION_PATH,
+            "args": {"key": self._s.ai_ingress_secret, "body": body},
+            "format": "json",
+        }
+        last: Exception | None = None
+        for attempt, backoff in enumerate(_RETRY_BACKOFF):
+            try:
+                r = await self._c.post(self._s.mutation_url, json=payload)
+            except (httpx.TransportError, httpx.TimeoutException) as e:
+                last = e
+            else:
+                if r.status_code == 200:
+                    try:
+                        env = r.json()
+                    except ValueError:
+                        return None
+                    if env.get("status") == "success":
+                        value = env.get("value") or {}
+                        status = int(value.get("status", 500))
+                        out = value.get("body")
+                        if status < 400:
+                            return out if isinstance(out, dict) else {}
+                        if status == 404:
+                            # Unknown or already-finalized stream. Not
+                            # retryable, and not an error: tell the caller to stop.
+                            return {"ok": False, "cancel": True, "unknown": True}
+                        if status < 500:
+                            log.error(
+                                "ingress_rejected",
+                                extra={"status": status, "op": body.get("op")},
+                            )
+                            raise ConvexRejected(f"ingress rejected: {status}")
+                        last = ConvexUnavailable(f"ingress {status}")
+                    else:
+                        msg = str(env.get("errorMessage", ""))
+                        if "Could not find public function" in msg:
+                            # Older Convex deployment: fall back for the rest of
+                            # this process's life (logged once).
+                            if self._mutation_path_ok:
+                                log.warning("ingress_mutation_path_unavailable")
+                            self._mutation_path_ok = False
+                            return None
+                        if "unauthorized" in msg:
+                            log.error(
+                                "ingress_rejected",
+                                extra={"status": 401, "op": body.get("op")},
+                            )
+                            raise ConvexRejected("ingress rejected: unauthorized")
+                        last = ConvexUnavailable(f"ingress mutation error: {msg[:120]}")
+                elif r.status_code == 404:
+                    # No /api/mutation at this origin at all: not our backend.
+                    if self._mutation_path_ok:
+                        log.warning("ingress_mutation_path_unavailable")
+                    self._mutation_path_ok = False
+                    return None
+                elif r.status_code < 500:
+                    log.error(
+                        "ingress_rejected",
+                        extra={"status": r.status_code, "op": body.get("op")},
+                    )
+                    raise ConvexRejected(f"ingress rejected: {r.status_code}")
+                else:
+                    last = ConvexUnavailable(f"ingress {r.status_code}")
+
+            if attempt < len(_RETRY_BACKOFF) - 1:
+                jitter = 0.75 + random.random() * 0.5  # noqa: S311
+                await asyncio.sleep(backoff * jitter)
+
+        raise ConvexUnavailable(str(last) if last else "ingress unavailable")
+
+    async def _ingress_http(self, body: dict) -> dict:
         """POST one op to /ai/ingress. Raises ConvexUnavailable on failure."""
         headers = {
             "content-type": "application/json",

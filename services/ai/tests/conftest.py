@@ -31,6 +31,7 @@ def make_settings(url: str, **overrides) -> Settings:
         "ollima_api_key": "sk-ollima-test",
         "convex_internal_url": url,
         "convex_site_url": url,
+        "convex_api_url": url,
         # Render in-thread in tests so _render_page monkeypatches apply (the
         # process pool would not see them). Prod uses the pool for crash safety.
         "ai_ocr_render_workers": 0,

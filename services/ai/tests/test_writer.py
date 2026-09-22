@@ -198,3 +198,51 @@ async def test_finalize_is_attempted_even_when_deltas_failed(
 
     assert fake_convex.finalize_count["f1"] == 1
     assert fake_convex.finalized["f1"].text == "partial answer"
+
+
+async def test_hot_ops_take_the_mutation_path_and_fall_back_when_absent(
+    convex_client, fake_convex
+):
+    """delta / heartbeat / finalize go to chat/ingress:apply over /api/mutation
+    (the ~10 ms path); the HTTP action is used only when the deployment lacks
+    the mutation, and a wrong key is refused loudly, not retried."""
+    from app.clients.convex import ConvexRejected
+
+    convex, settings = convex_client
+    writer = DeltaWriter(convex, "hot", settings)
+    for tok in tokenize(SAMPLE[:400]):
+        await writer.push(tok)
+    await writer.flush(force=True)
+    await writer.heartbeat()
+    await writer.finalize("done", usage={"promptTokens": 1, "completionTokens": 2})
+    assert fake_convex.mutation_calls >= 3  # every hot op used /api/mutation
+    assert fake_convex.total_text("hot") == SAMPLE[:400]
+    assert fake_convex.finalize_count["hot"] == 1
+
+    # A non-hot op never touches the mutation path.
+    before = fake_convex.mutation_calls
+    await convex.ingress({"op": "title", "streamId": "hot", "title": "T"})
+    assert fake_convex.mutation_calls == before
+    assert fake_convex.titles["hot"] == "T"
+
+    # Wrong key: rejected immediately (ConvexRejected), no silent fallback.
+    fake_convex.expected_key = "something-else"
+    try:
+        await convex.ingress({"op": "heartbeat", "streamId": "hot"})
+        raise AssertionError("a wrong key must be rejected")
+    except ConvexRejected:
+        pass
+    fake_convex.expected_key = settings.ai_ingress_secret
+
+    # Deployment without the mutation: fall back to /ai/ingress for good.
+    convex._mutation_path_ok = True
+    from app.clients import convex as convex_mod
+
+    real = convex_mod._MUTATION_PATH
+    convex_mod._MUTATION_PATH = "chat/ingress:missing"
+    try:
+        r = await convex.ingress({"op": "heartbeat", "streamId": "hot"})
+        assert r.get("ok") is True
+        assert convex._mutation_path_ok is False
+    finally:
+        convex_mod._MUTATION_PATH = real

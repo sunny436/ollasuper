@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import socket
 import time
 from dataclasses import dataclass, field
@@ -64,6 +65,9 @@ class FakeConvex:
     fail_next: int = 0
     fail_status: int = 500
     attempts: int = 0
+    # /api/mutation (chat/ingress:apply) accounting — see build()
+    expected_key: str = "test-ingress-secret-bbbbbbbbbbbbbbbb"
+    mutation_calls: int = 0
 
     def total_text(self, stream_id: str) -> str:
         return "".join(
@@ -93,14 +97,43 @@ def build(state: FakeConvex) -> FastAPI:
 
     _seen: set[str] = set()
 
+    @app.post("/api/mutation")
+    async def mutation(request: Request):
+        # What the real backend does for chat/ingress:apply: the same op
+        # handler, wrapped in Convex's {status, value} envelope. Any other path
+        # is "not found", which the client treats as "use the HTTP action".
+        env = await request.json()
+        if env.get("path") != "chat/ingress:apply":
+            return _json(
+                {"status": "error", "errorMessage": "Could not find public function"}
+            )
+        args = env.get("args") or {}
+        if args.get("key") != state.expected_key:
+            return _json(
+                {
+                    "status": "error",
+                    "errorMessage": "Uncaught ConvexError: unauthorized",
+                }
+            )
+        state.mutation_calls += 1
+        inner = await _ingress_body(args.get("body") or {})
+        return _json(
+            {
+                "status": "success",
+                "value": {"status": inner.status_code, "body": json.loads(inner.body)},
+            }
+        )
+
     @app.post("/ai/ingress")
     async def ingress(request: Request):
+        return await _ingress_body(await request.json())
+
+    async def _ingress_body(body: dict):
         state.attempts += 1
         if state.fail_next > 0:
             state.fail_next -= 1
             return _json({"error": "boom"}, state.fail_status)
 
-        body = await request.json()
         op = body.get("op")
         sid = body.get("streamId", "")
 
@@ -163,9 +196,12 @@ def build(state: FakeConvex) -> FastAPI:
                 return _json({"ok": True})
             if op == "seo-run-report":
                 state.seo_reports[rid] = body
-                return _json({"ok": True, "reportId": body.get("report", {}).get(
-                    "report_id", "rpt_x"
-                )})
+                return _json(
+                    {
+                        "ok": True,
+                        "reportId": body.get("report", {}).get("report_id", "rpt_x"),
+                    }
+                )
 
         return _json({"error": f"unknown op {op}"}, 400)
 

@@ -66,12 +66,10 @@ const messagesIn = (t: ReturnType<typeof convexTest>, threadId: Id<"chatThreads"
     (await ctx.db.query("chatMessages").collect()).filter((m) => m.threadId === threadId),
   );
 const quota = (t: ReturnType<typeof convexTest>, userId: Id<"users">) =>
-  t.run(async (ctx) =>
-    ctx.db
-      .query("userQuotas")
-      .withIndex("by_user_kind", (q) => q.eq("userId", userId).eq("kind", "chat"))
-      .unique(),
-  );
+  t.run(async (ctx) => {
+    const rows = await ctx.db.query("userQuotas").collect();
+    return rows.find((r) => r.userId === userId && r.kind === "chat") ?? null;
+  });
 
 describe("messages.createAndSend", () => {
   test("creates the thread and the first turn exactly like create + send", { timeout: 180_000 }, async () => {

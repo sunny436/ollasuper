@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # cutovers that rewrite the public origin.
     convex_site_url: str = "http://127.0.0.1:3211"
     convex_internal_url: str = "http://127.0.0.1:3211"
+    # The Convex API origin (the :3210 half, where /api/mutation lives), as
+    # opposed to the HTTP-actions origin above. The hot ingress ops go here —
+    # see clients/convex.py — because an HTTP action costs ~125 ms of runtime
+    # overhead per call on this backend and a mutation over /api/mutation
+    # costs ~10 ms (both measured on production).
+    convex_api_url: str = "http://127.0.0.1:3210"
     convex_audience: str = "convex"
 
     # --- OpenRouter (embeddings, title-gen, OCR) ---------------------------
@@ -830,6 +836,10 @@ class Settings(BaseSettings):
     @property
     def ingress_url(self) -> str:
         return f"{self.convex_internal_url.rstrip('/')}/ai/ingress"
+
+    @property
+    def mutation_url(self) -> str:
+        return f"{self.convex_api_url.rstrip('/')}/api/mutation"
 
     @property
     def file_url(self) -> str:
