@@ -94,7 +94,9 @@ describe("TOOL_RESULT.content never reaches a display path", () => {
     expect(JSON.parse(stored?.payload ?? "{}").content).toBe(BIG); // resume source intact
 
     const live = await u.query(api.chat.stream.active, { threadId });
-    const liveResult = live?.events.find((e) => e.eventId === "e2");
+    expect(live?.hasEvents).toBe(true);
+    const liveEvents = await u.query(api.chat.stream.events, { messageId: mid });
+    const liveResult = liveEvents?.find((e) => e.eventId === "e2");
     expect(liveResult).toBeDefined();
     expect(JSON.parse(liveResult?.payload ?? "{}").content).toBeUndefined();
     expect(JSON.parse(liveResult?.payload ?? "{}").result).toEqual({ n_results: 3 });

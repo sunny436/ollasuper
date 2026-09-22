@@ -188,13 +188,14 @@ Convex owns persistence, auth and reactive transport. **Python owns every line o
 
 ### Streaming is Convex-mediated
 
-The browser never talks to Python. Python POSTs token batches to `/ai/ingress`; the browser's `useQuery` subscription re-renders. That is what makes a stream survive a refresh, work in a second tab, and need no SSE on the client.
+The browser never talks to Python. Python posts token batches to Convex — the hot ops (delta / event / heartbeat / finalize) through the guarded public mutation `chat/ingress:apply` over `/api/mutation` (~10 ms; the same secret check and capability-scoped mutations as the HTTP action), everything else through `POST /ai/ingress` (an HTTP action, ~136 ms of which ~125 ms is runtime overhead — measured) — and the browser's `useQuery` subscription re-renders. That is what makes a stream survive a refresh, work in a second tab, and need no SSE on the client. Python serialises its posts per stream (`writer._wire`): three concurrent writers on one `chatStreams` row cost 86 OCC retries a day.
 
 The design turns on one fact: **Convex re-sends the whole query result to every subscriber on any write, with no document-level diffing.** Therefore:
 
 - The in-flight assistant row is written **exactly twice** — `""` on insert, final text on finalize. It is never patched during streaming. `chat.messages.listPaged` excludes in-flight rows and stays stable during a generation.
 - Deltas are append-only rows in `chatStreamChunks`, compacted into `chatStreams.committedText` every 24 seqs.
-- `chat.stream.active` is the **only** query that re-fires during a generation. It returns one small document.
+- `chat.stream.active` is the **only** query that re-fires per delta. It is small **by construction**: the resident chunks (those above `committedSeq`) plus `committedSeq` and `hasEvents` — never the whole answer, never the events. The client accumulates the text itself (`chat/_lib/stream-text.ts`); it asks `chat.stream.committed` for the compacted prefix only while it is missing it (a mid-stream mount, reload or reconnect) and then drops that subscription; typed events ride `chat.stream.events`, which re-fires on append, not per delta. Returning `committedText` from `active` again would make the wire quadratic in the answer length (measured: ~1.7 MB for a p99 answer).
+- `TOOL_RESULT.content` (the model-context block, 74 % of all bytes in `chatMessages` on production) exists for durable resume, which reads the live `chatStreamEvents` row. Every DISPLAY copy — the fold at finalize, `toPublic`, `stream.events` — goes through `stripForDisplay`; the browser never rendered it.
 - `chatStreams` is a separate table from `chatMessages` because it is patched per delta, and `chatMessages` carries a full-text search index that would be rewritten every token.
 
 If you add a field to `chatMessages` that changes during a stream, you have undone this.

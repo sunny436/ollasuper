@@ -17,6 +17,7 @@ import { useChatSession } from "../_hooks/use-chat-session";
 import { useReveal } from "../_hooks/use-reveal";
 import { useStickToBottom } from "../_hooks/use-stick-to-bottom";
 import { useThrottledValue } from "../_hooks/use-throttled-value";
+import { type Accumulated, accumulate, needsCommitted } from "../_lib/stream-text";
 import { ChatMessage, type ChatMessageDoc } from "./chat-message";
 import { ShareDialog } from "./share-dialog";
 import { preloadMarkdown } from "./lazy-markdown";
@@ -51,11 +52,27 @@ export function MessageList({ threadId }: { threadId: string | null }) {
     threadId ? { threadId } : "skip",
   );
 
+  // The text is accumulated HERE, from the resident chunks each push carries
+  // (see _lib/stream-text.ts): the query no longer re-sends the whole answer
+  // per delta. The committed prefix is fetched only while this subscriber is
+  // missing it — a mid-stream mount, reload or reconnect — then dropped.
+  const accRef = useRef<Accumulated | null>(null);
+  const gap = needsCommitted(accRef.current, live);
+  const committed = useQuery(
+    api.chat.stream.committed,
+    gap && live ? { messageId: live.messageId } : "skip",
+  );
   const liveTextRaw = useMemo(() => {
-    if (!live) return "";
-    const chunks = [...live.chunks].sort((a, b) => a.seq - b.seq);
-    return live.committedText + chunks.map((c) => c.text).join("");
-  }, [live]);
+    const next = accumulate(accRef.current, live, committed);
+    accRef.current = next;
+    return next?.text ?? "";
+  }, [live, committed]);
+  // Typed events ride their own subscription, which re-fires on append rather
+  // than on every text delta (and only when the turn has any).
+  const liveEvents = useQuery(
+    api.chat.stream.events,
+    live?.hasEvents ? { messageId: live.messageId } : "skip",
+  );
 
   // ~16 updates/sec: below the threshold where text reads as stalling, and
   // 3-5x fewer renders than the raw delta rate.
@@ -279,7 +296,7 @@ export function MessageList({ threadId }: { threadId: string | null }) {
                   content: revealed,
                   status: "streaming",
                   // Live typed events (Phase 3) — empty for normal text turns.
-                  events: live.events,
+                  events: liveEvents ?? undefined,
                   createdAt: live.startedAt,
                 } as ChatMessageDoc
               }

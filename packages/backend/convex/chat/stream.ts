@@ -114,6 +114,18 @@ const MAX_RESIDENT_EVENTS = 256;
  *
  * Returns null once the stream reaches a terminal state, which lets the client
  * drop the subscription and fall back to the settled message list.
+ *
+ * SMALL BY CONSTRUCTION. This used to return `committedText` (the whole answer
+ * so far) and every typed event on every push, which made the wire quadratic
+ * in the answer length: a p99 answer of 28k chars over 121 flushes sent ~1.7 MB
+ * through the socket, uncompressed. Now it carries the RESIDENT chunks only
+ * (those after `committedSeq`, at most ~2 compactions' worth) plus the two
+ * numbers the client needs to know what it has missed. The client accumulates
+ * text itself — it sees every chunk at least once because a chunk stays
+ * resident for 24 flushes before compaction — and asks `committed` for the
+ * prefix only when `committedSeq` has passed what it saw (a mid-stream mount,
+ * a reload, a reconnect). Events live in `events`, which re-fires only when an
+ * event is appended, not per delta.
  */
 export const active = query({
   args: { threadId: v.string() },
@@ -145,30 +157,6 @@ export const active = query({
       )
       .take(MAX_RESIDENT_CHUNKS);
 
-    // Typed events (Phase 3) — read only when this generation has any, so a
-    // normal text turn pays for zero extra work. Low-volume, so return all rows
-    // (no compaction/watermark like text).
-    const events = stream.hasEvents
-      ? (
-          await ctx.db
-            .query("chatStreamEvents")
-            .withIndex("by_message_seq", (q) => q.eq("messageId", message._id))
-            .take(MAX_RESIDENT_EVENTS)
-        )
-          .sort((a, b) => a.seq - b.seq)
-          .map((e) =>
-            stripForDisplay({
-              eventId: e.eventId,
-              seq: e.seq,
-              type: e.type,
-              v: e.v,
-              ts: e.ts,
-              textOffset: e.textOffset,
-              payload: e.payload,
-            }),
-          )
-      : [];
-
     // Phase 8: the pending approval (if the turn is parked) rides this same hot
     // subscription so the dialog appears + survives refresh with no extra query.
     const pendingApproval =
@@ -191,14 +179,12 @@ export const active = query({
       // user sees one assistant), and a field the client never reads is a leak
       // surface kept alive for no reason. It stays on chatMessages for
       // observability, which is server-side.
-      events,
-      // Sent so the Python plane can size its context budget and clamp
-      // max_tokens for small-context models -- 4095-token models exist, and a
-      // fixed 8192-token output request is an immediate provider 400. 0 means
-      // "unknown", and Python keeps its own conservative default.
-      contextWindow: await contextWindowFor(ctx, message.model ?? thread.model),
-      // Client renders committedText + chunks joined in seq order.
-      committedText: stream.committedText,
+      //
+      // Typed events: see `events` below (one subscription, re-fires on append).
+      hasEvents: stream.hasEvents === true,
+      // Everything at or below this seq has been compacted into committedText
+      // (see `committed`); the chunks below are exactly those above it.
+      committedSeq: stream.committedSeq,
       chunks: chunks.map((c) => ({ seq: c.seq, text: c.text })),
       startedAt: stream.startedAt,
       pendingApproval: pendingApproval
@@ -211,6 +197,72 @@ export const active = query({
           }
         : null,
     };
+  },
+});
+
+/**
+ * The compacted prefix of an in-flight reply — the text of every chunk at or
+ * below `committedSeq`. The client subscribes to this ONLY while it is missing
+ * that prefix (it mounted mid-stream, reloaded, or reconnected after more than
+ * a compaction's worth of flushes) and drops it the moment it has caught up, so
+ * the whole-answer payload crosses the wire once per gap, not once per delta.
+ *
+ * Reads the stream row, which is patched on every delta, so it re-executes
+ * per delta while subscribed; Convex only pushes when the result changes,
+ * i.e. every compaction. Owner-scoped like everything in chat; null (never an
+ * error) for anyone else.
+ */
+export const committed = query({
+  args: { messageId: v.id("chatMessages") },
+  handler: async (ctx, { messageId }) => {
+    const userId = await getUserIdOrNull(ctx);
+    if (!userId) return null;
+    const message = await ctx.db.get(messageId);
+    if (!message || message.userId !== userId) return null;
+    const stream = await ctx.db
+      .query("chatStreams")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .unique();
+    if (!stream) return null;
+    return {
+      messageId,
+      committedSeq: stream.committedSeq,
+      committedText: stream.committedText,
+    };
+  },
+});
+
+/**
+ * The typed events of an in-flight reply. Its read set is the events index
+ * (plus the message row for authorization), so it re-fires when an event is
+ * APPENDED and not on every text delta — the timeline used to be re-sent with
+ * every flush. Display copies only (stripForDisplay). Owner-scoped; null for
+ * anyone else.
+ */
+export const events = query({
+  args: { messageId: v.id("chatMessages") },
+  handler: async (ctx, { messageId }) => {
+    const userId = await getUserIdOrNull(ctx);
+    if (!userId) return null;
+    const message = await ctx.db.get(messageId);
+    if (!message || message.userId !== userId) return null;
+    const rows = await ctx.db
+      .query("chatStreamEvents")
+      .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+      .take(MAX_RESIDENT_EVENTS);
+    return rows
+      .sort((a, b) => a.seq - b.seq)
+      .map((e) =>
+        stripForDisplay({
+          eventId: e.eventId,
+          seq: e.seq,
+          type: e.type,
+          v: e.v,
+          ts: e.ts,
+          textOffset: e.textOffset,
+          payload: e.payload,
+        }),
+      );
   },
 });
 

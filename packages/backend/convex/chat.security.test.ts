@@ -801,10 +801,17 @@ describe("AI ingress (/ai/ingress)", () => {
     const live = await t
       .withIdentity(as(owner))
       .query(api.chat.stream.active, { threadId });
-    // The read path orders by seq, so out-of-order arrival self-heals.
+    // The read path orders by seq, so out-of-order arrival self-heals. The
+    // compacted prefix lives in stream.committed; the resident tail in active.
+    const committed = await t
+      .withIdentity(as(owner))
+      .query(api.chat.stream.committed, { messageId: assistantMessageId as Id<"chatMessages"> });
     expect(
-      (live?.committedText ?? "") +
-        (live?.chunks ?? []).map((c: { text: string }) => c.text).join(""),
+      (committed?.committedText ?? "") +
+        (live?.chunks ?? [])
+          .filter((c: { seq: number }) => c.seq > (committed?.committedSeq ?? -1))
+          .map((c: { text: string }) => c.text)
+          .join(""),
     ).toBe("Hello, world");
 
     await post(t, {
