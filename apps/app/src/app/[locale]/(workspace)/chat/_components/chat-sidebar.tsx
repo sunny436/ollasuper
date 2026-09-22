@@ -5,6 +5,7 @@ import { ChatInstructionsDialog } from "./chat-instructions-dialog";
 import { MoveToProjectDialog } from "./move-to-project-dialog";
 import { OllaSuperBrand } from "@/components/branding";
 import { clearDisplayCaches } from "@/lib/display-cache";
+import { preloadLocale } from "@/locales/client";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
@@ -15,7 +16,14 @@ import {
 } from "convex/react";
 import { useCachedThreads, type CachedThread } from "../_hooks/use-cached-threads";
 import { useCachedUser } from "../_hooks/use-cached-user";
-import { cancelPrefetch, prefetchThread, releasePrefetch } from "../_lib/prefetch";
+import {
+  cancelPrefetch,
+  cancelRoutePrefetch,
+  prefetchRoute,
+  prefetchThread,
+  prefetchThreadNow,
+  releasePrefetch,
+} from "../_lib/prefetch";
 import {
   Archive,
   CalendarClock,
@@ -104,6 +112,11 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
   const user = useCachedUser();
   const { signOut } = useAuthActions();
   const [open, setOpen] = useState(false);
+  // Opening this menu is the intent to enter Settings; see preloadLocale.
+  const { locale } = useParams<{ locale?: string }>() ?? {};
+  useEffect(() => {
+    if (open) preloadLocale(locale);
+  }, [open, locale]);
 
   // Escape closes, matching the drawer and the command palette.
   useEffect(() => {
@@ -305,6 +318,12 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         <button
           type="button"
           onClick={() => void onNewChat()}
+          // router.push("/chat") pays an RSC round trip unless the route is
+          // already in the router cache; warm it on intent, like a thread row.
+          onPointerEnter={() => prefetchRoute(router, "/chat")}
+          onPointerLeave={() => cancelRoutePrefetch("/chat")}
+          onFocus={() => prefetchRoute(router, "/chat")}
+          onBlur={() => cancelRoutePrefetch("/chat")}
           className="group flex w-full items-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-medium text-primary transition-all duration-200 hover:border-brand/30 active:scale-[0.98]"
         >
           <span className="rounded-lg bg-brand/10 p-1 text-brand-ink transition-colors group-hover:bg-brand group-hover:text-brand-foreground">
@@ -322,6 +341,10 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         */}
         <Link
           href="/projects"
+          // Full prefetch: under the dynamic [locale] segment the default
+          // partial prefetch fetches nothing a navigation can use, so the
+          // click paid an RSC round trip. One small request per five minutes.
+          prefetch={true}
           onClick={onNavigate}
           aria-current={projectsActive ? "page" : undefined}
           className={`mt-2 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
@@ -336,6 +359,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
         <Link
           href="/scheduled"
+          prefetch={true}
           onClick={onNavigate}
           aria-current={scheduledActive ? "page" : undefined}
           className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
@@ -386,10 +410,13 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                   <Link
                     href={`/chat/${t._id}`}
                     prefetch={false}
-                    onClick={onNavigate}
-                    onPointerEnter={() => prefetchThread(convex, t._id)}
+                    onClick={() => {
+                      prefetchThreadNow(convex, t._id);
+                      onNavigate?.();
+                    }}
+                    onPointerEnter={() => prefetchThread(convex, t._id, router)}
                     onPointerLeave={() => cancelPrefetch(t._id)}
-                    onFocus={() => prefetchThread(convex, t._id)}
+                    onFocus={() => prefetchThread(convex, t._id, router)}
                     onBlur={() => cancelPrefetch(t._id)}
                     className="flex min-w-0 flex-1 items-center gap-2.5 truncate [@media(pointer:coarse)]:min-h-11"
                   >

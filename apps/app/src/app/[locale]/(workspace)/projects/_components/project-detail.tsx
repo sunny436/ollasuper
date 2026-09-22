@@ -3,7 +3,7 @@
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
-import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import { useConvex, useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import {
   Archive,
   ArchiveRestore,
@@ -23,6 +23,11 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { NotificationsBell } from "../../../(dashboard)/_components/notifications-bell";
 import { useChatSidebar } from "../../chat/_components/chat-shell";
+import {
+  cancelPrefetch,
+  prefetchThread,
+  prefetchThreadNow,
+} from "../../chat/_lib/prefetch";
 import { PROJECT_DRAFT_KEY } from "../../chat/_lib/project-draft";
 import { ProjectSettingsDialog } from "./project-settings-dialog";
 import { ProjectSources } from "./project-sources";
@@ -51,6 +56,7 @@ const PAGE = 30;
 export function ProjectDetail({ projectId }: { projectId: string }) {
   const { openSidebar, collapsed, toggleCollapsed } = useChatSidebar();
   const router = useRouter();
+  const convex = useConvex();
   const searchParams = useSearchParams();
   const { current, select } = useWorkspace();
 
@@ -423,6 +429,12 @@ Its chats are kept and move back to your conversation list. You can restore the 
                       <Link
                         href={`/chat/${t._id}`}
                         prefetch={false}
+                        // Same intent warm as a rail row: route + transcript.
+                        onClick={() => prefetchThreadNow(convex, t._id)}
+                        onPointerEnter={() => prefetchThread(convex, t._id, router)}
+                        onPointerLeave={() => cancelPrefetch(t._id)}
+                        onFocus={() => prefetchThread(convex, t._id, router)}
+                        onBlur={() => cancelPrefetch(t._id)}
                         className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-2 hover:text-primary"
                       >
                         <MessageSquare className="h-3.5 w-3.5 shrink-0" />

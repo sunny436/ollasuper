@@ -5,9 +5,11 @@ import { api } from "@v1/backend/convex/_generated/api";
 import { usePaginatedQuery } from "convex/react";
 import { FolderKanban, PanelLeft, Plus, Search } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { NotificationsBell } from "../../../(dashboard)/_components/notifications-bell";
 import { useChatSidebar } from "../../chat/_components/chat-shell";
+import { cancelRoutePrefetch, prefetchRoute } from "../../chat/_lib/prefetch";
 import { CreateProjectDialog } from "./create-project-dialog";
 
 /**
@@ -39,6 +41,7 @@ const TAB_LABEL: Record<Tab, string> = {
 
 export function ProjectsPane() {
   const { current } = useWorkspace();
+  const router = useRouter();
   const { openSidebar, collapsed, toggleCollapsed } = useChatSidebar();
   const [tab, setTab] = useState<Tab>("active");
   const [query, setQuery] = useState("");
@@ -179,6 +182,14 @@ export function ProjectsPane() {
                   <li key={p._id}>
                     <Link
                       href={`/projects/${p._id}`}
+                      // Intent-gated full prefetch (see chat/_lib/prefetch):
+                      // the list is unbounded, so not prefetch={true}, and the
+                      // default partial prefetch fetches nothing usable here.
+                      prefetch={false}
+                      onPointerEnter={() => prefetchRoute(router, `/projects/${p._id}`)}
+                      onPointerLeave={() => cancelRoutePrefetch(`/projects/${p._id}`)}
+                      onFocus={() => prefetchRoute(router, `/projects/${p._id}`)}
+                      onBlur={() => cancelRoutePrefetch(`/projects/${p._id}`)}
                       className="flex items-center gap-3 rounded-lg px-2 py-3 transition-colors hover:bg-accent"
                     >
                       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/5 text-muted-foreground">

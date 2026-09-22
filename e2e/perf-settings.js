@@ -74,7 +74,7 @@ function delayQueue(oneWayMs, bytesPerSec, send) {
   await page.getByRole("link", { name: "Settings" }).first().click();
   await page.waitForURL(/\/settings/, { timeout: 30000 });
   await page.getByText("Search settings").first().waitFor({ timeout: 30000 }).catch(() => {});
-  await sleep(2500);
+  await sleep(6000);
 
   const res = {};
   for (let r = 0; r < RUNS; r++) {

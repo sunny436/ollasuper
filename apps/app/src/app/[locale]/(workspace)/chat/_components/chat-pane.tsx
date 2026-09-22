@@ -135,6 +135,9 @@ export function ChatPane({
         <div className="flex min-w-0 items-center gap-1 text-sm">
           <Link
             href="/chat"
+            // Full prefetch: one small request per five minutes, and it also
+            // serves the rail's New chat button (same router cache entry).
+            prefetch={true}
             className="hidden shrink-0 rounded-md px-2 py-1 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-primary sm:inline-block"
           >
             OllaSuper

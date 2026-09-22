@@ -1,6 +1,10 @@
 import { setPrefetchedTranscript } from "@/lib/display-cache";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { ConvexReactClient } from "convex/react";
+import { preloadMarkdown } from "../_components/lazy-markdown";
+
+/** The one router method used here; `useRouter()` satisfies it. */
+export type RoutePrefetcher = { prefetch: (href: string) => void };
 
 /**
  * Intent-based (hover/focus) prefetch for thread navigation.
@@ -29,6 +33,17 @@ import type { ConvexReactClient } from "convex/react";
  * in under a second, competing with the click that followed. On a
  * data-saver / 2G connection the transcript warm is skipped entirely; the two
  * small warms (thread meta, stream) are kept.
+ *
+ * ROUTE, NOT ONLY DATA: the same intent also prefetches the /chat/[threadId]
+ * route through the Next router (`router.prefetch` defaults to a FULL
+ * prefetch, the same thing `<Link prefetch>` does; the rail's rows are
+ * `prefetch={false}` because a full prefetch of every row in the viewport
+ * would be ~70 requests). Without it a click still paid one RSC round trip
+ * before the URL could change — 100 ms from the US, 260+ ms from India — even
+ * though the page component is a one-liner. The markdown chunk rides along:
+ * the first transcript of a session used to fetch it (and its helpers) after
+ * the route committed, which put the first painted row ~450 ms (US) behind the
+ * URL. Both are no-ops once warm.
  */
 const TTL_MS = 20_000;
 const MAX = 6;
@@ -62,6 +77,7 @@ function release(threadId: string): void {
 export function prefetchThread(
   client: ConvexReactClient,
   threadId: string,
+  router?: RoutePrefetcher,
 ): void {
   if (held.has(threadId) || pending.has(threadId)) return; // already warm / armed
   pending.set(
@@ -69,8 +85,63 @@ export function prefetchThread(
     setTimeout(() => {
       pending.delete(threadId);
       warmThread(client, threadId);
+      if (router) prefetchRouteNow(router, `/chat/${threadId}`);
+      void preloadMarkdown().catch(() => {});
     }, INTENT_MS),
   );
+}
+
+/**
+ * The click itself: no intent to wait for. A tap (no hover) or a keyboard
+ * activation used to start the transcript's queries only once the new segment
+ * mounted, i.e. one RSC round trip after the click; starting them here puts
+ * that round trip and the data round trip in parallel. No-op if the hover
+ * already warmed the thread.
+ */
+export function prefetchThreadNow(
+  client: ConvexReactClient,
+  threadId: string,
+): void {
+  cancelPrefetch(threadId);
+  warmThread(client, threadId);
+}
+
+/**
+ * Intent-gated route prefetch for the other in-app destinations that a
+ * `<Link prefetch>` cannot cover: a `router.push` button (New chat) and
+ * lists whose length is unbounded (project cards). Same INTENT_MS gate; a
+ * warm entry is reused by the router for five minutes (staleTimes.static),
+ * so this is at most one small RSC request per destination per five minutes.
+ */
+const routePending = new Map<string, ReturnType<typeof setTimeout>>();
+const routeWarm = new Map<string, number>();
+const ROUTE_WARM_MS = 5 * 60_000;
+
+function prefetchRouteNow(router: RoutePrefetcher, href: string): void {
+  const at = routeWarm.get(href);
+  if (at !== undefined && Date.now() - at < ROUTE_WARM_MS) return;
+  routeWarm.set(href, Date.now());
+  try {
+    router.prefetch(href);
+  } catch {}
+}
+
+export function prefetchRoute(router: RoutePrefetcher, href: string): void {
+  if (routePending.has(href)) return;
+  routePending.set(
+    href,
+    setTimeout(() => {
+      routePending.delete(href);
+      prefetchRouteNow(router, href);
+    }, INTENT_MS),
+  );
+}
+
+export function cancelRoutePrefetch(href: string): void {
+  const t = routePending.get(href);
+  if (t === undefined) return;
+  clearTimeout(t);
+  routePending.delete(href);
 }
 
 /** The pointer left before INTENT_MS: nothing is fetched. */
