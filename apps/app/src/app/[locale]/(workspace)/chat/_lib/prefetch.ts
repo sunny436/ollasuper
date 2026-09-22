@@ -58,12 +58,28 @@ function constrained(): boolean {
   return !!c && (c.saveData === true || c.effectiveType === "slow-2g" || c.effectiveType === "2g");
 }
 
-type Held = { unsubs: Array<() => void>; timer: ReturnType<typeof setTimeout> };
+type Held = {
+  unsubs: Array<() => void>;
+  timer: ReturnType<typeof setTimeout>;
+  /** A transcript page is on its way and has not been handed over yet. */
+  awaitingSeed: boolean;
+  /** release() was asked for while the page was still in flight. */
+  releaseOnSeed: boolean;
+};
 const held = new Map<string, Held>();
 
-function release(threadId: string): void {
+function release(threadId: string, force = false): void {
   const h = held.get(threadId);
   if (!h) return;
+  // The route can become active BEFORE the warmed page lands — a tap starts
+  // the warm at click time and the RSC round trip is often the shorter one.
+  // Dropping the subscription here would throw the page away one round trip
+  // before it could seed the transcript; keep it until it lands. The TTL
+  // (force) still bounds it, so an answer that never comes cannot leak it.
+  if (h.awaitingSeed && !force) {
+    h.releaseOnSeed = true;
+    return;
+  }
   clearTimeout(h.timer);
   for (const u of h.unsubs) {
     try {
@@ -156,9 +172,19 @@ function warmThread(client: ConvexReactClient, threadId: string): void {
   if (held.has(threadId)) return; // already warm
   if (held.size >= MAX) {
     const oldest = held.keys().next().value as string | undefined;
-    if (oldest) release(oldest);
+    if (oldest) release(oldest, true); // the bound wins over a late seed
   }
   const unsubs: Array<() => void> = [];
+  const entry: Held = {
+    unsubs,
+    timer: setTimeout(() => release(threadId, true), TTL_MS),
+    awaitingSeed: false,
+    releaseOnSeed: false,
+  };
+  const seeded = () => {
+    entry.awaitingSeed = false;
+    if (entry.releaseOnSeed) release(threadId);
+  };
   const warm = (
     q: Parameters<ConvexReactClient["watchQuery"]>[0],
     args: Record<string, unknown>,
@@ -177,6 +203,7 @@ function warmThread(client: ConvexReactClient, threadId: string): void {
         threadId,
         paginationOpts: { numItems: PAGE, cursor: null },
       });
+      entry.awaitingSeed = true;
       unsubs.push(
         w.onUpdate(() => {
           // localQueryResult() THROWS when the subscription is in an error
@@ -189,19 +216,22 @@ function warmThread(client: ConvexReactClient, threadId: string): void {
           try {
             page = w.localQueryResult();
           } catch {
+            seeded(); // nothing will ever land for this one
             return;
           }
           // listPaged is newest-first; the transcript displays oldest-first —
           // the same reversal message-list.tsx applies to the live result.
-          if (page) setPrefetchedTranscript(threadId, [...page.page].reverse());
+          if (page) {
+            setPrefetchedTranscript(threadId, [...page.page].reverse());
+            seeded();
+          }
         }),
       );
-    } catch {}
+    } catch {
+      entry.awaitingSeed = false;
+    }
   }
-  held.set(threadId, {
-    unsubs,
-    timer: setTimeout(() => release(threadId), TTL_MS),
-  });
+  held.set(threadId, entry);
 }
 
 /** Drop a thread's warm subs once its own components have taken over. */
