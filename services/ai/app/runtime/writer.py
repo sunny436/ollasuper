@@ -169,6 +169,18 @@ class DeltaWriter:
         self._event_draining = False
         # Held ONLY to swap the buffer, never across the network round-trip.
         self._event_lock = asyncio.Lock()
+        # ONE writer on the wire per stream. Deltas, typed events and the 5 s
+        # liveness beat all patch the same chatStreams row, and they used to go
+        # out concurrently: measured on production, 86 OCC retries a day
+        # (heartbeat 40, appendEvent 22, appendDeltas 21), each one a mutation
+        # re-run on the delta path. Serialising the POSTs removes the conflict
+        # at the source. The cost is queueing behind an in-flight POST, ~10 ms
+        # on the /api/mutation path — far less than one retry.
+        self._wire = asyncio.Lock()
+        # When a delta or event last landed. Those writes already refresh the
+        # row the beat exists to touch, so a beat that would land right behind
+        # one is skipped (see heartbeat()).
+        self._last_wire = 0.0
         self._first_failure_at: float | None = None
         self.stats = WriterStats()
 
@@ -265,9 +277,10 @@ class DeltaWriter:
             deltas = [{"seq": p.seq, "text": p.text} for p in self._pending]
             t0 = time.monotonic()
             try:
-                resp = await self._convex.ingress(
-                    {"op": "delta", "streamId": self._stream_id, "deltas": deltas}
-                )
+                async with self._wire:
+                    resp = await self._convex.ingress(
+                        {"op": "delta", "streamId": self._stream_id, "deltas": deltas}
+                    )
             except ConvexUnavailable:
                 # Keep the batches; the next flush carries the backlog.
                 if self._first_failure_at is None:
@@ -282,6 +295,7 @@ class DeltaWriter:
             rtt = time.monotonic() - t0
             self.stats.ewma_rtt = 0.7 * self.stats.ewma_rtt + 0.3 * rtt
             self._first_failure_at = None
+            self._last_wire = time.monotonic()
             self._pending.clear()
             self._pending_bytes = 0
             self._last_flush = time.monotonic()
@@ -317,10 +331,16 @@ class DeltaWriter:
         # A wide tool fan-out produces events but no text, so this beat is the
         # drain that keeps the activity pill live between model steps.
         await self.flush_events()
+        # A delta or event that landed moments ago already refreshed heartbeatAt
+        # (and carried the cancel flag back); a beat right behind it would only
+        # contend for the same row. The stall reaper is 90 s away.
+        if time.monotonic() - self._last_wire < self._s.ai_heartbeat_ms / 2000:
+            return
         try:
-            resp = await self._convex.ingress(
-                {"op": "heartbeat", "streamId": self._stream_id}
-            )
+            async with self._wire:
+                resp = await self._convex.ingress(
+                    {"op": "heartbeat", "streamId": self._stream_id}
+                )
         except ConvexUnavailable:
             return
         if resp.get("cancel"):
@@ -711,14 +731,16 @@ class DeltaWriter:
         terminal state is folded server-side at finalize."""
         self.stats.event_posts += 1
         try:
-            resp = await self._convex.ingress(
-                {"op": "event", "streamId": self._stream_id, "events": batch}
-            )
+            async with self._wire:
+                resp = await self._convex.ingress(
+                    {"op": "event", "streamId": self._stream_id, "events": batch}
+                )
         except ConvexUnavailable:
             return False  # transient; the answer text is unaffected
         except ConvexRejected:
             log.error("event_rejected", extra={"stream_id": self._stream_id})
             return False
+        self._last_wire = time.monotonic()
         if resp.get("cancel"):
             self._cancel_requested = True
         return bool(resp.get("persisted")) and not resp.get("unknown")
