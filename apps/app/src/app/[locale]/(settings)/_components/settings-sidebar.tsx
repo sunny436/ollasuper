@@ -69,6 +69,7 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
         <Link
           href="/chat"
+          prefetch={true}
           onClick={onNavigate}
           aria-label="Close settings"
           className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-border text-muted-foreground transition hover:bg-accent hover:text-primary"
@@ -101,6 +102,15 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
               <Link
                 key={href}
                 href={href}
+                // FULL prefetch, not the default partial one. Every section lives
+                // under the dynamic [locale] segment with no loading boundary, so
+                // the default prefetch fetched nothing useful and each click paid
+                // a fresh RSC round trip through the middleware before the URL
+                // even changed — 230-600 ms from the US, 1-2 s from India
+                // (measured, e2e/perf-settings.js), while the server renders the
+                // payload in 5 ms. With prefetch the shell comes from the router
+                // cache and a click waits only for the section's own query.
+                prefetch={true}
                 onClick={onNavigate}
                 className={`mb-1 flex items-center gap-3 rounded-xl border px-3 py-2.5 text-sm transition-colors ${
                   active

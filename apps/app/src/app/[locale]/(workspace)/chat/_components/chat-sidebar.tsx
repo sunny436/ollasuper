@@ -82,6 +82,10 @@ function ProfileMenuItem({
   return (
     <Link
       href={href}
+      // Settings / Shared / Billing sit under the dynamic [locale] segment; the
+      // default partial prefetch fetches nothing useful there, so entering
+      // settings paid a full RSC round trip. See settings-sidebar.tsx.
+      prefetch={true}
       onClick={onNavigate}
       className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs text-primary/75 transition hover:bg-primary/5 hover:text-primary"
     >
