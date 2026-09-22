@@ -5,7 +5,8 @@ import type { ActionCtx, MutationCtx } from "../_generated/server";
 import { EVENT_TYPES } from "./events";
 
 /**
- * The HOT ingress ops — delta, event, heartbeat, finalize — reachable two ways:
+ * The HOT ingress ops — delta, event, heartbeat, finalize, and the scheduler
+ * tick (sched-list / materialize / claim / heartbeat / verify) — reachable two ways:
  *
  *   1. `POST /ai/ingress` (http.ts): the HTTP action, as always.
  *   2. `chat/ingress:apply` via `POST /api/mutation`: the same logic as a
@@ -31,12 +32,25 @@ import { EVENT_TYPES } from "./events";
  * `/api/mutation` is reachable through the public `/__cvx` path the browser
  * uses, but so is `/__cvx-site/ai/ingress` — this adds no new surface.
  *
- * Only the hot ops are here on purpose. The ~25 remaining ops (artifacts,
- * scheduling, MCP credentials, …) are rare and stay on the HTTP action; a
+ * Only the hot ops are here on purpose. The ~20 remaining ops (artifacts,
+ * MCP credentials, run control, …) are rare and stay on the HTTP action; a
  * case that runs several mutations in sequence keeps its per-call commit
  * semantics there rather than being folded into one transaction here.
  */
-export const HOT_OPS = ["delta", "event", "heartbeat", "finalize"] as const;
+export const HOT_OPS = [
+  "delta",
+  "event",
+  "heartbeat",
+  "finalize",
+  // The scheduler service's tick: one query/mutation each, and the single
+  // largest source of HTTP-action calls on production (sched-materialize ran
+  // ~0.7 times a second at ~142 ms each — a constant tenth of a core).
+  "sched-list",
+  "sched-materialize",
+  "sched-claim",
+  "sched-heartbeat",
+  "sched-verify",
+] as const;
 
 /** Constant-time compare — the same check http.ts uses for every secret. */
 export function timingSafeEqual(
@@ -70,7 +84,9 @@ const ok = (body: unknown): IngressResult => ({ status: 200, body });
  * row → thread), so the two entry points cannot diverge in what they allow.
  */
 export async function applyHotOp(
-  ctx: Pick<ActionCtx, "runMutation"> | Pick<MutationCtx, "runMutation">,
+  ctx:
+    | Pick<ActionCtx, "runMutation" | "runQuery">
+    | Pick<MutationCtx, "runMutation" | "runQuery">,
   body: Record<string, unknown>,
 ): Promise<IngressResult | null> {
   const streamId = typeof body.streamId === "string" ? body.streamId : null;
@@ -204,6 +220,74 @@ export async function applyHotOp(
       });
       if ("unknown" in r && r.unknown) return unknownStream();
       return ok(r);
+    }
+    case "sched-list": {
+      const limit = typeof body.limit === "number" ? body.limit : undefined;
+      return ok(
+        await ctx.runQuery(internal.scheduled.occurrences.listSchedulable, {
+          limit,
+        }),
+      );
+    }
+    case "sched-materialize": {
+      const taskId = typeof body.taskId === "string" ? body.taskId : null;
+      const fromCursor =
+        typeof body.fromCursor === "number" ? body.fromCursor : null;
+      const toCursor = typeof body.toCursor === "number" ? body.toCursor : null;
+      if (!taskId || fromCursor === null || toCursor === null) return bad();
+      const scheduledFor = Array.isArray(body.scheduledFor)
+        ? body.scheduledFor.filter((x): x is number => typeof x === "number")
+        : [];
+      return ok(
+        await ctx.runMutation(internal.scheduled.occurrences.materialize, {
+          taskId,
+          fromCursor,
+          toCursor,
+          scheduledFor,
+          nextRunAt:
+            typeof body.nextRunAt === "number" ? body.nextRunAt : undefined,
+          invalidReason:
+            typeof body.invalidReason === "string"
+              ? body.invalidReason
+              : undefined,
+          scheduleEnded: body.scheduleEnded === true ? true : undefined,
+        }),
+      );
+    }
+    case "sched-claim": {
+      const limit = typeof body.limit === "number" ? body.limit : 5;
+      const maxPerUser =
+        typeof body.maxPerUser === "number" ? body.maxPerUser : 1;
+      return ok(
+        await ctx.runMutation(internal.scheduled.occurrences.claim, {
+          limit,
+          maxPerUser,
+        }),
+      );
+    }
+    case "sched-verify":
+    case "sched-heartbeat": {
+      const occurrenceKey =
+        typeof body.occurrenceKey === "string" ? body.occurrenceKey : null;
+      const leaseToken =
+        typeof body.leaseToken === "string" ? body.leaseToken : null;
+      if (!occurrenceKey || !leaseToken) return bad();
+      if (body.op === "sched-heartbeat") {
+        return ok(
+          await ctx.runMutation(internal.scheduled.occurrences.heartbeat, {
+            occurrenceKey,
+            leaseToken,
+          }),
+        );
+      }
+      return ok(
+        await ctx.runMutation(internal.scheduled.occurrences.verify, {
+          occurrenceKey,
+          leaseToken,
+          workflowId:
+            typeof body.workflowId === "string" ? body.workflowId : undefined,
+        }),
+      );
     }
     default:
       return null; // not a hot op — the HTTP action handles the rest

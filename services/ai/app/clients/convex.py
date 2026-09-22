@@ -42,7 +42,19 @@ class ConvexRejected(RuntimeError):
 
 # The ops chat/ingress.ts serves as a guarded public mutation. Everything else
 # stays on the HTTP action.
-_HOT_OPS = frozenset({"delta", "event", "heartbeat", "finalize"})
+_HOT_OPS = frozenset(
+    {
+        "delta",
+        "event",
+        "heartbeat",
+        "finalize",
+        "sched-list",
+        "sched-materialize",
+        "sched-claim",
+        "sched-heartbeat",
+        "sched-verify",
+    }
+)
 _MUTATION_PATH = "chat/ingress:apply"
 
 
