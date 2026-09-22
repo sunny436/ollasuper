@@ -133,6 +133,14 @@ function PanelFrame({
       exit={{ opacity: 0, x: -18 }}
       transition={{ duration: 0.25 }}
       onSubmit={onSubmit}
+      // Pre-hydration submit. Until React attaches onSubmit, Enter performs
+      // the browser's native submission, and a form with no method submits
+      // as GET — the email AND password land in the URL, the history, and
+      // every access log on the path. Seen from India-throttled Chrome, where
+      // typing outran hydration. A POST puts nothing in the URL; the server
+      // answers it with this same page (200), so the user simply sees the
+      // form again. After hydration onSubmit preventDefaults, unchanged.
+      method="post"
       className="space-y-5"
     >
       {children}
