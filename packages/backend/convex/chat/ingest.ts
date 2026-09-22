@@ -18,8 +18,23 @@ import { deleteExecutions } from "./executions";
  * thread — the caller must also hold a streamId that Convex minted.
  */
 
-/** Fold chunks into committedText every N seqs, bounding resident rows. */
-const COMPACT_EVERY = 24;
+/**
+ * Fold chunks into committedText every N seqs, bounding resident rows.
+ *
+ * The resident window is what every stream.active push carries, so it is the
+ * per-push payload: 24 seqs of 96–512-char batches was 12–24 KB per push, i.e.
+ * most of a typical answer re-sent with every flush. 12 keeps it at 4–16
+ * chunks (measured 2–5 KB) and costs one extra compaction per 24 flushes.
+ */
+const COMPACT_EVERY = 12;
+/**
+ * The newest chunks stay resident through a compaction. A subscriber receives
+ * one push per flush, so a chunk that lived in COMPACT_LAG consecutive pushes
+ * has been seen; compacting the chunk that arrived in the SAME mutation used
+ * to remove it before any subscriber saw it, which forced every client to
+ * fetch the whole committed prefix (stream.committed) at every compaction.
+ */
+const COMPACT_LAG = 4;
 
 /** Convex documents cap at 1MB; stop well short of it. */
 const MAX_MESSAGE_CHARS = 400_000;
@@ -98,11 +113,14 @@ async function residentText(
   ctx: MutationCtx,
   messageId: Id<"chatMessages">,
   afterSeq: number,
+  upToSeq?: number,
 ): Promise<string> {
   const chunks = await ctx.db
     .query("chatStreamChunks")
     .withIndex("by_message_seq", (q) =>
-      q.eq("messageId", messageId).gt("seq", afterSeq),
+      upToSeq === undefined
+        ? q.eq("messageId", messageId).gt("seq", afterSeq)
+        : q.eq("messageId", messageId).gt("seq", afterSeq).lte("seq", upToSeq),
     )
     .collect();
   chunks.sort((a, b) => a.seq - b.seq);
@@ -270,16 +288,21 @@ export const appendDeltas = internalMutation({
 
     // Periodic compaction keeps the resident chunk count (and therefore the
     // hot tail query's read cost) bounded.
-    if (maxSeq >= stream.committedSeq + COMPACT_EVERY) {
+    const upTo = maxSeq - COMPACT_LAG;
+    if (
+      maxSeq >= stream.committedSeq + COMPACT_EVERY &&
+      upTo > stream.committedSeq
+    ) {
       const text = await residentText(
         ctx,
         stream.messageId,
         stream.committedSeq,
+        upTo,
       );
       const toDelete = await ctx.db
         .query("chatStreamChunks")
         .withIndex("by_message_seq", (q) =>
-          q.eq("messageId", stream.messageId).lte("seq", maxSeq),
+          q.eq("messageId", stream.messageId).lte("seq", upTo),
         )
         .collect();
       for (const c of toDelete) await ctx.db.delete(c._id);
@@ -287,7 +310,7 @@ export const appendDeltas = internalMutation({
         0,
         MAX_MESSAGE_CHARS,
       );
-      patch.committedSeq = maxSeq;
+      patch.committedSeq = upTo;
     }
 
     await ctx.db.patch(stream._id, patch);
