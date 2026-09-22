@@ -41,6 +41,76 @@ round trip itself stays (one cheap request now). Known emulation limits are docu
 whole answer per push, the 125 ms HTTP-action overhead per `/ai/ingress` POST (mutation itself
 11 ms), `chatStreams` OCC retries (three writers), `dispatchPayload` reading 518 KB per turn.
 
+## Performance Phase 2 + whole-app navigation (2026-09-22) - LIVE, prod-verified
+
+Same rules as Phase 1: minimum change, measured before and after, nothing functional, nothing
+in auth semantics. Backend suite + `e2e/p-chat.js` (18/18, 0 console errors) + `p-sidebar.js`
+(9/9) on the deployed build; `p-scheduled.js` 28/32 and `p-settings.js` 7/8 fail on assertions
+that predate this work (an "Ambience" slider the monochrome system removed; notification-pref
+steps that assume the QA account's first task row is the one they just created) — the row menu
+and its dialog were re-checked by hand, 0 console errors.
+
+**Streaming and ingress** (measured on the UDF execution stream and per-query WebSocket bytes,
+`e2e/perf-wire.js`):
+
+- **Hot ingress ops as a guarded public mutation over `/api/mutation`** (`chat/ingress.ts`;
+  delta/event/heartbeat/finalize + the scheduler tick). The HTTP action cost ~136 ms per POST of
+  which the mutation was ~11 ms; the mutation path round-trips in 8–14 ms. **p50 152 → 14 ms.**
+  Same `AI_INGRESS_SECRET` constant-time check, same capability-scoped internal mutations, key
+  travels in args over loopback. Python prefers it and falls back to `/ai/ingress` on
+  "Could not find public function", so the two planes can be deployed in either order.
+- **One writer on the wire per stream** (`runtime/writer.py`): delta/event/heartbeat POSTs
+  serialised; a heartbeat is skipped within half its interval of any write. `chatStreams` OCC
+  retries **~1.4 → ~0.25 per turn.**
+- **`stream.active` carries the resident chunks only** (chunks > `committedSeq`); the client
+  accumulates text (`_lib/stream-text.ts`) and fetches `stream.committed` only on a gap;
+  events moved to `stream.events`, re-fired on append. Compaction every 12 seqs but never the
+  newest 4, so no push exceeds the window. **Largest push ~32 KB → 2.2 KB; WebSocket bytes per
+  pure-text turn 36 → 21.5 B/char.**
+- **`TOOL_RESULT.content` stripped from every display copy of an event** (fold, `toPublic`,
+  `stream.events`): the transcript page no longer carries raw tool output.
+
+**Navigation — every surface, US and India-emulated** (`e2e/perf-app.js`: login → thread open
+(hovered / tapped) → New chat → Projects → project → Scheduled → Settings and its sections →
+Billing, N=3, medians, click → URL / content painted):
+
+| step | India before | India after | US before | US after |
+|---|---|---|---|---|
+| thread open, hovered | 909 / 1004 | 219 / 331 | 297 / 619 | 231 / 394 |
+| thread open, tapped | 456 / 903 | 414 / 499 | 215 / 358 | 266 / 341 |
+| New chat | 232 / 289 | 105 / 161 | 157 / 221 | 206 / 215 |
+| Projects (data) | 724 / 813 / 1184 | 102 / 180 / 537 | 304 / 345 / 408 | 200 / 263 / 270 |
+| open a project | 1414 / 1954 | 98 / 470 | 291 / 446 | 126 / 240 |
+| Scheduled (data) | 828 / 902 / 1380 | 85 / 160 / 559 | 241 / 384 / 446 | 212 / 306 / 341 |
+| back to chat | 435 / 492 | 115 / 178 | 309 / 465 | 113 / 178 |
+| Settings, first entry | 777 / 1668 | 95 / 152 | 326 / 1181 | 115 / 197 |
+| Settings → Files / Connectors / Billing | ≤ 221 | ≤ 106 | ≤ 164 | ≤ 149 |
+
+- **Settings sections fully prefetched** (`settings-sidebar.tsx`, `prefetch={true}`): under
+  the dynamic `[locale]` segment the default partial prefetch fetches nothing a navigation can
+  use, so every click paid an RSC round trip (India 1–2 s → 0.2–0.5 s).
+- **Thread rows: the 150 ms hover intent also prefetches the route and the markdown chunk; a tap
+  starts the transcript warm at click time** so the RSC and data round trips overlap
+  (`chat/_lib/prefetch.ts`). A warm whose page is still in flight now survives the route
+  becoming active, and a transcript that mounted before its seed picks it up when it lands
+  (`display-cache.ts`, `use-cached-transcript.ts`) — traced with `e2e/perf-probe-open.js`:
+  tapped open, first row 837 → 416 ms at India RTT.
+- **Projects / Scheduled warmed at idle after the first thread page**, hover-warmed thereafter;
+  the breadcrumb is `prefetch={true}` (also serves New chat's `router.push`); project cards
+  are intent-prefetched; the account menu preloads the locale dictionary that
+  `I18nProviderClient` suspends the whole settings shell on.
+- **Sign-in form submits as POST before hydration** (`auth-panel.tsx`): found by the
+  India-throttled run — typing outran hydration and the native GET put email and password in
+  the URL, history and access logs.
+
+Not done / remaining: the first thread open of a session still loads the `[threadId]` page
+chunk after the click (one RTT; Next loads route entry chunks at navigation, not prefetch);
+`stream.events` re-sends all events on a tool turn (O(k²), ~128 KB observed); `threads.list`
+(3 × 8 KB) and `myNotifications` (2 × 9.4 KB) are re-pushed every turn; sign-in is bounded by
+the password hash + token mint (~450 ms server) and the chat route's 15 chunks loading after
+the `/chat` RSC; model TTFT (2–7.5 s by model) dwarfs everything above. Real-India numbers are
+still to be produced by running `node perf-app.js --profile us --label real-india` from India.
+
 ## Auth hardening — operator action still outstanding
 
 The second auth audit (Better Auth as the reference) is shipped and prod-verified, but two items
