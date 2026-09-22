@@ -21,6 +21,7 @@ export const CACHE_KEYS = {
 
 export function clearDisplayCaches(): void {
   prefetchedTranscripts.clear();
+  prefetchWaiters.clear();
   if (typeof window === "undefined") return;
   try {
     for (const key of Object.values(CACHE_KEYS)) {
@@ -63,6 +64,33 @@ export function setPrefetchedTranscript<T>(threadId: string, rows: T[]): void {
     if (oldest !== undefined) prefetchedTranscripts.delete(oldest);
   }
   prefetchedTranscripts.set(threadId, rows);
+  for (const cb of prefetchWaiters.get(threadId) ?? []) cb();
+}
+
+/**
+ * A transcript that mounted BEFORE its seed arrived asks to be told when it
+ * does. React renders the new segment as soon as the route's RSC lands and
+ * the seed is one WebSocket round trip behind the click, so at 260 ms RTT
+ * the two race and the seed lost by a few ms — the page then waited a
+ * further round trip for its own query although the same rows were already
+ * in memory. Cleared with everything else in clearDisplayCaches.
+ */
+const prefetchWaiters = new Map<string, Set<() => void>>();
+
+export function onPrefetchedTranscript(
+  threadId: string,
+  cb: () => void,
+): () => void {
+  let set = prefetchWaiters.get(threadId);
+  if (!set) {
+    set = new Set();
+    prefetchWaiters.set(threadId, set);
+  }
+  set.add(cb);
+  return () => {
+    set.delete(cb);
+    if (set.size === 0) prefetchWaiters.delete(threadId);
+  };
 }
 
 /**

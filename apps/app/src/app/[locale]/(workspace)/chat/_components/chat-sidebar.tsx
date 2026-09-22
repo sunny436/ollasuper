@@ -301,11 +301,39 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   const onNewChat = async () => {
     if (!current) return;
+    cancelRoutePrefetch("/chat"); // the click supersedes a still-pending intent
     // Navigating to a fresh /chat is enough — the thread is created on the
     // first send, so an abandoned "New chat" never leaves an empty row.
     router.push("/chat");
     onNavigate?.();
   };
+
+  /**
+   * Warm the rail's two other destinations once the rail itself has painted.
+   *
+   * Not `<Link prefetch>`: that fires the moment the links enter the viewport,
+   * which on sign-in is the exact moment the chat route is hydrating and the
+   * WebSocket is connecting — three RSC fetches and seven chunks competing
+   * with the composer becoming usable (seen in the sign-in request trace).
+   * Waiting for the first thread page and then for idle keeps them off the
+   * critical path; a tap still finds both routes in the router cache.
+   */
+  useEffect(() => {
+    if (loadingFirst) return;
+    const warm = () => {
+      for (const href of ["/projects", "/scheduled"]) prefetchRoute(router, href);
+    };
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (w.requestIdleCallback) {
+      const id = w.requestIdleCallback(warm, { timeout: 4000 });
+      return () => w.cancelIdleCallback?.(id);
+    }
+    const t = setTimeout(warm, 1500);
+    return () => clearTimeout(t);
+  }, [loadingFirst, router]);
 
 
   return (
@@ -341,11 +369,17 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
         */}
         <Link
           href="/projects"
-          // Full prefetch: under the dynamic [locale] segment the default
-          // partial prefetch fetches nothing a navigation can use, so the
-          // click paid an RSC round trip. One small request per five minutes.
-          prefetch={true}
-          onClick={onNavigate}
+          // Under the dynamic [locale] segment the default partial prefetch
+          // fetches nothing a navigation can use, so the click paid an RSC
+          // round trip; the idle warm-up above (and hover, for a stale entry)
+          // is a full prefetch. One small request per five minutes.
+          prefetch={false}
+          onPointerEnter={() => prefetchRoute(router, "/projects")}
+          onPointerLeave={() => cancelRoutePrefetch("/projects")}
+          onClick={() => {
+            cancelRoutePrefetch("/projects");
+            onNavigate?.();
+          }}
           aria-current={projectsActive ? "page" : undefined}
           className={`mt-2 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
             projectsActive
@@ -359,8 +393,13 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
         <Link
           href="/scheduled"
-          prefetch={true}
-          onClick={onNavigate}
+          prefetch={false}
+          onPointerEnter={() => prefetchRoute(router, "/scheduled")}
+          onPointerLeave={() => cancelRoutePrefetch("/scheduled")}
+          onClick={() => {
+            cancelRoutePrefetch("/scheduled");
+            onNavigate?.();
+          }}
           aria-current={scheduledActive ? "page" : undefined}
           className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
             scheduledActive

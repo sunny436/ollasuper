@@ -1,6 +1,10 @@
 "use client";
 
-import { CACHE_KEYS, takePrefetchedTranscript } from "@/lib/display-cache";
+import {
+  CACHE_KEYS,
+  onPrefetchedTranscript,
+  takePrefetchedTranscript,
+} from "@/lib/display-cache";
 import { useEffect, useState } from "react";
 import type { ChatMessageDoc } from "../_components/chat-message";
 
@@ -36,9 +40,20 @@ export function useCachedTranscript(
   loadingFirst: boolean,
 ): ChatMessageDoc[] {
   const [cached, setCached] = useState<Entry | null>(null);
-  const [prefetched] = useState<ChatMessageDoc[] | null>(() =>
+  const [prefetched, setPrefetched] = useState<ChatMessageDoc[] | null>(() =>
     threadId ? takePrefetchedTranscript<ChatMessageDoc>(threadId) : null,
   );
+
+  // The seed can land a moment AFTER this mounted (see onPrefetchedTranscript);
+  // take it then, as long as the live first page has not arrived. Once it has,
+  // `live` is returned and a seed is never looked at again.
+  useEffect(() => {
+    if (!threadId || prefetched || !loadingFirst) return;
+    return onPrefetchedTranscript(threadId, () => {
+      const rows = takePrefetchedTranscript<ChatMessageDoc>(threadId);
+      if (rows) setPrefetched(rows);
+    });
+  }, [threadId, prefetched, loadingFirst]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

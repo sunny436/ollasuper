@@ -244,6 +244,9 @@ Its chats are kept and move back to your conversation list. You can restore the 
           <div className="flex items-center gap-1 pt-4 text-sm">
             <Link
               href="/projects"
+              // The rail already holds /projects warm; the default partial
+              // prefetch here was one wasted request per project opened.
+              prefetch={false}
               className="rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-primary"
             >
               Projects

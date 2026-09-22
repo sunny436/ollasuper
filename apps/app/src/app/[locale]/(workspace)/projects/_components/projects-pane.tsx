@@ -190,6 +190,7 @@ export function ProjectsPane() {
                       onPointerLeave={() => cancelRoutePrefetch(`/projects/${p._id}`)}
                       onFocus={() => prefetchRoute(router, `/projects/${p._id}`)}
                       onBlur={() => cancelRoutePrefetch(`/projects/${p._id}`)}
+                      onClick={() => cancelRoutePrefetch(`/projects/${p._id}`)}
                       className="flex items-center gap-3 rounded-lg px-2 py-3 transition-colors hover:bg-accent"
                     >
                       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/5 text-muted-foreground">

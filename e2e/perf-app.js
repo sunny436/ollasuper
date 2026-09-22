@@ -140,7 +140,7 @@ function delayQueue(oneWayMs, bytesPerSec, send) {
   await sleep(4000);
 
   const threadLinks = () => page.locator('nav[aria-label="Conversations"] a[href^="/chat/"]').filter({ hasNotText: /^New chat$/ });
-  const acctMenu = async () => { await page.getByRole("button", { name: "Account menu" }).click(); };
+  const acctMenu = async () => { await page.getByRole("button", { name: "Account menu" }).click(); await page.getByRole("link", { name: "Settings" }).first().hover(); await sleep(400); };
 
   for (let r = 0; r < RUNS; r++) {
     console.log(`run ${r + 1}/${RUNS}`);
@@ -162,7 +162,7 @@ function delayQueue(oneWayMs, bytesPerSec, send) {
     const proj = page.locator('a[href^="/projects/"]').first();
     if (await proj.count()) {
       const phref = await proj.getAttribute("href");
-      await step("project-open", { go: () => proj.click(), url: (p) => p === phref, paint: () => noText(/Loading…/), data: noPulse });
+      await step("project-open", { pre: async () => { await proj.hover(); await sleep(350); }, go: () => proj.click(), url: (p) => p === phref, paint: () => noText(/Loading…/), data: noPulse });
       await step("project-back", { go: () => page.getByRole("link", { name: /Projects/ }).first().click(), url: (p) => p === "/projects", paint: () => page.getByRole("heading", { name: "Projects" }).first().waitFor({ timeout: 30000 }), data: noPulse });
     }
     await step("scheduled", { go: () => page.getByRole("link", { name: "Scheduled", exact: true }).click(), url: (p) => p === "/scheduled", paint: () => page.getByRole("heading", { name: /Scheduled/ }).first().waitFor({ timeout: 30000 }), data: noPulse });
