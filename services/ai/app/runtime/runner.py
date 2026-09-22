@@ -281,6 +281,11 @@ async def run_generation(
     # opaque block, so a 45s p90 time-to-first-token could not be attributed to
     # the app or to the provider, and every latency discussion was guesswork.
     prep_ms: float | None = None
+    # Sub-spans of prep, so a slow first token can be attributed to attachments,
+    # retrieval or connector handshakes instead of "prep". Wall-clock spent
+    # AWAITING each (retrieval runs concurrently; its span is the time the turn
+    # actually waited for it).
+    prep_spans: dict[str, int] = {}
     hb_task: asyncio.Task | None = None
     # `mono` is the LIVE total-execution deadline (monotonic seconds), read every
     # heartbeat tick. ANY forward progress rolls it forward (below) — a tool event
@@ -575,6 +580,7 @@ async def run_generation(
             )
 
         try:
+            _t_attach = time.monotonic()
             content, n_images = await build_user_content(
                 latest,
                 convex,
@@ -588,6 +594,7 @@ async def run_generation(
                     max(0, latest_char_cap - len(latest.content)),
                 ),
             )
+            prep_spans["attach_ms"] = round((time.monotonic() - _t_attach) * 1000)
         except AttachmentError as e:
             error = {"code": ERR_ATTACHMENT, "message": str(e), "retryable": False}
             raise
@@ -597,9 +604,11 @@ async def run_generation(
         rag_text, rag_tokens = "", 0
         if rag_task is not None:
             try:
+                _t_rag = time.monotonic()
                 chunks = await asyncio.wait_for(
                     rag_task, settings.ai_rag_deadline_ms / 1000
                 )
+                prep_spans["rag_wait_ms"] = round((time.monotonic() - _t_rag) * 1000)
                 rag_text, rag_tokens = render_rag_block(chunks, settings)
                 # Observability: the ONLY signal that retrieval fired and what it
                 # found. No chunk content is logged (safe for journalctl); this is
@@ -1015,6 +1024,7 @@ async def run_generation(
         # sessions outlive tool binding and every tool call that follows.
         mcp_caps = TurnCapabilities()
         if mcp_pool is not None and req.mcpConnections:
+            _t_mcp = time.monotonic()
             mcp_caps = await mcp_stack.enter_async_context(
                 mcp_for_turn(
                     mcp_pool,
@@ -1030,6 +1040,7 @@ async def run_generation(
                     convex=convex,
                 )
             )
+            prep_spans["mcp_open_ms"] = round((time.monotonic() - _t_mcp) * 1000)
             if mcp_caps.registry is not None:
                 tool_registry = mcp_caps.registry
                 tool_selector = ToolSelector(tool_registry)
@@ -2490,6 +2501,7 @@ async def run_generation(
                 # is model<->executor round-trips, the serial cost of a turn and
                 # the thing to watch now that the step ceiling is off.
                 "prep_ms": round(prep_ms) if prep_ms is not None else None,
+                "prep_spans": prep_spans,
                 "steps": tools_ctx.step_counter if tools_ctx is not None else 0,
                 "dropped": writer.stats.dropped,
                 "ttft_ms": writer.stats.first_flush_ms,
