@@ -13,7 +13,7 @@
  */
 
 const BUTTON =
-  "flex min-h-[58px] w-full items-center justify-center gap-2 rounded-2xl border border-border bg-card px-4 font-semibold text-[13px] text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-card";
+  "flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 font-medium text-[13px] text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-card";
 
 function GoogleIcon() {
   return (

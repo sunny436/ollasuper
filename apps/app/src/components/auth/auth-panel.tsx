@@ -15,11 +15,7 @@ import {
   Loader2,
   Lock,
   Mail,
-  ShieldCheck,
-  Sparkles,
   User,
-  Users,
-  Zap,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
@@ -41,22 +37,19 @@ import {
 // after hydration and never lands in the login route's first-load bundle.
 // ssr:false is legal here and only here — this file is a client component.
 
-// Rendered during SSR too, so it cannot be new Date().getFullYear() without
-// risking a hydration mismatch across a year boundary.
-const COPYRIGHT_YEAR = 2026;
-
 type Mode = "signIn" | "signUp" | "verify" | "forgot" | "reset" | "otp";
 
-const LABEL =
-  "mb-2 block font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.12em]";
+// Field heights are a touch-target floor, not a taste call: qa-responsive.js
+// measures every interactive element on a coarse pointer against 44px.
+const LABEL = "mb-1.5 block font-medium text-[13px] text-foreground";
 const FIELD_ROW =
-  "flex min-h-[62px] items-center gap-3.5 rounded-lg border border-border bg-card px-5 py-4 transition-colors focus-within:border-foreground";
+  "flex min-h-[50px] items-center gap-3 rounded-xl border border-border bg-card px-3.5 transition-colors focus-within:border-foreground focus-within:ring-1 focus-within:ring-ring";
 const FIELD_INPUT =
-  "w-full bg-transparent font-medium text-[15px] text-foreground placeholder:text-muted-foreground focus:outline-none";
+  "w-full bg-transparent text-[15px] text-foreground placeholder:text-muted-foreground focus:outline-none";
 const SUBMIT =
-  "group flex min-h-[64px] w-full items-center justify-center gap-2 rounded-lg bg-foreground px-8 py-4 font-bold text-sm text-background uppercase tracking-[0.14em] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-40";
+  "group flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-foreground px-6 font-semibold text-[14px] text-background transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-40";
 const LINK =
-  "font-semibold text-foreground text-[13px] underline underline-offset-4 transition-opacity hover:opacity-70";
+  "font-medium text-foreground text-[13px] underline underline-offset-4 transition-opacity hover:opacity-70";
 // Was the app's only gradient TEXT (four stops via bg-clip-text). One ink now.
 
 
@@ -90,29 +83,6 @@ function SubmitButton({ pending, label }: { pending: boolean; label: string }) {
         </>
       )}
     </button>
-  );
-}
-
-/** One cell of the left-column 2×2 feature grid. Module scope like the rest. */
-function FeatureCard({
-  icon: Icon,
-  title,
-  desc,
-  accent,
-}: {
-  icon: typeof Sparkles;
-  title: string;
-  desc: string;
-  accent: string;
-}) {
-  return (
-    <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card p-4 transition-colors hover:border-foreground">
-      <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card">
-        <Icon className={`h-4 w-4 ${accent}`} />
-      </span>
-      <p className="font-semibold text-[13px] text-foreground">{title}</p>
-      <p className="text-[11px] leading-snug text-muted-foreground">{desc}</p>
-    </div>
   );
 }
 
@@ -382,97 +352,56 @@ export function AuthPanel() {
 
   return (
     <LazyMotion features={loadMotionFeatures}>
-    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-background p-4 font-sans md:p-8">
+      {/*
+        ONE centred column on a plain page — no split panel, no card.
 
-      {/* Near-full-page auth shell; the neon halo sits behind it (-inset, -z-10). */}
-      <div className="relative h-auto w-[92vw] max-w-[1360px] md:h-[86vh] md:max-h-[860px]">
-        <div className="relative flex h-full w-full flex-col overflow-hidden rounded-xl border border-border bg-card md:flex-row">
+        min-h-screen and NOT .h-dvh-safe (a fixed 100dvh): the sign-up and reset
+        panels are taller than a short phone, and a fixed height would clip them
+        with nothing to scroll. For the same reason there is no overflow-hidden
+        here and NO min-h-0 on <main> — a flex item keeps min-height:auto, so a
+        tall panel grows the page and the document scrolls, instead of being
+        centred into an overflow that cannot be scrolled back up to.
+      */}
+      <div className="flex min-h-screen w-full flex-col bg-background font-sans">
+        {/*
+          The brand sits in NORMAL FLOW, not absolutely positioned. An absolute
+          mark overlaps the form on a short viewport, which qa-responsive.js
+          reports as a covered control — a hard failure; a flow header cannot
+          overlap anything at any size. Deliberately not a link: no extra tab
+          stop and no new navigation target on the sign-in page.
+        */}
+        <header className="shrink-0 px-5 py-5 sm:px-8 sm:py-7">
+          <OllaSuperBrand
+            variant="auth"
+            className="gap-2.5 text-foreground"
+            markClassName="h-7 w-7 sm:h-8 sm:w-8"
+            textClassName="text-[21px] sm:text-[23px]"
+          />
+        </header>
 
-        {/* ===== LEFT: constant branding for every mode (no tab nav, no AI pill) ===== */}
-        {/* Scrolls on short desktop windows, so it must be keyboard-reachable
-            (axe scrollable-region-focusable on prod). */}
-        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-reachable (WCAG 2.1.1) */}
-        <div tabIndex={0} role="region" aria-label="About OllaSuper" className="scrollbar-quiet relative flex w-full select-none flex-col items-center justify-between overflow-hidden border-border p-8 md:w-1/2 md:overflow-y-auto md:border-r md:p-10">
-          {/* Top: reused orb housing (VERBATIM) + wordmark + divider + taglines. */}
-          <div className="relative z-10 flex flex-col items-center gap-5">
-            <OllaSuperBrand
-              variant="auth"
-              className="gap-3.5 text-foreground"
-              markClassName="h-12 w-12 sm:h-16 sm:w-16"
-              textClassName="text-[clamp(22px,7.5vw,30px)] sm:text-[42px]"
-            />
-
-            {/* ──── ✦ ──── */}
-            <div className="flex items-center gap-3">
-              <span className="h-px w-12 bg-border" />
-              <span className="text-[11px] text-muted-foreground">✦</span>
-              <span className="h-px w-12 bg-border" />
-            </div>
-
-            <div className="text-center">
-              <p className="font-semibold text-[20px] text-foreground">
-                All-in-One Super Intelligence Workspace
-              </p>
-              <p className="mt-2 text-[15px] text-muted-foreground">
-                AI tools for creators, builders &amp; dreamers.
-              </p>
-            </div>
-          </div>
-
-          {/* Middle: 2×2 feature cards (desktop only). */}
-          <div className="relative z-10 my-8 hidden w-full max-w-sm grid-cols-2 gap-3 md:grid">
-            <FeatureCard
-              icon={Zap}
-              title="Super Fast"
-              desc="AI that works as fast as you think"
-              accent="text-foreground"
-            />
-            <FeatureCard
-              icon={Sparkles}
-              title="All-in-One"
-              desc="Everything you need, in one workspace"
-              accent="text-foreground"
-            />
-            <FeatureCard
-              icon={ShieldCheck}
-              title="Privacy First"
-              desc="Your data, your control, always secure"
-              accent="text-foreground"
-            />
-            <FeatureCard
-              icon={Users}
-              title="Built for Teams"
-              desc="Create, collaborate and achieve more"
-              accent="text-foreground"
-            />
-          </div>
-
-          {/* Footer (desktop only). */}
-          <div className="relative z-10 hidden w-full items-center justify-between border-border border-t pt-5 text-[11px] text-muted-foreground md:flex">
-            <span>&copy; {COPYRIGHT_YEAR} OllaSuper Workspaces</span>
-            <span className="flex items-center gap-1.5 text-muted-foreground">
-              <ShieldCheck className="h-3 w-3" /> Convex Auth
-            </span>
-          </div>
-        </div>
-
-        {/* ===== RIGHT: mode-specific form ===== */}
-        {/* m-auto (not justify-center) centres the block but lets a tall mode
-            scroll from the top instead of clipping it under overflow-y-auto. */}
-        <div className="scrollbar-quiet relative z-10 flex flex-1 flex-col overflow-y-auto p-8 md:p-12">
-          <div className="m-auto w-full max-w-md">
+        <main className="flex w-full flex-1 items-center justify-center px-5 pb-16 sm:px-8 sm:pb-24">
+          {/* max-w-md is the width the form column already had, so the three-up
+              social row keeps the horizontal maths that passes at 375px. */}
+          <div className="w-full max-w-md">
             <div className="mb-8 text-center">
               {/* No text-transform: renders copy verbatim ("Welcome back"). */}
-              <h1 className="font-bold text-[40px] leading-tight text-foreground">
+              <h1 className="font-bold text-[30px] leading-tight tracking-[-0.01em] text-foreground sm:text-[34px]">
                 {copy[mode].title}
               </h1>
-              <p className="mt-2 text-[15px] text-muted-foreground">{copy[mode].sub}</p>
+              <p className="mt-2 text-[14px] text-muted-foreground sm:text-[15px]">
+                {copy[mode].sub}
+              </p>
             </div>
 
             {/* mode="wait" is load-bearing, not decorative: e2e/p2-auth.js fills
                 input[type="email"] without .first(), so two mounted forms would
                 be a Playwright strict-mode violation. */}
-            <AnimatePresence mode="wait">
+            {/* initial={false}: without it framer-motion serialises the first
+                panel as opacity:0 translateX(18px) INTO THE SERVER HTML, so the
+                fields are invisible until the motion chunk hydrates. The old
+                branding column hid that; on a centred page it is the whole
+                screen. Mode SWITCHES still animate. */}
+            <AnimatePresence mode="wait" initial={false}>
               {mode === "signIn" && (
                 <PanelFrame formKey="signIn" onSubmit={submit(signInForm)}>
                   <signInForm.Field name="email" validators={{ onSubmit: signInSchema.shape.email }}>
@@ -525,7 +454,7 @@ export function AuthPanel() {
                           type="button"
                           aria-label={reveal ? "Hide password" : "Show password"}
                           onClick={() => setReveal((v) => !v)}
-                          className="shrink-0 text-muted-foreground transition-colors hover:text-muted-foreground"
+                          className="-mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground"
                         >
                           {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -610,7 +539,7 @@ export function AuthPanel() {
                           type="button"
                           aria-label={reveal ? "Hide password" : "Show password"}
                           onClick={() => setReveal((v) => !v)}
-                          className="shrink-0 text-muted-foreground transition-colors hover:text-muted-foreground"
+                          className="-mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground"
                         >
                           {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -753,7 +682,7 @@ export function AuthPanel() {
                           type="button"
                           aria-label={reveal ? "Hide password" : "Show password"}
                           onClick={() => setReveal((v) => !v)}
-                          className="shrink-0 text-muted-foreground transition-colors hover:text-muted-foreground"
+                          className="-mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground"
                         >
                           {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -873,10 +802,8 @@ export function AuthPanel() {
               </p>
             )}
           </div>
-        </div>
-        </div>
+        </main>
       </div>
-    </div>
     </LazyMotion>
   );
 }
