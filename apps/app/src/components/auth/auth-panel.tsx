@@ -369,13 +369,16 @@ export function AuthPanel() {
       */}
       <div className="flex min-h-screen w-full flex-col bg-background font-sans">
         {/*
-          The brand sits in NORMAL FLOW, not absolutely positioned. An absolute
-          mark overlaps the form on a short viewport, which qa-responsive.js
-          reports as a covered control — a hard failure; a flow header cannot
-          overlap anything at any size. Deliberately not a link: no extra tab
-          stop and no new navigation target on the sign-in page.
+          STICKY, NOT FIXED. Sticky keeps the header in normal flow — it still
+          reserves its own space — so at the top of the page it cannot sit on
+          top of the form the way a fixed (or absolute) mark would, which
+          qa-responsive.js reports as a covered control. It only pins once the
+          page actually scrolls, which is what a tall panel on a short phone
+          does. bg-background + z-10 so the form passes UNDER it rather than
+          through it. Deliberately not a link: no extra tab stop and no new
+          navigation target on the sign-in page.
         */}
-        <header className="shrink-0 px-5 py-5 sm:px-8 sm:py-7">
+        <header className="sticky top-0 z-10 shrink-0 bg-background px-5 py-5 sm:px-8 sm:py-7">
           <OllaSuperBrand
             variant="auth"
             className="gap-2.5 text-foreground"

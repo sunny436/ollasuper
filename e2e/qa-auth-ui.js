@@ -39,6 +39,22 @@ const PANELS = [
   { mode: "forgot", heading: "Reset password", go: (p) => p.getByRole("button", { name: "Forgot?" }).click() },
   { mode: "otp", heading: "Email code", go: (p) => p.getByText("Sign in with a one-time email code").click() },
   { mode: "signUp", heading: "Your Intelligence Starts Here", go: (p) => p.getByRole("button", { name: /Create an account/ }).click() },
+  // The two-field code+password panel, reached WITHOUT sending anything: for an
+  // address with no account, queuePasswordReset returns after one indexed read —
+  // no budget consumed, no scheduler job, no mail (convex/authSessions.ts). The
+  // UI still advances, which is the whole point of that design. This is also the
+  // stand-in for  and the OTP code step: all three are the same
+  // FieldShell code path with a KeyRound icon and a  input.
+  {
+    mode: "reset",
+    heading: "New password",
+    go: async (p) => {
+      await p.getByRole("button", { name: "Forgot?" }).click();
+      await p.getByRole("heading", { name: "Reset password" }).waitFor({ timeout: 15000 });
+      await p.locator('input[name="email"]').fill(`nobody-${Date.now()}@example.invalid`);
+      await p.getByRole("button", { name: /Send reset code/ }).click();
+    },
+  },
 ];
 
 const failures = [];
@@ -205,6 +221,35 @@ const AUDIT = () => {
           await page.getByRole("heading", { name: "Welcome back" }).waitFor({ timeout: 15000 });
           await sleep(500);
         }
+      }
+
+      // The brand must SURVIVE A SCROLL — that is the whole point of sticky, and
+      // the only way to see it is on a viewport too short for the tallest panel.
+      if (!SHOTS_ONLY && vp.touch) {
+        await page.getByRole("button", { name: /Create an account/ }).click();
+        await page.getByRole("heading", { name: "Your Intelligence Starts Here" }).waitFor({ timeout: 15000 });
+        await page.setViewportSize({ width: vp.width, height: 560 });
+        await sleep(600);
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await sleep(600);
+        const pin = await page.evaluate(() => {
+          const brand = document.querySelector("header")?.querySelector("span");
+          const r = brand?.getBoundingClientRect();
+          return {
+            scrollY: Math.round(window.scrollY),
+            top: r ? Math.round(r.top) : null,
+            onScreen: !!r && r.top >= 0 && r.bottom <= window.innerHeight,
+          };
+        });
+        const stickyWhere = `${vp.name}/${theme}/sticky-brand`;
+        if (pin.scrollY < 40) fail(stickyWhere, `the page only scrolled ${pin.scrollY}px, so this proves nothing`);
+        else if (!pin.onScreen || pin.top > 40) fail(stickyWhere, `the brand scrolled away (top=${pin.top} after ${pin.scrollY}px)`);
+        else ok(stickyWhere, `brand still pinned at y=${pin.top} after scrolling ${pin.scrollY}px`);
+        await page.screenshot({ path: path.join(SHOTS, `${vp.name}-${theme}-scrolled.png`) });
+        await page.setViewportSize({ width: vp.width, height: vp.height });
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.getByRole("button", { name: "Sign in", exact: true }).click();
+        await page.getByRole("heading", { name: "Welcome back" }).waitFor({ timeout: 15000 });
       }
 
       // Keyboard: the form must be reachable and every stop must show a ring.
