@@ -226,6 +226,9 @@ const AUDIT = () => {
       // The brand must SURVIVE A SCROLL — that is the whole point of sticky, and
       // the only way to see it is on a viewport too short for the tallest panel.
       if (!SHOTS_ONLY && vp.touch) {
+        // Let the previous panel's toast expire first: Sonner is fixed at the
+        // top, so a live toast sits over the very band this check photographs.
+        await page.waitForFunction(() => !document.querySelector("[data-sonner-toast]"), null, { timeout: 12000 }).catch(() => {});
         await page.getByRole("button", { name: /Create an account/ }).click();
         await page.getByRole("heading", { name: "Your Intelligence Starts Here" }).waitFor({ timeout: 15000 });
         await page.setViewportSize({ width: vp.width, height: 560 });
