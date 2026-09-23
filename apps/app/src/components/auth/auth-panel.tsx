@@ -45,11 +45,16 @@ const LABEL = "mb-1.5 block font-medium text-[13px] text-foreground";
 const FIELD_ROW =
   "flex min-h-[50px] items-center gap-3 rounded-xl border border-border bg-card px-3.5 transition-colors focus-within:border-foreground focus-within:ring-1 focus-within:ring-ring";
 const FIELD_INPUT =
-  "w-full bg-transparent text-[15px] text-foreground placeholder:text-muted-foreground focus:outline-none";
+  // min-h so the INPUT is the tap target, not just the 23px line box inside a
+  // 50px row: tapping a row's padding focuses nothing, the row is not a label.
+  "min-h-[46px] w-full bg-transparent text-[15px] text-foreground placeholder:text-muted-foreground focus:outline-none";
 const SUBMIT =
   "group flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-foreground px-6 font-semibold text-[14px] text-background transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-40";
 const LINK =
-  "font-medium text-foreground text-[13px] underline underline-offset-4 transition-opacity hover:opacity-70";
+  // py-1 takes these 20px text links to 28px of hit area, clearing WCAG 2.2 AA
+  // 2.5.8 (24px). Vertical padding on an inline box does not move a line, so
+  // nothing shifts.
+  "py-1 font-medium text-foreground text-[13px] underline underline-offset-4 transition-opacity hover:opacity-70";
 // Was the app's only gradient TEXT (four stops via bg-clip-text). One ink now.
 
 
