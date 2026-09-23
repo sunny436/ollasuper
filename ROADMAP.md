@@ -41,6 +41,53 @@ round trip itself stays (one cheap request now). Known emulation limits are docu
 whole answer per push, the 125 ms HTTP-action overhead per `/ai/ingress` POST (mutation itself
 11 ms), `chatStreams` OCC retries (three writers), `dispatchPayload` reading 518 KB per turn.
 
+## Sign-in page — centred layout (2026-09-23) - LIVE, prod-verified
+
+UI only. The split card (left branding column + right form column inside a `w-[92vw]
+max-w-[1360px] md:h-[86vh]` shell) became a plain page: the OllaSuper lockup top-left, one form
+centred below it. Every handler, form, schema, validator, provider, route and redirect in
+`components/auth/auth-panel.tsx` is unchanged — the diff removes **no** line matching
+`signIn|signUp|onSubmit|useForm|schema|router|toast|await|handleSubmit|field.` — and only
+`auth-panel.tsx` + `oauth-row.tsx` were opened. The removed left column's strings appear in no
+test or script.
+
+Three things are load-bearing and easy to undo by accident:
+
+- **The brand header is `sticky top-0`, never `fixed` or `absolute`.** Sticky stays in flow and
+  reserves its own space, so at rest nothing is underneath it; it pins only once the page
+  scrolls. Fixed or absolute would sit on top of the form on a short viewport, which
+  `qa-responsive.js` reports as a *covered control* — a hard failure.
+- **No `overflow-hidden` on the page and no `min-h-0` on `<main>`.** A flex item keeps
+  `min-height: auto`, so a tall panel (sign-up, reset) grows the page and the document scrolls
+  instead of being centred into an overflow nothing can scroll back up to. `.h-dvh-safe` is a
+  FIXED `100dvh` and would clip those panels outright — hence `min-h-screen`.
+- **`AnimatePresence initial={false}`.** Without it framer-motion serialises the first panel as
+  `opacity:0 translateX(18px)` **into the server HTML** (proven by curl against production), so
+  the fields are invisible until the motion chunk hydrates. The old branding column hid that; on
+  a centred page it is the whole screen. Mode switches still animate.
+
+Two pre-existing touch-target bugs fixed on the way: the `<input>` was 23px tall inside a 50px
+row — and a row is not a `<label>`, so tapping its padding focused nothing — now `min-h-[46px]`;
+and the text links were 20px, now `py-1` → 28px, clearing WCAG 2.2 AA 2.5.8 (24px). The
+show/hide-password control went from a bare 16px icon to a 44×44 target.
+
+New gate: **`e2e/qa-auth-ui.js`** — headed Chrome at 390×844 / 820×1180 / 1440×900, light and
+dark, over the five panels reachable without sending mail (signIn, forgot, otp, signUp, and
+reset via an address with no account, which `queuePasswordReset` answers after one indexed read:
+no budget consumed, no scheduler job, no mail). Per state it asserts no horizontal overflow,
+nothing outside the viewport, no covered control, every input paired with a `<label for>`, the
+brand visible and never overlapping the form, exactly one submit button, and the theme applied;
+plus the SSR `opacity:0` check, the landmark check, the desktop tab order, and a scroll test
+that shrinks the window until the page really scrolls and asserts the brand is still within 40px
+of the top. `verify` and the OTP code step are the same `FieldShell` path with a `KeyRound` icon
+and a `code` input, and are exercised for real by `p2-auth.js` / `p-auth-edges.js`.
+
+Verified on production: `qa-auth-ui` **30/30 states, 0 console errors** · `p-chat` 18/18 ·
+`p-google-login` PASS · `qa-monochrome` PASS including `/login` in both themes (67 elements each)
+· `qa-responsive --part a11y` 0 failures, and **zero axe violations on `/login`** at 375 and 1280
+— the new `<header>`/`<main>` landmarks removed the `region` and `landmark-one-main` findings the
+rest of the app still reports · `apps/app` unit suite 228/228 (`monochrome`, `font`, `branding`).
+
 ## Performance Phase 2 + whole-app navigation (2026-09-22) - LIVE, prod-verified
 
 Same rules as Phase 1: minimum change, measured before and after, nothing functional, nothing
