@@ -15,6 +15,12 @@ const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const { email: EMAIL, password: PASSWORD } = require("./creds").account();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PAGE = 30; // chat-sidebar.tsx
+const SECTIONS = ["static", "pagination", "menu-light", "collapse", "switch", "files", "menu-dark", "mobile"];
+const FROM = (() => {
+  const i = process.argv.indexOf("--from");
+  return i === -1 ? 0 : Math.max(0, SECTIONS.indexOf(process.argv[i + 1]));
+})();
+const run = (name) => SECTIONS.indexOf(name) >= FROM;
 
 const failures = [];
 const fail = (w, why) => {
@@ -134,10 +140,12 @@ async function scrollRailOnce(page, how, before) {
   const page = await ctx.newPage();
   watch(page, "desktop");
   const frames = await frameCounter(ctx, page);
+  let s = null;
   await login(page);
   await page.locator(ROWS).first().waitFor({ timeout: 30000 });
   await sleep(2500);
 
+  if (run("static")) {
   console.log("\nstatic");
   const body = await page.locator("body").innerText();
   check("no \"Load more\" anywhere on /chat", !/Load more/i.test(body));
@@ -151,9 +159,11 @@ async function scrollRailOnce(page, how, before) {
   await page.keyboard.press("Escape");
   await sleep(300);
 
+  }
   // ------------------------------------------------ pagination by scrolling
+  if (run("pagination")) {
   console.log("\nrail pagination");
-  let s = await railState(page);
+  s = await railState(page);
   const initial = s.count;
   const pagesAtStart = frames.railPages();
   console.log(`  initial rows ${initial}, rail subscriptions ${pagesAtStart}`);
@@ -196,6 +206,8 @@ async function scrollRailOnce(page, how, before) {
     prev = next;
     i++;
   }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await sleep(500);
   s = await railState(page);
   const pages = Math.ceil(s.count / PAGE);
   const subs = frames.railPages();
@@ -218,6 +230,7 @@ async function scrollRailOnce(page, how, before) {
     `${frames.railPages() - endSubs} extra in ${Math.round((Date.now() - tEnd) / 1000)}s`,
   );
 
+  }
   // ---------------------------------------------------- the 3-dot menu
   async function menuOnLastRow(tag) {
     const sc = await scrollerHandle(page);
@@ -335,21 +348,26 @@ async function scrollRailOnce(page, how, before) {
     check(`${tag}: …and the menu is closed`, (await page.getByRole("button", { name: /^(Pin|Unpin)$/ }).count()) === 0);
   }
 
+  if (run("menu-light")) {
   console.log("\n3-dot menu, desktop light");
   await menuOnLastRow("1280x800 light");
 
+  }
   // ------------------------------------------ collapse / expand the rail
+  if (run("collapse")) {
   console.log("\ncollapse / expand");
   const beforeCollapse = frames.railPages();
   await page.getByRole("button", { name: "Hide conversations" }).first().click();
   await sleep(900);
   check("collapsed rail requests nothing", frames.railPages() === beforeCollapse);
-  await page.getByRole("button", { name: "Show conversations" }).first().click();
+  await page.locator('button[aria-label="Open conversations"]:visible').first().click();
   await sleep(900);
   s = await railState(page);
   check("expanded rail still holds every row, unique", s.unique === s.count && s.count > 0, `${s.count}`);
 
+  }
   // --------------------------------- switching chats while a page is in flight
+  if (run("switch")) {
   console.log("\nswitch chats mid-load");
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator(ROWS).first().waitFor({ timeout: 30000 });
@@ -364,26 +382,47 @@ async function scrollRailOnce(page, how, before) {
   s = await railState(page);
   check("rail consistent after switching mid-load", s.unique === s.count && s.count >= 1, `${s.unique}/${s.count}`);
 
+  }
   // ------------------------------------------------ the short-scroller trap
+  if (run("files")) {
   console.log("\nchat Files section (256px scroller)");
-  const tFiles = Date.now();
+  // The Files query subscribes its FIRST page on mount, open or not, so the
+  // signal is how many EXTRA pages expanding it pulls. The regression the
+  // derived rootMargin prevents: a flat 400px margin on this 256px scroller
+  // made the sentinel intersect on first render and pull every page at once.
   const filesToggle = page.getByRole("button", { name: /^Files/ }).first();
   if (await filesToggle.count()) {
+    const before = frames.count("userFiles:list");
     await filesToggle.click();
-    await sleep(4000);
-    const n = frames.since(tFiles, "userFiles:list");
-    const fileRows = await page.locator(`${RAIL} [data-file-row], ${RAIL} .max-h-64 > *`).count();
+    await sleep(5000);
+    const extra = frames.count("userFiles:list") - before;
+    const shown = await page.locator(`${RAIL} .max-h-64 > *`).count();
     check(
-      "opening the Files section does not eagerly page the whole list",
-      n <= 1,
-      `${n} userFiles:list subscription(s) on open, ${fileRows} rows visible`,
+      "opening the 256px Files section pulls NO extra pages",
+      extra === 0,
+      `${extra} extra page(s); ${shown} rows rendered`,
     );
+    // …and it still paginates when the user actually scrolls it.
+    await page.evaluate(([rail]) => {
+      const el = document.querySelector(`${rail} .max-h-64`);
+      if (el) el.scrollTop = el.scrollHeight;
+    }, [RAIL]);
+    const t0 = Date.now();
+    let grew = 0;
+    while (Date.now() - t0 < 9000) {
+      grew = (await page.locator(`${RAIL} .max-h-64 > *`).count()) - shown;
+      if (grew > 0) break;
+      await sleep(200);
+    }
+    check("scrolling the Files section still loads the next page", grew > 0, `+${grew} rows`);
     await filesToggle.click().catch(() => {});
   } else {
-    console.log("  (Files toggle not found — skipped)");
+    fail("Files section", "toggle not found");
   }
 
+  }
   // ------------------------------------------------------ dark theme menu
+  if (run("menu-dark")) {
   console.log("\n3-dot menu, desktop dark");
   await page.emulateMedia({ colorScheme: "dark" });
   await page.evaluate(() => {
@@ -402,9 +441,11 @@ async function scrollRailOnce(page, how, before) {
       localStorage.removeItem("theme_ts");
     } catch {}
   });
+  }
   await ctx.close();
 
   // ============================================================ mobile drawer
+  if (run("mobile")) {
   console.log("\nmobile drawer 390x844");
   const mctx = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -416,41 +457,96 @@ async function scrollRailOnce(page, how, before) {
   watch(mpage, "mobile");
   const mframes = await frameCounter(mctx, mpage);
   await login(mpage);
-  await mpage.getByRole("button", { name: "Open conversations" }).first().click();
-  await mpage.locator(ROWS).first().waitFor({ timeout: 30000 });
-  await sleep(2000);
-  const m0 = (await railState(mpage)).count;
-  const mNext = await (async () => {
-    const sc = await mpage.evaluateHandle(
+  // Below md the DOCKED rail is still mounted — just display:none — and it
+  // comes FIRST in the DOM, so every selector here is scoped to the drawer
+  // (the only rail nav that is position:fixed). That hidden rail also holds
+  // its own first-page subscription: usePaginatedQuery adds a private id to
+  // its args, so the two instances cannot share one. Pre-existing, and not a
+  // pagination duplicate — it is counted below rather than hidden.
+  const DRAWER = 'nav.fixed[aria-label="Conversations"]';
+  const DROWS = `${DRAWER} a[href^="/chat/"]`;
+  const drawerState = () =>
+    mpage.evaluate(
       ([rows]) => {
-        const a = document.querySelector(rows);
-        let p = a?.parentElement;
-        while (p && !/auto|scroll/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
-        return p;
+        const ids = [...document.querySelectorAll(rows)].map((x) => x.getAttribute("href"));
+        return { count: ids.length, unique: new Set(ids).size };
       },
-      [ROWS],
+      [DROWS],
     );
-    await sc.evaluate((el) => {
-      el.scrollTop = el.scrollHeight;
-    });
-    const t0 = Date.now();
-    while (Date.now() - t0 < 9000) {
-      const c = (await railState(mpage)).count;
-      if (c > m0) return c;
-      await sleep(150);
-    }
-    return (await railState(mpage)).count;
-  })();
+  await mpage.locator('button[aria-label="Open conversations"]:visible').first().click();
+  await mpage.locator(DROWS).first().waitFor({ timeout: 30000 });
+  await sleep(2000);
+  const subsOpen = mframes.railPages();
+  const m0 = (await drawerState()).count;
+  await mpage.evaluate(
+    ([rows]) => {
+      const x = document.querySelector(rows);
+      let p = x?.parentElement;
+      while (p && !/auto|scroll/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
+      if (p) p.scrollTop = p.scrollHeight;
+    },
+    [DROWS],
+  );
+  const t0 = Date.now();
+  let mNext = m0;
+  while (Date.now() - t0 < 9000) {
+    mNext = (await drawerState()).count;
+    if (mNext > m0) break;
+    await sleep(150);
+  }
   check("the drawer paginates by scrolling too", mNext > m0 || m0 < PAGE, `${m0} -> ${mNext}`);
-  const ms = await railState(mpage);
+  const ms = await drawerState();
   check("drawer ids unique", ms.unique === ms.count, `${ms.unique}/${ms.count}`);
+  const drawerPages = Math.ceil(ms.count / PAGE);
+  const loads = mframes.railPages() - subsOpen;
   check(
-    "drawer: one subscription per page",
-    mframes.railPages() === Math.ceil(ms.count / PAGE),
-    `${mframes.railPages()} for ${Math.ceil(ms.count / PAGE)} pages`,
+    "drawer: exactly one request per page it scrolled into",
+    loads === drawerPages - 1,
+    `${loads} load(s) for ${drawerPages - 1} additional page(s)`,
+  );
+  console.log(
+    `  note: ${subsOpen} first-page subscription(s) when the drawer opened — ${subsOpen - 1} of them is the hidden docked rail (pre-existing)`,
+  );
+
+  // The reported bug, on a phone: the menu on the drawer's last visible row.
+  const lastIdx = await mpage.evaluate(
+    ([rows]) => {
+      const as = [...document.querySelectorAll(rows)];
+      let p = as[0]?.parentElement;
+      while (p && !/auto|scroll/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
+      const box = p.getBoundingClientRect();
+      let best = -1;
+      as.forEach((x, n) => {
+        const r = x.getBoundingClientRect();
+        if (r.bottom <= box.bottom && r.top >= box.top) best = n;
+      });
+      return best;
+    },
+    [DROWS],
+  );
+  const mrow = mpage.locator(DROWS).nth(lastIdx).locator("xpath=..");
+  await mrow.getByRole("button", { name: "Conversation actions" }).click();
+  await sleep(500);
+  const mm = await mpage.evaluate(() => {
+    const item = [...document.querySelectorAll("button")].find((x) => /^(Pin|Unpin)$/.test(x.textContent.trim()));
+    const menu = item?.parentElement;
+    if (!menu) return null;
+    const r = menu.getBoundingClientRect();
+    const covered = [...menu.querySelectorAll("button")].filter((x) => {
+      const br = x.getBoundingClientRect();
+      const hit = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2);
+      return !(hit === x || x.contains(hit));
+    }).length;
+    return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right), vh: innerHeight, vw: innerWidth, covered };
+  });
+  check(
+    "390x844: drawer's last-row menu fully on screen and uncovered",
+    !!mm && mm.top >= 0 && mm.bottom <= mm.vh && mm.left >= 0 && mm.right <= mm.vw && mm.covered === 0,
+    mm ? `y ${mm.top}..${mm.bottom} of ${mm.vh}, x ${mm.left}..${mm.right} of ${mm.vw}, covered ${mm.covered}` : "menu did not open",
   );
   await mctx.close();
 
+  }
   await browser.close();
 
   console.log(`\n${"=".repeat(62)}`);
