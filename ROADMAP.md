@@ -41,6 +41,97 @@ round trip itself stays (one cheap request now). Known emulation limits are docu
 whole answer per push, the 125 ms HTTP-action overhead per `/ai/ingress` POST (mutation itself
 11 ms), `chatStreams` OCC retries (three writers), `dispatchPayload` reading 518 KB per turn.
 
+## Scheduled-task parser P0, incremental stream events, and four stale tests (2026-09-24) - LIVE, prod-verified
+
+### P0 — no user could create a scheduled task by typing one
+
+100% of `schedule.parse_failed`, both candidate models, `TypeError`, so the composer's
+"Create task" button was permanently disabled. Chat was unaffected, which is why it went
+unnoticed; the journal logs the exception CLASS only, not the message.
+
+`app/agent/llm.py::_with_connect_timeout` passes an already-built Timeout through and splits a
+scalar into connect+read. Its guard was `isinstance(timeout, httpx.Timeout)`. `schedule.py`
+passes `openai.DEFAULT_TIMEOUT` deliberately (46fdff3 — a complex parse must not die on a short
+deadline), and **that object is built by the httpx the `openai` package imports, which in this
+venv is `httpx2`** — a different module object. So the isinstance was False for a perfectly good
+Timeout and the scalar branch ran `float(<Timeout>)`. Now duck-typed on connect/read/write/pool.
+
+Rule for `services/ai`: never `isinstance(x, httpx.Something)` on a value that came from
+`openai`. Two regression tests; the pre-existing one passed a REAL `httpx.Timeout` and so never
+went near the bug. Baseline was 47 failures, now 45, same total — the two new tests flipped and
+nothing else moved (the other 45 are pre-existing and flag-dependent on the VM's .env).
+Verified live: parse p50 6.6s / p90 16.4s over 8 runs, Create task works, task lands first.
+
+### stream.events is incremental — the last quadratic query
+
+Measured with `e2e/perf-wire.js` on a tool turn, and it was the largest single line item on the
+socket — larger than the answer itself:
+
+| query | before | after |
+|---|---|---|
+| `chat/stream:events` | 47,406 B / 16 pushes / max 6,367 | **25,790 B / 49 pushes / max 1,346** |
+| turn total | 110,757 B (151.1 B/char) | **98,686 B (132.6 B/char)** |
+
+Same shape as the `stream.active` fix: an optional `afterSeq`, the client keeps what it has seen
+(`chat/_lib/stream-events.ts`, mirroring `stream-text.ts`). It cannot drop an event — moving the
+mark swaps one subscription for another and the replacement is computed from the database, so
+anything appended during the swap is in the next result; append also dedupes on `eventId`
+because two subscriptions legitimately overlap on a swap. `afterSeq` is optional, so a
+mid-stream mount, reload, reconnect or older client still gets the whole bounded timeline.
+
+Push count rises (16 → 49) because half are now empty `[]` results confirming "caught up", at a
+few bytes each. Adding hysteresis — only advance the mark once the tail exceeds N, the way
+`COMPACT_LAG` works for chunks — would remove most of those; not done, because the win is
+already taken and it trades simplicity for bytes that no longer matter.
+
+Gate: `e2e/qa-tool-timeline.js` (new) watches the live pill through a whole tool turn and fails
+on a missing or duplicated step — the exact failure modes this change could cause. 6/6 steps, 14
+distinct labels, 82 samples, no duplicates, 0 console errors.
+
+### Four tests that asserted behaviour the product had deliberately changed
+
+None were product defects; two of them actively pressured a security regression.
+
+- **p-auth-edges ×2** asserted that a repeat sign-up delivers a SECOND verification code and
+  kills the first. `convex/passwordProvider.ts` — "COLLISION. Touch NOTHING and send NOTHING" —
+  removed that on purpose: an unverified account belongs to whoever squatted the address, and
+  `verifyCodeAndSignIn` patches `emailVerified` onto it, so the real owner completing an emailed
+  code would ACTIVATE the squatter's password. Both now pin the opposite, correct invariant.
+- **p-settings** asked for `getByRole("slider", {name: "Ambience"})`; the monochrome system
+  (2026-09-18) deleted the 0-100 ambience engine and the control is a two-state button. 8/8.
+- **p-scheduled** asserted an IANA "Region/City" string; `scheduleSummary()` prints
+  `shortZone()` — "Kolkata", not "Asia/Kolkata" — so the line reads as a place, not a key.
+
+### Measured and deliberately NOT changed
+
+- **Model routing is the dominant remaining latency lever, and it is a product decision.** 1,271
+  turns over 7 days: `gemini-3.7-flash-high` TTFT p50 **2,470 ms** / p90 16,601; `deepseek-v4-flash`
+  p50 **5,978** / p90 30,593; `gemini-3.8-flash-high` p50 **8,716** / p90 42,530. Our own prep is a
+  flat ~455 ms p50 regardless of model, so the provider is 80-95% of TTFT. The router sends the
+  most traffic (560 turns) to the second-slowest. Weighting it by latency would change which model
+  answers, i.e. answer quality — an operator call, not a perf change.
+- **`chat/threads:list`, 24,986 B over 3 pushes/turn.** Now the largest item, but `toListItem` is
+  already lean (~277 B/row, no bodies). The cost is that the thread row is written three times a
+  turn (send, title, finalize) and the rail's ordering genuinely depends on `updatedAt`. The fix
+  would be to split the streaming flag out into its own small query, as was done for
+  `stream.active`. Next candidate.
+- **`myNotifications`, 9,406 B × 2 per navigation.** The bell unmounts and remounts with each
+  pane, so the subscription is dropped and re-created. Off the critical path (it lands after the
+  first row paints), bandwidth only. Hoisting the query into the workspace layout would fix it.
+
+### Verification
+
+`qa-tool-timeline` PASS · `p-chat` 18/18 · `qa-auth-ui` 30/30 · `p2-auth` **7/7** and
+`p-auth-edges` **8/8** against a real inbox (the Ollastack e2e mailbox is now wired, so the
+`verify` / `reset` / OTP-code panels are covered end to end) · `p-google-login` PASS ·
+`p-settings` 8/8 · backend **1071 passed** · `apps/app` **241 passed** · `services/ai` 45 failures
+vs a 47 baseline.
+
+**Known flaky:** `p-scheduled` produced three different failure sets across three runs today. The
+steps that fail are the ones hovering a task row created earlier in the same run; parses all
+succeed server-side (`needs: 0`) and neither the 60/hour parse budget nor leftover rows explain
+it. It needs a stabilisation pass of its own and should not be read as a product signal.
+
 ## Sign-in page — centred layout (2026-09-23) - LIVE, prod-verified
 
 UI only. The split card (left branding column + right form column inside a `w-[92vw]
