@@ -1,10 +1,10 @@
 "use client";
 
 import { ConfirmButton } from "@/components/confirm-button";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
-import { Button } from "@v1/ui/button";
 import { useMutation, usePaginatedQuery } from "convex/react";
 import { ArchiveRestore, FolderKanban, MessageSquare } from "lucide-react";
 import Link from "next/link";
@@ -132,13 +132,7 @@ export default function ArchivedSection() {
         ))}
       </div>
 
-      {status === "CanLoadMore" && (
-        <div className="flex justify-center">
-          <Button variant="outline" size="sm" onClick={() => loadMore(20)}>
-            Load more
-          </Button>
-        </div>
-      )}
+      <InfiniteSentinel status={status} loadMore={loadMore} pageSize={20} />
     </div>
   );
 }

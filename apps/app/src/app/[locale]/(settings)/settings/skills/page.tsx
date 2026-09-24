@@ -1,6 +1,7 @@
 "use client";
 
 import { ConfirmButton } from "@/components/confirm-button";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
@@ -205,16 +206,7 @@ export default function SkillsSection() {
         </ul>
       )}
 
-      {status === "CanLoadMore" && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="self-start"
-          onClick={() => loadMore(PAGE)}
-        >
-          Load more
-        </Button>
-      )}
+      <InfiniteSentinel status={status} loadMore={loadMore} pageSize={PAGE} />
 
       <SkillFormDialog
         open={dialogOpen}

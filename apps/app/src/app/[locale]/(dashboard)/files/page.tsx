@@ -1,12 +1,12 @@
 "use client";
 
 import { accepted, sha256Hex } from "@/lib/knowledge-file";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { storageContentType } from "@/lib/upload-content-type";
 
 import { ConfirmButton } from "@/components/confirm-button";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
-import { Button } from "@v1/ui/button";
 import { useMutation, usePaginatedQuery } from "convex/react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
@@ -211,17 +211,11 @@ export default function FilesPage() {
               ))}
             </tbody>
           </table>
-          {knowledgeStatus === "CanLoadMore" && (
-            <div className="flex justify-center border-t border-border py-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => loadMoreKnowledge(20)}
-              >
-                Load more
-              </Button>
-            </div>
-          )}
+          <InfiniteSentinel
+            status={knowledgeStatus}
+            loadMore={loadMoreKnowledge}
+            pageSize={20}
+          />
         </div>
 
         {/* Stored only — types the ingest pipeline cannot read (.zip, video…). */}
@@ -299,16 +293,7 @@ export default function FilesPage() {
             </tbody>
           </table>
         </div>
-        {status === "CanLoadMore" && (
-          <div className="mt-4 flex justify-center">
-            <Button variant="outline" size="sm" onClick={() => loadMore(20)}>
-              Load more
-            </Button>
-          </div>
-        )}
-        {status === "LoadingMore" && (
-          <p className="mt-4 text-center text-sm text-primary/60">Loading…</p>
-        )}
+        <InfiniteSentinel status={status} loadMore={loadMore} pageSize={20} />
       </div>
     </div>
   );

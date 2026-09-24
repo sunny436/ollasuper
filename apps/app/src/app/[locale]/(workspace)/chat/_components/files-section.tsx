@@ -1,6 +1,7 @@
 "use client";
 
 import { ConfirmButton } from "@/components/confirm-button";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
@@ -90,15 +91,12 @@ export function FilesSection() {
             />
           ))}
 
-          {status === "CanLoadMore" && (
-            <button
-              type="button"
-              onClick={() => loadMore(20)}
-              className="mt-1 w-full rounded-md px-2 py-1 text-[11px] text-primary/65 transition hover:bg-primary/5"
-            >
-              Load more
-            </button>
-          )}
+          <InfiniteSentinel
+            status={status}
+            loadMore={loadMore}
+            pageSize={20}
+            className="py-2"
+          />
 
           {results.length === 0 && status !== "LoadingFirstPage" && (
             <p className="px-2 py-2 text-[11px] leading-relaxed text-muted-foreground">

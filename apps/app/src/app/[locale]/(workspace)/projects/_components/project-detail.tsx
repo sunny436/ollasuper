@@ -1,6 +1,7 @@
 "use client";
 
 import { useWorkspace } from "@/lib/useWorkspace";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useConvex, useMutation, usePaginatedQuery, useQuery } from "convex/react";
@@ -462,15 +463,11 @@ Its chats are kept and move back to your conversation list. You can restore the 
                 </ul>
               )}
 
-              {status === "CanLoadMore" && (
-                <button
-                  type="button"
-                  onClick={() => loadMore(PAGE)}
-                  className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/65 transition hover:bg-primary/5"
-                >
-                  Load more
-                </button>
-              )}
+              <InfiniteSentinel
+                status={status}
+                loadMore={loadMore}
+                pageSize={PAGE}
+              />
             </div>
           ) : (
             project && (

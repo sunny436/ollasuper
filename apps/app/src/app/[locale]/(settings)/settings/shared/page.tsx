@@ -1,6 +1,7 @@
 "use client";
 
 import { api } from "@v1/backend/convex/_generated/api";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { ConfirmButton } from "@/components/confirm-button";
 import { useWorkspace } from "@/lib/useWorkspace";
@@ -185,17 +186,7 @@ export default function SharedChatsPage() {
           ))}
         </div>
 
-        {status === "CanLoadMore" && (
-          <div className="border-t border-border p-4 text-center">
-            <button
-              type="button"
-              onClick={() => loadMore(20)}
-              className="rounded-full border border-border px-4 py-1.5 text-xs text-primary/60 transition hover:bg-primary/5"
-            >
-              Load more
-            </button>
-          </div>
-        )}
+        <InfiniteSentinel status={status} loadMore={loadMore} pageSize={20} />
       </div>
     </div>
   );

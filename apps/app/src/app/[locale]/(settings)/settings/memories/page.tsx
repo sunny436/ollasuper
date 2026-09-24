@@ -1,10 +1,10 @@
 "use client";
 
 import { ConfirmButton } from "@/components/confirm-button";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
-import { Button } from "@v1/ui/button";
 import { Switch } from "@v1/ui/switch";
 import { FolderKanban } from "lucide-react";
 import {
@@ -189,15 +189,7 @@ export default function MemoriesSection() {
         </ul>
       )}
 
-      {status === "CanLoadMore" && (
-        <Button
-          variant="outline"
-          className="self-start"
-          onClick={() => loadMore(30)}
-        >
-          Load more
-        </Button>
-      )}
+      <InfiniteSentinel status={status} loadMore={loadMore} pageSize={30} />
     </div>
   );
 }

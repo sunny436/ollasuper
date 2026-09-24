@@ -1,12 +1,12 @@
 "use client";
 
 import { accepted, sha256Hex } from "@/lib/knowledge-file";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { storageContentType } from "@/lib/upload-content-type";
 
 import { ConfirmButton } from "@/components/confirm-button";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
-import { Button } from "@v1/ui/button";
 import { useMutation, usePaginatedQuery } from "convex/react";
 import { FileText, ImageIcon, Braces, File as FileIcon } from "lucide-react";
 import { useRef, useState } from "react";
@@ -270,13 +270,7 @@ export default function FilesSection() {
         );
       })}
 
-      {status === "CanLoadMore" && (
-        <div className="flex justify-center">
-          <Button variant="outline" size="sm" onClick={() => loadMore(20)}>
-            Load more
-          </Button>
-        </div>
-      )}
+      <InfiniteSentinel status={status} loadMore={loadMore} pageSize={20} />
 
       {/* Deliberately its own section, NOT folded into the type grouping above:
           these rows have a different owner and a different visibility rule, and
@@ -350,17 +344,11 @@ export default function FilesSection() {
             ))}
           </div>
         )}
-        {knowledgeStatus === "CanLoadMore" && (
-          <div className="flex justify-center border-t border-border py-3">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => loadMoreKnowledge(20)}
-            >
-              Load more
-            </Button>
-          </div>
-        )}
+        <InfiniteSentinel
+          status={knowledgeStatus}
+          loadMore={loadMoreKnowledge}
+          pageSize={20}
+        />
       </div>
     </div>
   );

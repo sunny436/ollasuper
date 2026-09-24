@@ -1,6 +1,7 @@
 "use client";
 
 import { FilesSection } from "./files-section";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { ChatInstructionsDialog } from "./chat-instructions-dialog";
 import { MoveToProjectDialog } from "./move-to-project-dialog";
 import { OllaSuperBrand } from "@/components/branding";
@@ -39,12 +40,12 @@ import {
   PinOff,
   Plus,
   Settings,
-  Share2,
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { timeBucket } from "../_lib/format";
 import { useAuthActions } from "@convex-dev/auth/react";
@@ -143,12 +144,6 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
               href="/settings"
               icon={Settings}
               label="Settings"
-              onNavigate={onNavigate}
-            />
-            <ProfileMenuItem
-              href="/settings/shared"
-              icon={Share2}
-              label="Shared Chats"
               onNavigate={onNavigate}
             />
             <ProfileMenuItem
@@ -528,15 +523,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         ))}
 
-        {status === "CanLoadMore" && (
-          <button
-            type="button"
-            onClick={() => loadMore(PAGE)}
-            className="w-full rounded-md px-2 py-1.5 text-xs text-primary/65 transition hover:bg-primary/5"
-          >
-            Load more
-          </button>
-        )}
+        <InfiniteSentinel status={status} loadMore={loadMore} pageSize={PAGE} />
       </div>
 
       <ChatInstructionsDialog
@@ -571,87 +558,146 @@ function ThreadMenu({
   onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+
+  /**
+   * PORTALLED, not absolutely positioned — and that is the whole fix.
+   *
+   * This menu used to be `absolute` inside the row, which sits inside the
+   * rail's `overflow-y-auto` scroller. A positioned descendant is clipped by
+   * any ancestor whose overflow is not visible, so on the last few rows the
+   * menu was cut off and looked like it was hiding behind the account footer
+   * (a sibling BELOW that scroller). No z-index can fix that; leaving the clip
+   * context can.
+   */
+  useLayoutEffect(() => {
+    if (!open) return;
+    const t = triggerRef.current;
+    if (!t) return;
+    const r = t.getBoundingClientRect();
+    const menuH = menuRef.current?.getBoundingClientRect().height ?? 0;
+    // Flip up from the menu's REAL height once it exists, rather than an
+    // estimate taken before the browser reacted to the click — the mistake
+    // scheduled/task-row.tsx documents ("52px of it unreachable" at 1280x800).
+    // useLayoutEffect, so it is never painted in the wrong place.
+    const below = r.bottom + 4;
+    const flip = menuH > 0 && below + menuH > window.innerHeight - 8;
+    setPos({
+      top: flip ? Math.max(8, r.top - 4 - menuH) : below,
+      right: Math.max(8, window.innerWidth - r.right),
+    });
+  }, [open]);
+
+  // A fixed menu would otherwise hang in place while its row scrolls away.
+  // Capture, because scroll does not bubble: this catches the rail's scroller
+  // as well as the page.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [open]);
+
+  const menu = (
+    <div className="workspace">
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-away dismiss */}
+      <div
+        className="fixed inset-0 z-40"
+        onClick={() => setOpen(false)}
+        aria-hidden="true"
+      />
+      <div
+        ref={menuRef}
+        style={{ top: pos?.top ?? -9999, right: pos?.right ?? 0 }}
+        className="fixed z-50 w-36 overflow-hidden rounded-md border border-border bg-card py-1 shadow-md"
+      >
+        <MenuItem
+          onClick={() => {
+            setOpen(false);
+            onPin();
+          }}
+        >
+          {pinned ? (
+            <PinOff className="h-3.5 w-3.5" />
+          ) : (
+            <Pin className="h-3.5 w-3.5" />
+          )}
+          {pinned ? "Unpin" : "Pin"}
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setOpen(false);
+            onRename();
+          }}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+          Rename
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setOpen(false);
+            onMove();
+          }}
+        >
+          <FolderInput className="h-3.5 w-3.5" />
+          Move to project
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setOpen(false);
+            onInstructions();
+          }}
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5" />
+          Chat instructions
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setOpen(false);
+            onArchive();
+          }}
+        >
+          <Archive className="h-3.5 w-3.5" />
+          Archive
+        </MenuItem>
+        <MenuItem
+          destructive
+          onClick={() => {
+            setOpen(false);
+            onDelete();
+          }}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          Delete
+        </MenuItem>
+      </div>
+    </div>
+  );
+
   return (
-    <div className="relative shrink-0">
+    <div className="shrink-0">
       <button
+        ref={triggerRef}
         type="button"
         aria-label="Conversation actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="rounded p-0.5 text-muted-foreground opacity-0 transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+        className={`rounded p-0.5 text-muted-foreground transition hover:bg-primary/10 hover:text-primary/70 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11 ${
+          open ? "opacity-100" : "opacity-0"
+        }`}
       >
         <MoreHorizontal className="h-3.5 w-3.5" />
       </button>
-      {open && (
-        <>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-away dismiss */}
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setOpen(false)}
-            aria-hidden="true"
-          />
-          <div className="absolute right-0 z-50 mt-1 w-36 overflow-hidden rounded-md border border-border bg-card py-1 shadow-md">
-            <MenuItem
-              onClick={() => {
-                setOpen(false);
-                onPin();
-              }}
-            >
-              {pinned ? (
-                <PinOff className="h-3.5 w-3.5" />
-              ) : (
-                <Pin className="h-3.5 w-3.5" />
-              )}
-              {pinned ? "Unpin" : "Pin"}
-            </MenuItem>
-            <MenuItem
-              onClick={() => {
-                setOpen(false);
-                onRename();
-              }}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-              Rename
-            </MenuItem>
-            <MenuItem
-              onClick={() => {
-                setOpen(false);
-                onMove();
-              }}
-            >
-              <FolderInput className="h-3.5 w-3.5" />
-              Move to project
-            </MenuItem>
-            <MenuItem
-              onClick={() => {
-                setOpen(false);
-                onInstructions();
-              }}
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              Chat instructions
-            </MenuItem>
-            <MenuItem
-              onClick={() => {
-                setOpen(false);
-                onArchive();
-              }}
-            >
-              <Archive className="h-3.5 w-3.5" />
-              Archive
-            </MenuItem>
-            <MenuItem
-              destructive
-              onClick={() => {
-                setOpen(false);
-                onDelete();
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Delete
-            </MenuItem>
-          </div>
-        </>
-      )}
+      {open && typeof document !== "undefined"
+        ? createPortal(menu, document.body)
+        : null}
     </div>
   );
 }

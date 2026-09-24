@@ -1,6 +1,7 @@
 "use client";
 
 import { storageContentType } from "@/lib/upload-content-type";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
@@ -256,15 +257,7 @@ export function ProjectSources({
         </ul>
       )}
 
-      {status === "CanLoadMore" && (
-        <button
-          type="button"
-          onClick={() => loadMore(PAGE)}
-          className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/65 transition hover:bg-primary/5"
-        >
-          Load more
-        </button>
-      )}
+      <InfiniteSentinel status={status} loadMore={loadMore} pageSize={PAGE} />
 
       {pickerOpen && workspaceId && (
         <AttachExistingDialog
@@ -394,15 +387,7 @@ function AttachExistingDialog({
               );
             })}
           </ul>
-          {status === "CanLoadMore" && (
-            <button
-              type="button"
-              onClick={() => loadMore(PAGE)}
-              className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-primary/65 transition hover:bg-primary/5"
-            >
-              Load more
-            </button>
-          )}
+          <InfiniteSentinel status={status} loadMore={loadMore} pageSize={PAGE} />
         </div>
       </div>
     </>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useWorkspace } from "@/lib/useWorkspace";
+import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { api } from "@v1/backend/convex/_generated/api";
 import { usePaginatedQuery } from "convex/react";
 import { FolderKanban, PanelLeft, Plus, Search } from "lucide-react";
@@ -235,16 +236,15 @@ export function ProjectsPane() {
             </div>
           )}
 
-          {/* Only offered when NOT searching — a search has already paged
-              everything in, so a Load more there would be meaningless. */}
-          {!searching && status === "CanLoadMore" && (
-            <button
-              type="button"
-              onClick={() => loadMore(PAGE)}
-              className="mt-3 w-full rounded-md px-2 py-2 text-xs text-primary/65 transition hover:bg-primary/5"
-            >
-              Load more
-            </button>
+          {/* Not while searching — a search has already paged everything in
+              eagerly (see the effect above), so a sentinel there would be a
+              second, competing trigger for the same pages. */}
+          {!searching && (
+            <InfiniteSentinel
+              status={status}
+              loadMore={loadMore}
+              pageSize={PAGE}
+            />
           )}
         </div>
       </div>
