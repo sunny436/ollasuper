@@ -72,9 +72,13 @@ const step = async (n, f) => {
     }
     if ((await page.getByLabel("Close settings").count()) === 0)
       throw new Error("no close button");
-    // Theme slider top-right.
-    if ((await page.getByRole("slider", { name: "Ambience" }).count()) === 0)
-      throw new Error("no theme slider");
+    // Theme control, top-right. NOT a slider any more: the monochrome system
+    // (2026-09-18) removed the 0-100 ambience engine, and the frontend now
+    // speaks only light/dark, so this is a two-state button.
+    if (
+      (await page.getByRole("button", { name: "Toggle dark and light theme" }).count()) === 0
+    )
+      throw new Error("no theme toggle");
     // The OLD white settings sub-nav had a "General" item; its absence proves
     // the new sidebar replaced it, not that it merely re-skinned.
     if ((await aside.getByRole("link", { name: "General" }).count()) > 0)

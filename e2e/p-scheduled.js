@@ -289,7 +289,14 @@ const openRowMenu = async (page, title) => {
     await page.waitForTimeout(2500);
     const body = await page.locator("body").innerText();
     must(/Daily|Weekly|Monthly|Once/i.test(body), "no recurrence in the summary");
-    must(/[A-Za-z]+\/[A-Za-z_]+|UTC/.test(body), "no IANA timezone rendered");
+    // scheduleSummary() prints shortZone(spec.timezone) — "Kolkata", not
+    // "Asia/Kolkata" — on purpose, so the line reads as a place rather than a
+    // database key. Derive the same short form the composer defaulted to.
+    const zone = await page.evaluate(() => {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      return (tz.split("/").pop() ?? tz).replace(/_/g, " ");
+    });
+    must(body.includes(zone), `the summary does not name the task's zone ("${zone}")`);
   });
 
   await step("month-end is disclosed rather than silently clamped", async () => {
