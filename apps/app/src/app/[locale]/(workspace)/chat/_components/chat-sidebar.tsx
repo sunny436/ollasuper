@@ -588,6 +588,26 @@ function ThreadMenu({
       top: flip ? Math.max(8, r.top - 4 - menuH) : below,
       right: Math.max(8, window.innerWidth - r.right),
     });
+    // The portal put the menu at the END of <body>, out of the tab order next
+    // to its trigger, so it takes focus itself — the disclosure-menu contract.
+    // preventScroll: a focus-induced scroll would trip the scroll-to-close
+    // listener below and shut the menu the instant it opened.
+    menuRef.current
+      ?.querySelector<HTMLButtonElement>("button")
+      ?.focus({ preventScroll: true });
+  }, [open]);
+
+  // This menu never handled Escape; the portal made that matter, because the
+  // menu now owns focus. Close, and hand focus back to the trigger.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus({ preventScroll: true });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
   // A fixed menu would otherwise hang in place while its row scrolls away.
@@ -614,6 +634,14 @@ function ThreadMenu({
       />
       <div
         ref={menuRef}
+        // No role="menu": that requires menuitem children, and the items must
+        // stay buttons — seven e2e scripts click them by button role.
+        onBlur={(e) => {
+          // relatedTarget is where focus is GOING. Null means a click on the
+          // click-away layer or outside the page — the layer handles that.
+          const next = e.relatedTarget as Node | null;
+          if (next && !e.currentTarget.contains(next)) setOpen(false);
+        }}
         style={{ top: pos?.top ?? -9999, right: pos?.right ?? 0 }}
         className="fixed z-50 w-36 overflow-hidden rounded-md border border-border bg-card py-1 shadow-md"
       >
