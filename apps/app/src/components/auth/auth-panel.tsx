@@ -6,7 +6,7 @@ import { api } from "@v1/backend/convex/_generated/api";
 import { useAction } from "convex/react";
 import { useForm } from "@tanstack/react-form";
 import { zodValidator } from "@tanstack/zod-form-adapter";
-import { AnimatePresence, LazyMotion, m } from "framer-motion";
+import { AnimatePresence, LazyMotion, m, useReducedMotion } from "framer-motion";
 import {
   ArrowRight,
   Eye,
@@ -100,13 +100,22 @@ function PanelFrame({
   onSubmit: (e: React.FormEvent) => void;
   children: React.ReactNode;
 }) {
+  // WCAG 2.3.3: the SLIDE is motion triggered by an interaction, and it is
+  // decorative — switching panel is already obvious from the heading and the
+  // fields. The cross-fade stays, because a fade is not motion in that sense
+  // and removing it would make the swap read as a glitch. Hook, not a media
+  // query in CSS, because the offsets live in props. SSR returns false and it
+  // resolves after mount; the first panel does not animate at all
+  // (AnimatePresence initial={false}), so nothing can be caught mid-swap.
+  const reduce = useReducedMotion();
+  const slide = reduce ? 0 : 18;
   return (
     <m.form
       key={formKey}
-      initial={{ opacity: 0, x: 18 }}
+      initial={{ opacity: 0, x: slide }}
       animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -18 }}
-      transition={{ duration: 0.25 }}
+      exit={{ opacity: 0, x: -slide }}
+      transition={{ duration: reduce ? 0.12 : 0.25 }}
       onSubmit={onSubmit}
       // Pre-hydration submit. Until React attaches onSubmit, Enter performs
       // the browser's native submission, and a form with no method submits
