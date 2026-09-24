@@ -86,9 +86,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     must(/login/.test(cur), `a wrong code got in: ${cur}`);
     return "rejected";
   });
-
-  let secondCode = null;
-  await step("a resend delivers a NEW code", async () => {
+  // REWRITTEN 2026-09-24. These two steps used to assert that signing up again
+  // with the same address delivers a SECOND code and kills the first. That
+  // behaviour was removed on purpose, and re-adding it would reopen an account
+  // takeover: an unverified account belongs to whoever squatted the address, and
+  // verifyCodeAndSignIn patches emailVerified onto it, so the real owner
+  // completing an emailed code ACTIVATES the squatter's password on their own
+  // account. convex/passwordProvider.ts now returns the shape of a fresh
+  // sign-up and touches nothing — "COLLISION. Touch NOTHING and send NOTHING."
+  //
+  // So the invariant worth pinning is the opposite one, and it is the security
+  // property: a repeat sign-up is SILENT, and it does not disturb the code the
+  // real owner is already holding. Reset is the documented recovery path for a
+  // squatted address, and the step after this proves a live code still works.
+  await step("a repeat sign-up is silent — no second code, and no takeover", async () => {
     await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
     await page.waitForURL(/login/, { timeout: 20000 });
     await page.click('button:has-text("Create an account")');
@@ -96,22 +107,29 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.fill('input[type="email"]', EMAIL);
     await page.fill('input[type="password"]', PW);
     await page.click('button[type="submit"]');
+    // The UI is deliberately identical to a fresh sign-up — it must NOT reveal
+    // that the address is taken — so the code screen still appears.
     await page.waitForSelector('input[name="code"]', { timeout: 30000 });
-    // Wait for a code that is genuinely different from the first.
-    const deadline = Date.now() + 120000;
+    // Give a second code every chance to show up; none may.
+    const deadline = Date.now() + 45000;
+    let extra = null;
     while (Date.now() < deadline) {
-      const c = await ollastack.codeFromOllastack(TAG, "email verification", 20000);
+      const c = await ollastack.codeFromOllastack(TAG, "email verification", 15000);
       if (c && c !== firstCode) {
-        secondCode = c;
-        return c;
+        extra = c;
+        break;
       }
       await sleep(4000);
     }
-    throw new Error("no second, distinct code arrived");
+    must(
+      extra === null,
+      `a repeat sign-up delivered a second code (${extra}) — that is the account-takeover path convex/passwordProvider.ts closes`,
+    );
+    return "silent, as designed";
   });
 
-  await step("the OLD code is now dead — a resend invalidates its predecessor", async () => {
-    must(firstCode && secondCode, "need both codes");
+  await step("the owner's existing code still works after that repeat sign-up", async () => {
+    must(firstCode, "need the first code");
     await page.fill('input[name="code"]', firstCode);
     await page.click('button[type="submit"]');
     await page.waitForTimeout(4000);
@@ -119,32 +137,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.waitForTimeout(2500);
     cur = page.url();
     must(
-      /login/.test(cur),
-      `the superseded code still worked — that is a real auth defect: ${cur}`,
+      !/login/.test(cur),
+      `the real owner's code stopped working after someone else signed up over the address: ${cur}`,
     );
-    return "old code rejected";
+    return "owner's code intact";
   });
 
-  await step("the NEWEST code verifies and signs in", async () => {
-    await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
-    await page.waitForURL(/login/, { timeout: 20000 });
-    await page.click('button:has-text("Create an account")');
-    await page.fill('input[name="name"]', "Edge Test");
-    await page.fill('input[type="email"]', EMAIL);
-    await page.fill('input[type="password"]', PW);
-    await page.click('button[type="submit"]');
-    await page.waitForSelector('input[name="code"]', { timeout: 30000 });
-    const latest = await ollastack.codeFromOllastack(TAG, "email verification", 120000);
-    must(latest, "no current code");
-    await page.fill('input[name="code"]', latest);
-    await page.click('button[type="submit"]');
-    await page.waitForTimeout(4500);
-    await page.goto(BASE + "/en", { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(3000);
-    cur = page.url();
-    must(!/login/.test(cur), `still not signed in: ${cur}`);
-    return cur;
-  });
+  // "the NEWEST code verifies and signs in" used to live here. It signed out,
+  // signed up a third time to force a fresh code, and verified with it. Both of
+  // its halves are now covered upstream and it can no longer run as written: the
+  // step above verifies with a live code and LEAVES THE USER SIGNED IN, so this
+  // one's waitForURL(/login/) could never match. Merged rather than repaired —
+  // a third sign-up over the same address is exactly the takeover attempt the
+  // provider refuses, so it would have been asserting the old behaviour again.
 
   await step("a refresh mid-session keeps the user signed in", async () => {
     await page.reload({ waitUntil: "domcontentloaded" });
