@@ -96,11 +96,25 @@ def _with_connect_timeout(
     connections while DNS still resolved and the rest of the VM's egress was
     healthy.
 
-    A caller that already passes an `httpx.Timeout` has made its own decision
-    and is respected unchanged.
+    A caller that already passes a Timeout has made its own decision and is
+    respected unchanged.
+
+    DUCK-TYPED, NOT `isinstance`. `openai.DEFAULT_TIMEOUT` — which schedule.py
+    passes deliberately (46fdff3: a complex parse must not die on a short
+    deadline) — is a Timeout built by the httpx that the OPENAI package imports,
+    and in this environment that is `httpx2`, a DIFFERENT module object. So
+    `isinstance(openai.DEFAULT_TIMEOUT, httpx.Timeout)` is False even though the
+    value is a perfectly good Timeout, execution fell through to `float()`, and
+    every scheduled-task parse raised TypeError before a socket was opened.
+    Measured on production 2026-09-24: 100% of parses, both candidate models,
+    with the composer's Create button disabled for every user. Anything carrying
+    the four phase attributes is already a decision — pass it through and let the
+    openai client use its own type.
     """
-    if isinstance(timeout, httpx.Timeout):
-        return timeout
+    if isinstance(timeout, httpx.Timeout) or all(
+        hasattr(timeout, phase) for phase in ("connect", "read", "write", "pool")
+    ):
+        return timeout  # type: ignore[return-value]
     read = float(timeout)
     connect = min(float(settings.ai_model_connect_timeout_s), read)
     return httpx.Timeout(read, connect=connect)

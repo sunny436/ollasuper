@@ -46,6 +46,46 @@ def test_an_explicit_httpx_timeout_is_respected_unchanged():
     assert _with_connect_timeout(given, s) is given
 
 
+def test_a_foreign_timeout_class_is_respected_rather_than_crashed():
+    """THE PRODUCTION FAILURE this pins (2026-09-24): every scheduled-task parse
+    raised TypeError before a socket was opened, on both candidate models, for
+    every user — the composer's Create button was permanently disabled.
+
+    `schedule.py` passes `openai.DEFAULT_TIMEOUT` on purpose, so a complex parse
+    is not killed by a short deadline. But that object is built by the httpx the
+    OPENAI package imports, which here is `httpx2` — a different module object —
+    so `isinstance(..., httpx.Timeout)` was False and the scalar branch ran
+    `float(<Timeout>)`. The test above passes a REAL httpx.Timeout and therefore
+    never went near the bug; this one passes the value production actually uses.
+    """
+    import openai
+
+    s = make_settings("http://x")
+    given = openai.DEFAULT_TIMEOUT
+    assert not isinstance(given, httpx.Timeout), (
+        "if openai ever shares our httpx this assertion is stale, but the "
+        "pass-through below must keep working either way"
+    )
+    assert _with_connect_timeout(given, s) is given
+
+
+def test_the_schedule_parser_can_actually_build_its_client():
+    """End to end with the parser's OWN constant, which is the thing that broke.
+    A unit test of the helper alone would not have caught the call site."""
+    from app.routers.schedule import PARSE_TIMEOUT
+
+    s = make_settings("http://x")
+    llm = build_llm(
+        s,
+        model="deepseek-v4-pro",
+        base_url="https://api.test/v1",
+        api_key="k",
+        timeout=PARSE_TIMEOUT,
+        max_retries=0,
+    )
+    assert llm is not None
+
+
 def test_the_built_client_carries_the_split_timeout():
     """End to end through the real builder, so a refactor that drops the split
     fails here rather than on production."""
