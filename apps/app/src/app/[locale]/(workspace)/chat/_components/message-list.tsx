@@ -17,6 +17,11 @@ import { useChatSession } from "../_hooks/use-chat-session";
 import { useReveal } from "../_hooks/use-reveal";
 import { useStickToBottom } from "../_hooks/use-stick-to-bottom";
 import { useThrottledValue } from "../_hooks/use-throttled-value";
+import {
+  type EventAcc,
+  accumulateEvents,
+  afterSeqFor,
+} from "../_lib/stream-events";
 import { type Accumulated, accumulate, needsCommitted } from "../_lib/stream-text";
 import { ChatMessage, type ChatMessageDoc } from "./chat-message";
 import { ShareDialog } from "./share-dialog";
@@ -68,11 +73,33 @@ export function MessageList({ threadId }: { threadId: string | null }) {
     return next?.text ?? "";
   }, [live, committed]);
   // Typed events ride their own subscription, which re-fires on append rather
-  // than on every text delta (and only when the turn has any).
-  const liveEvents = useQuery(
+  // than on every text delta (and only when the turn has any) — and carries
+  // only what is ABOVE the high-water mark, with the rest kept here. Sending
+  // the whole timeline per append made a tool turn quadratic: 47,406 bytes over
+  // 16 pushes for a 733-character answer, 43% of that turn's socket traffic.
+  // See _lib/stream-events.ts for why a swap of `afterSeq` cannot drop one.
+  const eventsAccRef = useRef<EventAcc | null>(null);
+  const liveMessageId = live?.messageId ?? null;
+  const afterSeq = afterSeqFor(eventsAccRef.current, liveMessageId);
+  const liveEventsPage = useQuery(
     api.chat.stream.events,
-    live?.hasEvents ? { messageId: live.messageId } : "skip",
+    live?.hasEvents
+      ? afterSeq === undefined
+        ? { messageId: live.messageId }
+        : { messageId: live.messageId, afterSeq }
+      : "skip",
   );
+  const liveEvents = useMemo(() => {
+    const next = accumulateEvents(
+      eventsAccRef.current,
+      liveMessageId,
+      liveEventsPage,
+    );
+    eventsAccRef.current = next;
+    // undefined, not [], when the turn has none — the timeline's existing
+    // contract, so nothing downstream changes.
+    return next && next.events.length > 0 ? next.events : undefined;
+  }, [liveMessageId, liveEventsPage]);
 
   // ~16 updates/sec: below the threshold where text reads as stalling, and
   // 3-5x fewer renders than the raw delta rate.

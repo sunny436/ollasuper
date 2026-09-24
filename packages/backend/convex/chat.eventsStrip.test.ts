@@ -161,4 +161,67 @@ describe("TOOL_RESULT.content never reaches a display path", () => {
     const doc = await t.run((ctx) => ctx.db.get(legacy));
     expect(JSON.parse(doc?.events?.[0]?.payload ?? "{}").content).toBe(BIG);
   });
+
+  test("afterSeq returns only what is newer — the wire is linear, not quadratic", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await t.run(async (ctx) => {
+      const owner = await ctx.db.insert("users", { email: "o2@t.test" });
+      const ws = await ctx.db.insert("workspaces", { name: "WS", ownerId: owner, createdAt: Date.now() });
+      await ctx.db.insert("members", { workspaceId: ws, userId: owner, role: "owner", createdAt: Date.now() });
+      return { owner, ws };
+    });
+    const u = t.withIdentity(as(owner));
+    const threadId = await u.mutation(api.chat.threads.create, { workspaceId: ws });
+    const sent = await u.mutation(api.chat.messages.send, { threadId, content: "hi", clientId: "c1" });
+    await drain(t);
+    const streamId = sent.streamId as string;
+    const mid = sent.assistantMessageId as Id<"chatMessages">;
+
+    const append = (seq: number) =>
+      t.mutation(api.chat.ingress.apply, {
+        key: SECRET,
+        body: {
+          op: "event",
+          streamId,
+          events: [
+            {
+              eventId: `e${seq}`,
+              seq,
+              type: "TOOL_CALL",
+              v: 1,
+              ts: seq,
+              payload: JSON.stringify({ call_id: `c${seq}`, tool: "web_search", arguments: { q: "x" } }),
+            },
+          ],
+        },
+      });
+
+    for (const seq of [0, 1, 2]) await append(seq);
+
+    // No afterSeq: the whole (bounded) timeline, exactly as a fresh subscriber
+    // — a mid-stream mount, a reload, a reconnect — must still receive.
+    const all = await u.query(api.chat.stream.events, { messageId: mid });
+    expect(all?.map((e) => e.seq)).toEqual([0, 1, 2]);
+
+    // Above the high-water mark: only what the client has not seen.
+    expect(
+      (await u.query(api.chat.stream.events, { messageId: mid, afterSeq: 1 }))?.map((e) => e.seq),
+    ).toEqual([2]);
+
+    // Caught up: nothing, and NOT the whole timeline again.
+    expect(await u.query(api.chat.stream.events, { messageId: mid, afterSeq: 2 })).toEqual([]);
+
+    // The event appended after that mark is what the next push carries — this
+    // is the property that makes swapping afterSeq unable to drop one.
+    await append(3);
+    expect(
+      (await u.query(api.chat.stream.events, { messageId: mid, afterSeq: 2 }))?.map((e) => e.seq),
+    ).toEqual([3]);
+
+    // Still owner-scoped with the new arg.
+    const other = await t.run((ctx) => ctx.db.insert("users", { email: "x@t.test" }));
+    expect(
+      await t.withIdentity(as(other)).query(api.chat.stream.events, { messageId: mid, afterSeq: 0 }),
+    ).toBeNull();
+  });
 });

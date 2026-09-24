@@ -240,15 +240,34 @@ export const committed = query({
  * anyone else.
  */
 export const events = query({
-  args: { messageId: v.id("chatMessages") },
-  handler: async (ctx, { messageId }) => {
+  args: {
+    messageId: v.id("chatMessages"),
+    /**
+     * High-water mark: return only events ABOVE it. Optional, so an existing
+     * caller (and a fresh subscriber — a mid-stream mount, reload, reconnect)
+     * still gets the whole bounded timeline.
+     *
+     * Without it this query re-sent every event of the turn on every append, so
+     * a tool turn was quadratic on the wire: measured on production 2026-09-24,
+     * 47,406 bytes over 16 pushes for a 733-character answer — 43% of that
+     * turn's socket traffic and its largest single line item. The client keeps
+     * what it has seen (chat/_lib/stream-events.ts), exactly as it already does
+     * for text.
+     */
+    afterSeq: v.optional(v.number()),
+  },
+  handler: async (ctx, { messageId, afterSeq }) => {
     const userId = await getUserIdOrNull(ctx);
     if (!userId) return null;
     const message = await ctx.db.get(messageId);
     if (!message || message.userId !== userId) return null;
     const rows = await ctx.db
       .query("chatStreamEvents")
-      .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+      .withIndex("by_message_seq", (q) =>
+        afterSeq === undefined
+          ? q.eq("messageId", messageId)
+          : q.eq("messageId", messageId).gt("seq", afterSeq),
+      )
       .take(MAX_RESIDENT_EVENTS);
     return rows
       .sort((a, b) => a.seq - b.seq)
