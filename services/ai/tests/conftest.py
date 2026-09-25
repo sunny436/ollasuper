@@ -9,6 +9,13 @@ from app.clients.convex import ConvexClient
 from app.config import Settings
 from tests.fakes.convex_server import FakeConvexServer
 
+# Tests run against Settings' DEFAULTS plus their explicit overrides — never
+# against the deployment's .env. pydantic-settings reads env_file=".env"
+# relative to the working directory, so running the suite from services/ai on
+# the VM loaded production flags into every test that builds a Settings: 43 of
+# the 45 long-standing "failures" there were flag-off tests seeing flags on.
+Settings.model_config["env_file"] = None
+
 # psycopg's async mode cannot run on Windows' default ProactorEventLoop; pick the
 # Selector loop so the DB-backed tests (test_knowledge_db / test_retrieve_db) run
 # on Windows dev machines too. No-op on Linux/CI.

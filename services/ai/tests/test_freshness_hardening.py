@@ -29,9 +29,16 @@ from app.agent.freshness import (
     render_freshness,
 )
 from app.research.tool import Finding, has_primary, is_primary_domain, primary_status
-from tests.test_freshness_executor import SCRAPE_ID, _ctx, _iso, _tool
+from tests.test_freshness_executor import SCRAPE_ID, _ctx, _tool
 
 T = date(2026, 9, 19)
+
+
+def _iso(days_ago: int) -> str:
+    """Relative to THIS file's fixed T. It used to be imported from
+    test_freshness_executor, whose T is the real today — so "3 days ago" drifted
+    past this file's pinned date and the test began failing on 2026-09-20."""
+    return (T - timedelta(days=days_ago)).isoformat()
 
 
 def req(text):
@@ -314,6 +321,9 @@ def test_soffice_components_are_reported_from_disk(monkeypatch, tmp_path):
         "app.documents.soffice.shutil.which",
         lambda name: str(fake_bin) if name == "soffice" else None,
     )
+    # Hermetic: the VM has had libreoffice-writer installed since 2026-09-19,
+    # and the Debian fallback dir would report Writer from THERE.
+    monkeypatch.setattr(soffice, "_DEBIAN_PROGRAM_DIR", tmp_path / "no-debian")
     c = soffice.soffice_components()
     assert c == {"binary": True, "writer": False, "impress": True}
 

@@ -52,6 +52,9 @@ def soffice_available() -> bool:
 #: installed on the first VM and DOCX conversion failed silently for a week
 #: ("source file could not be loaded") — readiness now names each component.
 _COMPONENT_LIBS = {"writer": "libswlo.so", "impress": "libsdlo.so"}
+# Debian's program dir, checked as a fallback. A module constant so a test can
+# point it away from a host that happens to have LibreOffice installed.
+_DEBIAN_PROGRAM_DIR = Path("/usr/lib/libreoffice/program")
 
 
 def soffice_components() -> dict:
@@ -59,7 +62,7 @@ def soffice_components() -> dict:
     is launched). The program dir is derived from the binary, with the Debian
     default as the fallback."""
     binary = shutil.which("soffice") or shutil.which("libreoffice")
-    dirs: list[Path] = [Path("/usr/lib/libreoffice/program")]
+    dirs: list[Path] = [_DEBIAN_PROGRAM_DIR]
     if binary:
         try:
             real = Path(binary).resolve()
