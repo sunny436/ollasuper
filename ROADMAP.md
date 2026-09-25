@@ -2,6 +2,182 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Production hardening — scheduler P0, one rail, wire cost, flaky and failing suites, India (2026-09-25) - LIVE, prod-verified
+
+### P0 — recurring scheduled tasks stopped running on 2026-09-22 (fixed)
+
+Found while chasing the p-scheduled flake: the page said "This task is not running: The run did not
+complete." On prod, 34 tasks carried `invalidReason: "invalid hour"`, **20 still active, across 6
+accounts, none of them test tasks**, and the scheduler had logged 159,098 `sched.spec_invalid` in 30
+days (it re-rejects the same tasks every tick). The stored specs were valid (`hour: 8`, `hour: 9`).
+The first `spec_invalid` was 2026-09-22 08:23 UTC — the day Perf Phase 2 moved the scheduler's hot ops
+onto `chat/ingress:apply` over `/api/mutation`. Proven on prod with the scheduler's own client: the same
+`sched-list` returned `hour`/`cursorAt` as **float** over `/api/mutation` (Convex float64 → `8.0`) and
+**int** over `/ai/ingress` (JSON.stringify → `8`); `parse_spec` requires an int hour.
+
+Fix at the boundary (`services/ai/app/clients/convex.py::_as_http_action_json`): the mutation path
+returns exactly the JSON types the HTTP action did (an integral float becomes an int; everything else
+untouched; bounded at 1e21 where JSON.stringify switches to exponent notation). The fake Convex server
+returned plain ints on that path — why no test saw it — and now encodes float64 like the real backend;
+`tests/test_ingress_json_types.py` drives sched-list through the client into `parse_spec`.
+**Verified on prod after the restart: 0 `spec_invalid`, all 20 tasks materialised, runs succeeding.**
+They resumed with their missed occurrences, one per instant, which is the scheduler's documented
+outage behaviour (no data was edited to skip them).
+
+### Mobile: one sidebar, one subscription
+
+The docked `<ChatSidebar>` was only CSS-hidden below md (mounted and subscribed) and a second copy
+mounted on every drawer open. `workspace-rail.tsx` now renders ONE `<nav>` and ONE sidebar at every
+width — docked from md, the fixed drawer below. Measured on prod (`e2e/perf-lists-wire.js`, 390×844):
+chat-list first-page subscriptions for load + open + reopen + resize **3 → 1**. The drawer now opens on
+data it already has.
+
+### The rail was rebuilt on every section switch
+
+`WorkspaceRail` was mounted by three section layouts (chat via chat-shell, scheduled, projects) — whose
+comments said the rail was shared — so Chat ↔ Scheduled ↔ Projects rebuilt it and re-subscribed its
+first page. It is mounted once, by `(workspace)/layout.tsx`. Measured: **+1 subscription / 7,847 B per
+switch → 0**; scroll position and collapse state now really survive.
+
+### Notifications: no re-subscription on navigation
+
+The bell lived inside each pane and panes remount on navigation (chat panes per thread), so EVERY
+navigation dropped and re-added both notification queries. `NotificationsProvider` (in the same
+persistent layout) holds the newest page and the unread count; the bell reads them and only an older
+page is its own subscription. Measured on chat → Scheduled → Projects → a chat → another chat → New
+chat: **+2/−2 subscriptions on every step → +0/−0**. Clear all, Show older, the second tab, reload and a
+live new notification all re-verified (`qa-search-notif.js`, 0 failures).
+
+### Chat list per turn — rows 43% lighter; the pushes that remain are real
+
+`threads.list` rows now carry only what the rail and Archived render (`_id, title, pinned, updatedAt,
+project`); the streaming dot is its own query (`chat.threads.streaming`, 19 B a push). Measured: a
+first turn 23,578 B → **13,443 B** (3 pushes both times: first-message naming, finalize, auto-title); a
+second turn in the same chat **8,960 B in 2 pushes**. Correction to the commit that shipped this
+(c562471): the send-time push is NOT gone — `startAssistantTurn` sets `updatedAt`, so the chat really
+moves to the top when you send and is re-stamped when the reply lands. Both are the timestamp updates
+the rail must show; removing either would change what the user sees. So: push count unchanged (already
+legitimate), bytes per push ≈7.9 KB → ≈4.5 KB.
+
+### p-scheduled — deterministic
+
+Three runs before: three different failure sets. Causes, from evidence, all in the test except the P0
+it surfaced: (1) the Phase 4 email-preference steps opened "the first row", but the list orders by
+`updatedAt` and finishing the earlier Run now bumps the main task, so they opened the wrong task — the
+probe now has a unique name and is opened by it; (2) the running-badge regex matched "running" anywhere
+on the page and hit the P0's "This task is not running" — it now reads the run rows' own labels; (3) the
+parse wait was a fixed 30 s, but the app deliberately puts no bound on a parse (a slow provider gets a
+"Stop interpreting" button) — it now waits for the parse to END. Parse → draft card measured over 30
+parses: p50 ≈ 11 s, **max 51.2 s**. **Final: 3 consecutive runs, 33/33 each, 0 console errors.**
+
+### services/ai — the 45 long-standing failures
+
+| Class | Count | Cause | Fix |
+|---|---|---|---|
+| Environment | 43 | `Settings` reads `env_file=".env"` from the cwd, so running from `services/ai` on the VM fed production flags to flag-off tests | `tests/conftest.py` disables `env_file` for tests |
+| Test time bomb | 1 | `test_live_results_older…` pins T = 2026-09-19 but imported `_iso` from a module whose T is the real today | own `_iso` |
+| Host-dependent | 1 | `test_soffice_components…` assumed no LibreOffice Writer; the VM has it since 09-19 | Debian fallback dir is a patchable constant |
+| Genuine bugs | 0 | — | — |
+
+Result in place on the VM: **45 failed / 3,294 passed → 0 failed / 3,341 passed** (48 skipped).
+
+### India, measured — network level, from real Indian networks
+
+This office machine is behind Cloudflare's Chicago edge (`cdn-cgi/trace`: `colo=ORD, loc=US`), so
+India was measured with Globalping's public probes (`e2e/perf-geo.js`; Mumbai, Bengaluru, Hyderabad,
+Chennai, Aizawl, Prayagraj). p50/p90, ms:
+
+| From | Sign-in HTML first byte | Static chunk first byte | Convex round trip first byte |
+|---|---|---|---|
+| India | 875 / 1,052 | **HIT 29–37 · MISS 805–1,071** | 775 / 1,367 |
+| US | 160 / 218 | 124 / 124 | 166 / 193 |
+
+TCP (14 ms) and TLS (26 ms) are fast from India — Cloudflare's edge is local — and a static chunk is 29–37
+ms when that edge has it cached. Everything else crosses to the US VM: ~0.6 s more per dynamic round trip
+than from the US, and ~1 s per chunk while an Indian edge is cold (every deploy changes chunk hashes).
+App-level timings were measured in a real browser from the US only (`e2e/perf-core.js`, medians of 3):
+sign in → composer 1,433 · chat list cold 869 · notifications cold 825 · next page 105 · search 266
+(incl. 200 ms debounce) · first token 1,326 · short reply done 1,771. No browser ran inside India.
+
+### Found, not fixed
+
+- **Cold Indian edges after each deploy** — Cloudflare Tiered Cache / Cache Reserve (dashboard, not code).
+- **India dynamic latency** is geography: the VM is in the US. Only a region move or an edge-side
+  replica changes it.
+- **Scheduled-task parse latency** reaches 51 s at the tail (provider/router); the user waits behind a
+  Stop button.
+- **Sandboxed attachment decode spends 0.57–0.80 s** in `sandbox/harness.py::_secret_masks`, which
+  recursively globs `/opt/myos` for `.env` files on EVERY decode. Caching it per process is small, but it
+  is secret-masking code and wants its own review.
+- **The scheduler re-logs an invalid spec every tick**, forever (the cursor is deliberately not advanced).
+- **"The run did not complete."** is the UI fallback for any unmapped `invalidReason` — it hid the P0.
+- **An intermittent React #418 hydration error on `/en/projects`**: once in 2 `qa-responsive` a11y runs,
+  not reproduced in 15 targeted loads (desktop, touch, corrected clock, Asia/Kolkata). Needs a dev-build
+  reproduction to name the element.
+- The public share page's "Start your own chat" link is a 170×36 touch target (under 44 px).
+- QA login env (`/tmp/qa-env.sh`): the password is user-provided and stored nowhere recoverable;
+  disposable accounts (`qa-throwaway.js`) were used instead.
+
+## Infinite scroll on every paginated list; the rail's 3-dot menu can't be clipped (2026-09-24) - LIVE, all 16 lists prod-verified 2026-09-25
+
+Every "Load more" button is gone — **16 lists in 13 files** — replaced by one shared component,
+`apps/app/src/components/infinite-sentinel.tsx`. Convex's `usePaginatedQuery` already makes
+`loadMore` a no-op outside `CanLoadMore`, latches it inside, and memoises it, so the sentinel only
+calls it in `CanLoadMore` and duplicate or skipped pages are structurally impossible. What the
+component encodes: the IntersectionObserver root is the list's own nearest `overflow-y: auto|scroll`
+ancestor (a `rootMargin` expands only the root); the margin is `clamp(h/2, 120, 400)` of that root,
+because a fixed 400px on the 256px chat Files scroller eagerly pulled every page; it re-observes once
+per page (keyed on `loadMore`, whose identity changes exactly when a page lands) so a short page cannot
+stall pagination; the spinner carries `motion-reduce:animate-none`; the sentinel is `h-px`, not `h-0`.
+
+The lists: conversation rail · chat Files section · Move-to-project dialog · Projects pane · Project
+chats · Project memories (Project settings) · Project sources · Project sources' attach picker ·
+Settings → Archived / Memories / My Skills / Shared Links / Files ×2 · `/files` ×2. "Load earlier"
+in a transcript is deliberately NOT infinite: it prepends, restores a scroll anchor and shares its
+scroller with the bottom pin.
+
+The rail's 3-dot menu is portalled to `<body>`: an `absolute` menu inside the rail's
+`overflow-y-auto` is clipped whatever its z-index. Portalling needed focus-on-open, Escape back to the
+trigger, a forced-visible trigger while open, and `className="workspace"`. No `role="menu"` — seven
+e2e scripts click its items as buttons.
+
+**Verification — `e2e/qa-lists-all.js` (2026-09-25, prod, disposable account seeded by
+`qa-seed-lists.js`).** The wire is the authority: every page is its own Convex subscription, so each
+`ModifyQuerySet Add` is a page request and each Transition carries that page's rows, checked against
+totals read from the API.
+
+| List | Initial | Page 2 | Pages | End | Dupes | Rows | Stable |
+|---|---|---|---|---|---|---|---|
+| 1 Conversation rail | 1 req | auto | 3/3 | stops | 0 | 71/71 | yes |
+| 2 Chat Files section | 1 req | auto | 3/3 | stops | 0 | 45/45 | yes |
+| 3 Move to project dialog | 1 req | auto | 3/3 | stops | 0 | 70/70 | yes |
+| 4 Projects pane | 1 req | auto | 3/3 | stops | 0 | 70/70 | yes |
+| 5 Project chats | 1 req | auto | 3/3 | stops | 0 | 66/66 | yes |
+| 6 Project memories | 1 req | auto | 2/2 | stops | 0 | 30/30 | yes |
+| 7 Project sources | 1 req | auto | 3/3 | stops | 0 | 45/45 | yes |
+| 8 Attach picker | 1 req | auto | 3/3 | stops | 0 | 45/45 | yes |
+| 9 Settings → Archived | 1 req | auto | 3/3 | stops | 0 | 45/45 | yes |
+| 10 Settings → Memories | 1 req | auto | 2/1¹ | stops | 0 | 30/30 | yes |
+| 11 Settings → My Skills | 1 req | auto | 2/2 | stops | 0 | 50/50 | yes |
+| 12 Settings → Shared Links | 1 req | auto | 2/2 | stops | 0 | 30/30 | yes |
+| 13 Settings → Files (workspace) | 1 req | auto | 3/3 | stops | 0 | 45/45 | yes |
+| 14 Settings → Files (mine) | 1 req | auto | 3/3 | stops | 0 | 45/45 | yes |
+| 15 `/files` (workspace) | 1 req | auto | 3/3 | stops | 0 | 45/45 | yes |
+| 16 `/files` (mine) | 1 req | auto | 3/3 | stops | 0 | 45/45 | yes |
+
+¹ exactly one full page (30 model-written memories, page size 30): Convex answers the follow-up with an
+empty final page — the end path, not a duplicate. Also at 390×844: the rail drawer, Projects and My
+Skills (all PASS, no horizontal overflow); a collapsed rail requests nothing under a real mouse wheel;
+offline mid-list then back online completes 71/71 with no duplicates and no request storm. Rapid
+up/down scrolling is exercised before page 2 lands on every list. 0 console errors.
+
+Harness traps (each one produced a false FAIL first): Convex query ids restart at 0 per WebSocket, so
+state must reset on every page load; `Remove` frames must be tracked or replaced pages look like
+duplicates; several `scrollIntoView` calls in one task leave IntersectionObserver only the LAST
+position, so two lists stacked in one scroller need one list end per turn; a list behind a dialog must
+be identified by the subscription the dialog creates, because the same query can already be live on
+the page (the rail's Files section also reads `userFiles`).
+
 ## Search chats, Clear all notifications, no "Settings" label (2026-09-24) - LIVE, prod-verified
 
 ### Search chats (beside the rail's logo)
