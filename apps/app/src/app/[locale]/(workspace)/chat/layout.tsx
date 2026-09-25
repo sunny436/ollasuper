@@ -12,8 +12,8 @@ import { ChatShell } from "./_components/chat-shell";
  * min-height:auto default lets the transcript push the container taller instead
  * of scrolling.
  *
- * This layout also keeps the conversation rail mounted across thread
- * navigations, so its scroll position survives.
+ * The conversation rail is mounted once by (workspace)/layout.tsx, above this
+ * one, so it survives thread navigations and section switches alike.
  */
 export default function ChatLayout({
   children,

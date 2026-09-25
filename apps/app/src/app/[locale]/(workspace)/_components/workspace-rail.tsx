@@ -165,15 +165,40 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
         already removes the subtree from the tab order AND the a11y tree, it
         needs no polyfill, and `inert` is not in React 18's prop types so it
         would not survive tsc.
+
+        ONE <nav> and ONE <ChatSidebar> for every width. It used to be two: a
+        docked copy that was only CSS-hidden below md (still mounted, still
+        subscribed) plus a drawer copy mounted on every open — so a phone paid
+        for the conversation list's first page on load, again on every drawer
+        open, and held two live subscriptions while it was open (measured:
+        three first-page subscriptions for load + open + reopen). Now the same
+        element is docked from md up and becomes the drawer below md: one
+        subscription, fetched once, and the drawer opens on data it already has.
+
+        Below md it is `hidden` until opened, then a fixed overlay drawer.
+        overflow-hidden matters there too: without it, on a short viewport
+        (measured: a phone in landscape, 342px of usable height) the brand, nav
+        and account rows overflowed it and THE WHOLE SIDEBAR became the scroller
+        — the account row ended up 19px below the fold and the history list was
+        squeezed to 16px. Clipping keeps the conversation list the only thing
+        that scrolls.
       */}
       <nav
+        ref={panelRef}
+        tabIndex={-1}
         aria-label="Conversations"
-        className={`hidden shrink-0 overflow-hidden border-r border-border bg-card transition-[width,opacity,visibility] duration-300 ease-out motion-reduce:transition-none md:block ${
-          collapsed ? "invisible w-0 opacity-0" : "visible w-[272px] opacity-100"
+        className={`overflow-hidden border-r border-border bg-card outline-none ${
+          open ? "fixed inset-y-0 left-0 z-40 block w-[272px]" : "hidden"
+        } md:static md:z-auto md:block md:shrink-0 md:transition-[width,opacity,visibility] md:duration-300 md:ease-out motion-reduce:transition-none ${
+          collapsed
+            ? "md:invisible md:w-0 md:opacity-0"
+            : "md:visible md:w-[272px] md:opacity-100"
         }`}
       >
         <div className="h-full w-[272px]">
-          <ChatSidebar />
+          {/* closeSidebar is a no-op when the drawer is not open, so the docked
+              rail can share the prop. */}
+          <ChatSidebar onNavigate={closeSidebar} />
         </div>
       </nav>
 
@@ -183,31 +208,14 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
         {children}
       </div>
 
-      {/* Drawer for everything below md. */}
+      {/* The drawer's backdrop, below md only. */}
       {open && (
-        <>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above */}
-          <div
-            className="fixed inset-0 z-30 bg-black/60 md:hidden"
-            onClick={closeSidebar}
-            aria-hidden="true"
-          />
-          <nav
-            ref={panelRef}
-            tabIndex={-1}
-            aria-label="Conversations"
-            // overflow-hidden, like the docked rail above. Without it this
-            // element computed `overflow-y: visible`, so on a short viewport
-            // (measured: a phone in landscape, 342px of usable height) the brand,
-            // nav and account rows overflowed it and THE WHOLE SIDEBAR became the
-            // scroller — the account row ended up 19px below the fold and the
-            // history list was squeezed to 16px. Clipping here is what keeps the
-            // conversation list the only thing that scrolls.
-            className="fixed inset-y-0 left-0 z-40 w-[272px] overflow-hidden border-r border-border bg-card outline-none md:hidden"
-          >
-            <ChatSidebar onNavigate={closeSidebar} />
-          </nav>
-        </>
+        // biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled above
+        <div
+          className="fixed inset-0 z-30 bg-black/60 md:hidden"
+          onClick={closeSidebar}
+          aria-hidden="true"
+        />
       )}
     </SidebarCtx.Provider>
   );

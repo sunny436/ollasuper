@@ -51,6 +51,32 @@ export function titleFromText(text: string): string {
 }
 
 /** Shape returned to the sidebar. Never leaks another user's rows. */
+/**
+ * A row of `list` — ONLY what its two consumers render (the rail: title, pin,
+ * recency; Settings → Archived: title, recency, project).
+ *
+ * Deliberately NOT `toListItem`. Convex re-sends a query's whole result when
+ * any of it changes, and `isStreaming`, `messageCount`, `lastMessageAt` and
+ * `model` all change the moment a message is sent — so returning them made
+ * every turn push the entire first page (30 rows, ~7.9 KB) at send, again at
+ * finalize, for fields nothing in the list displays. The streaming dot now
+ * comes from `streaming` below; `updatedAt` still changes at finalize, which
+ * is a real reorder and is still pushed.
+ */
+function toRailRow(t: {
+  _id: Id<"chatThreads">;
+  title: string;
+  pinned: boolean;
+  updatedAt: number;
+}) {
+  return { _id: t._id, title: t.title, pinned: t.pinned, updatedAt: t.updatedAt };
+}
+
+/** Stream states that mean "this conversation is generating a reply". */
+const ACTIVE_STREAM_STATES = ["queued", "running", "waiting_approval"] as const;
+/** Far above MAX_CONCURRENT_STREAMS; only bounds a pathological backlog. */
+const ACTIVE_STREAM_CAP = 20;
+
 function toListItem(t: {
   _id: Id<"chatThreads">;
   title: string;
@@ -139,7 +165,7 @@ export const list = query({
           .paginate(args.paginationOpts);
 
     if (!args.withProject) {
-      return { ...res, page: res.page.map((t) => ({ ...toListItem(t), project: null })) };
+      return { ...res, page: res.page.map((t) => ({ ...toRailRow(t), project: null })) };
     }
 
     // Memoised per page: several archived chats commonly share one Project.
@@ -160,9 +186,37 @@ export const list = query({
         }
         if (name !== undefined) project = { _id: t.projectId, name };
       }
-      page.push({ ...toListItem(t), project });
+      page.push({ ...toRailRow(t), project });
     }
     return { ...res, page };
+  },
+});
+
+/**
+ * The caller's conversations that are generating a reply right now — the
+ * rail's streaming dot, split out of `list` so a turn no longer re-sends the
+ * whole conversation list just to show and hide that dot.
+ *
+ * Read from `chatStreams`, whose active states flip in the SAME transactions
+ * that set and clear `chatThreads.streamingMessageId` (send, finalize, stop),
+ * so it is exactly the old `isStreaming`. Tiny by construction: at most a few
+ * ids, one indexed range per state.
+ */
+export const streaming = query({
+  args: { workspaceId: v.id("workspaces") },
+  handler: async (ctx, { workspaceId }) => {
+    const uid = await getUserIdOrNull(ctx);
+    if (!uid) return [];
+    await requireMember(ctx, uid, workspaceId);
+    const ids = new Set<Id<"chatThreads">>();
+    for (const status of ACTIVE_STREAM_STATES) {
+      const rows = await ctx.db
+        .query("chatStreams")
+        .withIndex("by_user_status", (q) => q.eq("userId", uid).eq("status", status))
+        .take(ACTIVE_STREAM_CAP);
+      for (const s of rows) if (s.workspaceId === workspaceId) ids.add(s.threadId);
+    }
+    return [...ids];
   },
 });
 

@@ -15,6 +15,7 @@ import {
   useConvex,
   useMutation,
   usePaginatedQuery,
+  useQuery,
 } from "convex/react";
 import { useCachedThreads, type CachedThread } from "../_hooks/use-cached-threads";
 import { useCachedUser } from "../_hooks/use-cached-user";
@@ -58,7 +59,6 @@ interface ThreadItem {
   title: string;
   pinned: boolean;
   updatedAt: number;
-  isStreaming: boolean;
 }
 
 
@@ -268,6 +268,15 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   );
   const threads = cachedThreads as unknown as ThreadItem[];
 
+  // The streaming dot has its own tiny query. Kept out of the list on purpose:
+  // the list re-sends its whole page on any change, and a turn flips this flag
+  // twice — that was two full-page pushes per reply for one dot.
+  const streamingIds = useQuery(
+    api.chat.threads.streaming,
+    current ? { workspaceId: current } : "skip",
+  );
+  const streaming = useMemo(() => new Set<string>(streamingIds ?? []), [streamingIds]);
+
   // The full thread list. (The conversation search bar was removed.)
   const filtered = threads;
 
@@ -471,7 +480,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
                     />
                     <span className="truncate">{t.title}</span>
                   </Link>
-                  {t.isStreaming && (
+                  {streaming.has(t._id) && (
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand animate-pulse motion-reduce:animate-none" />
                   )}
                   <ThreadMenu

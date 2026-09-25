@@ -11,7 +11,13 @@ import {
 import { useMutation, useQuery } from "convex/react";
 import { Bell, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import {
+  type ReactNode,
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "../../(workspace)/scheduled/_components/confirm-dialog";
 import { relative } from "../../(workspace)/scheduled/_lib/schedule-format";
@@ -166,13 +172,55 @@ function NotificationRow({
   );
 }
 
+type Latest = ReturnType<
+  typeof useQuery<typeof api.notifications.myNotifications>
+>;
+const NotificationsCtx = createContext<{
+  latest: Latest;
+  unread: number | undefined;
+} | null>(null);
+
+/**
+ * Holds the centre's two live subscriptions — the newest page and the unread
+ * count — ABOVE the panes, in a layout that survives navigation.
+ *
+ * The bell is rendered inside each pane's header (chat, scheduled, projects),
+ * and panes remount on navigation — chat panes even per thread. With the
+ * queries in the bell, every navigation dropped and re-added both
+ * subscriptions and re-downloaded the page (measured: +2/−2 on every step,
+ * ~9.4 KB for a full page). Here they live once for the whole workspace; the
+ * bell only reads them. Realtime is unchanged — Convex pushes to this one
+ * subscription exactly as it did to the bell's.
+ */
+export function NotificationsProvider({ children }: { children: ReactNode }) {
+  const latest = useQuery(api.notifications.myNotifications, {});
+  const unread = useQuery(api.notifications.unreadCount);
+  const value = useMemo(() => ({ latest, unread }), [latest, unread]);
+  return (
+    <NotificationsCtx.Provider value={value}>{children}</NotificationsCtx.Provider>
+  );
+}
+
 export function NotificationsBell() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [before, setBefore] = useState<number | undefined>(undefined);
 
-  const result = useQuery(api.notifications.myNotifications, { before });
-  const unread = useQuery(api.notifications.unreadCount) ?? 0;
+  // Inside a NotificationsProvider the newest page and the count come from it;
+  // only an OLDER page ("Show older") is a subscription of the bell's own. A
+  // bell with no provider above it (the dashboard topbar, whose layout already
+  // persists) subscribes for itself, exactly as before.
+  const shared = useContext(NotificationsCtx);
+  const own = useQuery(
+    api.notifications.myNotifications,
+    shared && before === undefined ? "skip" : { before },
+  );
+  const ownUnread = useQuery(
+    api.notifications.unreadCount,
+    shared ? "skip" : {},
+  );
+  const result = shared && before === undefined ? shared.latest : own;
+  const unread = (shared ? shared.unread : ownUnread) ?? 0;
   const markRead = useMutation(api.notifications.markRead);
   const markAllRead = useMutation(api.notifications.markAllRead);
   const [confirmClear, setConfirmClear] = useState(false);

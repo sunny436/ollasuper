@@ -2,6 +2,8 @@ import { CommandPalette } from "@/components/command-palette";
 import { ThemeSync } from "@/lib/theme/theme-sync";
 import { WorkspaceProvider } from "@/lib/workspace-provider";
 import { Toaster } from "sonner";
+import { NotificationsProvider } from "../(dashboard)/_components/notifications-bell";
+import { WorkspaceRail } from "./_components/workspace-rail";
 
 /**
  * The full-bleed workspace shell.
@@ -19,6 +21,14 @@ import { Toaster } from "sonner";
  *
  * CommandPalette is mounted here rather than left behind in (dashboard) so ⌘K
  * still works on the app's landing route.
+ *
+ * The conversation rail and the notification subscriptions live HERE, in the
+ * one layout that survives moving between /chat, /scheduled and /projects.
+ * Each section layout used to mount its own WorkspaceRail, so every switch
+ * between them rebuilt the rail and re-subscribed its first page (~7.9 KB),
+ * and every pane mounted its own bell, so every navigation — even chat to
+ * chat — dropped and re-added both notification queries. Measured on prod
+ * before the move; see ROADMAP.
  *
  * No auth check: middleware.ts enforces it, exactly as in (dashboard)/layout.
  */
@@ -41,7 +51,9 @@ export default function WorkspaceLayout({
         a trackpad rubber-bands past the top of the transcript.
       */}
       <div className="workspace relative isolate flex h-dvh-safe w-full overflow-hidden overscroll-none bg-background text-foreground">
-        {children}
+        <NotificationsProvider>
+          <WorkspaceRail>{children}</WorkspaceRail>
+        </NotificationsProvider>
       </div>
       <Toaster richColors position="top-right" />
       <CommandPalette />

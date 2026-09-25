@@ -8,7 +8,6 @@ export type CachedThread = {
   title: string;
   pinned: boolean;
   updatedAt: number;
-  isStreaming: boolean;
 };
 
 const MAX = 30;
@@ -50,7 +49,6 @@ export function useCachedThreads(
         title: t.title,
         pinned: t.pinned,
         updatedAt: t.updatedAt,
-        isStreaming: false,
       }));
       window.localStorage.setItem(CACHE_KEYS.threads, JSON.stringify(slice));
     } catch {}

@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useParams } from "next/navigation";
-import { WorkspaceRail, useWorkspaceRail } from "../../_components/workspace-rail";
+import { useWorkspaceRail } from "../../_components/workspace-rail";
 import { ChatSessionProvider } from "../_hooks/use-chat-session";
 import { ComposerProvider } from "../_hooks/use-composer";
 import { ChatLayout } from "./chat-layout";
@@ -10,11 +10,10 @@ import { ChatLayout } from "./chat-layout";
 /**
  * Layout for the chat subtree.
  *
- * THE RAIL NOW LIVES IN (workspace)/_components/workspace-rail.tsx. It moved
- * there when Scheduled Tasks became the second workspace destination: the rail
- * carries the navigation between them, so it belongs to the workspace rather
- * than to chat. Behaviour is unchanged — the docked/drawer split, the persisted
- * collapse, Escape, focus restore and the body scroll-lock all moved verbatim.
+ * THE RAIL LIVES IN (workspace)/_components/workspace-rail.tsx and is mounted
+ * ONCE, by (workspace)/layout.tsx — the layout that survives moving between
+ * /chat, /scheduled and /projects. It carries the navigation between them, so
+ * it belongs to the workspace rather than to chat.
  *
  * What is left here is what is genuinely chat's: the composer and the chat
  * session. ChatLayout wraps the route segment rather than sitting beside it
@@ -35,12 +34,10 @@ export function ChatShell({ children }: { children: ReactNode }) {
   const threadId = params?.threadId ?? null;
 
   return (
-    <WorkspaceRail>
-      <ComposerProvider>
-        <ChatSessionProvider threadId={threadId}>
-          <ChatLayout>{children}</ChatLayout>
-        </ChatSessionProvider>
-      </ComposerProvider>
-    </WorkspaceRail>
+    <ComposerProvider>
+      <ChatSessionProvider threadId={threadId}>
+        <ChatLayout>{children}</ChatLayout>
+      </ChatSessionProvider>
+    </ComposerProvider>
   );
 }
