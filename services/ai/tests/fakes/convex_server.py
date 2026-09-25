@@ -68,6 +68,8 @@ class FakeConvex:
     # /api/mutation (chat/ingress:apply) accounting — see build()
     expected_key: str = "test-ingress-secret-bbbbbbbbbbbbbbbb"
     mutation_calls: int = 0
+    # sched-list's work list (schedule data only, like the real op)
+    sched_tasks: list = field(default_factory=list)
 
     def total_text(self, stream_id: str) -> str:
         return "".join(
@@ -117,10 +119,17 @@ def build(state: FakeConvex) -> FastAPI:
             )
         state.mutation_calls += 1
         inner = await _ingress_body(args.get("body") or {})
+        # The real backend encodes every Convex number as a float64 on this
+        # path — an integral value comes back as `8.0`, where the HTTP action's
+        # JSON.stringify writes `8`. This fake returned plain ints for a year,
+        # which is exactly why no test saw the scheduler's "invalid hour" P0.
         return _json(
             {
                 "status": "success",
-                "value": {"status": inner.status_code, "body": json.loads(inner.body)},
+                "value": {
+                    "status": inner.status_code,
+                    "body": _as_float64(json.loads(inner.body)),
+                },
             }
         )
 
@@ -156,6 +165,9 @@ def build(state: FakeConvex) -> FastAPI:
                     )
                 )
             return _json({"ok": True, "cancel": cancel})
+
+        if op == "sched-list":
+            return _json({"tasks": state.sched_tasks, "truncated": False})
 
         if op == "heartbeat":
             state.heartbeats[sid] = state.heartbeats.get(sid, 0) + 1
@@ -240,6 +252,19 @@ def build(state: FakeConvex) -> FastAPI:
         return _json({"version": "fake"})
 
     return app
+
+
+def _as_float64(value):
+    """Every number as Convex's /api/mutation returns it: float64 (bools kept)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return float(value)
+    if isinstance(value, dict):
+        return {k: _as_float64(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_as_float64(v) for v in value]
+    return value
 
 
 def _json(body: dict, status: int = 200):

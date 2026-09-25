@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from typing import Any
 
 import httpx
 
@@ -56,6 +57,34 @@ _HOT_OPS = frozenset(
     }
 )
 _MUTATION_PATH = "chat/ingress:apply"
+
+
+def _as_http_action_json(value: Any) -> Any:
+    """Give an /api/mutation result the JSON types the HTTP action returns.
+
+    Convex numbers are float64, and /api/mutation serialises them as such: an
+    integral value arrives as `8.0`. The HTTP action returns
+    `JSON.stringify(...)`, which writes the same value as `8`. Python decodes
+    those as `float` and `int` respectively — so moving the hot ops onto the
+    mutation path silently changed every integer they return into a float.
+    `parse_spec` rejects a float hour, and from 2026-09-22 (the day
+    sched-list moved) to 2026-09-25 every recurring task that needed new
+    occurrences was marked "invalid hour" and stopped running.
+
+    This restores exactly what the HTTP action produced: a float with no
+    fractional part becomes an int, anywhere in the result; everything else
+    is untouched. The 1e21 bound is where JSON.stringify switches to exponent
+    notation, which json.loads would have decoded as a float too.
+    """
+    if isinstance(value, float):
+        if value.is_integer() and abs(value) < 1e21:
+            return int(value)
+        return value
+    if isinstance(value, dict):
+        return {k: _as_http_action_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_as_http_action_json(v) for v in value]
+    return value
 
 
 class ConvexClient:
@@ -122,7 +151,11 @@ class ConvexClient:
                         status = int(value.get("status", 500))
                         out = value.get("body")
                         if status < 400:
-                            return out if isinstance(out, dict) else {}
+                            return (
+                                _as_http_action_json(out)
+                                if isinstance(out, dict)
+                                else {}
+                            )
                         if status == 404:
                             # Unknown or already-finalized stream. Not
                             # retryable, and not an error: tell the caller to stop.
