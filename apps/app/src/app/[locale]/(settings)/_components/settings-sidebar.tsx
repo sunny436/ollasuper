@@ -59,9 +59,11 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header: brand lockup + close */}
+      {/* Header: brand lockup + close. The wrapper is flex so the brand sits in
+          no text line box — as a plain block it grew 7px of empty space under
+          the logo on a phone (71px header vs the chat rail's 64px). */}
       <div className="flex items-center gap-3 px-4 py-4">
-        <div className="min-w-0 flex-1 text-foreground">
+        <div className="flex min-w-0 flex-1 items-center text-foreground">
           <OllaSuperBrand variant="app" />
         </div>
         <Link
