@@ -584,6 +584,27 @@ async function setTheme(page, mode) {
 
   await call("mutation", jwtB, "orgs:invite", { workspaceId: lastWs, email: A.email, role: "member" });
   check("a NEW notification still arrives after the clear, live", await waitFor(async () => (await badge(page)) === "1", 15000), `badge "${await badge(page)}"`);
+
+  // Mark all as read, from the keyboard: it is the first item when anything is unread.
+  await bell(page).focus();
+  await page.keyboard.press("Enter");
+  await sleep(400);
+  const firstItem = await page.evaluate(() => document.activeElement?.textContent?.trim());
+  const tMark = Date.now();
+  await page.keyboard.press("Enter");
+  const markedAt = (await waitFor(async () => (await badge(page)) === "", 3000, 30)) ? Date.now() - tMark : -1;
+  const stillOpen = (await page.locator('[role="menu"]').count()) === 1;
+  const unreadLeft = await page.locator('[role="menu"] [aria-label^="Mark “"]').count();
+  check(
+    "keyboard Enter on Mark all as read: badge clears at once, panel stays open, no row left unread",
+    firstItem === "Mark all as read" && markedAt >= 0 && markedAt < 600 && stillOpen && unreadLeft === 0,
+    `"${firstItem}", badge cleared in ${markedAt} ms, ${unreadLeft} unread row(s)`,
+  );
+  await page.keyboard.press("Escape");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator("#chat-composer:not([disabled])").waitFor({ timeout: 30000 });
+  await sleep(1500);
+  check("…and it is persisted: still no badge after a reload", (await badge(page)) === "");
   }
 
   // ── 6. Visual: the popover and its confirmation, light + dark, 1280 + 390 ─

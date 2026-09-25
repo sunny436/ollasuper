@@ -2,6 +2,39 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Closing the hardening opens (2026-09-25) - LIVE 30778bd, prod-verified
+
+Every item under "Found, not fixed" in the entry below, in order. Deployed Python → Convex → frontend.
+
+| Item | What was done | Evidence (prod unless stated) |
+|---|---|---|
+| Scheduler re-logs an invalid spec every tick | `listSchedulable` now carries the recorded `invalidReason`; the tick skips re-reporting when the reason is unchanged. The skip rests on recorded Convex output, so a DBOS replay takes the same branch (an in-memory memo would not have). A changed reason is still reported; a spec that parses again recovers. | 3 new tick tests; prod ticks `invalid: 0`. No invalid task exists on prod to watch — Convex rejects an unknown zone at create, so one cannot be made through the product. |
+| "The run did not complete." hid the P0 | An invalid task names its reason and the fix ("its schedule could not be read (invalid hour). Edit the schedule and save it…"); the generic run copy names its code. | `schedule-format.test.ts` covers every `parse_spec` message. |
+| Parse latency tail (51 s) | `AI_SCHEDULE_MODEL` deepseek-v4-pro → **deepseek-v4-flash** (VM `.env`, backed up; fallback unchanged). Benchmarked first: flash 16/16 on the hard set, p50 2.1 s; pro 14/16, p50 8.2 s, max 29.7 s. | Headed `p-scheduled`, 10 parses → draft card: **p50 ≈ 4.0 s, max 8.8 s** (was p50 ≈ 11–12 s, max 51.2 s). Since the deploy: 13 `schedule.parsed`, 0 `parse_failed`/`repair_failed`; the repairs logged ran on deepseek-v4-flash (a model fallback is not logged separately, so it is not claimed either way). |
+| `_secret_masks` 0.57–0.80 s per sandboxed decode | A pruned `os.walk` (skips node_modules/.git/.venv/__pycache__, NOT `.next`) instead of `glob("**")`, returning realpaths. | VM: **646 ms → 11 ms** (41 ms cold); the same real files (35, incl. the new `.env` backup). A real tier-1 `pdf_text` decode works (~0.3 s end to end) and all 35 files read **0 bytes inside** the sandbox. |
+| markAllRead stopped at 200 (a user had 268) | The same bounded batch, then a scheduled continuation with a creation-time cutoff, so a notification arriving after the click stays unread; optimistic badge. | 2 convex-tests (268 → 0; a later row stays unread). Headed: badge cleared in **39 ms**, persisted across reload. The >200 path is unit-tested only (making 200+ real notifications is 200 invites of audit residue). |
+| Bell panel pointer-only | Rows, Mark all as read, Show older and Back to latest are `DropdownMenuItem`s — Radix menus swallow Tab, so only items are reachable. | Headed `qa-search-notif`: Mark all → Clear all → a row by arrows, Enter on Mark all; 20/20, 0 console errors. `p-notif-center` 14/14 (N9: a row still opens its run). |
+| Share page touch target | "Start your own chat" gets `py-3` on coarse pointers. | Headed: **170×44 coarse, 170×36 fine**, on the share and the not-found page. |
+| QA login env missing | A durable QA account made through the product's own sign-up (`qa-throwaway.js`, unseeded); its 0600 JSON lives at `/root/qa-account.json` on the VM; `e2e/run-as.js <file> <suite>` passes it to any suite through the environment only. | `p-notif-center`, `p-scheduled` (33/33), `qa-responsive --part a11y` all ran as it. |
+| Cold Indian edges after each deploy | `e2e/warm-edge.js`: records the first-visit static set (48 files: /login + signed-in /en/chat) in a headed session and fetches each from 4 Indian Globalping probes, sized from the live quota (250/h). Tiered Cache remains the real fix and remains zone-wide on a zone that is not ours. | Same 8 files from other Indian probes: **HIT 38% → 58%, first byte p50 814 → 237 ms**. It warms the colos the probes land on (BOM 150, SIN 37, DEL 3) — not every Indian colo. |
+| Next.js major | Already done: Next 15.5.25 / React 19.2.8. | — |
+
+`p-scheduled`'s empty-state check expected only the All-filter wording; the default filter is Active
+("No active tasks"), so it failed on any account with no tasks. The test accepts all three wordings now.
+
+**Still open, honestly:**
+
+- **React #418 on `/en/projects`** — one sighting (`args[]=HTML`, an element mismatch) in 2 early a11y
+  runs; not reproduced in 90+ full loads (incl. 30 at 4× CPU throttle with unread notifications) or a
+  third full a11y run. Ruled out by code: the rail's collapse is restored in an effect, workspace
+  resolution is SSR-safe, nothing branches on auth state in render, and there is no Suspense/lazy
+  boundary in the workspace tree (so the page hydrates as one unit). Prod has no client error telemetry
+  (`NEXT_PUBLIC_SENTRY_DSN` unset), so a real-user occurrence would not be seen.
+- **India dynamic latency** is geography (VM in the US): only a region move or an edge replica changes it.
+- **Audit rows from test accounts** are retained by the deletion policy (the workspace's compliance record).
+- `/login`'s three text links are 28 px on touch — WCAG 2.2 AA (24 px) by a documented choice; 44 px
+  would need layout work on a page six suites gate.
+
 ## Production hardening — scheduler P0, one rail, wire cost, flaky and failing suites, India (2026-09-25) - LIVE, prod-verified
 
 ### P0 — recurring scheduled tasks stopped running on 2026-09-22 (fixed)

@@ -33,6 +33,18 @@ node p2-auth.js              # full auth journey
 npm run dashboard            # the dashboard E2E set
 ```
 
+Signing in as the QA account (never type its password into a shell):
+```bash
+ssh root@172.16.70.25 cat /root/qa-account.json > "$TMP/qa.json"   # 0600 on the VM
+node run-as.js "$TMP/qa.json" p-scheduled.js                          # any suite, any args
+rm "$TMP/qa.json"
+```
+Suites that need volume or destroy data run on disposable accounts instead:
+`node qa-throwaway.js setup|teardown <file>`.
+
+After every frontend deploy, warm the Indian edges (each deploy mints new chunk URLs):
+`node warm-edge.js "$TMP/qa.json"` — prints the Indian HIT ratio before and after.
+
 Notes:
 - `p2-idor.js` and `p2-auth.js` complete the **mandatory email-verification** flow by
   reading the code the self-hosted backend streams to its logs — they expect log access

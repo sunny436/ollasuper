@@ -210,7 +210,12 @@ const openRowMenu = async (page, title) => {
   });
 
   await step("the pane renders either its list or its empty state", async () => {
-    const hasEmpty = await page.getByText("No scheduled tasks yet").count();
+    // One wording per filter (scheduled-pane.tsx EmptyState); the default filter
+    // is Active, so an account with no tasks shows "No active tasks". Only an
+    // account that always had tasks ever met the "yet" wording this used to require.
+    const hasEmpty = await page
+      .getByText(/^(No active tasks|No paused tasks|No scheduled tasks yet)$/)
+      .count();
     const hasComposer = await page
       .getByRole("textbox", { name: "Schedule a task" })
       .count();
