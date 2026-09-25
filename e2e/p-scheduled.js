@@ -83,13 +83,21 @@ const must = (cond, msg) => {
 // not resolve the schedule — either way the draft card appears, because every
 // parse failure degrades to the same editable form. That invariant is the thing
 // worth asserting; model quality is not.
+// Every parse's wall time, printed at the end: the only way to tell a slow
+// model tail from a broken composer when the card is late.
+const parseMs = [];
 const compose = async (page, text) => {
   const box = page.getByRole("textbox", { name: "Schedule a task" });
   await box.click();
   await box.fill(text);
+  const t0 = Date.now();
   await page.getByRole("button", { name: "Interpret schedule" }).click();
   const card = page.getByRole("textbox", { name: "Task instruction" });
-  await card.waitFor({ state: "visible", timeout: 30000 });
+  try {
+    await card.waitFor({ state: "visible", timeout: 30000 });
+  } finally {
+    parseMs.push(Date.now() - t0);
+  }
   return card;
 };
 
@@ -142,6 +150,15 @@ const openRowMenu = async (page, title) => {
   });
 
   let taskId = null;
+  // The Phase 4 defaults probe, opened BY NAME. It used to be opened as "the
+  // first row", on the theory that the newest task sorts first — but the list
+  // is ordered by updatedAt, and finishing the earlier "Run now" bumps the main
+  // task's updatedAt (occurrences.ts, finalize). Whenever that run landed after
+  // the probe was created, the main task jumped to the top and these steps
+  // opened IT — the task whose in-app switch an earlier step deliberately
+  // flipped. That was the flake: 3 failures in 3 runs on 2026-09-25, each one
+  // a different symptom of opening the wrong task.
+  let probeTitle = null;
   const dailyTitle = `${TAG} daily ${Date.now()}`;
   const editedTitle = `${dailyTitle} edited`;
 
@@ -454,16 +471,21 @@ const openRowMenu = async (page, title) => {
     await page.goto(`${BASE}/en/scheduled/${taskId}`, { waitUntil: "domcontentloaded" });
     let sawQueuedOrRunning = false;
     for (let i = 0; i < 24; i++) {
-      const body = await page.locator("body").innerText();
-      if (/Queued|Running|Retrying/i.test(body)) sawQueuedOrRunning = true;
-      if (/Running|Retrying/i.test(body)) {
+      // The RUN ROWS' status labels, not the whole page: a case-insensitive
+      // /Running/i over body text matched the sentence "This task is not
+      // running: …" and failed 2 of 3 runs with a spinner that was never
+      // supposed to be there. A run row's label is its first word.
+      const labels = (await page.locator("aside button").allInnerTexts()).map((t) => t.trim());
+      const has = (re) => labels.some((l) => re.test(l));
+      if (has(/^(Queued|Running|Retrying)\b/)) sawQueuedOrRunning = true;
+      if (has(/^(Running|Retrying)\b/)) {
         must(
-          await page.locator(".animate-spin").count(),
+          await page.locator("aside .animate-spin").count(),
           "a RUNNING occurrence rendered no progress affordance",
         );
         return;
       }
-      if (/Completed|Failed|Cancelled/i.test(body) && sawQueuedOrRunning) {
+      if (has(/^(Completed|Failed|Cancelled)\b/) && sawQueuedOrRunning) {
         // It finished between polls. The run happened, which is the point.
         return;
       }
@@ -641,15 +663,16 @@ const openRowMenu = async (page, title) => {
     await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
     await compose(page, `${TAG} defaults probe — every day at 6pm`);
-    // Pin the name so cleanup can find it: the parser now writes its own label
-    // rather than echoing the request back.
-    await page.getByRole("textbox", { name: "Task name" }).fill(`${TAG} defaults probe`);
+    // Pin a UNIQUE name: cleanup finds it by the tag, and these steps open it by
+    // this exact name (see probeTitle above for why not "the first row").
+    probeTitle = `${TAG} defaults probe ${Date.now()}`;
+    await page.getByRole("textbox", { name: "Task name" }).fill(probeTitle);
     await page.getByRole("button", { name: "Create task" }).click();
     await page.waitForURL(/\/scheduled\/[a-z0-9]+/i, { timeout: 20000 });
     const freshId = page.url().split("/scheduled/")[1].split(/[/?#]/)[0];
     await page.goto(BASE + "/en/scheduled", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
-    await openFirstRowMenu(page);
+    await openRowMenu(page, probeTitle);
     await page.getByRole("menuitem", { name: "Notification settings" }).click();
     await page.waitForTimeout(1000);
 
@@ -693,9 +716,9 @@ const openRowMenu = async (page, title) => {
     await page.keyboard.press("Escape");
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2500);
-    // The SAME fresh task the two steps above used — openRowMenu(editedTitle)
-    // would reopen the older task, whose email preference nothing ever toggled.
-    await openFirstRowMenu(page);
+    // The SAME fresh task the two steps above used — by its unique name, not
+    // by position (see probeTitle).
+    await openRowMenu(page, probeTitle);
     await page.getByRole("menuitem", { name: "Notification settings" }).click();
     await page.waitForTimeout(1000);
     must(
@@ -814,6 +837,10 @@ const openRowMenu = async (page, title) => {
   );
   for (const s of skipped) console.log("  ~ " + s);
   for (const e of errs) console.log("  - " + e);
+  if (parseMs.length) {
+    const sorted = [...parseMs].sort((a, b) => a - b);
+    console.log(`parse → draft card: n=${sorted.length} p50=${sorted[Math.floor(sorted.length / 2)]} ms max=${sorted[sorted.length - 1]} ms [${parseMs.join(", ")}]`);
+  }
   if (passed !== results.length || errs.length > 0) process.exit(1);
 })().catch((e) => {
   console.error("FATAL", e);
