@@ -457,12 +457,10 @@ async function scrollRailOnce(page, how, before) {
   watch(mpage, "mobile");
   const mframes = await frameCounter(mctx, mpage);
   await login(mpage);
-  // Below md the DOCKED rail is still mounted — just display:none — and it
-  // comes FIRST in the DOM, so every selector here is scoped to the drawer
-  // (the only rail nav that is position:fixed). That hidden rail also holds
-  // its own first-page subscription: usePaginatedQuery adds a private id to
-  // its args, so the two instances cannot share one. Pre-existing, and not a
-  // pagination duplicate — it is counted below rather than hidden.
+  // Below md the rail's single <nav> becomes a position:fixed drawer when
+  // opened, so the drawer is `nav.fixed`. (Before 2026-09-25 a second,
+  // CSS-hidden docked copy came first in the DOM and held its own first-page
+  // subscription; the check after pagination below pins that it is gone.)
   const DRAWER = 'nav.fixed[aria-label="Conversations"]';
   const DROWS = `${DRAWER} a[href^="/chat/"]`;
   const drawerState = () =>
@@ -504,8 +502,14 @@ async function scrollRailOnce(page, how, before) {
     loads === drawerPages - 1,
     `${loads} load(s) for ${drawerPages - 1} additional page(s)`,
   );
-  console.log(
-    `  note: ${subsOpen} first-page subscription(s) when the drawer opened — ${subsOpen - 1} of them is the hidden docked rail (pre-existing)`,
+  // Since 2026-09-25 the rail is ONE <nav> and ONE sidebar at every width (it
+  // used to be a CSS-hidden docked copy plus a drawer copy mounted per open):
+  // on a phone the list's first page is subscribed exactly once, and opening
+  // the drawer adds nothing.
+  check(
+    "phone: exactly one first-page subscription, the drawer opening adds none",
+    subsOpen === 1,
+    `${subsOpen} first-page subscription(s) by the time the drawer was open`,
   );
 
   // The reported bug, on a phone: the menu on the drawer's last visible row.

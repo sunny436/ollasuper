@@ -127,6 +127,27 @@ const sum = (xs) => xs.reduce((a, x) => a + (x.bytes || 0), 0);
   console.log(`  chat list:     ${listPushes.length} push(es), ${sum(listPushes)} B  ${JSON.stringify(result.turn.list.each)}`);
   console.log(`  notifications: ${notifPushes.length} push(es), ${sum(notifPushes)} B`);
 
+  // ── 1b. TURN 2 — the steady state: a second reply in the SAME chat, so no
+  // first-message naming and no auto-title; only real per-turn changes remain.
+  await page.locator("#chat-composer").fill("And one more short sentence about tea.");
+  const tSend2 = Date.now();
+  await page.keyboard.press("Enter");
+  await page.locator('button[aria-label="Stop generating"]').waitFor({ timeout: 20000 }).catch(() => {});
+  await page.locator('button[aria-label="Stop generating"]').waitFor({ state: "detached", timeout: 90000 }).catch(() => {});
+  const tDone2 = Date.now();
+  await sleep(12000);
+  const tEnd2 = Date.now();
+  const list2 = rec.pushes(tSend2, tEnd2, LIST);
+  const stream2 = rec.pushes(tSend2, tEnd2, "chat/threads:streaming");
+  result.turn2 = {
+    replyMs: tDone2 - tSend2,
+    list: { pushes: list2.length, bytes: sum(list2), each: list2.map((x) => ({ atMs: x.t - tSend2, bytes: x.bytes })) },
+    streamingDot: { pushes: stream2.length, bytes: sum(stream2) },
+  };
+  console.log(`[turn 2, same chat] reply ${result.turn2.replyMs} ms`);
+  console.log(`  chat list:     ${list2.length} push(es), ${sum(list2)} B  ${JSON.stringify(result.turn2.list.each)}`);
+  console.log(`  streaming dot: ${stream2.length} push(es), ${sum(stream2)} B`);
+
   // ── 2. NAV ──────────────────────────────────────────────────────────────
   const steps = [
     ["→ Scheduled", async () => { await page.locator(`${RAIL} a[href="/scheduled"]`).first().click(); await page.waitForURL(/\/scheduled/, { timeout: 15000 }); }],

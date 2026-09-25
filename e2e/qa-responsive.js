@@ -641,7 +641,10 @@ async function motionPart(type, touch, results, info) {
     for (const [route, w, h] of [["/login", 375, 667], ["/login", 1280, 800], info?.share && [info.share, 375, 667], info?.share && [info.share, 1280, 800]].filter(Boolean)) {
       if ((w < 1000) !== touch) continue;
       await page.setViewportSize({ width: w, height: h });
-      await page.goto(`${BASE}${route}`, { waitUntil: "domcontentloaded" });
+      // The share link comes from the page's own <a href>, which is ABSOLUTE;
+      // prefixing BASE produced "https://app…comhttps//app…" the first time
+      // this ran on an account that actually had a share link.
+      await page.goto(/^https?:\/\//.test(route) ? route : `${BASE}${route}`, { waitUntil: "domcontentloaded" });
       await settle(page);
       const a = await page.evaluate(AUDIT, { touch, shell: false });
       judge(`anon ${w} ${route.replace(/\/share\/.+/, "/share/:token")}`, a, "document");

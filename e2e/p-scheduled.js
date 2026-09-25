@@ -92,9 +92,16 @@ const compose = async (page, text) => {
   await box.fill(text);
   const t0 = Date.now();
   await page.getByRole("button", { name: "Interpret schedule" }).click();
+  // Wait for the PARSE to end, not for an arbitrary 30 s. The app deliberately
+  // puts no bound on a parse (schedule-composer.tsx: a slow provider gets a
+  // "Stop interpreting" button, not a timeout), and measured on 2026-09-25 over
+  // 15 parses: p50 ≈ 12 s, max 30.2 s — the one over the old 30 s budget failed
+  // a run on its own. The 120 s cap only turns a genuine hang into a failure.
+  const stop = page.getByRole("button", { name: "Stop interpreting" });
   const card = page.getByRole("textbox", { name: "Task instruction" });
   try {
-    await card.waitFor({ state: "visible", timeout: 30000 });
+    await stop.waitFor({ state: "detached", timeout: 120000 }).catch(() => {});
+    await card.waitFor({ state: "visible", timeout: 10000 });
   } finally {
     parseMs.push(Date.now() - t0);
   }
