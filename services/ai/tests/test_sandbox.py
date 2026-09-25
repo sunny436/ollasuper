@@ -187,3 +187,56 @@ async def test_a_sandbox_that_cannot_spawn_refuses_rather_than_parsing_in_proces
     assert ran_fallback["n"] == 1
 
 pytestmark = pytest.mark.anyio
+
+
+# ── the secret-file mask list ────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(not POSIX, reason="symlinks + the mount-mask path are POSIX-only")
+def test_mask_list_finds_every_real_secret_and_skips_only_dependency_trees(
+    tmp_path, monkeypatch
+):
+    """`_secret_masks` walks the repo once per sandboxed decode. It used to
+    `glob("**")` through node_modules (0.56-0.65 s per decode on prod); it now
+    prunes dependency/VCS trees. What must NOT change is the set of REAL files
+    masked: a workspace symlink under node_modules resolves to a file found at
+    its own path, and `.next` (a standalone build can copy real .env files) is
+    still walked."""
+    from app.sandbox import harness
+
+    repo = tmp_path / "repo"
+    ai = repo / "services" / "ai"
+    ai.mkdir(parents=True)
+    (ai / ".env").write_text("SECRET=1")
+    (ai / ".env.bak-2026").write_text("SECRET=old")
+    app = repo / "apps" / "app"
+    app.mkdir(parents=True)
+    (app / ".env").write_text("NEXT=1")
+    backend = repo / "packages" / "backend"
+    backend.mkdir(parents=True)
+    (backend / ".env.local").write_text("CONVEX=1")
+    standalone = app / ".next" / "standalone"
+    standalone.mkdir(parents=True)
+    (standalone / ".env").write_text("COPIED=1")
+    # bun workspace link: node_modules/@v1/app -> apps/app
+    (repo / "node_modules" / "@v1").mkdir(parents=True)
+    (repo / "node_modules" / "@v1" / "app").symlink_to(app, target_is_directory=True)
+    # a third-party package's own .env is not ours, and is skipped
+    pkg = repo / "node_modules" / "some-pkg"
+    pkg.mkdir()
+    (pkg / ".env").write_text("THIRD_PARTY=1")
+
+    monkeypatch.chdir(ai)
+    masks = set(harness._secret_masks())
+
+    for real in (
+        ai / ".env",
+        ai / ".env.bak-2026",
+        app / ".env",
+        backend / ".env.local",
+        standalone / ".env",
+    ):
+        assert os.path.realpath(real) in masks, f"{real} must be masked"
+    # The symlinked path is covered by masking its real target, once.
+    assert str(repo / "node_modules" / "@v1" / "app" / ".env") not in masks
+    assert os.path.realpath(pkg / ".env") not in masks

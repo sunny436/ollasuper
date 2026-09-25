@@ -102,7 +102,7 @@ function StatePage({ heading, body }: { heading: string; body: string }) {
         <p className="mt-2 text-sm text-primary/60">{body}</p>
         <Link
           href="/"
-          className="mt-6 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90"
+          className="mt-6 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 [@media(pointer:coarse)]:py-3"
         >
           Start your own chat
         </Link>
@@ -211,7 +211,7 @@ export default async function SharePage({
           </p>
           <Link
             href="/"
-            className="mt-3 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90"
+            className="mt-3 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition hover:opacity-90 [@media(pointer:coarse)]:py-3"
           >
             Start your own chat
           </Link>

@@ -129,31 +129,42 @@ function NotificationRow({
         aria-hidden
         className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${sev.dot}`}
       />
-      <button
-        type="button"
-        onClick={() => onOpen(n)}
-        // Not a <Link>: a link-less notification must still be openable to be
-        // marked read, and the row does both jobs.
-        className="min-w-0 flex-1 text-left"
+      {/* A menu ITEM (asChild keeps the button): this panel is a Radix menu,
+          which swallows Tab, so only items are reachable from the keyboard —
+          arrow keys move between them, Enter opens (and marks read). A
+          link-less notification only gets marked read, so the panel stays. */}
+      <DropdownMenuItem
+        asChild
+        onSelect={(e) => {
+          if (!href) e.preventDefault();
+          onOpen(n);
+        }}
+        className="block min-w-0 flex-1 cursor-pointer rounded-md px-1 py-0.5 text-left focus:bg-primary/5 focus:text-inherit"
       >
-        <p
-          className={`truncate text-sm ${
-            n.read ? "text-primary/70" : "font-medium text-primary"
-          }`}
+        <button
+          type="button"
+          // Not a <Link>: a link-less notification must still be openable to be
+          // marked read, and the row does both jobs.
         >
-          <span className="sr-only">{sev.label}. </span>
-          {n.title}
-        </p>
-        {n.body && (
-          <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-            {n.body}
+          <p
+            className={`truncate text-sm ${
+              n.read ? "text-primary/70" : "font-medium text-primary"
+            }`}
+          >
+            <span className="sr-only">{sev.label}. </span>
+            {n.title}
           </p>
-        )}
-        <p className="mt-1 text-[10px] text-muted-foreground">
-          {relative(n.createdAt)}
-          {href ? "" : " · no details"}
-        </p>
-      </button>
+          {n.body && (
+            <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+              {n.body}
+            </p>
+          )}
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            {relative(n.createdAt)}
+            {href ? "" : " · no details"}
+          </p>
+        </button>
+      </DropdownMenuItem>
       {!n.read && (
         <button
           type="button"
@@ -222,7 +233,20 @@ export function NotificationsBell() {
   const result = shared && before === undefined ? shared.latest : own;
   const unread = (shared ? shared.unread : ownUnread) ?? 0;
   const markRead = useMutation(api.notifications.markRead);
-  const markAllRead = useMutation(api.notifications.markAllRead);
+  // Optimistic like clearAll: the badge and every mounted page's rows read as
+  // read the instant it is chosen; the server finishes past 200 by itself.
+  const markAllRead = useMutation(api.notifications.markAllRead).withOptimisticUpdate(
+    (store) => {
+      for (const q of store.getAllQueries(api.notifications.myNotifications)) {
+        if (!q.value) continue;
+        store.setQuery(api.notifications.myNotifications, q.args, {
+          ...q.value,
+          page: q.value.page.map((row) => ({ ...row, read: true })),
+        });
+      }
+      store.setQuery(api.notifications.unreadCount, {}, 0);
+    },
+  );
   const [confirmClear, setConfirmClear] = useState(false);
   // Optimistic: every mounted page of the centre (one per pane's bell, and an
   // older page if one is open) empties and the badge drops the instant the
@@ -295,13 +319,17 @@ export function NotificationsBell() {
           <span className="text-xs font-medium text-primary">Notifications</span>
           <div className="flex items-center gap-1">
             {unread > 0 && (
-              <button
-                type="button"
-                onClick={() => void markAllRead()}
-                className="rounded-md px-1.5 py-0.5 text-[11px] text-primary/65 transition hover:bg-primary/5 hover:text-primary"
+              // Menu items, like every action in this panel: a Radix menu
+              // swallows Tab, and a plain button here was pointer-only.
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  void markAllRead();
+                }}
+                className="cursor-pointer rounded-md px-1.5 py-0.5 text-[11px] text-primary/65 transition hover:bg-primary/5 hover:text-primary focus:bg-primary/5 focus:text-primary"
               >
                 Mark all as read
-              </button>
+              </DropdownMenuItem>
             )}
             {rows.length > 0 && (
               // A menu ITEM, not a plain button: this panel is a Radix menu,
@@ -350,22 +378,26 @@ export function NotificationsBell() {
         </div>
 
         {result?.nextCursor != null && (
-          <button
-            type="button"
-            onClick={() => setBefore(result.nextCursor ?? undefined)}
-            className="w-full border-t border-border px-3 py-2 text-xs text-primary/65 transition hover:bg-primary/5 hover:text-primary"
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.preventDefault();
+              setBefore(result.nextCursor ?? undefined);
+            }}
+            className="w-full cursor-pointer justify-center rounded-none border-t border-border px-3 py-2 text-xs text-primary/65 transition hover:bg-primary/5 hover:text-primary focus:bg-primary/5 focus:text-primary"
           >
             Show older
-          </button>
+          </DropdownMenuItem>
         )}
         {before !== undefined && (
-          <button
-            type="button"
-            onClick={() => setBefore(undefined)}
-            className="w-full border-t border-border px-3 py-2 text-xs text-primary/65 transition hover:bg-primary/5 hover:text-primary"
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.preventDefault();
+              setBefore(undefined);
+            }}
+            className="w-full cursor-pointer justify-center rounded-none border-t border-border px-3 py-2 text-xs text-primary/65 transition hover:bg-primary/5 hover:text-primary focus:bg-primary/5 focus:text-primary"
           >
             Back to latest
-          </button>
+          </DropdownMenuItem>
         )}
 
         {/* Inside the menu's React tree, so Radix treats the portalled dialog

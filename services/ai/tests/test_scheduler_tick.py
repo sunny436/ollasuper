@@ -202,6 +202,41 @@ async def test_an_unresolvable_spec_parks_the_task_without_moving_the_cursor():
     assert report.tasks_invalid == 1
 
 
+MARS = {"kind": "daily", "timezone": "Mars/Olympus", "hour": 9, "minute": 0}
+
+
+async def test_an_invalid_task_already_on_record_is_not_re_reported_every_tick():
+    """It used to be logged and re-materialised on EVERY tick (159,098 warnings in
+    30 days on prod). The same reason already stored means nothing new to say."""
+    row = task(cursor_at=NOW - DAY_MS, spec=MARS)
+    ops = FakeOps([row])
+    await dispatched(ops, settings())
+    reason = ops.materialize_calls[0]["invalid_reason"]
+
+    again = FakeOps([{**row, "invalidReason": reason}])
+    report, _ = await dispatched(again, settings())
+    assert again.materialize_calls == []
+    assert report.tasks_invalid == 1
+
+
+async def test_a_different_invalid_reason_is_still_reported():
+    ops = FakeOps(
+        [{**task(cursor_at=NOW - DAY_MS, spec=MARS), "invalidReason": "invalid hour"}]
+    )
+    await dispatched(ops, settings())
+    assert "Mars/Olympus" in ops.materialize_calls[0]["invalid_reason"]
+
+
+async def test_a_task_that_parses_again_recovers_on_the_next_tick():
+    # Stored reason from a past failure (e.g. the 09-22 float-hour P0), spec now
+    # valid: it materialises normally, which clears the reason in Convex.
+    ops = FakeOps([{**task(cursor_at=NOW - DAY_MS), "invalidReason": "invalid hour"}])
+    await dispatched(ops, settings())
+    call = ops.materialize_calls[0]
+    assert call.get("invalid_reason") is None
+    assert call["scheduled_for"]
+
+
 # ── pause: the exactness that makes suppression correct in BOTH directions ──
 
 

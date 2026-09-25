@@ -176,6 +176,12 @@ export const listSchedulable = internalQuery({
         cursorAt: t.cursorAt,
         pausedAt: t.pausedAt ?? null,
         revision: t.revision,
+        // The reason already on record, so the scheduler can tell "still
+        // invalid for the same reason" (nothing new to report) from a fresh
+        // failure. Without it an invalid task was logged and re-materialised
+        // on every tick, forever — 159,098 warnings in 30 days on prod. Status
+        // data, not content: no prompt or title crosses.
+        invalidReason: t.invalidReason ?? null,
       })),
     };
   },

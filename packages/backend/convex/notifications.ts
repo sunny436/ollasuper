@@ -10,10 +10,10 @@ const MAX_BODY = 500;
 /** One page of the notification centre. */
 const PAGE_SIZE = 20;
 /**
- * Ceiling on a single markAllRead. A user's history is never pruned — there is
- * no retention cron for this table — so an unbounded collect() grows without
- * limit. Reading at most this many per call keeps the mutation bounded; the UI
- * simply calls it again while a full page comes back.
+ * Rows one markAllRead transaction patches. A user's history is never pruned —
+ * there is no retention cron for this table — so an unbounded collect() grows
+ * without limit. Past this, the rest is finished by markAllReadRemaining in the
+ * background; the caller never has to call again.
  */
 const MARK_ALL_LIMIT = 200;
 /**
@@ -147,20 +147,59 @@ export const markRead = mutation({
   },
 });
 
+/**
+ * Mark one bounded batch of unread notifications read, newest first, and
+ * continue in the background if the batch was full — the same shape as
+ * clearBatch: the first batch works from the transaction's snapshot, each
+ * continuation only strictly OLDER than the oldest row it already marked, so a
+ * notification arriving after the click stays unread.
+ *
+ * It used to mark 200 and return `remaining: true` for the caller to go again —
+ * and the only caller never did, so an account with 268 unread (one existed on
+ * prod) was left with 68 after "Mark all as read".
+ */
+async function markReadBatch(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  before?: number,
+): Promise<number> {
+  // by_user_read, not by_user + filter: the index is exact, so this reads only
+  // unread rows instead of scanning the user's whole history.
+  const unread = await ctx.db
+    .query("notifications")
+    .withIndex("by_user_read", (q) =>
+      before === undefined
+        ? q.eq("userId", userId).eq("read", false)
+        : q.eq("userId", userId).eq("read", false).lte("_creationTime", before),
+    )
+    .order("desc")
+    .take(MARK_ALL_LIMIT);
+  for (const n of unread) await ctx.db.patch(n._id, { read: true });
+  const oldest = unread[unread.length - 1];
+  if (unread.length === MARK_ALL_LIMIT && oldest) {
+    await ctx.scheduler.runAfter(0, internal.notifications.markAllReadRemaining, {
+      userId,
+      before: oldest._creationTime,
+    });
+  }
+  return unread.length;
+}
+
 export const markAllRead = mutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx): Promise<{ remaining: boolean }> => {
     const userId = await activeUserId(ctx);
     if (!userId) return { remaining: false };
-    // by_user_read, not by_user + filter: the index is exact, so this reads only
-    // unread rows instead of scanning the user's whole history.
-    const unread = await ctx.db
-      .query("notifications")
-      .withIndex("by_user_read", (q) => q.eq("userId", userId).eq("read", false))
-      .take(MARK_ALL_LIMIT);
-    for (const n of unread) await ctx.db.patch(n._id, { read: true });
-    // Tells the caller to go again rather than silently leaving rows unread.
-    return { remaining: unread.length === MARK_ALL_LIMIT };
+    // `remaining` now means "finishing in the background", never "call again".
+    return { remaining: (await markReadBatch(ctx, userId)) === MARK_ALL_LIMIT };
+  },
+});
+
+/** The background continuation of markAllRead for more than MARK_ALL_LIMIT unread. */
+export const markAllReadRemaining = internalMutation({
+  args: { userId: v.id("users"), before: v.number() },
+  handler: async (ctx, { userId, before }): Promise<void> => {
+    await markReadBatch(ctx, userId, before);
   },
 });
 

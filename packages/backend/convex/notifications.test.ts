@@ -96,7 +96,67 @@ describe("read state", () => {
     expect(res.remaining).toBe(false);
     expect(await client.query(api.notifications.unreadCount, {})).toBe(0);
   });
+
+  test("markAllRead finishes more than one batch by itself (268 unread on prod stopped at 200)", async () => {
+    const t = convexTest(schema, modules);
+    const { alice } = await seedUsers(t);
+    await seedUnread(t, alice, 268);
+    const client = t.withIdentity(as(alice));
+
+    const res = await client.mutation(api.notifications.markAllRead, {});
+    expect(res.remaining).toBe(true); // finishing in the background — not "call again"
+    await drain(t);
+
+    expect(await unreadRows(t, alice)).toBe(0);
+  });
+
+  test("a notification arriving after the click stays unread", async () => {
+    const t = convexTest(schema, modules);
+    const { alice } = await seedUsers(t);
+    await seedUnread(t, alice, 250);
+    const client = t.withIdentity(as(alice));
+
+    await client.mutation(api.notifications.markAllRead, {});
+    await emit(t, alice, "invite", "new after the click");
+    await drain(t);
+
+    expect(await unreadRows(t, alice)).toBe(1);
+  });
 });
+
+/** markAllReadRemaining reschedules itself; pump until the chain is done. */
+async function drain(t: TestConvex<typeof schema>) {
+  for (let i = 0; i < 8; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
+
+async function seedUnread(t: TestConvex<typeof schema>, userId: Id<"users">, n: number) {
+  await t.run(async (ctx) => {
+    for (let i = 0; i < n; i++) {
+      await ctx.db.insert("notifications", {
+        userId,
+        type: "invite",
+        title: `u${i}`,
+        read: false,
+        createdAt: Date.now(),
+      });
+    }
+  });
+}
+
+function unreadRows(t: TestConvex<typeof schema>, userId: Id<"users">) {
+  return t.run(
+    async (ctx) =>
+      (
+        await ctx.db
+          .query("notifications")
+          .withIndex("by_user_read", (q) => q.eq("userId", userId).eq("read", false))
+          .collect()
+      ).length,
+  );
+}
 
 describe("isolation", () => {
   test("a user sees only their own notifications", async () => {

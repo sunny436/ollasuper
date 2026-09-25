@@ -313,6 +313,18 @@ describe("the scheduler work list leaks no task content", () => {
     expect(JSON.stringify(listed)).not.toContain("Summarise my inbox");
   });
 
+  test("listSchedulable carries the recorded invalidReason, so the tick does not re-report it every minute", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, ws } = await seedWorkspace(t);
+    const taskId = await seedTask(t, owner, ws);
+    let listed = await t.query(internal.scheduled.occurrences.listSchedulable, {});
+    expect((listed.tasks[0] as Record<string, unknown>).invalidReason).toBeNull();
+
+    await t.run((ctx) => ctx.db.patch(taskId, { invalidReason: "invalid hour" }));
+    listed = await t.query(internal.scheduled.occurrences.listSchedulable, {});
+    expect((listed.tasks[0] as Record<string, unknown>).invalidReason).toBe("invalid hour");
+  });
+
   test("claim returns identifiers only — never prompt or title", async () => {
     const t = convexTest(schema, modules);
     const { owner, ws } = await seedWorkspace(t);

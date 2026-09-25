@@ -79,6 +79,9 @@ def _unshare_prefix() -> list[str]:
     return []
 
 
+_MASK_WALK_SKIP = frozenset({"node_modules", ".git", ".venv", "__pycache__"})
+
+
 def _secret_masks() -> list[str]:
     """Absolute paths of on-disk secrets to make unreadable inside the sandbox.
 
@@ -94,16 +97,21 @@ def _secret_masks() -> list[str]:
     candidates: list[str] = []
     # Every .env* under the AI service dir and the whole repo's env files.
     candidates += glob.glob(os.path.join(cwd, ".env*"))
-    candidates += glob.glob(os.path.join(root, "**", ".env"), recursive=True)
-    candidates += glob.glob(os.path.join(root, "**", ".env.local"), recursive=True)
+    # A walk that skips dependency/VCS trees instead of `glob("**")`, which
+    # descended node_modules on EVERY sandboxed decode: 0.56-0.65 s per image or
+    # PDF on prod, now ~11 ms. Measured on the VM to mask the IDENTICAL set of
+    # real files (34): the only env paths under node_modules are bun's workspace
+    # symlinks (node_modules/@v1/app/.env -> apps/app/.env), whose real file is
+    # found at its own path. `.next` is deliberately NOT skipped — a standalone
+    # build can hold real copies of .env files.
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in _MASK_WALK_SKIP]
+        candidates += [os.path.join(d, f) for f in files if f in (".env", ".env.local")]
     # Convex admin key + cloud key live outside the repo too.
     candidates += ["/root/.cvx-cloud-key", "/root/cloud-logs.sh"]
-    # De-dup, keep only ones that exist and are files.
-    seen: list[str] = []
-    for c in {os.path.abspath(x) for x in candidates}:
-        if c not in seen and os.path.isfile(c):
-            seen.append(c)
-    return seen
+    # REAL paths, de-duped: a bind mount over the real file masks every path
+    # (symlinks included) that resolves to it.
+    return sorted({os.path.realpath(x) for x in candidates if os.path.isfile(x)})
 
 
 def _tier() -> tuple[int, str]:

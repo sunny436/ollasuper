@@ -303,8 +303,23 @@ export function runErrorCopy(code: string | null): string {
     case "schedule_ended":
       return "The schedule reached its end date.";
     default:
-      return "The run did not complete.";
+      // Name an unknown code rather than hide it: the generic line alone is
+      // what kept the 2026-09-22 "invalid hour" outage invisible for 3 days.
+      return code ? `The run did not complete (${code}).` : "The run did not complete.";
   }
+}
+
+/**
+ * Why a TASK — not a run — is not running (`task.invalidReason`). Owner and
+ * entitlement codes read as they do for a run; anything else comes from the
+ * scheduler's own schedule validation ("invalid hour", "unknown timezone: X",
+ * …) and says what the user can actually do about it.
+ */
+export function taskInvalidCopy(code: string): string {
+  if (/^(invalid|missing|unknown) /.test(code)) {
+    return `its schedule could not be read (${code}). Edit the schedule and save it to fix this.`;
+  }
+  return runErrorCopy(code);
 }
 
 /**

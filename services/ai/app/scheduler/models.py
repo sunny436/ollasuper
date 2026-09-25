@@ -48,6 +48,9 @@ class TaskRow:
     cursor_at: int
     paused_at: int | None
     revision: int
+    # The invalidReason already recorded on the task (None = valid, or a Convex
+    # build that does not send it yet).
+    invalid_reason: str | None = None
 
     @staticmethod
     def from_json(raw: dict[str, Any]) -> TaskRow:
@@ -60,6 +63,11 @@ class TaskRow:
                 int(raw["pausedAt"]) if raw.get("pausedAt") is not None else None
             ),
             revision=int(raw.get("revision", 1)),
+            invalid_reason=(
+                str(raw["invalidReason"])
+                if raw.get("invalidReason") is not None
+                else None
+            ),
         )
 
 

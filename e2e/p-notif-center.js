@@ -252,7 +252,7 @@ const taskRows = (page) =>
     if ((await unreadCount(page)) === 0) throw new Error("nothing unread to clear");
     await bell(page).first().click();
     await page.waitForTimeout(1000);
-    await page.getByRole("button", { name: "Mark all as read" }).click();
+    await page.getByRole("menuitem", { name: "Mark all as read" }).click();
     await page.waitForTimeout(2000);
     must((await unreadCount(page)) === 0, "the badge did not clear");
     await page.keyboard.press("Escape");

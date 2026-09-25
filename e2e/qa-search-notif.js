@@ -485,18 +485,34 @@ async function setTheme(page, mode) {
   check(
     'panel: 20 rows, "Show older", and a "Clear all" item',
     (await panelRows(page)) === 20 &&
-      (await page.getByRole("button", { name: "Show older" }).count()) === 1 &&
+      (await page.getByRole("menuitem", { name: "Show older" }).count()) === 1 &&
       (await page.getByRole("menuitem", { name: "Clear all" }).count()) === 1,
   );
   await page.screenshot({ path: path.join(SHOTS, "notif-1280-light.png") });
   await page.keyboard.press("Escape");
   await sleep(300);
 
-  // Keyboard: open by keyboard → the item has focus → Enter → Cancel has focus.
+  // Keyboard: open by keyboard → the first item has focus. With unread rows that
+  // is "Mark all as read"; ArrowDown reaches "Clear all", and further down the
+  // rows themselves (they were pointer-only before they became menu items).
+  const focused = () => page.evaluate(() => document.activeElement?.textContent?.trim());
   await bell(page).focus();
   await page.keyboard.press("Enter");
   await sleep(400);
-  const onItem = await page.evaluate(() => document.activeElement?.textContent?.trim());
+  const onFirst = await focused();
+  await page.keyboard.press("ArrowDown");
+  await sleep(100);
+  const onItem = await focused();
+  await page.keyboard.press("ArrowDown");
+  await sleep(100);
+  const onRow = await focused();
+  check(
+    "keyboard: Mark all as read → Clear all → a notification row, all reachable by arrows",
+    onFirst === "Mark all as read" && onItem === "Clear all" && /Workspace invitation/.test(onRow || ""),
+    `"${onFirst}" → "${onItem}" → "${(onRow || "").slice(0, 40)}"`,
+  );
+  await page.keyboard.press("ArrowUp");
+  await sleep(100);
   await page.keyboard.press("Enter");
   await page.getByText("Clear all notifications?").waitFor({ timeout: 5000 });
   const onCancel = await page.evaluate(() => document.activeElement?.textContent?.trim());
@@ -520,8 +536,8 @@ async function setTheme(page, mode) {
   check("Cancel keeps every notification", (await panelRows(page)) === 20 && (await badge(page)) === "9+");
 
   // Go to the OLDER page — the case where a careless reset would flash rows back.
-  await page.getByRole("button", { name: "Show older" }).click();
-  const older = await waitFor(async () => (await panelRows(page)) >= 1 && (await page.getByRole("button", { name: "Back to latest" }).count()) === 1, 8000);
+  await page.getByRole("menuitem", { name: "Show older" }).click();
+  const older = await waitFor(async () => (await panelRows(page)) >= 1 && (await page.getByRole("menuitem", { name: "Back to latest" }).count()) === 1, 8000);
   check('"Show older" pages to the older rows', older, `${await panelRows(page)} older row(s)`);
   const page2 = await ctxA.newPage();
   watch(page2, "A/tab2");
@@ -549,8 +565,8 @@ async function setTheme(page, mode) {
   check(
     'badge, "Show older", "Back to latest" and "Clear all" all gone',
     (await badge(page)) === "" &&
-      (await page.getByRole("button", { name: "Show older" }).count()) === 0 &&
-      (await page.getByRole("button", { name: "Back to latest" }).count()) === 0 &&
+      (await page.getByRole("menuitem", { name: "Show older" }).count()) === 0 &&
+      (await page.getByRole("menuitem", { name: "Back to latest" }).count()) === 0 &&
       (await page.getByRole("menuitem", { name: "Clear all" }).count()) === 0,
   );
   const tab2 = await waitFor(async () => (await badge(page2)) === "" && (await page2.getByText("No notifications").count()) === 1, 8000);

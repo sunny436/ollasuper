@@ -20,6 +20,7 @@ import {
   runErrorCopy,
   runStatusLabel,
   scheduleSummary,
+  taskInvalidCopy,
 } from "../_lib/schedule-format";
 import { EditTaskDialog } from "./edit-task-dialog";
 import { RunResultDialog } from "./run-result-dialog";
@@ -126,7 +127,7 @@ export function TaskDetail({
             )}
             {task.invalidReason && (
               <p className="mt-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-primary/75">
-                This task is not running: {runErrorCopy(task.invalidReason)}
+                This task is not running: {taskInvalidCopy(task.invalidReason)}
               </p>
             )}
 

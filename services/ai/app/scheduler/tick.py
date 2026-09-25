@@ -112,6 +112,16 @@ async def run_tick(
             # The task stops producing occurrences and says why, instead of
             # failing silently every tick forever.
             report.tasks_invalid += 1
+            reason = str(e)[:200]
+            if task.invalid_reason == reason:
+                # Already on record, for the same reason: nothing new to say.
+                # It used to be logged and re-materialised on EVERY tick —
+                # 159,098 warnings in 30 days. The spec is still re-parsed each
+                # tick, so a fix (an edit, or a deploy like the 09-25 one)
+                # recovers the task on the next tick with no manual step. The
+                # decision rests on sched-list's recorded output, so a DBOS
+                # replay takes the same branch.
+                continue
             log.warning(
                 "sched.spec_invalid",
                 extra={"task_id": task.task_id, "reason": str(e)},
@@ -121,7 +131,7 @@ async def run_tick(
                 from_cursor=task.cursor_at,
                 to_cursor=task.cursor_at,
                 scheduled_for=[],
-                invalid_reason=str(e)[:200],
+                invalid_reason=reason,
             )
             continue
 
