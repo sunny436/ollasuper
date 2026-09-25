@@ -2,6 +2,70 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Search chats, Clear all notifications, no "Settings" label (2026-09-24) - LIVE, prod-verified
+
+### Search chats (beside the rail's logo)
+
+A Radix dialog (`chat/_components/search-chats.tsx`) over `chat.search.combined`, the server
+search that had no caller since the sidebar search box was removed in `df5f156`. **No backend
+change.** Recent chats when empty (the rail's own data, no query), 200 ms debounce, previous
+results held while the next load, combobox keyboard model (focus stays in the input; results are
+`tabIndex=-1` options), the composer's IME-safe Enter guard, and the rail's own prefetch path on
+open. The mobile drawer closes on any Escape through a `window` listener, so the dialog stops the
+event in `onEscapeKeyDown` (Radix handles it on `document`, capture phase). A probe through a real
+session showed the server accepts 16/17/60-word, punctuation-dense, 200-char, HTML, regex and
+Devanagari/CJK/emoji queries, so nothing is clamped beyond the input's `maxLength`.
+
+### Clear all notifications
+
+`notifications.clearAll` (no args; owner = the authenticated caller) deletes the newest 500 from
+its own snapshot — prod's largest history is 272, so today every clear is one transaction — and
+`clearRemaining` continues in the background by paging strictly **older than the oldest row
+already deleted**. The first design compared `_creationTime` against `Date.now()`; its unit test
+failed: `_creationTime` has sub-millisecond precision and `Date.now()` does not, so a notification
+written in the click's own millisecond escaped the clear (regression test kept). The bell clears
+optimistically across every mounted page and rolls back on error; `before` is reset only after the
+mutation resolves, or a user on the older page watched pre-clear rows flash back. "Clear all" is a
+`DropdownMenuItem` because the panel is a Radix *menu*, which swallows Tab; the confirmation is the
+existing controlled `ConfirmDialog`, rendered inside the menu's React tree so the panel stays open.
+Deleting a row frees its dedupeKey, so a *new* event with the same key (a re-invite) notifies again.
+
+### Settings header
+
+The label is gone, and the header is exactly logo + close: the brand's wrapper is `flex` now. As a
+plain block it put the logo in a text line box and left 7px of empty space on a phone (71px header
+against the chat rail's 64px), which the headed gate caught after the first deploy.
+
+### Found, not fixed (outside this change)
+
+- "Mark all as read" calls `markAllRead` once; the server stops at 200 and returns `remaining:
+  true`. A prod account with 268 unread is left with 68 after one click.
+- The bell panel's rows, "Mark all as read" and "Show older" are plain buttons inside a Radix menu,
+  so none of them can be reached from the keyboard. Converting the panel to a Popover fixes all of
+  them at once; `p-notif-center` selects `[role="menu"]` and would need updating with it.
+
+### Verification
+
+New headed gate `e2e/qa-search-notif.js`, on two disposable accounts (B invites A from B's
+workspaces to create real notifications; `ONLY=settings,search,clear,visual` runs a subset):
+settings header geometry at 1920/1280/820/390 (0px under the logo, logo and close centred);
+search placement at all four sizes, Tab reach + focus ring, one request per settled query and none
+for one character, title and message-text hits with snippet, ↑↓/Enter, hostile input, Escape/overlay,
+a chat deleted while listed drops out, **isolation** (B finds B's chat, A never does — API and UI),
+390px drawer (fits, Escape closes only the modal, picking closes the drawer); clear all with 22 real
+notifications — Cancel keeps everything, keyboard path, "No notifications" in ~285 ms, **no row
+flashes back from the older page**, second tab empties live, reload stays empty, a new invite arrives
+after the clear; popover and confirmation fit at 1280/390 in both themes. 0 console errors.
+Existing: `p-notif-center` 15/15 · `p-settings` 8/8 · `p-chat` 18/18 · `qa-responsive --part a11y`
+0 failures · `qa-monochrome` PASS · backend **1078 passed** (7 new) · `apps/app` 241 · typecheck,
+lint + sherif and the production build clean.
+
+Test traps worth knowing: an account's saved theme beats `emulateMedia`, so switch themes through
+the product's toggle; a chat is auto-titled from its first message, which can put the searched text
+in the title; notification rows read "<severity>. <title>", so exact-text matching counts zero. The
+dev machine's clock runs ~7h ahead of the NTP-synced VM, which is why local browsers show fresh
+notifications as "7 hours ago".
+
 ## Performance Phase 1 — round trips and cache lifetimes (2026-09-21) - LIVE, prod-verified
 
 Five isolated commits, each revertable alone, chosen from the measured audit (India-user latency;

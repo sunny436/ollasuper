@@ -181,6 +181,16 @@ async function setTheme(page, mode) {
     await page.locator("#chat-composer").fill(`Reply with just the word ok. (search marker ${MARK})`);
     await page.keyboard.press("Enter");
     await page.getByText(MARK).first().waitFor({ timeout: 20000 });
+    // The chat is auto-titled from its first message, and that title can
+    // itself contain the marker — which turns the check below into a TITLE hit
+    // with no snippet. Wait for the auto-title, then rename it to something
+    // without the marker, so the only way to find MARK is the message text.
+    const railLink = page.locator(`${RAIL} a[href="/chat/${markHost}"]`).first();
+    await waitFor(async () => {
+      const t = (await railLink.innerText().catch(() => "")).trim();
+      return t !== "" && t !== "qa marker host";
+    }, 45000, 500);
+    await call("mutation", jwtA, "chat/threads:rename", { threadId: markHost, title: "qa marker host" });
     console.log("data: 2 chats + 1 message for A, 1 private chat for B");
   }
 
