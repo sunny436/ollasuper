@@ -1,8 +1,9 @@
 import { activeUserId } from "./accountState";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 
 const MAX_TITLE = 120;
 const MAX_BODY = 500;
@@ -15,6 +16,12 @@ const PAGE_SIZE = 20;
  * simply calls it again while a full page comes back.
  */
 const MARK_ALL_LIMIT = 200;
+/**
+ * Rows one clearAll transaction deletes. Production's largest history was 272
+ * rows on 2026-09-24, so today every user's clear is ONE atomic transaction; a
+ * longer history finishes in the background (clearRemaining).
+ */
+const CLEAR_BATCH = 500;
 
 /**
  * Dependency-free helper to emit an in-app notification to a user.
@@ -154,5 +161,70 @@ export const markAllRead = mutation({
     for (const n of unread) await ctx.db.patch(n._id, { read: true });
     // Tells the caller to go again rather than silently leaving rows unread.
     return { remaining: unread.length === MARK_ALL_LIMIT };
+  },
+});
+
+/**
+ * Delete one bounded batch of a user's notifications, newest first, and
+ * schedule the next batch if this one was full.
+ *
+ * No clock cutoff. The first batch deletes from the transaction's own snapshot
+ * — everything that existed when the click was processed. Each continuation
+ * then pages strictly OLDER than the oldest row already deleted (`before`, a
+ * `_creationTime`, which `by_user` carries as its implicit last field, so this
+ * is an index range, not a scan). A notification that arrives after the click is
+ * newer than all of those, so no batch can ever reach it. Comparing against
+ * Date.now() instead was measurably wrong: `_creationTime` has sub-millisecond
+ * precision and Date.now() does not, so a row created in the click's own
+ * millisecond escaped the clear.
+ *
+ * Newest first also means the page the user is looking at empties in the first
+ * transaction.
+ */
+async function clearBatch(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  before?: number,
+): Promise<number> {
+  const rows = await ctx.db
+    .query("notifications")
+    .withIndex("by_user", (q) =>
+      before === undefined
+        ? q.eq("userId", userId)
+        : q.eq("userId", userId).lte("_creationTime", before),
+    )
+    .order("desc")
+    .take(CLEAR_BATCH);
+  for (const n of rows) await ctx.db.delete(n._id);
+  const oldest = rows[rows.length - 1];
+  if (rows.length === CLEAR_BATCH && oldest) {
+    await ctx.scheduler.runAfter(0, internal.notifications.clearRemaining, {
+      userId,
+      before: oldest._creationTime,
+    });
+  }
+  return rows.length;
+}
+
+/**
+ * "Clear all" in the notification centre: delete every notification the
+ * caller had at the moment of the click. One call from the browser, bounded on
+ * the server. No arguments — the owner is the authenticated caller, so there is
+ * nothing to forge.
+ */
+export const clearAll = mutation({
+  args: {},
+  handler: async (ctx): Promise<{ cleared: number }> => {
+    const userId = await activeUserId(ctx);
+    if (!userId) return { cleared: 0 };
+    return { cleared: await clearBatch(ctx, userId) };
+  },
+});
+
+/** The background continuation of clearAll for a history over CLEAR_BATCH. */
+export const clearRemaining = internalMutation({
+  args: { userId: v.id("users"), before: v.number() },
+  handler: async (ctx, { userId, before }): Promise<void> => {
+    await clearBatch(ctx, userId, before);
   },
 });

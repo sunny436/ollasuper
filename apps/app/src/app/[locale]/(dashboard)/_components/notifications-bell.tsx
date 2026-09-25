@@ -5,12 +5,15 @@ import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@v1/ui/dropdown-menu";
 import { useMutation, useQuery } from "convex/react";
 import { Bell, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { toast } from "sonner";
+import { ConfirmDialog } from "../../(workspace)/scheduled/_components/confirm-dialog";
 import { relative } from "../../(workspace)/scheduled/_lib/schedule-format";
 
 /**
@@ -172,9 +175,36 @@ export function NotificationsBell() {
   const unread = useQuery(api.notifications.unreadCount) ?? 0;
   const markRead = useMutation(api.notifications.markRead);
   const markAllRead = useMutation(api.notifications.markAllRead);
+  const [confirmClear, setConfirmClear] = useState(false);
+  // Optimistic: every mounted page of the centre (one per pane's bell, and an
+  // older page if one is open) empties and the badge drops the instant the
+  // user confirms; Convex rolls both back by itself if the mutation fails.
+  const clearAll = useMutation(api.notifications.clearAll).withOptimisticUpdate(
+    (store) => {
+      for (const q of store.getAllQueries(api.notifications.myNotifications)) {
+        store.setQuery(api.notifications.myNotifications, q.args, {
+          page: [],
+          nextCursor: null,
+        });
+      }
+      store.setQuery(api.notifications.unreadCount, {}, 0);
+    },
+  );
 
   const loading = result === undefined;
   const rows = (result?.page ?? []) as Row[];
+
+  async function onClearAll() {
+    try {
+      await clearAll();
+      // AFTER the mutation, not before: resetting first would mount a fresh
+      // page-one subscription the optimistic update never saw, and a user on
+      // an older page would watch the old rows flash back until it resolved.
+      setBefore(undefined);
+    } catch {
+      toast.error("Couldn't clear notifications");
+    }
+  }
 
   function openNotification(n: Row) {
     if (!n.read) void markRead({ notificationId: n._id });
@@ -213,17 +243,35 @@ export function NotificationsBell() {
         sideOffset={8}
         className="scrollbar-quiet workspace max-h-[var(--radix-dropdown-menu-content-available-height)] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto p-0"
       >
-        <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
           <span className="text-xs font-medium text-primary">Notifications</span>
-          {unread > 0 && (
-            <button
-              type="button"
-              onClick={() => void markAllRead()}
-              className="rounded-md px-1.5 py-0.5 text-[11px] text-primary/65 transition hover:bg-primary/5 hover:text-primary"
-            >
-              Mark all as read
-            </button>
-          )}
+          <div className="flex items-center gap-1">
+            {unread > 0 && (
+              <button
+                type="button"
+                onClick={() => void markAllRead()}
+                className="rounded-md px-1.5 py-0.5 text-[11px] text-primary/65 transition hover:bg-primary/5 hover:text-primary"
+              >
+                Mark all as read
+              </button>
+            )}
+            {rows.length > 0 && (
+              // A menu ITEM, not a plain button: this panel is a Radix menu,
+              // which swallows Tab, so only items are keyboard-reachable
+              // (arrow keys). preventDefault keeps the panel open behind the
+              // confirmation. Muted like its neighbour; the destructive tint
+              // appears only on hover/focus.
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setConfirmClear(true);
+                }}
+                className="cursor-pointer rounded-md px-1.5 py-0.5 text-[11px] text-primary/65 transition hover:bg-primary/5 hover:text-destructive focus:bg-primary/5 focus:text-destructive"
+              >
+                Clear all
+              </DropdownMenuItem>
+            )}
+          </div>
         </div>
 
         <div className="scrollbar-quiet max-h-80 divide-y divide-border/50 overflow-y-auto">
@@ -239,7 +287,7 @@ export function NotificationsBell() {
             </div>
           ) : rows.length === 0 ? (
             <div className="px-3 py-6 text-center text-sm text-primary/60">
-              You're all caught up
+              No notifications
             </div>
           ) : (
             rows.map((n) => (
@@ -271,6 +319,20 @@ export function NotificationsBell() {
             Back to latest
           </button>
         )}
+
+        {/* Inside the menu's React tree, so Radix treats the portalled dialog
+            as part of the menu and does not dismiss the panel under it; and
+            outside the rows conditional, so the optimistic empty list cannot
+            unmount it mid-confirm. */}
+        <ConfirmDialog
+          open={confirmClear}
+          onOpenChange={setConfirmClear}
+          title="Clear all notifications?"
+          body="This permanently deletes every notification you have now. New notifications will still arrive."
+          confirmLabel="Clear all"
+          destructive
+          onConfirm={onClearAll}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );

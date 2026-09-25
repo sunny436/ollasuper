@@ -4,6 +4,7 @@ import { FilesSection } from "./files-section";
 import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { ChatInstructionsDialog } from "./chat-instructions-dialog";
 import { MoveToProjectDialog } from "./move-to-project-dialog";
+import { type RecentChat, SearchChats } from "./search-chats";
 import { OllaSuperBrand } from "@/components/branding";
 import { clearDisplayCaches } from "@/lib/display-cache";
 import { preloadLocale } from "@/locales/client";
@@ -69,10 +70,17 @@ interface ThreadItem {
  * blow away the search input's focus and value on each keystroke. The same bug
  * is documented above Shell in components/auth/auth-form.tsx.
  */
-function BrandHeader() {
+function BrandHeader({
+  recent,
+  onNavigate,
+}: {
+  recent: RecentChat[];
+  onNavigate?: () => void;
+}) {
   return (
-    <div className="flex shrink-0 items-center px-4 py-4 text-foreground">
+    <div className="flex shrink-0 items-center justify-between gap-2 px-4 py-4 text-foreground">
       <OllaSuperBrand variant="app" />
+      <SearchChats recent={recent} onNavigate={onNavigate} />
     </div>
   );
 }
@@ -333,7 +341,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      <BrandHeader />
+      <BrandHeader recent={threads} onNavigate={onNavigate} />
 
       {/* Grouped header block — New chat, Files — with no internal
           dividers, matching the reference's grouping. */}

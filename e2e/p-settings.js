@@ -57,9 +57,12 @@ const step = async (n, f) => {
   await step("Settings opens the full-screen black shell", async () => {
     await page.goto(BASE + "/en/settings", { waitUntil: "domcontentloaded" });
     await page.waitForSelector("h1", { timeout: 15000 });
-    // The new sidebar: title + exactly the five sections + close.
+    // The sidebar: brand + close + the sections. The "Settings" label that used
+    // to sit under the logo was removed on purpose, so it must stay gone.
     const aside = page.locator("aside");
-    await aside.getByText("Settings", { exact: true }).first().waitFor({ timeout: 8000 });
+    await aside.getByRole("link", { name: "Close settings" }).first().waitFor({ timeout: 8000 });
+    if ((await aside.getByText("Settings", { exact: true }).count()) !== 0)
+      throw new Error('the "Settings" label under the logo is back');
     for (const label of [
       "Profile",
       "Personalization",

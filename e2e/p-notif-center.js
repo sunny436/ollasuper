@@ -149,7 +149,7 @@ const taskRows = (page) =>
     const panel = await page.locator("body").innerText();
     must(/Notifications/.test(panel), "the panel did not open");
     must(
-      /You're all caught up|ago|in \d/.test(panel),
+      /No notifications|ago|in \d/.test(panel),
       "neither the empty state nor any row rendered",
     );
     console.log(`        unread before opening = ${beforeOpen}`);

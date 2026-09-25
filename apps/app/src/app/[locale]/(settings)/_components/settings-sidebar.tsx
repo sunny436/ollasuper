@@ -59,13 +59,10 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header: brand lockup + page label + close */}
+      {/* Header: brand lockup + close */}
       <div className="flex items-center gap-3 px-4 py-4">
         <div className="min-w-0 flex-1 text-foreground">
           <OllaSuperBrand variant="app" />
-          <p className="mt-0.5 truncate text-[11px] font-medium text-muted-foreground">
-            Settings
-          </p>
         </div>
         <Link
           href="/chat"
