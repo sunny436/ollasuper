@@ -1,4 +1,4 @@
-import { getAuthSessionId } from "@convex-dev/auth/server";
+import { getAuthSessionId, getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -13,11 +13,11 @@ import {
 } from "./_generated/server";
 import { activeUserId } from "./accountState";
 import { normalizeEmail } from "./authPolicy";
-import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
+import { enforceSessionLimit, recordAuthEvent } from "./authEvents";
 import { consumeWindow } from "./quotas";
 
 /**
- * Single-active-session enforcement and activity tracking.
+ * Session-limit enforcement (MAX_ACTIVE_SESSIONS) and activity tracking.
  *
  * WHY THIS EXISTS AS A SEPARATE ENTRY POINT, and not only in the
  * afterUserCreatedOrUpdated callback in auth.ts:
@@ -33,14 +33,41 @@ import { consumeWindow } from "./quotas";
  * The library gives no hook that spans all flows, so enforcement also runs from
  * the authenticated client on mount. That is deliberately NOT frontend security:
  * the decision and the writes happen here, in one Convex mutation, so two
- * concurrent calls serialise and exactly one session survives. The client only
- * supplies the trigger.
+ * concurrent calls serialise and the limit holds. The client only supplies the
+ * trigger.
  *
  * It also matches the requirement's own wording — "the previous device is forced
  * to login again on its next request". A displaced device keeps its access token
  * until it expires (≤1h, a property of stateless JWTs that no server-side design
- * removes), but its refresh token is gone, so it cannot continue past that.
+ * removes), but its refresh token is gone, so it cannot continue past that —
+ * and `sessionState` below tells its open tab at once, instead of leaving it
+ * signed in to an app where every query now answers "signed out".
  */
+/**
+ * Is THIS browser's session still alive? Reactive, and that is the point.
+ *
+ * A session revoked from elsewhere — a newer sign-in past the session limit, a
+ * password reset or change, suspension, deletion — leaves the tab holding a JWT
+ * that stays valid for up to an hour, while every query answers as if signed
+ * out (activeUserId checks the session row). heartbeat only runs on mount, so
+ * such a tab sat in an empty app. This query reads the same session row, so it
+ * re-runs the moment the row is deleted and the client can sign out cleanly.
+ *
+ *   anonymous  no identity at all: signed out, or auth still being attached
+ *   live       identity, a live session and an active account
+ *   ended      identity, but the session or the account is gone
+ *
+ * Only `ended` means "you were signed out": `anonymous` is also what a page
+ * sees while its token is still being attached, so it must never trigger one.
+ */
+export const sessionState = query({
+  args: {},
+  handler: async (ctx): Promise<"anonymous" | "live" | "ended"> => {
+    if ((await getAuthUserId(ctx)) === null) return "anonymous";
+    return (await activeUserId(ctx)) === null ? "ended" : "live";
+  },
+});
+
 /** How often `users.lastActivityAt` is written by heartbeat (see below). */
 export const ACTIVITY_WRITE_INTERVAL_MS = 5 * 60_000;
 
@@ -58,7 +85,7 @@ export const heartbeat = mutation({
     const session = await ctx.db.get(current);
     if (session === null) return { ok: false as const, displaced: true as const };
 
-    const revoked = await revokeOtherSessions(ctx, userId, current);
+    const revoked = await enforceSessionLimit(ctx, userId, current);
     if (revoked > 0) {
       await recordAuthEvent(ctx, {
         type: "session_replaced",

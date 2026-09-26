@@ -93,7 +93,9 @@ export async function recordAuthEvent(
 }
 
 /**
- * Single-device enforcement: revoke every session for this user except `keep`.
+ * Revoke EVERY session for this user except `keep` — for the events that must
+ * leave nothing else alive (password reset/change, suspension, deletion).
+ * Ordinary sign-ins use enforceSessionLimit below.
  *
  * WHY `keep` IS LOAD-BEARING. @convex-dev/auth creates the new session at
  * different points depending on the flow — `mutations/signIn.js` creates it with
@@ -114,8 +116,8 @@ export async function recordAuthEvent(
  * can still mint access tokens, so leaving them behind would make the revocation
  * cosmetic.
  *
- * Runs inside a single Convex mutation, so two concurrent logins serialise and
- * exactly one session survives.
+ * Runs inside a single Convex mutation, so concurrent callers serialise and
+ * exactly `keep` survives.
  */
 export async function revokeOtherSessions(
   ctx: MutationCtx,
@@ -130,13 +132,61 @@ export async function revokeOtherSessions(
   let revoked = 0;
   for (const session of sessions) {
     if (keep !== null && session._id === keep) continue;
-    const tokens = await ctx.db
-      .query("authRefreshTokens")
-      .withIndex("sessionId", (q) => q.eq("sessionId", session._id))
-      .collect();
-    for (const token of tokens) await ctx.db.delete(token._id);
-    await ctx.db.delete(session._id);
+    await deleteSessionAndTokens(ctx, session._id);
     revoked++;
   }
   return revoked;
+}
+
+/** Sessions one account may hold at once: a computer and a phone. */
+export const MAX_ACTIVE_SESSIONS = 2;
+
+/**
+ * Ordinary sign-in and heartbeat: keep `keep` plus the NEWEST other sessions
+ * up to MAX_ACTIVE_SESSIONS, revoke the rest (tokens included).
+ *
+ * Revoking everything else on every sign-in and every workspace load made a
+ * computer and a phone evict each other, and an evicted tab is never told: its
+ * token stays valid for up to an hour while every query treats it as signed out
+ * — an empty app, measured on production firing ensureWorkspace ~30 times a
+ * second. Password reset, password change, suspension and deletion still call
+ * revokeOtherSessions: those must leave nothing else alive.
+ *
+ * `keep` has the same meaning as in revokeOtherSessions, and one budget covers
+ * all three of its cases: when `keep` is the new session, or null with the new
+ * one landing after, or the caller's old session the library then replaces,
+ * `keep` plus one other leaves at most two.
+ */
+export async function enforceSessionLimit(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  keep: Id<"authSessions"> | null,
+): Promise<number> {
+  const others = (
+    await ctx.db
+      .query("authSessions")
+      .withIndex("userId", (q) => q.eq("userId", userId))
+      .collect()
+  )
+    .filter((s) => keep === null || s._id !== keep)
+    .sort((a, b) => b._creationTime - a._creationTime);
+
+  let revoked = 0;
+  for (const session of others.slice(MAX_ACTIVE_SESSIONS - 1)) {
+    await deleteSessionAndTokens(ctx, session._id);
+    revoked++;
+  }
+  return revoked;
+}
+
+async function deleteSessionAndTokens(
+  ctx: MutationCtx,
+  sessionId: Id<"authSessions">,
+): Promise<void> {
+  const tokens = await ctx.db
+    .query("authRefreshTokens")
+    .withIndex("sessionId", (q) => q.eq("sessionId", sessionId))
+    .collect();
+  for (const token of tokens) await ctx.db.delete(token._id);
+  await ctx.db.delete(sessionId);
 }

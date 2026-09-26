@@ -14,7 +14,12 @@ import {
   normalizeEmail,
 } from "./authPolicy";
 import { generateNumericCode, hasMailTransport } from "./authCodes";
-import { ipPrefix, recordAuthEvent, revokeOtherSessions } from "./authEvents";
+import {
+  enforceSessionLimit,
+  ipPrefix,
+  recordAuthEvent,
+  revokeOtherSessions,
+} from "./authEvents";
 import { reconcileDuplicateUsers } from "./authReconcile";
 import { UNVERIFIED_TTL_MS } from "./authPurge";
 import schema from "./schema";
@@ -318,6 +323,97 @@ describe("single active session", () => {
     });
     await t.run((ctx) => revokeOtherSessions(ctx, userId, null));
     expect(await countSessions(t, otherId)).toBe(1);
+  });
+});
+
+// ------------------------------------- session limit: a computer and a phone
+
+describe("session limit (MAX_ACTIVE_SESSIONS = 2)", () => {
+  // Filtered in JS for the same reason as countSessions above.
+  const sessionsOf = (t: ReturnType<typeof convexTest>, userId: Id<"users">) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("authSessions").collect()).filter((s) => s.userId === userId),
+    );
+
+  test("sequential logins converge on the NEWEST TWO, tokens and all", async () => {
+    const t = convexTest(schema, modules);
+    const { userId } = await seedSessions(t, 1);
+    const made: Id<"authSessions">[] = [];
+    for (let i = 0; i < 4; i++) {
+      made.push(
+        await t.run(async (ctx) => {
+          const id = await ctx.db.insert("authSessions", {
+            userId,
+            expirationTime: Date.now() + 1000,
+          });
+          await enforceSessionLimit(ctx, userId, id);
+          return id;
+        }),
+      );
+      expect((await sessionsOf(t, userId)).length).toBeLessThanOrEqual(2);
+    }
+    const left = (await sessionsOf(t, userId)).map((x) => x._id).sort();
+    expect(left).toEqual(made.slice(-2).sort());
+    // Every surviving refresh token belongs to a surviving session.
+    const tokens = await t.run((ctx) => ctx.db.query("authRefreshTokens").collect());
+    expect(tokens.every((k) => left.includes(k.sessionId))).toBe(true);
+  });
+
+  test("keep=null (the callback before the new session) keeps one, leaving room for it", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sessionIds } = await seedSessions(t, 3);
+    const revoked = await t.run((ctx) => enforceSessionLimit(ctx, userId, null));
+    expect(revoked).toBe(2);
+    expect((await sessionsOf(t, userId)).map((x) => x._id)).toEqual([sessionIds[2]]);
+  });
+
+  test("never touches another user's sessions", async () => {
+    const t = convexTest(schema, modules);
+    const { userId } = await seedSessions(t, 3);
+    const otherId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("users", { email: "other@t.test" });
+      await ctx.db.insert("authSessions", { userId: id, expirationTime: Date.now() + 1000 });
+      await ctx.db.insert("authSessions", { userId: id, expirationTime: Date.now() + 1000 });
+      return id;
+    });
+    await t.run((ctx) => enforceSessionLimit(ctx, userId, null));
+    expect((await sessionsOf(t, otherId)).length).toBe(2);
+  });
+
+  test("heartbeat from the newest device keeps it and the next newest", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sessionIds } = await seedSessions(t, 3);
+    const newest = sessionIds[2];
+    if (!newest) throw new Error("seed failed");
+    const r = await t
+      .withIdentity({ subject: `${userId}|${newest}` })
+      .mutation(api.authSessions.heartbeat, {});
+    expect(r).toMatchObject({ ok: true, revoked: 1 });
+    expect((await sessionsOf(t, userId)).map((x) => x._id).sort()).toEqual(
+      [sessionIds[1], sessionIds[2]].sort(),
+    );
+  });
+});
+
+describe("sessionState: an open tab learns its session ended", () => {
+  test("anonymous without identity, live with a session, ended once it is revoked", async () => {
+    const t = convexTest(schema, modules);
+    expect(await t.query(api.authSessions.sessionState, {})).toBe("anonymous");
+    const { userId, sessionIds } = await seedSessions(t, 1);
+    const sid = sessionIds[0];
+    if (!sid) throw new Error("seed failed");
+    const me = t.withIdentity({ subject: `${userId}|${sid}` });
+    expect(await me.query(api.authSessions.sessionState, {})).toBe("live");
+    await t.run((ctx) => revokeOtherSessions(ctx, userId, null));
+    expect(await me.query(api.authSessions.sessionState, {})).toBe("ended");
+  });
+
+  test("a suspended account reads as ended even with a live session row", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sessionIds } = await seedSessions(t, 1);
+    await t.run((ctx) => ctx.db.patch(userId, { accountStatus: "suspended" }));
+    const me = t.withIdentity({ subject: `${userId}|${sessionIds[0]}` });
+    expect(await me.query(api.authSessions.sessionState, {})).toBe("ended");
   });
 });
 

@@ -12,7 +12,11 @@ import {
   assertPasswordRequirements,
   normalizeEmail,
 } from "./authPolicy";
-import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
+import {
+  enforceSessionLimit,
+  recordAuthEvent,
+  revokeOtherSessions,
+} from "./authEvents";
 import { consumeCodeSendBudget } from "./authProbe";
 import { reconcileDuplicateUsers } from "./authReconcile";
 import { ResendOTPReset, ResendOTPVerify } from "./passwordProviders";
@@ -94,11 +98,12 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
   },
   callbacks: {
     /**
-     * Single active session per account, enforced server-side.
+     * At most MAX_ACTIVE_SESSIONS per account (a computer and a phone), enforced
+     * server-side; a password reset still leaves exactly one.
      *
      * Runs inside the sign-in mutation, so it shares that transaction: two
-     * concurrent logins serialise and exactly one session survives. Doing this
-     * in the frontend would be decorative.
+     * concurrent logins serialise and the limit holds. Doing this in the
+     * frontend would be decorative.
      *
      * `keep` must be the CURRENT session rather than nothing — see
      * revokeOtherSessions for why deleting unconditionally breaks the
@@ -138,8 +143,14 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       }
 
       // Proof has been given (verified code, OAuth, or a fresh credential).
+      // A completed password reset evicts every other device (requirement 6);
+      // any other sign-in keeps the newest other session, so a computer and a
+      // phone no longer sign each other out.
       const keep = await getAuthSessionId(ctx);
-      const revoked = await revokeOtherSessions(ctx, args.userId, keep);
+      const revoked =
+        providerId === "password-reset"
+          ? await revokeOtherSessions(ctx, args.userId, keep)
+          : await enforceSessionLimit(ctx, args.userId, keep);
 
       if (user !== null) {
         await ctx.db.patch(args.userId, {
@@ -162,10 +173,9 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
         });
       }
 
-      // Every other session dies here. For a password reset that is precisely
-      // requirement 6 — the reset must not leave an attacker's session alive —
-      // and it is the same code path as single-device enforcement rather than a
-      // second, separately-maintained mechanism.
+      // Sessions past the limit (or, for a password reset, every other one —
+      // requirement 6: the reset must not leave an attacker's session alive)
+      // were revoked above; record it.
       if (revoked > 0) {
         await recordAuthEvent(ctx, {
           type: "session_replaced",

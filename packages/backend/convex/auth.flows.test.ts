@@ -530,27 +530,31 @@ describe("session lifetime and single device", () => {
     expect(days).toBeLessThan(2.1);
   });
 
-  test("a second sign-in leaves the account with one usable session", async () => {
+  test("a computer and a phone both stay signed in; a third sign-in evicts the oldest", async () => {
     const t = convexTest(schema, modules);
     const email = "twodevices@gmail.com";
     const userId = await createVerifiedUser(t, email);
-    await signIn(t, { email, password: PASSWORD, flow: "signIn" });
-    await signIn(t, { email, password: PASSWORD, flow: "signIn" });
+    for (let i = 0; i < 3; i++) {
+      await signIn(t, { email, password: PASSWORD, flow: "signIn" });
+    }
+    // A plain password sign-in never reaches the auth callback, so the newest
+    // device's heartbeat is what applies the limit (see authSessions.ts).
+    const all = (await sessionsFor(t, userId)).sort(
+      (x, y) => x._creationTime - y._creationTime,
+    );
+    const newest = all[all.length - 1];
+    if (!newest || all.length < 3) throw new Error("expected several sessions");
+    await t
+      .withIdentity({ subject: `${userId}|${newest._id}` })
+      .mutation(api.authSessions.heartbeat, {});
 
-    // The library replaces the caller's own session on each sign-in; the
-    // heartbeat mutation converges anything left over.
-    const before = (await sessionsFor(t, userId)).length;
-    await t.run(async (ctx) => {
-      const all = (await ctx.db.query("authSessions").collect()).filter(
-        (s) => s.userId === userId,
-      );
-      const newest = all.sort((a, b) => b._creationTime - a._creationTime)[0];
-      if (!newest) throw new Error("no session");
-      const { revokeOtherSessions } = await import("./authEvents");
-      await revokeOtherSessions(ctx, userId, newest._id);
-    });
-    expect(before).toBeGreaterThanOrEqual(1);
-    expect((await sessionsFor(t, userId)).length).toBe(1);
+    const left = (await sessionsFor(t, userId)).map((x) => x._id).sort();
+    expect(left).toEqual(
+      all
+        .slice(-2)
+        .map((x) => x._id)
+        .sort(),
+    );
   });
 });
 

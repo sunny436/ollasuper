@@ -69,11 +69,12 @@ describe("authSessions.heartbeat activity throttle", () => {
     const me = t.withIdentity({ subject: `${userId}|${ids[2]}` });
     await t.run((ctx) => ctx.db.patch(userId, { lastActivityAt: Date.now() }));
 
+    // The limit is two sessions (a computer and a phone): the oldest goes.
     const r = await me.mutation(api.authSessions.heartbeat, {});
-    expect(r).toEqual({ ok: true, revoked: 2 });
+    expect(r).toEqual({ ok: true, revoked: 1 });
     const remaining = await t.run(async (ctx) =>
       (await ctx.db.query("authSessions").collect()).map((s) => s._id),
     );
-    expect(remaining).toEqual([ids[2]]);
+    expect(remaining.sort()).toEqual([ids[1], ids[2]].sort());
   });
 });
