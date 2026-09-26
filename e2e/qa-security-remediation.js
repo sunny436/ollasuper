@@ -59,6 +59,9 @@ async function step(name, fn) {
   });
 
   await step("chat: .txt + .xml attachments upload, register, and the reply streams", async () => {
+    // The composer ignores files until the workspace has resolved (a silent
+    // drop, measured: no upload mutation at all) — wait it out first.
+    await page.waitForTimeout(5000);
     const input = page.locator('input[type="file"]').first();
     await input.setInputFiles([
       { name: `note-${stamp}.txt`, mimeType: "text/plain", buffer: Buffer.from("remediation check") },
@@ -86,10 +89,28 @@ async function step(name, fn) {
   });
 
   await step("stored blobs reach the browser inert (edge headers on /api/storage)", async () => {
-    const hrefs = await page
-      .locator('a[href*="/api/storage/"], img[src*="/api/storage/"]')
-      .evaluateAll((els) => els.map((e) => e.getAttribute("href") || e.getAttribute("src")));
-    if (!hrefs.length) throw new Error("no storage URL rendered for the attachments");
+    // The bubble does not render raw storage links, so take this thread's
+    // attachment URLs from the API as the user (their own JWT cookie).
+    const jwt = (await ctx.cookies()).find((c) => /convexAuthJWT/i.test(c.name))?.value;
+    if (!jwt) throw new Error("no session to read attachments with");
+    const q = (path, args) =>
+      fetch(`${CVX}/api/query`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
+        body: JSON.stringify({ path, args, format: "json" }),
+      }).then((r) => r.json());
+    // The URL can commit /chat/<id> after the segment swaps; the newest thread
+    // is the one just sent either way.
+    let threadId = /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
+    if (!threadId) {
+      const ws = (await q("orgs:myWorkspaces", {})).value[0]._id;
+      threadId = (
+        await q("chat/threads:list", { workspaceId: ws, paginationOpts: { numItems: 1, cursor: null } })
+      ).value.page[0]._id;
+    }
+    const res = await q("chat/attachments:listForThread", { threadId });
+    const hrefs = (res.value || []).map((a) => a.url).filter(Boolean);
+    if (hrefs.length < 3) throw new Error(`expected 3 bound attachments, got ${hrefs.length}`);
     const out = [];
     for (const u of hrefs.slice(0, 3)) {
       const r = await page.request.get(new URL(u, BASE).toString());
@@ -104,6 +125,7 @@ async function step(name, fn) {
 
   await step("Files page: a non-knowledge upload registers (files.saveFile)", async () => {
     await page.goto(`${BASE}/en/settings/files`, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(5000); // same workspace resolution as the composer
     const name = `stored-${stamp}.bin`;
     await page
       .locator('input[type="file"]')
