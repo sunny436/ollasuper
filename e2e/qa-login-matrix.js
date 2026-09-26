@@ -8,7 +8,9 @@
 //   d  a tab from before a deploy: the auth library's    (false "Invalid email or password")
 //      invalidateCache action answers "not found"
 //   e  the same account signs in on a second device;     (evicted tab left blank/stuck)
-//      the first device is watched
+//      the first device is watched; then a THIRD device
+//      signs in and the oldest must be signed out cleanly
+//   f  an ordinary Log out                              (must not say "another device")
 //
 //   QA_EMAIL=… QA_PASSWORD=… OLLASTACK_MAIL_TOKEN=… OLLASTACK_E2E_MAILBOX_ID=… \
 //   [DEVICE=desktop|iphone|pixel] [ONLY=a,b,…] [OUT=<dir>] [EXPECT=fixed] node qa-login-matrix.js
@@ -25,7 +27,7 @@ const { account } = require("./creds");
 
 const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const DEVICE = process.env.DEVICE || "desktop";
-const ONLY = (process.env.ONLY || "a,b,c,d,e").split(",");
+const ONLY = (process.env.ONLY || "a,b,c,d,e,f").split(",");
 const OUT = process.env.OUT || "";
 const FIXED = process.env.EXPECT === "fixed";
 const A = account();
@@ -208,6 +210,18 @@ function report(id, title, r, ok) {
       console.log(`      first device looks blank/stuck: ${blankish}; ensureWorkspace calls in 25 s: ${r.ensureSent}`);
       const r2 = await observe(other.page, other.s, 3000, "e-second-device");
       report("e2", "…and the second device", r2, FIXED ? r2.final.composerReady : undefined);
+
+      // A THIRD device: the oldest (the first) must be signed out cleanly and
+      // told why — not left in an empty app.
+      const third = await newPage(browser, "desktop", "third-device");
+      await uiSignIn(third.page, A.email, A.password);
+      await third.page.waitForURL(/\/chat/, { timeout: 30000 }).catch(() => {});
+      const r3 = await observe(used.page, used.s, 15000, "e3-first-device");
+      const told = r3.seen.some((x) => x.toast?.some((t) => /another device/i.test(t)));
+      report("e3", "a third device signs in — the oldest is signed out cleanly, with the notice", r3,
+        FIXED ? r3.final.login && told && !r3.final.errorPage : undefined);
+      console.log(`      oldest device told why: ${told}`);
+      await third.ctx.close();
       await other.ctx.close();
     }
 
@@ -245,6 +259,21 @@ function report(id, title, r, ok) {
         FIXED ? f.composerReady && !f.errorPage && r.ensureSent <= 1 && r.consoleErrors.length === 0 : undefined);
     }
     await used.ctx.close();
+
+    if (ONLY.includes("f") && DEVICE === "desktop") {
+      // An ordinary Log out must not be reported as "used on another device".
+      const f = await newPage(browser, "desktop", "logout");
+      await uiSignIn(f.page, A.email, A.password);
+      await f.page.locator("#chat-composer:not([disabled])").waitFor({ timeout: 30000 });
+      await f.page.getByRole("button", { name: "Account menu" }).first().click();
+      await f.page.getByRole("button", { name: "Log out" }).click();
+      const r = await observe(f.page, f.s, 8000, "f");
+      const falseNotice = r.seen.some((x) => x.toast?.some((t) => /another device/i.test(t)));
+      report("f", "a normal Log out shows no 'another device' notice", r,
+        FIXED ? r.final.login && !falseNotice : undefined);
+      console.log(`      false displacement notice: ${falseNotice}`);
+      await f.ctx.close();
+    }
 
     if (ONLY.includes("d")) {
       const d = await newPage(browser, DEVICE, "stale");
