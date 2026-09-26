@@ -158,6 +158,9 @@ describe("F-01: a blob belongs to the user who uploaded it", () => {
     const stray = await t.run((ctx) =>
       ctx.storage.store(new Blob(["stray"], { type: "text/plain" })),
     );
+    // Strictly BEFORE the intent: on a fast runner both land in the same
+    // millisecond, and an intent issued at that instant legitimately covers it.
+    await new Promise((r) => setTimeout(r, 5));
     const a = t.withIdentity(as(attacker));
     await a.mutation(api.files.generateUploadUrl, { workspaceId: attackerWs });
     await expect(

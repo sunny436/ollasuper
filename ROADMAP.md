@@ -16,8 +16,18 @@ is stored + served `text/plain` with `CSP: sandbox` + `nosniff` (real blob, real
 upload succeeds; caches are `{owner,at,v}`; `/chat?code=junk` keeps the session; an anonymous reset
 request for the account keeps the session live (checked with its own token); log-out clears caches;
 **0 console errors**. From off-host: LAN `:3210/:3211/:6791` refused, public app/`__cvx`/JWKS 200.
-Not browser-tested (unit/integration-tested only): F-03 approval card, F-04, F-08, F-11, F-12, F-13,
-avatar upload. Found on the way, NOT fixed: `ensureWorkspace` threw on the log-out window after F-05
+**Remaining findings, prod (`e2e/qa-security-remaining.js`, QA account + a throwaway signed up through
+the real inbox and deleted through Settings):** avatar upload renders, blob `nosniff`; a 4.8 KB sparse
+workbook is refused in ingestion AND in the chat copy ("too large to process (1000 rows x 16384
+columns)"), an ordinary one ingests; re-invite refreshes ONE grant, a member cannot be re-invited;
+after removal the member's API key is invalid, task/workspace/members/threads are gone and the old
+invite cannot re-admit; a 515 KB file deleted mid-ingest leaves a tombstone and 0 `files`/`file_chunks`
+rows; private knowledge → web search parks the turn with "sends data that came from private:knowledge
+to web" and Reject works (the gate fired in 2/2 turns where the model searched; in one of them the
+harness never saw the buttons within 180 s — not reproduced; two other turns the model declined to
+search on its own); Settings deletion → sign-in refused, avatar 404, 0 rows in 26 tables (newest 400
+of each, read with `convex data`), 0 rows in Postgres. Kept by design: `auditLogs`/`authEvents` (retention policy), plus workspace `counters`/
+`usage` aggregates. Found on the way, NOT fixed: `ensureWorkspace` threw on the log-out window after F-05
 (fixed in 5bbefe8); a multi-file paperclip send gets `429` on all but one knowledge copy
 (per-user ingest concurrency 1, Convex treats 429 as terminal) — pre-existing, outside this audit.
 D-02 preflight **failed on the VM** (unprivileged userns blocked by AppArmor) → AI units unchanged.
@@ -41,7 +51,7 @@ D-02 preflight **failed on the VM** (unprivileged userns blocked by AppArmor) �
 | D-01 | Pinned Gitleaks job over each change's commits (`ci.yml secret-scan`). **Provider-side revocation/rotation of the historical Convex key and password is an operator action — still open.** | CI |
 | D-02 | `edge/myos-edge.service` → `DynamicUser` + no capabilities. `deploy/78-service-identities.sh` (preflight by default, `--apply`/`--rollback`) moves myos-ai/scheduler to `myos-ai`, read-only code, after proving `unshare -rnm` works for that user. **Not applied.** myos-app still root: bun lives in /root. | preflight |
 | D-03 | Compose publishes Convex/site/dashboard on `127.0.0.1` by default; Mailpit UI loopback, SMTP on the bridge gateway, quick tunnel removed; AI JWKS fetched over the internal URL. **Apply only after grepping VM env files for `172.16.70.25:321x`.** | — |
-| D-04 | `umask 077`, `0700` backup dir, existing dumps tightened. | — |
+| D-04 | `umask 077`, `0700` backup dir, existing dumps tightened — **in the scripts only: on the VM `/opt/backups` is still 755 with 38 group/other-readable dumps until `deploy/61-backups.sh` is re-run.** | — |
 | D-05 | httpx2 2.10.0 → 2.13.1; @tanstack/react-form + zod adapter 0.33 → 0.42.1 (form-core prototype pollution); `undici` override ≥ 6.23 (6.29.0). Remaining `bun audit` hits are build/dev tooling (brace-expansion, minimatch, glob, esbuild, vite, webpack, babel, postcss, browserslist, socket.io via a dev server) — backlog. | suites |
 | D-06 | Every action pinned by SHA, `permissions: contents: read`, uv via pinned `setup-uv`, check.yml frozen lockfile, `quickdesk_ref` via env + pattern. | — |
 

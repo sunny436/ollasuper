@@ -113,19 +113,21 @@ async def test_wrong_model_vectors_filtered(engine):
     assert {r["content"] for r in filtered} == {"current-model"}
 
 
-async def test_stale_reingest_after_delete_resurrects(engine):
-    # DOCUMENTS the resurrection risk: a delete followed by a late/duplicate
-    # persist (e.g. an in-flight ingest landing after the purge) re-creates the
-    # chunks. Nothing tombstones the id.
+async def test_a_late_reingest_after_delete_cannot_resurrect(engine):
+    # This used to DOCUMENT the resurrection risk: a delete followed by a late
+    # persist (an in-flight ingest landing after the purge) re-created the
+    # chunks. The delete now tombstones the id (audit F-13), so the late persist
+    # is refused and the file stays gone.
     await _seed(engine, file_id="z", user_id="uA", hot=0, content="zombie")
     assert await store.delete_by_id(engine, file_id="z") is True
     empty = await store.retrieve(engine, user_id="uA", query_embedding=_vec(0),
                                  fetch_k=10, embedding_dimensions=DIM)
     assert empty == []
-    await _seed(engine, file_id="z", user_id="uA", hot=0, content="zombie")  # late
+    with pytest.raises(store.IngestDeleted):
+        await _seed(engine, file_id="z", user_id="uA", hot=0, content="zombie")
     back = await store.retrieve(engine, user_id="uA", query_embedding=_vec(0),
                                 fetch_k=10, embedding_dimensions=DIM)
-    assert [r["content"] for r in back] == ["zombie"]  # resurrected
+    assert back == []
 
 
 # ---- Phase 5: file_ids scoping (selected files) ------------------------------

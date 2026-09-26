@@ -61,6 +61,12 @@ jobs:
       - name: Ruff
         working-directory: services/ai
         run: uv run ruff check .
+      # Ubuntu 24.04 runners forbid unprivileged user namespaces (AppArmor), so
+      # the sandbox child (`unshare -rnm`) exits rc=1 and every sandboxed op
+      # fails closed. Production runs it as root; this lets CI exercise the same
+      # tier-1 sandbox instead of failing before it starts.
+      - name: Allow the sandbox's user namespace
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Pytest (unit + db)
         working-directory: services/ai
         run: uv run pytest
