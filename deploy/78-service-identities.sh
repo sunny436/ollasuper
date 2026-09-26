@@ -108,6 +108,10 @@ ReadWritePaths=
 ReadOnlyPaths=${AI_DIR}
 StateDirectory=${SVC_USER}
 CacheDirectory=${SVC_USER}
+# As root (+), on every start: a deploy script that rewrites or restores .env
+# (a plain cp of a .env.bak, say) resets it to root:root 0600, and the settings
+# loader would then crash on PermissionError. Re-assert the group read here.
+ExecStartPre=+/bin/sh -c 'chgrp ${SVC_USER} ${AI_DIR}/.env && chmod 0640 ${AI_DIR}/.env'
 Environment=HOME=/var/lib/${SVC_USER}
 Environment=XDG_CACHE_HOME=/var/cache/${SVC_USER}
 CapabilityBoundingSet=
