@@ -212,10 +212,16 @@ echo "manifest written: $man"
 # nothing that can read the copies — and sent to an rsync destination.
 #   BACKUP_GPG_RECIPIENT_FILE  an armoured PUBLIC key file
 #   BACKUP_OFFHOST_TARGET      rsync destination, e.g. backup@host:/srv/myos/
+#   BACKUP_SSH_KEY             optional: the dedicated identity for that host
+#                              (deploy/80-backup-offhost.sh --setup makes one);
+#                              its host key is pinned on first use in
+#                              /etc/myos/backup_known_hosts
 # Read from /etc/myos/backup.env (root, 0600) when present, so the cron line
 # stays as it is. Both unset = exactly the old behaviour; one without the other
 # fails loudly instead of silently not copying.
-[ -f /etc/myos/backup.env ] && . /etc/myos/backup.env
+BACKUP_ENV_FILE=${BACKUP_ENV_FILE:-/etc/myos/backup.env}
+# shellcheck disable=SC1090
+[ -f "$BACKUP_ENV_FILE" ] && . "$BACKUP_ENV_FILE"
 if [ -n "${BACKUP_GPG_RECIPIENT_FILE:-}${BACKUP_OFFHOST_TARGET:-}" ]; then
   if [ -z "${BACKUP_GPG_RECIPIENT_FILE:-}" ] || [ -z "${BACKUP_OFFHOST_TARGET:-}" ]; then
     echo "FATAL: off-host copy needs BOTH BACKUP_GPG_RECIPIENT_FILE and BACKUP_OFFHOST_TARGET" >&2
@@ -229,6 +235,11 @@ if [ -n "${BACKUP_GPG_RECIPIENT_FILE:-}${BACKUP_OFFHOST_TARGET:-}" ]; then
       --recipient-file "$BACKUP_GPG_RECIPIENT_FILE" \
       --output "$stage/$(basename "$f").gpg" --encrypt "$f"
   done
-  rsync -a --chmod=F600,D700 "$stage"/ "$BACKUP_OFFHOST_TARGET"
+  ssh_cmd="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/etc/myos/backup_known_hosts"
+  [ -n "${BACKUP_SSH_KEY:-}" ] && ssh_cmd="$ssh_cmd -o IdentitiesOnly=yes -i $BACKUP_SSH_KEY"
+  rsync -a --chmod=F600,D700 -e "$ssh_cmd" "$stage"/ "$BACKUP_OFFHOST_TARGET"
+  # What was sent, by ciphertext checksum: deploy/80-backup-offhost.sh --verify
+  # pulls these back from the destination and compares.
+  ( cd "$stage" && sha256sum -- * ) > "$DEST/offhost-last.sha256"
   echo "off-host copy: $(ls "$stage" | wc -l) encrypted artifact(s) sent to $BACKUP_OFFHOST_TARGET"
 fi
