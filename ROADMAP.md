@@ -2,12 +2,25 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
-## Security audit remediation — SECURITY-AUDIT-FINAL.md F-01…F-14, D-01…D-06 (2026-09-26) - IMPLEMENTED, NOT DEPLOYED
+## Security audit remediation — SECURITY-AUDIT-FINAL.md F-01…F-14, D-01…D-06 (2026-09-26) - LIVE a093163 + 5bbefe8
 
 Every confirmed finding is fixed in code with a regression test that FAILS on the audited commit
 (verified by running the new tests against a HEAD worktree) and passes now. Local: backend 72 files,
 frontend 256 tests, edge 4, Python full suite + 4 new files; typecheck + lint clean.
-**Deploy is pending and needs a go-ahead**; nothing below is claimed live.
+
+**Deployed 2026-09-26** (alembic 0005 → myos-ai/scheduler → convex deploy → app rebuild → edge unit +
+proxy → Convex/dashboard re-bound to 127.0.0.1). **Prod, headed Chrome as the QA account**
+(`e2e/qa-security-remediation.js`, `qa-files-upload.js`, `qa-storage-headers.js`): sign-in; chat send
+with .txt/.xml/.png → all 3 attachments registered via upload intents, reply streamed; the .xml blob
+is stored + served `text/plain` with `CSP: sandbox` + `nosniff` (real blob, real URL); Settings → Files
+upload succeeds; caches are `{owner,at,v}`; `/chat?code=junk` keeps the session; an anonymous reset
+request for the account keeps the session live (checked with its own token); log-out clears caches;
+**0 console errors**. From off-host: LAN `:3210/:3211/:6791` refused, public app/`__cvx`/JWKS 200.
+Not browser-tested (unit/integration-tested only): F-03 approval card, F-04, F-08, F-11, F-12, F-13,
+avatar upload. Found on the way, NOT fixed: `ensureWorkspace` threw on the log-out window after F-05
+(fixed in 5bbefe8); a multi-file paperclip send gets `429` on all but one knowledge copy
+(per-user ingest concurrency 1, Convex treats 429 as terminal) — pre-existing, outside this audit.
+D-02 preflight **failed on the VM** (unprivileged userns blocked by AppArmor) → AI units unchanged.
 
 | ID | Closed by | Regression test |
 |---|---|---|

@@ -20,6 +20,10 @@ const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const CVX = process.env.E2E_CONVEX_URL || `${BASE}/__cvx`;
 const { email: EMAIL, password: PASSWORD } = account();
 const results = [];
+const PNG_1PX = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
 const consoleErrors = [];
 
 async function step(name, fn) {
@@ -63,6 +67,9 @@ async function step(name, fn) {
         mimeType: "text/xml",
         buffer: Buffer.from('<?xml version="1.0"?><root><item>ok</item></root>'),
       },
+      // An image renders with its storage URL, so the header check below sees
+      // a real stored blob as the browser receives it.
+      { name: `dot-${stamp}.png`, mimeType: "image/png", buffer: PNG_1PX },
     ]);
     // Both chips must reach "ready": no "Couldn't upload" toast.
     await page.waitForTimeout(6000);
@@ -102,8 +109,15 @@ async function step(name, fn) {
       .locator('input[type="file"]')
       .first()
       .setInputFiles({ name, mimeType: "application/octet-stream", buffer: Buffer.from([1, 2, 3]) });
-    await page.getByText(name).first().waitFor({ timeout: 30000 });
-    return name;
+    const ok = page.getByText(`Uploaded ${name}`);
+    const bad = page.getByText("Upload failed");
+    await Promise.race([
+      ok.first().waitFor({ timeout: 30000 }),
+      bad.first().waitFor({ timeout: 30000 }).then(() => {
+        throw new Error("the page reported: Upload failed");
+      }),
+    ]);
+    return `toast: Uploaded ${name}`;
   });
 
   await step("display caches are owner-bound envelopes", async () => {
