@@ -203,3 +203,32 @@ man="$DEST/manifest-$ts.txt"
 } > "$man"
 ls -1t "$DEST"/manifest-*.txt 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f || true
 echo "manifest written: $man"
+
+# --- off-host copy (audit D-04), opt-in ---------------------------------------
+# A backup that lives only beside the database it protects is lost with that
+# disk and readable to whoever holds this host. So, when configured, every
+# artifact of this run (and its manifest) is ENCRYPTED to a public key whose
+# private half lives OFF this host — the "separate key": a copy of this VM holds
+# nothing that can read the copies — and sent to an rsync destination.
+#   BACKUP_GPG_RECIPIENT_FILE  an armoured PUBLIC key file
+#   BACKUP_OFFHOST_TARGET      rsync destination, e.g. backup@host:/srv/myos/
+# Read from /etc/myos/backup.env (root, 0600) when present, so the cron line
+# stays as it is. Both unset = exactly the old behaviour; one without the other
+# fails loudly instead of silently not copying.
+[ -f /etc/myos/backup.env ] && . /etc/myos/backup.env
+if [ -n "${BACKUP_GPG_RECIPIENT_FILE:-}${BACKUP_OFFHOST_TARGET:-}" ]; then
+  if [ -z "${BACKUP_GPG_RECIPIENT_FILE:-}" ] || [ -z "${BACKUP_OFFHOST_TARGET:-}" ]; then
+    echo "FATAL: off-host copy needs BOTH BACKUP_GPG_RECIPIENT_FILE and BACKUP_OFFHOST_TARGET" >&2
+    exit 1
+  fi
+  stage=$(mktemp -d "$DEST/.offhost-XXXXXX")
+  trap 'rm -rf "$stage"' EXIT
+  for f in "$out" "${kout:-}" "${dout:-}" "$man"; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    gpg --batch --yes --trust-model always \
+      --recipient-file "$BACKUP_GPG_RECIPIENT_FILE" \
+      --output "$stage/$(basename "$f").gpg" --encrypt "$f"
+  done
+  rsync -a --chmod=F600,D700 "$stage"/ "$BACKUP_OFFHOST_TARGET"
+  echo "off-host copy: $(ls "$stage" | wc -l) encrypted artifact(s) sent to $BACKUP_OFFHOST_TARGET"
+fi
