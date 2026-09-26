@@ -290,3 +290,55 @@ describe("F-13: a knowledge purge outlives an outage of the inference plane", ()
     expect(after.filter((j) => j.name.includes("purge"))).toHaveLength(0);
   });
 });
+
+describe("F-08 lifecycle: a member removed while viewing gets empty reads, not errors", () => {
+  // The workspace-scoped RAIL queries keep denying non-members outright —
+  // chat.security.test.ts pins that for outsiders, and a removed member IS
+  // one. The owner-known thread reads below are the ones a page left open
+  // re-runs, so they degrade to the not-found state instead of throwing.
+  test("thread, transcript and events degrade to empty; a stranger still gets Not found", async () => {
+    const t = convexTest(schema, modules);
+    const { userId: owner, ws } = await seedUser(t, "owner@t.test");
+    const { userId: stranger } = await seedUser(t, "stranger@t.test");
+    const member = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("users", { email: "member@t.test" });
+      await ctx.db.insert("members", { workspaceId: ws, userId: id, role: "member", createdAt: Date.now() });
+      return id;
+    });
+    const m = t.withIdentity(as(member));
+    const threadId = await m.mutation(api.chat.threads.create, { workspaceId: ws, title: "mine" });
+    const messageId = await t.run((ctx) =>
+      ctx.db.insert("chatMessages", {
+        threadId,
+        userId: member,
+        workspaceId: ws,
+        role: "user",
+        content: "hi",
+        seq: 0,
+        status: "complete",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const page = { numItems: 10, cursor: null };
+    expect(await m.query(api.chat.threads.get, { threadId })).not.toBeNull(); // control
+
+    // Removed while the page is open.
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("members")
+        .withIndex("by_user", (q) => q.eq("userId", member))
+        .first();
+      if (row) await ctx.db.delete(row._id);
+    });
+    expect(await m.query(api.chat.threads.get, { threadId })).toBeNull();
+    expect((await m.query(api.chat.messages.listPaged, { threadId, paginationOpts: page })).page).toEqual([]);
+    expect(await m.query(api.chat.stream.events, { messageId })).toBeNull();
+
+    // A non-owner's answer is unchanged: Not found, no oracle.
+    await expect(
+      t.withIdentity(as(stranger)).query(api.chat.messages.listPaged, { threadId, paginationOpts: page }),
+    ).rejects.toThrow(/Not found/);
+    void owner;
+  });
+});

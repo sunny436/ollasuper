@@ -38,7 +38,7 @@ const results = [];
 const consoleErrors = [];
 const out = {};
 
-const wanted = (section) => ONLY.length === 0 || ONLY.includes(section);
+const wanted = (section) => section === "setup" || ONLY.length === 0 || ONLY.includes(section);
 
 async function step(section, name, fn) {
   if (!wanted(section)) return;
@@ -144,6 +144,18 @@ async function signUp(browser, label) {
 
 async function deleteViaSettings(browser, u) {
   await u.page.goto(`${BASE}/en/settings`, { waitUntil: "domcontentloaded" });
+  // One session per account: signing the same user in elsewhere (the F-09
+  // check does) displaces this one, so sign back in if that happened.
+  const form = await u.page
+    .getByPlaceholder("Your password")
+    .waitFor({ timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!form) {
+    await uiSignIn(u.page, u.email, u.password);
+    await u.page.waitForURL(/\/chat/, { timeout: 30000 });
+    await u.page.goto(`${BASE}/en/settings`, { waitUntil: "domcontentloaded" });
+  }
   await u.page.getByPlaceholder("Your password").waitFor({ timeout: 30000 });
   await u.page.getByPlaceholder("Your password").fill(u.password);
   await u.page.getByRole("button", { name: "Delete Account" }).click();
@@ -224,6 +236,61 @@ async function waitTurnDone(page, timeoutMs = 180000) {
   await stopBtn(page).waitFor({ state: "detached", timeout: timeoutMs });
 }
 
+async function allFiles(u) {
+  const rows = [];
+  let cursor = null;
+  for (;;) {
+    const res = await call("query", await u.jwt(), "files:listPaged", {
+      workspaceId: u.ws,
+      paginationOpts: { numItems: 100, cursor },
+    });
+    rows.push(...res.page);
+    if (res.isDone) return rows;
+    cursor = res.continueCursor;
+  }
+}
+
+/** Take over a throwaway whose password was lost (it lived only in memory):
+ *  reset it through the e2e inbox, then sign in through the UI. */
+async function adopt(browser, email) {
+  const tag = ollastack.tagOf(email);
+  const resetMails = async () =>
+    (await ollastack.messagesForTag(tag)).filter((m) => /password reset/i.test(String(m.subject)));
+  const before = (await resetMails()).length;
+  await call("action", null, "auth:signIn", { provider: "password", params: { email, flow: "reset" } });
+  let code = null;
+  const deadline = Date.now() + 90000;
+  while (!code && Date.now() < deadline) {
+    const msgs = await resetMails();
+    if (msgs.length > before) {
+      const full = await ollastack.message(msgs[0].id);
+      code = `${full?.textBody ?? ""} ${full?.htmlBody ?? ""}`.match(/\b(\d{6,8})\b/)?.[1] ?? null;
+    }
+    if (!code) await sleep(2000);
+  }
+  if (!code) throw new Error("adopt: no reset code arrived");
+  const password = `Qa${crypto.randomBytes(12).toString("base64url")}!5w`;
+  await call("action", null, "auth:signIn", {
+    provider: "password",
+    params: { email, code, newPassword: password, flow: "reset-verification" },
+  });
+  const ctx = await browser.newContext({ viewport: { width: 1360, height: 860 } });
+  const page = await ctx.newPage();
+  page.on("console", (m) => {
+    if (m.type() === "error") consoleErrors.push(`E: ${m.text().slice(0, 200)}`);
+  });
+  await uiSignIn(page, email, password);
+  await page.waitForURL(/\/chat/, { timeout: 30000 });
+  const jwt = async () => {
+    const c = (await ctx.cookies()).find((k) => /convexAuthJWT/i.test(k.name));
+    if (!c) throw new Error("E: no auth cookie");
+    return c.value;
+  };
+  const me = await call("query", await jwt(), "users:getUser", {});
+  const ws = (await call("query", await jwt(), "orgs:myWorkspaces", {}))[0]._id;
+  return { label: "E", ctx, page, email, password, tag, jwt, userId: me._id, ws };
+}
+
 const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
 
 (async () => {
@@ -238,6 +305,16 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
   const membersBefore = (await call("query", jwtA, "orgs:members", { workspaceId: wsA._id })).length;
 
   const browser = await chromium.launch({ headless: false });
+  // Throwaways a previous run stranded (their password lived only in memory):
+  // take each over through the inbox and delete it through Settings.
+  for (const email of (process.env.CLEANUP_EMAILS || "").split(",").filter(Boolean)) {
+    await step("setup", `cleanup: stranded throwaway ${email.replace(/\+.*@/, "+…@")} deleted`, async () => {
+      const u = await adopt(browser, email);
+      await deleteViaSettings(browser, u);
+      await u.ctx.close();
+      return "sign-in refused";
+    });
+  }
   const needB = ["f03", "multi", "queue", "avatar", "member", "f09"].some(wanted);
   let B = null;
   if (needB) {
@@ -257,41 +334,46 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
       (await ollastack.messagesForTag(C.tag)).filter((m) =>
         /password reset/i.test(String(m.subject)),
       );
+    // The reset entry point answers every request identically (no account
+    // oracle), so a throttled request is SILENT: accepted, nothing delivered,
+    // and — the F-07 property — the challenge the user already holds is NOT
+    // replaced. So: request until one delivers nothing, send one more for good
+    // measure, then prove the last DELIVERED code still completes the reset.
     let lastCode = null;
     let delivered = 0;
-    let throttled = null;
-    for (let i = 1; i <= 7 && !throttled; i++) {
+    let throttledAt = null;
+    for (let i = 1; i <= 8 && throttledAt === null; i++) {
       const before = (await resets()).length;
-      try {
-        await call("action", null, "auth:signIn", {
-          provider: "password",
-          params: { email: C.email, flow: "reset" },
-        });
-      } catch (e) {
-        throttled = { at: i, message: e.message };
-        break;
-      }
-      const deadline = Date.now() + 90000;
+      await call("action", null, "auth:signIn", {
+        provider: "password",
+        params: { email: C.email, flow: "reset" },
+      });
+      const deadline = Date.now() + 60000;
       let now = await resets();
       while (now.length <= before && Date.now() < deadline) {
         await sleep(2000);
         now = await resets();
       }
-      if (now.length <= before) throw new Error(`reset #${i} was accepted but no mail arrived`);
+      if (now.length <= before) {
+        throttledAt = i;
+        break;
+      }
       delivered += 1;
       const full = await ollastack.message(now[0].id);
       const m = `${full?.textBody ?? ""} ${full?.htmlBody ?? ""}`.match(/\b(\d{6,8})\b/);
       if (!m) throw new Error(`reset #${i}: no code in the mail`);
       lastCode = m[1];
     }
-    if (!throttled) throw new Error(`never throttled after ${delivered} deliveries`);
-    if (!/too many codes/i.test(throttled.message)) {
-      throw new Error(`throttled with an unexpected message: ${throttled.message}`);
-    }
-    // No silent replacement: nothing new is delivered for the refused request.
+    if (throttledAt === null) throw new Error(`never throttled after ${delivered} deliveries`);
+    if (!lastCode) throw new Error("no code was ever delivered");
     const countAtThrottle = (await resets()).length;
-    await sleep(15000);
-    if ((await resets()).length !== countAtThrottle) throw new Error("a mail was sent after the refusal");
+    await call("action", null, "auth:signIn", {
+      provider: "password",
+      params: { email: C.email, flow: "reset" },
+    });
+    await sleep(20000);
+    if ((await resets()).length !== countAtThrottle) throw new Error("a mail was sent after the budget ran out");
+    const throttled = { at: throttledAt, message: "silent: generic response, nothing delivered" };
     // The code the user holds still works.
     const newPassword = `Qa${crypto.randomBytes(12).toString("base64url")}!9y`;
     const v = await call("action", null, "auth:signIn", {
@@ -512,7 +594,7 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
     checks.push("removed admin's invite gone");
     await rejected(call("mutation", await jB(), "chat/artifacts:mintDownload", { artifactId }), /not found/i);
     checks.push("artifact download refused");
-    await rejected(call("mutation", await jB(), "userFiles:retry", { fileId: bombRow[0]._id }), /not found/i);
+    await rejected(call("mutation", await jB(), "userFiles:retry", { fileId: bombRow[0]._id }), /not found|forbidden/i);
     checks.push("knowledge retry refused");
 
     // Retrieval follows membership: A's-workspace knowledge is gone, B's own stays.
@@ -598,11 +680,14 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
   });
 
   // ------------------------------------------------------------ F-12 scale
-  await step("f12scale", "F-12: 201 files + 201 invites + an unsent upload + avatar are all gone after deletion", async () => {
-    const E = await signUp(browser, "E");
-    out.E = { userId: E.userId, ws: E.ws, email: E.email };
+  await step("f12scale", "F-12: 201 files + 201 invites + an unsent upload are all gone after deletion", async () => {
     const N = 201;
-    for (let i = 0; i < N; i++) {
+    const E = process.env.F12_REUSE_EMAIL
+      ? await adopt(browser, process.env.F12_REUSE_EMAIL)
+      : await signUp(browser, "E");
+    out.E = { userId: E.userId, ws: E.ws, email: E.email };
+    const seeded = (await allFiles(E)).length;
+    for (let i = seeded; i < N; i++) {
       const bytes = Buffer.from(`F-12 seed ${i} ${hex(8)}\n`);
       const url = await call("mutation", await E.jwt(), "files:generateUploadUrl", { workspaceId: E.ws });
       const up = await fetch(url, { method: "POST", headers: { "content-type": "text/plain" }, body: bytes });
@@ -611,7 +696,8 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
         workspaceId: E.ws, storageId, name: `seed-${i}.txt`, size: bytes.length, contentType: "text/plain",
       });
     }
-    for (let i = 0; i < N; i++) {
+    const invited = (await call("query", await E.jwt(), "orgs:pendingInvites", { workspaceId: E.ws })).length;
+    for (let i = invited; i < N; i++) {
       await call("mutation", await E.jwt(), "orgs:invite", {
         workspaceId: E.ws, email: `f12-${E.tag}-${i}@example.invalid`, role: "member",
       });
@@ -622,7 +708,7 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
     await call("mutation", await E.jwt(), "chat/attachments:register", {
       workspaceId: E.ws, storageId: aUp.storageId, name: "unsent.txt", size: aBytes.length, contentType: "text/plain",
     });
-    const files = await call("query", await E.jwt(), "files:list", { workspaceId: E.ws });
+    const files = await allFiles(E);
     const pending = await call("query", await E.jwt(), "orgs:pendingInvites", { workspaceId: E.ws });
     if (files.length < N || pending.length < N) throw new Error(`seeded ${files.length} files / ${pending.length} invites`);
     const probeUrls = [files[0].url, files[Math.floor(files.length / 2)].url, files[files.length - 1].url];

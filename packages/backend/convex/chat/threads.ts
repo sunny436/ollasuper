@@ -11,7 +11,7 @@ import {
 import { audit } from "../auditLog";
 import { deleteBlobIfUnreferenced } from "../blobOwnership";
 import { bump } from "../counters";
-import { requireMember } from "../orgs";
+import { hasWorkspaceAccess, requireMember } from "../orgs";
 import { clampText } from "./settings";
 import { requireProjectAccessByString } from "../projects";
 import { deleteResearchRunsForThread } from "../researchRuns";
@@ -260,7 +260,9 @@ export const get = query({
     if (!thread || thread.userId !== uid || thread.status === "trashed") {
       return null;
     }
-    await requireMember(ctx, uid, thread.workspaceId);
+    // Removed from the thread's workspace since: the same "not found" empty
+    // state, not a thrown Forbidden on a page that was open at the time.
+    if (!(await hasWorkspaceAccess(ctx, uid, thread.workspaceId))) return null;
 
     // Project context for the chat header. Re-verify ownership on the project
     // row rather than trusting the denormalised link: a thread must never be

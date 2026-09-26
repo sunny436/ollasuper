@@ -280,6 +280,8 @@ export const events = query({
     if (!userId) return null;
     const message = await ctx.db.get(messageId);
     if (!message || message.userId !== userId) return null;
+    // Current membership, like `active` and `committed` beside it (audit F-08).
+    if (!(await hasWorkspaceAccess(ctx, userId, message.workspaceId))) return null;
     const rows = await ctx.db
       .query("chatStreamEvents")
       .withIndex("by_message_seq", (q) =>

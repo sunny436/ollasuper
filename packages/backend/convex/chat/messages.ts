@@ -7,6 +7,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { internalMutation, mutation, query } from "../_generated/server";
 import { bump } from "../counters";
+import { hasWorkspaceAccess } from "../orgs";
 import { recordUsage } from "../usage";
 import { deleteArtifactsForMessage } from "./artifacts";
 import { activateMentioned } from "../mcp/activation";
@@ -124,6 +125,17 @@ export const listPaged = query({
     if (!userId) return EMPTY_PAGE;
     const id = ctx.db.normalizeId("chatThreads", args.threadId);
     if (!id) return EMPTY_PAGE;
+    // The OWNER removed from the thread's workspace since the page opened:
+    // an empty transcript, not a throw (audit F-08 lifecycle). A non-owner
+    // still gets requireThreadAccess's "Not found" below, unchanged.
+    const owned = await ctx.db.get(id);
+    if (
+      owned &&
+      owned.userId === userId &&
+      !(await hasWorkspaceAccess(ctx, userId, owned.workspaceId))
+    ) {
+      return EMPTY_PAGE;
+    }
     await requireThreadAccess(ctx, userId, id);
 
     const res = await ctx.db
