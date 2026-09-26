@@ -2,7 +2,67 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
-## Security audit remediation — SECURITY-AUDIT-FINAL.md F-01…F-14, D-01…D-06 (2026-09-26) - LIVE a093163 + 5bbefe8
+## Security audit remediation — SECURITY-AUDIT-FINAL.md F-01…F-14, D-01…D-06 (2026-09-26) - LIVE a093163 + 5bbefe8, completed 193abb4
+
+**Completion pass (2026-09-26 PM, fa3c2a9…193abb4, all LIVE).** A re-audit against each item's own
+Solution text found, and fixed, what the first pass missed:
+- **F-03:** the approval card showed the thread's FIRST pending row against the turn's LAST card. So a
+  step that parked two gated calls had no buttons, and resolving one re-queued the turn onto a stream
+  that no longer read as waiting. After a Reject, the model re-asked with reworded calls. Now:
+  per-message `pendingApprovals`; one card per approval; `resolve` resumes after the last decision; a
+  re-emitted request re-suspends; and a destination the user rejected is REFUSED for the rest of the
+  turn (`agent.declined_destination_refused`), never re-asked.
+- **F-05:** `chat.capabilities.list` and `skillCapabilities.list` read bare `ctx.auth`. They now left
+  the Node runtime and check `activeCallerId`.
+- **F-12/F-01:** the cascade swallowed real blob-delete failures after dropping the row. A row with a
+  missing blob was undeletable. `authDeletion.reconcileOrphanBlobs` sweeps unreferenced bytes (share
+  snapshots count as references). `blobInventory.test.ts` pins that inventory.
+- **F-13:** purge gave up after about 7.5 minutes. The 2026-09-26 outage left two deleted documents
+  retrievable. It now retries hourly for about a week.
+- **F-08 lifecycle:** a member removed while viewing got a thrown Forbidden. `threads.get`,
+  `messages.listPaged` and `stream.events` now return the not-found state; `stream.events` also
+  gained the membership check.
+- **Avatar:** replace and reset now delete the old bytes.
+- **Knowledge uploads:** a 429 now queues with Retry-After instead of failing.
+- **D-05:** `nodemailer` 9.1.1 everywhere; `sca.yml` plus `security/advisory-backlog.json`.
+
+**Production operations:**
+- **D-04:** `/opt/backups` 700 with dumps 600; the day's missed backup was re-run; there is an
+  opt-in encrypted off-host stage.
+- **D-02:** a scoped AppArmor profile gives userns to a private `unshare` (root:myos-ai 0750); the
+  global setting is unchanged. myos-ai, myos-scheduler and myos-app run unprivileged with 0
+  capabilities, a read-only code tree and no docker socket (`deploy/78`, `deploy/79`).
+- **Orphan cleanup:** row reconcile removed 4 attachments and 1 knowledge file. Cross-plane: 2
+  Postgres documents without Convex rows were purged, so 0 remain. Byte reconcile removed 32 blobs
+  (2.1 MB), with 0 references found in a full 69-table export. `auditDanglingBlobRefs` reports 0.
+- **XML migration:** the dry run found 0 unsafe blobs.
+- **D-01:** the leaked Convex Cloud key is rejected by the provider (401). The historical admin
+  password is rejected by prod.
+
+**Prod-validated this pass** (throwaways via the inbox, all deleted):
+- F-07: 5 codes sent, the 6th silently refused, and the last delivered code still resets.
+- F-09: switching accounts in one browser shows none of the previous user's data.
+- F-14: `/chat/*.png` stays gated; Google OAuth starts with a verifier.
+- F-12: 201 files, 201 invites and an unsent upload are gone after deletion.
+- F-08/F-11: admin issuer removal kills their invites; artifacts, retry and RAG follow membership; a
+  new invite still admits.
+- F-03: approve, reject, two cards, reload.
+- F-04: the sandbox kill works on the prod host.
+- F-05: capability lists return `null` after sign-out.
+- The 429 queue and avatar cleanup.
+- The full regression under the new identities: remediation 9/9, remaining 6/6, documents 9/9,
+  filegen 16/16 structurally valid, data 4/4, isolation 13/13, completion 9/9.
+
+**Manual actions left (need the operator):**
+- For the D-04 off-host copy: an rsync destination plus a PUBLIC gpg key, written to
+  `/etc/myos/backup.env`.
+- Optionally, D-01: review the Convex Cloud audit log for `benevolent-koala-651`.
+
+**Found, NOT fixed (outside the audit):**
+- The chat composer silently drops files attached before the workspace resolves (`use-attachments.ts`
+  `if (!current) return`).
+- MCP catalogue prefix search: PostgreSQL tokenises `acme/notion` as one file token, so "noti" never
+  matches. This is the one red CI test, `test_mcp_registry_db`.
 
 Every confirmed finding is fixed in code with a regression test that FAILS on the audited commit
 (verified by running the new tests against a HEAD worktree) and passes now. Local: backend 72 files,
