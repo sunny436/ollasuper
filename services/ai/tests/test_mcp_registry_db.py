@@ -167,6 +167,28 @@ async def test_search_supports_prefix_without_a_trigram_index(engine):
     ]
 
 
+async def test_search_finds_words_inside_a_registry_name(engine):
+    """The english parser reads "io.github.x/notion-mcp" as ONE path token, so a
+    word or prefix query never reaches "notion" inside it. Measured on the
+    production catalogue: every name tokenises that way."""
+    await store.upsert_page(
+        engine,
+        [_srv("io.github.acme/notion-mcp", desc="a server")],
+        [_ver("io.github.acme/notion-mcp", "1.0.0")],
+    )
+    for q in ("notion", "Notion-MCP", "acme/noti"):
+        hits = await store.search_servers(engine, query=q)
+        assert [h["name"] for h in hits] == ["io.github.acme/notion-mcp"], q
+
+
+async def test_search_takes_wildcards_in_the_query_literally(engine):
+    await store.upsert_page(
+        engine, [_srv("acme/notion")], [_ver("acme/notion", "1.0.0")]
+    )
+    for q in ("%", "%%", "_", "   "):
+        assert await store.search_servers(engine, query=q) == [], q
+
+
 async def test_search_filters_on_transport_and_auth(engine):
     await store.upsert_page(
         engine,

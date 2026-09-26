@@ -230,13 +230,19 @@ async def search_servers(
     if query:
         # `websearch_to_tsquery` takes human input safely — quotes, OR, - all
         # handled — where `to_tsquery` would raise on a stray character. The
-        # prefix term lets "noti" find "notion" without a trigram index.
+        # prefix term lets "noti" find "notion" in title/description. The NAME
+        # needs its own substring match: the english parser reads a registry
+        # name ("io.github.x/notion-mcp") as ONE path token, so no word or
+        # prefix query ever reaches the words inside it. A seq scan of the
+        # catalogue (31.5k rows on production: ~45 ms) — no trigram index.
         where.append(
             "(s.search_doc @@ websearch_to_tsquery('english', :q)"
-            " OR s.search_doc @@ to_tsquery('english', :qprefix))"
+            " OR s.search_doc @@ to_tsquery('english', :qprefix)"
+            " OR s.name ILIKE :qname ESCAPE '\\')"
         )
         params["q"] = query
         params["qprefix"] = _prefix_query(query)
+        params["qname"] = _substring_pattern(query)
     if transport or auth_kind:
         sub = ["v.server_name = s.name"]
         if transport:
@@ -290,6 +296,20 @@ def _prefix_query(query: str) -> str:
     """
     words = [w for w in "".join(c if c.isalnum() else " " for c in query).split() if w]
     return " & ".join(f"{w}:*" for w in words[:8]) or "zzzz:*"
+
+
+def _substring_pattern(query: str) -> str:
+    """An ILIKE pattern matching the query anywhere, taken literally.
+
+    `%`, `_` and the escape character itself are escaped, so a stranger's `%`
+    cannot turn the search into match-everything. A blank query yields "",
+    which no registry name matches — never "%%", which matches every row.
+    """
+    trimmed = query.strip()[:200]
+    if not trimmed:
+        return ""
+    escaped = trimmed.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 async def get_server(engine: AsyncEngine, name: str) -> dict | None:
