@@ -6,7 +6,7 @@
  * failing case with a positive control.
  */
 import { convexTest, type TestConvex } from "convex-test";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -193,6 +193,143 @@ describe("F-12: blob deletion never strands bytes and tolerates missing ones", (
     expect(await blobExists(t, orphan)).toBe(false);
     expect(await blobExists(t, referenced)).toBe(true);
     expect(await blobExists(t, shared)).toBe(true);
+  });
+});
+
+describe("automatic upload cleanup (crons: sweepUnsentAttachments, sweepOrphanBlobs)", () => {
+  const store = (t: TestT, body: string) =>
+    t.run((ctx) => ctx.storage.store(new Blob([body], { type: "text/plain" })));
+  const attach = (
+    t: TestT,
+    userId: Id<"users">,
+    ws: Id<"workspaces">,
+    storageId: Id<"_storage">,
+    extra: { createdAt: number; messageId?: Id<"chatMessages"> },
+  ) =>
+    t.run((ctx) =>
+      ctx.db.insert("chatAttachments", {
+        workspaceId: ws,
+        userId,
+        storageId,
+        name: "a.txt",
+        size: 1,
+        contentType: "text/plain",
+        kind: "text",
+        status: "uploaded",
+        ...extra,
+      }),
+    );
+
+  test("an attachment unsent for a week goes with its blob; sent and recent ones stay", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ws } = await seedUser(t);
+    const [oldSid, newSid, sentSid] = [
+      await store(t, "old"),
+      await store(t, "new"),
+      await store(t, "sent"),
+    ];
+    const old = await attach(t, userId, ws, oldSid, { createdAt: Date.now() - 8 * DAY });
+    const recent = await attach(t, userId, ws, newSid, { createdAt: Date.now() - DAY });
+    const messageId = await t.run(async (ctx) => {
+      const threadId = await ctx.db.insert("chatThreads", {
+        userId,
+        workspaceId: ws,
+        title: "t",
+        titleSource: "user",
+        status: "active",
+        pinned: false,
+        model: "m",
+        nextSeq: 1,
+        messageCount: 1,
+        tokensIn: 0,
+        tokensOut: 0,
+        lastMessageAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return ctx.db.insert("chatMessages", {
+        threadId,
+        workspaceId: ws,
+        userId,
+        role: "user",
+        seq: 0,
+        content: "hi",
+        status: "complete",
+        variantCount: 1,
+        activeVariantIndex: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+    const sent = await attach(t, userId, ws, sentSid, {
+      createdAt: Date.now() - 30 * DAY,
+      messageId,
+    });
+
+    const r = await t.mutation(internal.authDeletion.sweepUnsentAttachments, {});
+    expect(r).toEqual({ deleted: 1, stopped: false });
+    expect(await t.run((ctx) => ctx.db.get(old))).toBeNull();
+    expect(await blobExists(t, oldSid)).toBe(false);
+    for (const [id, sid] of [
+      [recent, newSid],
+      [sent, sentSid],
+    ] as const) {
+      expect(await t.run((ctx) => ctx.db.get(id))).not.toBeNull();
+      expect(await blobExists(t, sid)).toBe(true);
+    }
+  });
+
+  test("the blob sweep deletes only unreferenced bytes and pages itself to the end", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const { userId, ws } = await seedUser(t);
+      // More than one page (100) of orphans, so the sweep must continue itself.
+      // The 100th blob is the referenced one: convex-test resumes a cursor by
+      // finding its document again, so the page boundary must survive (real
+      // Convex cursors are index positions and survive deletions anyway).
+      const orphans: Id<"_storage">[] = [];
+      for (let i = 0; i < 99; i++) orphans.push(await store(t, `o${i}`));
+      const kept = await store(t, "kept");
+      await attach(t, userId, ws, kept, { createdAt: Date.now() });
+      for (let i = 99; i < 130; i++) orphans.push(await store(t, `o${i}`));
+
+      // Fake timers freeze the clock; let the bytes be a second old.
+      vi.setSystemTime(Date.now() + 1000);
+      await t.mutation(internal.authDeletion.sweepOrphanBlobs, { minAgeMs: 0 });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(await blobExists(t, kept)).toBe(true);
+      const left = await t.run(async (ctx) => ctx.db.system.query("_storage").collect());
+      expect(left.map((b) => b._id)).toEqual([kept]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("young bytes are never swept, and a mass deletion trips the breaker instead", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const young = await store(t, "young");
+      vi.setSystemTime(Date.now() + 1000);
+      expect(await t.mutation(internal.authDeletion.sweepOrphanBlobs, {})).toEqual({
+        deleted: 0,
+        stopped: false,
+      });
+      expect(await blobExists(t, young)).toBe(true);
+
+      const more = [await store(t, "a"), await store(t, "b")];
+      vi.setSystemTime(Date.now() + 1000);
+      const r = await t.mutation(internal.authDeletion.sweepOrphanBlobs, {
+        minAgeMs: 0,
+        maxDeletions: 2,
+      });
+      expect(r).toEqual({ deleted: 0, stopped: true });
+      for (const sid of [young, ...more]) expect(await blobExists(t, sid)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

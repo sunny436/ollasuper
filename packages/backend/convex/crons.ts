@@ -140,6 +140,28 @@ crons.interval(
 );
 
 /**
+ * Reclaim uploaded files nothing uses: attachments left unsent in a closed tab,
+ * then bytes no row references (uploads never registered, bytes a deletion
+ * left behind). Both page themselves forward and stop at a deletion ceiling
+ * rather than trusting an anomaly — see authDeletion.ts. Daily is ample for a
+ * 24-hour / 7-day grace, and the unsent pass runs first so its blobs are gone
+ * before the byte pass looks.
+ */
+crons.daily(
+  "sweep unsent chat attachments",
+  { hourUTC: 21, minuteUTC: 30 },
+  internal.authDeletion.sweepUnsentAttachments,
+  {},
+);
+
+crons.daily(
+  "sweep orphaned upload blobs",
+  { hourUTC: 22, minuteUTC: 0 },
+  internal.authDeletion.sweepOrphanBlobs,
+  {},
+);
+
+/**
  * Expire abandoned sign-ups.
  *
  * Security, not housekeeping: an unverified account is what lets someone squat

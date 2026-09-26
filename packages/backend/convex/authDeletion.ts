@@ -544,6 +544,38 @@ async function sharedBlobIds(ctx: MutationCtx): Promise<Set<string>> {
   return ids;
 }
 
+type OrphanBlob = {
+  storageId: Id<"_storage">;
+  size: number;
+  contentType: string | null;
+  createdAt: number;
+};
+
+/** One page of `_storage`: the blobs older than `cutoff` that nothing references. */
+async function findOrphanBlobs(
+  ctx: MutationCtx,
+  cursor: string | null,
+  cutoff: number,
+) {
+  const shared = await sharedBlobIds(ctx);
+  const res = await ctx.db.system
+    .query("_storage")
+    .paginate({ numItems: ORPHAN_BLOB_PAGE, cursor });
+  const orphans: OrphanBlob[] = [];
+  for (const b of res.page) {
+    if (b._creationTime > cutoff) continue;
+    if (shared.has(b._id)) continue;
+    if (await blobReferenced(ctx, b._id)) continue;
+    orphans.push({
+      storageId: b._id,
+      size: b.size,
+      contentType: b.contentType ?? null,
+      createdAt: b._creationTime,
+    });
+  }
+  return { res, orphans };
+}
+
 /**
  * RECONCILE stored BYTES that no row references (audit F-01/F-12). The row-level
  * `reconcileOrphans` above cannot see these: they are what earlier deletion
@@ -568,29 +600,11 @@ export const reconcileOrphanBlobs = internalMutation({
   },
   handler: async (ctx, { apply, cursor, minAgeMs }) => {
     const cutoff = Date.now() - Math.max(minAgeMs ?? ORPHAN_BLOB_MIN_AGE_MS, 0);
-    const shared = await sharedBlobIds(ctx);
-    const res = await ctx.db.system
-      .query("_storage")
-      .paginate({ numItems: ORPHAN_BLOB_PAGE, cursor: cursor ?? null });
-    const orphans: Array<{
-      storageId: string;
-      size: number;
-      contentType: string | null;
-      createdAt: number;
-    }> = [];
+    const { res, orphans } = await findOrphanBlobs(ctx, cursor ?? null, cutoff);
     let bytes = 0;
-    for (const b of res.page) {
-      if (b._creationTime > cutoff) continue;
-      if (shared.has(b._id)) continue;
-      if (await blobReferenced(ctx, b._id)) continue;
-      orphans.push({
-        storageId: b._id,
-        size: b.size,
-        contentType: b.contentType ?? null,
-        createdAt: b._creationTime,
-      });
-      bytes += b.size;
-      if (apply) await ctx.storage.delete(b._id);
+    for (const o of orphans) {
+      bytes += o.size;
+      if (apply) await ctx.storage.delete(o.storageId);
     }
     return {
       apply: !!apply,
@@ -600,5 +614,110 @@ export const reconcileOrphanBlobs = internalMutation({
       isDone: res.isDone,
       continueCursor: res.continueCursor,
     };
+  },
+});
+
+/**
+ * AUTOMATIC cleanup of uploaded files nothing uses (crons.ts, daily) — so
+ * reclaiming them no longer depends on an operator remembering to.
+ *
+ * Bounded twice. Each page is its own transaction (one page, then the next is
+ * scheduled), so no run grows past a mutation's limits. And a whole sweep
+ * deletes at most SWEEP_MAX_DELETIONS: a page that would cross it deletes
+ * NOTHING and the sweep stops, loudly. Real abandonment trickles in; hundreds
+ * at once means the reference inventory has missed a holder, and stopping is
+ * the only safe answer to that. Retry-safe: every deletion is re-derived from
+ * the current state inside the transaction that performs it, so a failed or
+ * repeated page — or tomorrow's run starting over — can only find less.
+ */
+const SWEEP_MAX_DELETIONS = 500;
+const SWEEP_MAX_PAGES = 400;
+/** A composer chip lives in page memory only, so an attachment still unsent
+ *  after a week belongs to a tab that is long gone and can never be sent. */
+const UNSENT_ATTACHMENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const UNSENT_ATTACHMENT_PAGE = 100;
+const SWEEP_PAGE_DELAY_MS = 1000;
+
+const sweepArgs = {
+  cursor: v.optional(v.union(v.string(), v.null())),
+  deleted: v.optional(v.number()),
+  pages: v.optional(v.number()),
+  // Tests only; the crons pass none of these.
+  minAgeMs: v.optional(v.number()),
+  maxDeletions: v.optional(v.number()),
+};
+
+export const sweepOrphanBlobs = internalMutation({
+  args: sweepArgs,
+  handler: async (ctx, args) => {
+    const max = args.maxDeletions ?? SWEEP_MAX_DELETIONS;
+    const deleted = args.deleted ?? 0;
+    const pages = (args.pages ?? 0) + 1;
+    const cutoff = Date.now() - Math.max(args.minAgeMs ?? ORPHAN_BLOB_MIN_AGE_MS, 0);
+    const { res, orphans } = await findOrphanBlobs(ctx, args.cursor ?? null, cutoff);
+    if (deleted + orphans.length > max) {
+      console.error(
+        `orphan blob sweep STOPPED: ${deleted + orphans.length} deletions would exceed ${max}; check blobReferenced's inventory before running reconcileOrphanBlobs by hand`,
+      );
+      return { deleted, stopped: true };
+    }
+    for (const o of orphans) await ctx.storage.delete(o.storageId);
+    const total = deleted + orphans.length;
+    if (!res.isDone && pages < SWEEP_MAX_PAGES) {
+      await ctx.scheduler.runAfter(SWEEP_PAGE_DELAY_MS, internal.authDeletion.sweepOrphanBlobs, {
+        ...args,
+        cursor: res.continueCursor,
+        deleted: total,
+        pages,
+      });
+    } else if (total > 0) {
+      console.log(`orphan blob sweep: deleted ${total} unreferenced blob(s) over ${pages} page(s)`);
+    }
+    return { deleted: total, stopped: false };
+  },
+});
+
+/**
+ * Attachments registered from the composer and never sent (the tab closed, or
+ * the page reloaded, with chips still in it). They are unreachable — `send`
+ * takes ids only from chips in page memory — yet hold a row and a blob forever:
+ * no thread purge reaches a row with no messageId, and none with no threadId.
+ * The account-knowledge copy (userFiles) is deliberate and is left alone.
+ */
+export const sweepUnsentAttachments = internalMutation({
+  args: sweepArgs,
+  handler: async (ctx, args) => {
+    const max = args.maxDeletions ?? SWEEP_MAX_DELETIONS;
+    const deleted = args.deleted ?? 0;
+    const pages = (args.pages ?? 0) + 1;
+    const cutoff = Date.now() - Math.max(args.minAgeMs ?? UNSENT_ATTACHMENT_TTL_MS, 0);
+    // Oldest first within the unsent set, so the first young row ends the pass.
+    const res = await ctx.db
+      .query("chatAttachments")
+      .withIndex("by_message", (q) => q.eq("messageId", undefined))
+      .paginate({ numItems: UNSENT_ATTACHMENT_PAGE, cursor: args.cursor ?? null });
+    const stale = res.page.filter((a) => a.createdAt <= cutoff);
+    if (deleted + stale.length > max) {
+      console.error(
+        `unsent attachment sweep STOPPED: ${deleted + stale.length} deletions would exceed ${max}`,
+      );
+      return { deleted, stopped: true };
+    }
+    for (const a of stale) {
+      await ctx.db.delete(a._id);
+      await deleteBlobIfUnreferenced(ctx, a.storageId);
+    }
+    const total = deleted + stale.length;
+    const reachedYoung = stale.length < res.page.length;
+    if (!res.isDone && !reachedYoung && pages < SWEEP_MAX_PAGES) {
+      await ctx.scheduler.runAfter(
+        SWEEP_PAGE_DELAY_MS,
+        internal.authDeletion.sweepUnsentAttachments,
+        { ...args, cursor: res.continueCursor, deleted: total, pages },
+      );
+    } else if (total > 0) {
+      console.log(`unsent attachment sweep: deleted ${total} attachment(s)`);
+    }
+    return { deleted: total, stopped: false };
   },
 });
