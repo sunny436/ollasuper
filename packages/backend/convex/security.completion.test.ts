@@ -266,3 +266,27 @@ describe("knowledge uploads queue behind the ingest limit instead of failing", (
     expect(row?.stage).toBeUndefined();
   });
 });
+
+describe("F-13: a knowledge purge outlives an outage of the inference plane", () => {
+  test("a failing purge keeps re-scheduling (capped hourly) far past five attempts", async () => {
+    const t = convexTest(schema, modules);
+    process.env.AI_BASE_URL = "http://ai.invalid:8000";
+    process.env.AI_SERVICE_KEY = "k";
+    globalThis.fetch = (async () => {
+      throw new Error("connection refused");
+    }) as unknown as typeof fetch;
+
+    await t.action(internal.userFiles.purge, { ingestId: "ing_x", attempt: 10 });
+    const jobs = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    const next = jobs.find((j) => j.name.includes("purge"));
+    expect(next?.args[0]).toMatchObject({ ingestId: "ing_x", attempt: 11 });
+    // Capped at an hour, not 30 s * 2^10 (~8.5 h).
+    expect((next?.scheduledTime ?? 0) - Date.now()).toBeLessThanOrEqual(60 * 60_000 + 5_000);
+
+    // The week-long horizon still ends.
+    const t2 = convexTest(schema, modules);
+    await t2.action(internal.userFiles.purge, { ingestId: "ing_y", attempt: 174 });
+    const after = await t2.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(after.filter((j) => j.name.includes("purge"))).toHaveLength(0);
+  });
+});

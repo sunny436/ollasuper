@@ -529,8 +529,16 @@ export const reapStalled = internalMutation({
  *  on the account-deletion path, where this is the difference between a user's
  *  documents being gone and being merely unreferenced. Hence a bounded retry:
  *  a Python restart or a brief outage no longer costs the deletion guarantee,
- *  and the cap stops a permanently-down plane from looping forever. */
-const PURGE_MAX_ATTEMPTS = 5;
+ *  and the cap stops a permanently-down plane from looping forever.
+ *
+ *  The cap is a WEEK, not minutes (audit F-13: retain retryable cleanup state
+ *  across both stores). Five attempts over ~7.5 minutes lost two deletions on
+ *  production — the VM was down ~1.5 h on 2026-09-26 — and each left a
+ *  document its owner had deleted still retrievable by their chats. The
+ *  pending scheduled purge IS the durable record: Convex keeps it across
+ *  restarts, and the backoff settles at hourly. */
+const PURGE_MAX_ATTEMPTS = 175; // 7 quick retries, then hourly for ~7 days
+const PURGE_MAX_DELAY_MS = 60 * 60_000;
 
 export const purge = internalAction({
   args: { ingestId: v.string(), attempt: v.optional(v.number()) },
@@ -553,9 +561,9 @@ export const purge = internalAction({
       console.error("userfile purge exhausted", { ingestId });
       return;
     }
-    // Backoff: 30s, 60s, 2m, 4m.
+    // Backoff: 30s, 60s, 2m, … capped at hourly.
     await ctx.scheduler.runAfter(
-      30_000 * 2 ** attempt,
+      Math.min(30_000 * 2 ** attempt, PURGE_MAX_DELAY_MS),
       internal.userFiles.purge,
       { ingestId, attempt: attempt + 1 },
     );
