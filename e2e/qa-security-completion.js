@@ -315,7 +315,7 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
       return "sign-in refused";
     });
   }
-  const needB = ["f03", "multi", "queue", "avatar", "member", "f09"].some(wanted);
+  const needB = ["f03", "f03x", "f03a", "multi", "queue", "avatar", "member", "f09"].some(wanted);
   let B = null;
   if (needB) {
     await step("setup", "B: throwaway signs up through the real UI + inbox", async () => {
@@ -416,7 +416,7 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
     throw new Error("the model answered without searching twice (no egress attempted)");
   }
 
-  await step("f03", "F-03: private data → web parks on an actionable card that survives reload; Reject ends the turn without a re-ask", async () => {
+  await step("f03x", "F-03: private data → web parks on an actionable card that survives reload; Reject ends the turn without a re-ask", async () => {
     await f03Doc();
     const attempt = await parkedTurn(SEARCH_PROMPT);
     const reason = (await B.page.getByText(/sends data that came from/).first().innerText()).trim();
@@ -426,14 +426,26 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
     await approveBtns(B.page).first().waitFor({ timeout: 30000 });
     const cards = await approveBtns(B.page).count();
     for (let i = 0; i < cards; i++) await rejectBtns(B.page).first().click();
+    // The rejected card keeps its buttons until the decision round-trips;
+    // look for a NEW card only after those have cleared.
+    const cleared = Date.now() + 20000;
+    while ((await approveBtns(B.page).count()) > 0 && Date.now() < cleared) await sleep(250);
     const after = await cardOrDone(B.page, 120000);
-    if (after === "card") throw new Error("re-asked for the same egress after Reject");
+    if (after === "card") {
+      const again = await B.page
+        .getByText(/Approval required/)
+        .last()
+        .locator("xpath=ancestor::div[2]")
+        .innerText()
+        .catch(() => "?");
+      throw new Error(`re-asked after Reject — second card: "${again.replace(/\s+/g, " ").slice(0, 260)}"`);
+    }
     if (after === "timeout") throw new Error("the turn did not finish after Reject");
     const body = (await B.page.locator("body").innerText()).replace(/\s+/g, " ");
     return `attempt ${attempt}; card "${reason.slice(0, 90)}"; ${cards} card(s) survived reload; rejected → turn finished, no re-ask (${body.length} chars on page)`;
   });
 
-  await step("f03", "F-03: Approve runs the approved call and the turn completes", async () => {
+  await step("f03a", "F-03: Approve runs the approved call and the turn completes", async () => {
     await f03Doc();
     const attempt = await parkedTurn(SEARCH_PROMPT);
     const cards = await approveBtns(B.page).count();

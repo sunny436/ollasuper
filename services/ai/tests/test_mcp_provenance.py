@@ -533,3 +533,92 @@ async def test_a_destination_the_user_rejected_is_refused_not_asked_again():
         assert stub.calls and stub.calls[0][0] == drive.tool_id  # control runs
     finally:
         await client.aclose()
+
+
+async def test_a_rejected_web_destination_is_refused_on_the_resume(monkeypatch):
+    """The production case: the rejected call was an Ollagraph WEB tool, whose id
+    carries no `mcp:` prefix, so the resume can only name its destination
+    through the registry. After the Reject the model retried the web tool with a
+    fragment; it must neither run nor park a second card."""
+    from langchain_core.messages import AIMessage
+
+    from app.models.chat import ApprovalDecision, CompletedTool, McpConnectionRef
+    from app.runtime.runner import run_generation
+    from app.tools.registry import ToolRegistry
+    from app.tools.selection import ToolSelector
+    from tests.test_agent_executor import _read_tool
+    from tests.test_durable import FakeLLM, _req
+    from tests.test_idempotency import _settings
+    from tests.test_recovery import _patch_rag
+    from tests.test_writer_events import RecordingConvex
+
+    _patch_rag(monkeypatch)
+    gmail = _mcp("gmail", "read_mail").model_copy(
+        update={"description": "Read mail from the Gmail inbox"}
+    )
+    web = _read_tool(
+        tool_id="search_endpoint_v1_search_post",
+        name="Search Endpoint",
+        description="Search the web for a query",
+    )
+    retry = {"name": "search_endpoint_v1_search_post", "args": {"q": "7781"}, "id": "c9"}
+    monkeypatch.setattr(
+        "app.runtime.runner.build_llm",
+        lambda *a, **k: FakeLLM(
+            AIMessage(content="plain"),
+            [AIMessage(content="", tool_calls=[retry]), AIMessage(content="done")],
+        ),
+    )
+    settings = _settings(ai_agent_enabled=True, ai_agent_side_effect_enabled=True)
+    reg = ToolRegistry()
+    reg.register(gmail)
+    reg.register(web)
+    stub = _McpStub({})
+    web_calls: list[str] = []
+
+    def _web(request: httpx.Request) -> httpx.Response:
+        web_calls.append(str(request.url))
+        return httpx.Response(200, json={"results": []})
+
+    class Pool:
+        pass
+
+    convex = RecordingConvex()
+    framed = _frame_tool_output(
+        json.dumps({"result": {"text": f"code {SECRET}"}}),
+        source="mcp:gmail",
+        trusted=True,
+    )
+    req = _req(
+        "search the web for the code from the gmail inbox mail",
+        attempt=0,
+        eventSeqBaseline=5,
+        mcpConnections=[
+            McpConnectionRef(connectionId="c-gmail", serverName="s", slug="gmail"),
+        ],
+        completedTools=[
+            CompletedTool(toolId=gmail.tool_id, args={"q": "latest"}, resultContent=framed)
+        ],
+        approvals=[
+            ApprovalDecision(
+                approvalId=f"{web.tool_id}:deadbeef",
+                toolId=web.tool_id,
+                decision="rejected",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "app.runtime.runner.mcp_for_turn", _stub_mcp_for_turn(reg, stub, [gmail])
+    )
+    await run_generation(
+        req,
+        settings,
+        convex,
+        tool_registry=reg,
+        tool_selector=ToolSelector(reg),
+        ollagraph_http=httpx.AsyncClient(transport=httpx.MockTransport(_web)),
+        mcp_pool=Pool(),
+    )
+    assert web_calls == [], "the web retry ran after a rejection"
+    parked = [c for c in convex.calls if c.get("op") == "approval"]
+    assert parked == [], "the user was asked again after saying no"
