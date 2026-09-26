@@ -353,3 +353,27 @@ describe("execution pill helpers", () => {
     ).toBe("error");
   });
 });
+
+describe("buildTimeline — approvals (one card per gated call)", () => {
+  test("a step that parks two calls yields two approvals, first-requested first", () => {
+    const t = buildTimeline([
+      ev("APPROVAL_REQUEST", { approval_id: "search:1", tool_name: "Search", reason: "r1" }, 1),
+      ev("APPROVAL_REQUEST", { approval_id: "search:2", tool_name: "Search", reason: "r2" }, 2),
+    ]);
+    expect(t.approvals.map((a) => a.approvalId)).toEqual(["search:1", "search:2"]);
+    // The single-approval field keeps its old meaning (the latest).
+    expect(t.approval?.approvalId).toBe("search:2");
+  });
+
+  test("a re-emitted request on resume replaces its copy instead of doubling it", () => {
+    const t = buildTimeline([
+      ev("APPROVAL_REQUEST", { approval_id: "search:1", tool_name: "Search" }, 1),
+      ev("APPROVAL_REQUEST", { approval_id: "search:1", tool_name: "Search" }, 5),
+    ]);
+    expect(t.approvals).toHaveLength(1);
+  });
+
+  test("a turn without approvals has none", () => {
+    expect(buildTimeline([]).approvals).toEqual([]);
+  });
+});

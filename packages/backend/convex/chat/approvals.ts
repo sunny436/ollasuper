@@ -76,8 +76,19 @@ export const requestApproval = internalMutation({
       )
       .unique();
     if (existing) {
-      // Duplicate request (resume re-emit): one row, never two.
-      if (existing.status === "pending") return { ok: true, decision: "pending" };
+      // Duplicate request (resume re-emit): one row, never two. The run is
+      // parking on it again, so the stream must read as parked too — otherwise
+      // it sits "queued" with no card to answer and no worker behind it.
+      if (existing.status === "pending") {
+        if (stream.status === "running" || stream.status === "queued") {
+          await ctx.db.patch(stream._id, {
+            status: "waiting_approval",
+            hasEvents: true,
+            heartbeatAt: now,
+          });
+        }
+        return { ok: true, decision: "pending" };
+      }
       // Already resolved → hand the decision to the live run.
       return { ok: true, decision: existing.status, token: existing.token ?? null };
     }
@@ -198,12 +209,6 @@ export const resolve = mutation({
       resolvedBy: userId,
       token,
     });
-    await ctx.db.patch(stream._id, {
-      status: "queued",
-      heartbeatAt: now,
-      attempts: 0,
-      deadlineAt: now + AGENT_TOTAL_DEADLINE_MS,
-    });
     await audit(
       ctx,
       row.workspaceId,
@@ -211,6 +216,23 @@ export const resolve = mutation({
       approved ? "agent.approval_approved" : "agent.approval_rejected",
       { toolName: row.toolName },
     );
+    // ALL-OR-PAUSE: the run parked every gated call of its step at once, so it
+    // resumes once, after the LAST of them is decided. Resuming on the first
+    // re-parked the rest behind a stream that no longer read as waiting.
+    const stillPending = (
+      await ctx.db
+        .query("chatApprovals")
+        .withIndex("by_stream_approval", (q) => q.eq("streamId", row.streamId))
+        .collect()
+    ).some((a) => a.status === "pending");
+    if (stillPending) return { status: approved ? "approved" : "rejected" };
+
+    await ctx.db.patch(stream._id, {
+      status: "queued",
+      heartbeatAt: now,
+      attempts: 0,
+      deadlineAt: now + AGENT_TOTAL_DEADLINE_MS,
+    });
     await ctx.scheduler.runAfter(0, internal.chat.stream.redispatch, {
       streamId: row.streamId,
     });

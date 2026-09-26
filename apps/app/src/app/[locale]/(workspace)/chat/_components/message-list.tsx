@@ -329,7 +329,7 @@ export function MessageList({ threadId }: { threadId: string | null }) {
               }
               isStreaming
               liveText={revealed}
-              pendingApproval={live.pendingApproval}
+              pendingApprovals={live.pendingApprovals}
               onResolveApproval={(approvalId, decision) => {
                 resolveApproval({
                   approvalId: approvalId as Id<"chatApprovals">,

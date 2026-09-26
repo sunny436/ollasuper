@@ -398,3 +398,95 @@ describe("Phase 8 approval — read model", () => {
     });
   });
 });
+
+describe("Phase 8 approval — several gated calls in one step (all-or-pause)", () => {
+  test("active returns EVERY pending approval of the live message, never another turn's", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedStream(t, { status: "waiting_approval", hasEvents: true });
+    // A stale pending row left by an EARLIER turn of the same thread.
+    await t.run(async (ctx) => {
+      const olderMessage = await ctx.db.insert("chatMessages", {
+        threadId: s.threadId,
+        userId: s.userId,
+        workspaceId: s.workspaceId,
+        role: "assistant",
+        content: "old",
+        seq: 1,
+        status: "complete",
+        createdAt: Date.now() - 60_000,
+        updatedAt: Date.now() - 60_000,
+      });
+      await ctx.db.insert("chatApprovals", {
+        approvalId: "search_web:stale",
+        streamId: "stream_older",
+        messageId: olderMessage,
+        threadId: s.threadId,
+        workspaceId: s.workspaceId,
+        userId: s.userId,
+        toolId: "search_web",
+        toolName: "Search Web",
+        argsKey: "{}",
+        reason: "old",
+        status: "pending",
+        createdAt: Date.now() - 60_000,
+        expiresAt: Date.now() + 900_000,
+      });
+    });
+    await seedApproval(t, s, { approvalId: "search_web:first" });
+    await seedApproval(t, s, { approvalId: "search_web:second" });
+
+    const live = await t
+      .withIdentity(as(s.userId))
+      .query(api.chat.stream.active, { threadId: s.threadId });
+    expect(live?.pendingApprovals.map((a) => a.approvalId).sort()).toEqual([
+      "search_web:first",
+      "search_web:second",
+    ]);
+    expect(live?.pendingApproval?.approvalId).not.toBe("search_web:stale");
+  });
+
+  test("deciding the first of two keeps the turn parked; the last decision resumes it", async () => {
+    const t = convexTest(schema, modules);
+    let dispatches = 0;
+    globalThis.fetch = (async () => {
+      dispatches += 1;
+      return new Response(JSON.stringify({ accepted: true }), { status: 202 });
+    }) as typeof fetch;
+    const s = await seedStream(t, { status: "waiting_approval", hasEvents: true });
+    const first = await seedApproval(t, s, { approvalId: "search_web:first" });
+    const second = await seedApproval(t, s, { approvalId: "search_web:second" });
+    const user = t.withIdentity(as(s.userId));
+
+    await user.mutation(api.chat.approvals.resolve, { approvalId: first, decision: "reject" });
+    await drain(t);
+    expect((await loadStream(t, s.streamId))?.status).toBe("waiting_approval");
+    expect(dispatches).toBe(0);
+    // The remaining card is still answerable.
+    const live = await user.query(api.chat.stream.active, { threadId: s.threadId });
+    expect(live?.pendingApprovals.map((a) => a.approvalId)).toEqual(["search_web:second"]);
+
+    await user.mutation(api.chat.approvals.resolve, { approvalId: second, decision: "approve" });
+    expect((await loadStream(t, s.streamId))?.status).toBe("queued");
+    await drain(t);
+    expect(dispatches).toBe(1);
+  });
+
+  test("a re-emitted pending approval re-suspends a stream that was requeued", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedStream(t, { status: "queued", hasEvents: true });
+    await seedApproval(t, s, { approvalId: "search_web:abc123" });
+    const r = await t.mutation(internal.chat.approvals.requestApproval, {
+      streamId: s.streamId,
+      approvalId: "search_web:abc123",
+      toolId: "search_web",
+      toolName: "Search Web",
+      argsKey: '{"q":"x"}',
+      reason: "External write",
+      ttlMs: 900_000,
+      event: APPROVAL_EVENT,
+    });
+    expect(r).toMatchObject({ decision: "pending" });
+    expect((await loadStream(t, s.streamId))?.status).toBe("waiting_approval");
+    expect(await loadApprovals(t, s.streamId)).toHaveLength(1);
+  });
+});

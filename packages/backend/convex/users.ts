@@ -24,7 +24,11 @@ import {
   assertUsableUsername,
   normalizeDisplayName,
 } from "./profilePolicy";
-import { claimUploadedBlob, issueUploadIntent } from "./blobOwnership";
+import {
+  claimUploadedBlob,
+  deleteBlobIfUnreferenced,
+  issueUploadIntent,
+} from "./blobOwnership";
 import { assertNonExecutableBlob } from "./blobSafety";
 
 /**
@@ -382,7 +386,14 @@ export const updateUserImage = mutation({
     await assertNonExecutableBlob(ctx, args.imageId);
     // Only a blob this caller uploaded and nobody registered (audit F-01).
     await claimUploadedBlob(ctx, userId, args.imageId);
+    const previous = (await ctx.db.get(userId))?.imageId;
     await ctx.db.patch(userId, { imageId: args.imageId });
+    // The replaced photo's bytes go too. Its URL is a bearer capability that
+    // outlives the row, so an image the user swapped out stayed reachable to
+    // anyone who had been shown it. Row first, then bytes (reference-aware).
+    if (previous && previous !== args.imageId) {
+      await deleteBlobIfUnreferenced(ctx, previous);
+    }
   },
 });
 
@@ -393,7 +404,10 @@ export const removeUserImage = mutation({
     if (!userId) {
       return;
     }
-    ctx.db.patch(userId, { imageId: undefined, image: undefined });
+    const previous = (await ctx.db.get(userId))?.imageId;
+    await ctx.db.patch(userId, { imageId: undefined, image: undefined });
+    // Reset means gone, not merely unlinked — see updateUserImage.
+    if (previous) await deleteBlobIfUnreferenced(ctx, previous);
   },
 });
 

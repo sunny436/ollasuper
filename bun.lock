@@ -106,7 +106,7 @@
         "@polar-sh/sdk": "^0.26.1",
         "convex": "1.19.2",
         "convex-helpers": "^0.1.63",
-        "nodemailer": "^8.0.11",
+        "nodemailer": "^9.1.1",
         "standardwebhooks": "^1.0.0",
       },
       "devDependencies": {
@@ -167,6 +167,7 @@
     },
   },
   "overrides": {
+    "nodemailer": "^9.1.1",
     "undici": "^6.23.0",
   },
   "packages": {
@@ -1664,7 +1665,7 @@
 
     "node-releases": ["node-releases@2.0.19", "", {}, "sha512-xxOWJsBKtzAq7DY0J+DTzuz58K8e7sJbdgwkbMWQe8UYB6ekmsQ45q0M/tJDsGaZmbC+l7n57UV8Hl5tHxO9uw=="],
 
-    "nodemailer": ["nodemailer@8.0.11", "", {}, "sha512-nrO/pDAUKl+wXX+lx16tDLbnm0fW6sK/x8mgohaCpg+CdCEl482bD4tCuAZk2DyliruiNTIZxRCoWkDqJEnAiA=="],
+    "nodemailer": ["nodemailer@9.1.1", "", {}, "sha512-izw9mVKFix6YSnC9eLgV6g1opl9DUlRio9ZNcq+Wu9Ujn2UwF+8Nl0B8nz22kEC+CTZCvinkxwJ0DeFbb6NwcQ=="],
 
     "normalize-path": ["normalize-path@3.0.0", "", {}, "sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA=="],
 

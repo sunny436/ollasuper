@@ -162,17 +162,31 @@ export const active = query({
       )
       .take(MAX_RESIDENT_CHUNKS);
 
-    // Phase 8: the pending approval (if the turn is parked) rides this same hot
-    // subscription so the dialog appears + survives refresh with no extra query.
-    const pendingApproval =
+    // Phase 8: the pending approvals (if the turn is parked) ride this same hot
+    // subscription so the cards appear + survive refresh with no extra query.
+    // EVERY pending row of THIS message, not the thread's first: all-or-pause
+    // parks one row per gated call, and the card for each is actionable only
+    // against its own row. Picking the thread's first row paired the LAST card
+    // with the FIRST row, so a two-call step rendered no buttons at all.
+    const pendingApprovals =
       stream.status === "waiting_approval"
-        ? await ctx.db
-            .query("chatApprovals")
-            .withIndex("by_thread_status", (q) =>
-              q.eq("threadId", tid).eq("status", "pending"),
-            )
-            .first()
-        : null;
+        ? (
+            await ctx.db
+              .query("chatApprovals")
+              .withIndex("by_thread_status", (q) =>
+                q.eq("threadId", tid).eq("status", "pending"),
+              )
+              .collect()
+          ).filter((a) => a.messageId === message._id)
+        : [];
+    const toPending = (a: Doc<"chatApprovals">) => ({
+      _id: a._id,
+      approvalId: a.approvalId,
+      toolName: a.toolName,
+      reason: a.reason,
+      expiresAt: a.expiresAt,
+    });
+    const pendingApproval = pendingApprovals[0] ?? null;
 
     return {
       messageId: message._id,
@@ -192,15 +206,8 @@ export const active = query({
       committedSeq: stream.committedSeq,
       chunks: chunks.map((c) => ({ seq: c.seq, text: c.text })),
       startedAt: stream.startedAt,
-      pendingApproval: pendingApproval
-        ? {
-            _id: pendingApproval._id,
-            approvalId: pendingApproval.approvalId,
-            toolName: pendingApproval.toolName,
-            reason: pendingApproval.reason,
-            expiresAt: pendingApproval.expiresAt,
-          }
-        : null,
+      pendingApproval: pendingApproval ? toPending(pendingApproval) : null,
+      pendingApprovals: pendingApprovals.map(toPending),
     };
   },
 });

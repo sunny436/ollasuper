@@ -284,9 +284,45 @@ export const dispatchPayload = internalQuery({
   },
 });
 
-export const dispatch = internalAction({
+/**
+ * Python admits a bounded number of ingestions (per user and in total) and
+ * answers 429 + Retry-After past that. That is a QUEUE signal, not a verdict:
+ * treating it as terminal failed every file after the first in a multi-file
+ * upload. So a 429 re-schedules the dispatch after Retry-After (clamped, with
+ * jitter so a burst does not re-arrive in lockstep), bounded by an attempt cap,
+ * and the row stays "processing" with a message saying why. The cap keeps a
+ * permanently saturated plane from queueing forever; past it the file fails
+ * with a retryable error.
+ */
+const QUEUE_MAX_ATTEMPTS = 120; // >= ~10 min at the 5 s floor, ~60 min at the cap
+const QUEUE_MIN_DELAY_MS = 5_000;
+const QUEUE_MAX_DELAY_MS = 30_000;
+
+function queueDelayMs(retryAfter: string | null): number {
+  const s = Number(retryAfter);
+  const base = Number.isFinite(s) && s > 0 ? s * 1000 : QUEUE_MIN_DELAY_MS;
+  const clamped = Math.min(QUEUE_MAX_DELAY_MS, Math.max(QUEUE_MIN_DELAY_MS, base));
+  return clamped + Math.floor(Math.random() * 2000);
+}
+
+/** Keep a queued file visibly waiting — and out of reapStalled's reach, which
+ *  keys on updatedAt — while its dispatch is re-scheduled. */
+export const markQueued = internalMutation({
   args: { fileId: v.id("userFiles") },
   handler: async (ctx, { fileId }) => {
+    const f = await ctx.db.get(fileId);
+    if (!f || f.status !== "processing") return;
+    await ctx.db.patch(fileId, {
+      stage: "queued",
+      stageMessage: "Waiting for a free processing slot",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const dispatch = internalAction({
+  args: { fileId: v.id("userFiles"), queued: v.optional(v.number()) },
+  handler: async (ctx, { fileId, queued = 0 }) => {
     const base = process.env.AI_BASE_URL;
     const key = process.env.AI_SERVICE_KEY;
     if (!base || !key) {
@@ -308,10 +344,22 @@ export const dispatch = internalAction({
       });
       // 409 = already ingesting this file (a double dispatch) — benign no-op;
       // Python's Registry rejects the duplicate and the first run converges it.
+      if (res.status === 429 && queued < QUEUE_MAX_ATTEMPTS) {
+        await ctx.runMutation(internal.userFiles.markQueued, { fileId });
+        await ctx.scheduler.runAfter(
+          queueDelayMs(res.headers.get("retry-after")),
+          internal.userFiles.dispatch,
+          { fileId, queued: queued + 1 },
+        );
+        return;
+      }
       if (!res.ok && res.status !== 409) {
         await ctx.runMutation(internal.userFiles.failById, {
           fileId,
-          error: `Ingest service responded ${res.status}`,
+          error:
+            res.status === 429
+              ? "Processing is busy right now — retry this file"
+              : `Ingest service responded ${res.status}`,
         });
       }
     } catch {

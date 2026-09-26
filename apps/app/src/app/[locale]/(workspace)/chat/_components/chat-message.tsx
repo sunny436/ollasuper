@@ -177,7 +177,7 @@ function ChatMessageImpl({
   liveText,
   onEdit,
   onShare,
-  pendingApproval,
+  pendingApprovals,
   onResolveApproval,
   readOnly = false,
   hideExecutionMeta = false,
@@ -187,10 +187,11 @@ function ChatMessageImpl({
   liveText?: string;
   onEdit?: (m: ChatMessageDoc) => void;
   onShare?: (id: Id<"chatMessages">) => void;
-  // Phase 8: the live turn's durable pending approval + resolver (live row only).
-  // `_id` flows as a string through AgentActivity; message-list re-narrows it to
-  // Id<"chatApprovals"> at the mutation call.
-  pendingApproval?: { _id: string; approvalId: string } | null;
+  // Phase 8: the live turn's durable pending approvals + resolver (live row
+  // only) — one per gated call of the parked step. `_id` flows as a string
+  // through AgentActivity; message-list re-narrows it to Id<"chatApprovals"> at
+  // the mutation call.
+  pendingApprovals?: { _id: string; approvalId: string }[];
   onResolveApproval?: (
     approvalId: string,
     decision: "approve" | "reject",
@@ -318,7 +319,7 @@ function ChatMessageImpl({
         <AgentActivity
           events={message.events}
           isStreaming={isStreaming}
-          pendingApproval={pendingApproval}
+          pendingApprovals={pendingApprovals}
           onResolveApproval={onResolveApproval}
         />
       )}
@@ -421,6 +422,10 @@ function IconButton({
  * default shallow compare is always false and React.memo would silently do
  * nothing — the whole memoisation strategy would be a no-op.
  */
+function pendingKey(p: { approvalId: string }[] | undefined): string {
+  return (p ?? []).map((x) => x.approvalId).join("|");
+}
+
 export const ChatMessage = memo(
   ChatMessageImpl,
   (a, b) =>
@@ -433,9 +438,8 @@ export const ChatMessage = memo(
     // structured events would not repaint (Convex hands back fresh identities).
     (a.message.events?.length ?? 0) === (b.message.events?.length ?? 0) &&
     a.message.events?.at(-1)?.eventId === b.message.events?.at(-1)?.eventId &&
-    // Phase 8: repaint when the pending approval appears/clears (Approve/Reject).
-    (a.pendingApproval?.approvalId ?? null) ===
-      (b.pendingApproval?.approvalId ?? null) &&
+    // Phase 8: repaint when any pending approval appears/clears (Approve/Reject).
+    pendingKey(a.pendingApprovals) === pendingKey(b.pendingApprovals) &&
     // Without this a memoised bubble could keep its interactive affordances
     // after being re-rendered read-only — buttons that would then throw.
     a.readOnly === b.readOnly &&

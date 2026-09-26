@@ -77,6 +77,10 @@ async def test_rejected_or_expired_never_executes(decision: str):
     assert ctx.writer.suspended is False  # a resolved decision does not suspend
     body = json.loads(msgs[0].content)
     assert body["status"] == decision
+    # The model is told not to try again: a bare "not approved" read as "find
+    # another way", and it re-asked the user with a reworded call.
+    assert "Do not retry" in body["reason"]
+    assert "do not send this data anywhere else" in body["reason"]
 
 
 async def test_missing_decision_suspends_and_does_not_execute():

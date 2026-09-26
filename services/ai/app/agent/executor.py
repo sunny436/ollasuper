@@ -700,12 +700,7 @@ async def _park_for_approval(
         return ("execute", None)  # caller advances WAITING_APPROVAL -> RUNNING
     if rdec in ("rejected", "expired"):
         _advance(execution, ExecutionState.FAILED)
-        return (
-            "done",
-            _tool_message(
-                call_id, {"status": rdec, "reason": "not approved"}, status="error"
-            ),
-        )
+        return ("done", _not_approved(call_id, rdec))
     if rdec == "unavailable":
         # A4: the approval could not be recorded (Convex ingress failure). Do NOT
         # suspend — that would hang the turn >=90s with no durable request. Return
@@ -724,6 +719,27 @@ async def _park_for_approval(
     return (
         "suspend",
         _tool_message(call_id, {"status": "awaiting_approval"}, status="error"),
+    )
+
+
+def _not_approved(call_id: str, decision: str) -> ToolMessage:
+    """The observation for a call the user declined (or let expire).
+
+    Plain "not approved" read to the model as "try another way": it re-issued
+    the same search with reworded arguments, so the user was asked again for
+    the call they had just declined. Say what happened and what not to do.
+    """
+    return _tool_message(
+        call_id,
+        {
+            "status": decision,
+            "reason": (
+                "The user did not approve this action, so it did not run. Do not "
+                "retry it or a variant of it, and do not send this data anywhere "
+                "else; answer without it."
+            ),
+        },
+        status="error",
     )
 
 
@@ -1202,11 +1218,7 @@ async def _run_one(
                 status="error",
                 result={"status": d["decision"]},
             )
-            return _tool_message(
-                call_id,
-                {"status": d["decision"], "reason": "not approved"},
-                status="error",
-            )
+            return _not_approved(call_id, d["decision"])
         elif ctx.unattended:
             # UNATTENDED: refuse rather than park. Same shape as the `denied`
             # branch below — the execution is advanced to a real terminal state

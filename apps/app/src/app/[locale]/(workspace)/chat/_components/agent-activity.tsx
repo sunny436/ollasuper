@@ -57,14 +57,15 @@ function runState(run: ToolRunModel): "running" | "done" | "error" {
 export function AgentActivity({
   events,
   isStreaming,
-  pendingApproval,
+  pendingApprovals,
   onResolveApproval,
 }: {
   events?: TypedEvent[];
   isStreaming: boolean;
-  // The live turn's durable pending approval (from stream.active). Absent on
-  // settled turns, so their approval card is a neutral historical note.
-  pendingApproval?: { _id: string; approvalId: string } | null;
+  // The live turn's durable pending approvals (from stream.active) — one per
+  // gated call of the parked step. Absent on settled turns, so their approval
+  // cards are neutral historical notes.
+  pendingApprovals?: { _id: string; approvalId: string }[];
   onResolveApproval?: (
     approvalId: string,
     decision: "approve" | "reject",
@@ -82,27 +83,35 @@ export function AgentActivity({
 
   // Render nothing unless there is real activity to show (or a pending approval) —
   // a turn whose only tool was suppressed must not leave an empty shell.
-  if (visibleRuns.length === 0 && !timeline.approval) return null;
+  if (visibleRuns.length === 0 && timeline.approvals.length === 0) return null;
 
   const current = visibleRuns.find((r) => r.status === "running");
+  // Each card is answered against ITS OWN durable row, matched by approvalId —
+  // never "the" pending row, which paired the wrong card with the wrong row
+  // when one step parked two calls.
+  const pendingById = new Map(
+    (pendingApprovals ?? []).map((p) => [p.approvalId, p]),
+  );
 
   return (
     <div data-agent-activity className="mb-2.5 flex flex-col gap-1.5">
       {visibleRuns.length > 0 && (
         <ExecutionStatus runs={visibleRuns} isStreaming={isStreaming} />
       )}
-      {timeline.approval && (
-        <ApprovalCard
-          approval={timeline.approval}
-          onResolve={
-            pendingApproval &&
-            onResolveApproval &&
-            pendingApproval.approvalId === timeline.approval.approvalId
-              ? (decision) => onResolveApproval(pendingApproval._id, decision)
-              : undefined
-          }
-        />
-      )}
+      {timeline.approvals.map((approval) => {
+        const pending = pendingById.get(approval.approvalId);
+        return (
+          <ApprovalCard
+            key={approval.approvalId}
+            approval={approval}
+            onResolve={
+              pending && onResolveApproval
+                ? (decision) => onResolveApproval(pending._id, decision)
+                : undefined
+            }
+          />
+        );
+      })}
       {/* One polite live region so a screen reader announces the current step
           without re-reading the whole timeline. */}
       {isStreaming && current && (

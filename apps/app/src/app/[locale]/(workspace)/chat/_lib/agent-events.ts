@@ -327,6 +327,8 @@ export interface TimelineModel {
   ragFiles: RagFile[];
   artifacts: ParsedArtifact[];
   approval?: ParsedApproval;
+  /** Every approval of the turn, first-requested first (one per gated call). */
+  approvals: ParsedApproval[];
   terminal?: { kind: "final" | "error"; code?: string; message?: string };
   /** True once any structured (non-terminal) event exists — drives whether to render. */
   hasActivity: boolean;
@@ -380,6 +382,7 @@ export function buildTimeline(events: TypedEvent[] | undefined): TimelineModel {
   const ragFileById = new Map<string, RagFile>();
   const artifacts: ParsedArtifact[] = [];
   let approval: ParsedApproval | undefined;
+  const approvals = new Map<string, ParsedApproval>();
   let terminal: TimelineModel["terminal"];
   let hasActivity = false;
 
@@ -463,6 +466,9 @@ export function buildTimeline(events: TypedEvent[] | undefined): TimelineModel {
           status: e.status,
           preview: e.preview,
         };
+        // One step can park several calls (all-or-pause); each needs its own
+        // card. A re-emitted request on resume replaces its earlier copy.
+        approvals.set(e.approvalId, approval);
         break;
       }
       case "final":
@@ -482,6 +488,7 @@ export function buildTimeline(events: TypedEvent[] | undefined): TimelineModel {
     ragFiles: [...ragFileById.values()],
     artifacts,
     approval,
+    approvals: [...approvals.values()],
     terminal,
     hasActivity,
   };

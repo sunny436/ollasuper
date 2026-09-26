@@ -37,6 +37,7 @@
   "packageManager": "bun@1.1.26",
   "version": "0.0.1",
   "overrides": {
+    "nodemailer": "^9.1.1",
     "undici": "^6.23.0"
   }
 }

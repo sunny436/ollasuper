@@ -142,5 +142,10 @@ export async function deleteBlobIfUnreferenced(
   storageId: Id<"_storage">,
 ): Promise<void> {
   if (await blobReferenced(ctx, storageId)) return;
+  // Already gone is done: a resumed cascade or an earlier pass may have taken
+  // it, and a row pointing at missing bytes must still be deletable. Any OTHER
+  // failure propagates — the caller's row delete then rolls back with it, so a
+  // failed blob delete leaves a retryable row, never unreferenced bytes.
+  if ((await ctx.db.system.get(storageId)) === null) return;
   await ctx.storage.delete(storageId);
 }

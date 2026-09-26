@@ -1,5 +1,5 @@
-"use node";
-
+import { internal } from "../_generated/api";
+import type { Id } from "../_generated/dataModel";
 import { action } from "../_generated/server";
 
 /**
@@ -29,26 +29,24 @@ export const list = action({
     // plane on behalf of whoever calls it, which anonymously is a confused
     // deputy: an unauthenticated caller made this deployment present its own
     // credential and hand back which capabilities are enabled here, on an
-    // unmetered "use node" action with no limit. The Python side is correctly
-    // guarded — but by OUR key, which is the problem.
+    // unmetered action with no limit. The Python side is correctly guarded —
+    // but by OUR key, which is the problem.
     //
-    // `ctx.auth` DIRECTLY, not a runQuery hop to accountState. This module is
-    // "use node", and a Node-runtime action calling ctx.runQuery fails on this
-    // self-hosted 1.19 backend with "Transient error while running query" —
-    // measured on production; no other "use node" module here calls runQuery, so
-    // the path was simply never exercised. ctx.auth needs no database and no
-    // second runtime, which makes it the right tool anyway.
-    //
-    // HONEST LIMIT: this proves AUTHENTICATION, not account status — a suspended
-    // user with an unexpired token could still read this list until it expires.
-    // That is proportionate for a feature-flag list and is not worth a database
-    // round trip on every menu open; the surfaces where status actually matters
-    // use activeUserId (see accountState.ts).
+    // A LIVE SESSION, not just a signed token (audit F-05): a signed-out,
+    // displaced or suspended caller holding an unexpired JWT is refused like
+    // an anonymous one. This module used to be "use node" and so read bare
+    // ctx.auth — a Node-runtime action cannot runQuery on this self-hosted
+    // 1.19 backend. It needs neither Node nor anything but fetch, so it runs in
+    // the default runtime, which can (the pattern mcp/connections.ts uses).
     //
     // Null, not a throw, so the contract below is unchanged: a signed-out
     // render shows the full static menu rather than an empty one, and logs no
     // console.error.
-    if ((await ctx.auth.getUserIdentity()) === null) return null;
+    const userId: Id<"users"> | null = await ctx.runQuery(
+      internal.accountState.activeCallerId,
+      {},
+    );
+    if (!userId) return null;
     const base = process.env.AI_BASE_URL;
     const key = process.env.AI_SERVICE_KEY;
     if (!base || !key) return null;

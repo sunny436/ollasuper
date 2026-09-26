@@ -35,7 +35,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx } from "./_generated/server";
-import { blobReferenced } from "./blobOwnership";
+import { blobReferenced, deleteBlobIfUnreferenced } from "./blobOwnership";
 
 // Bounded so one pass never approaches a mutation's operation limit; the cascade
 // reschedules until done, so a small batch only means more passes, never missed
@@ -44,17 +44,14 @@ const THREADS_PER_PASS = 15;
 const ROWS_PER_SUBQUERY = 200;
 
 async function deleteBlob(ctx: MutationCtx, storageId: Id<"_storage">) {
-  // Called AFTER the owning row is gone. Bytes another row still references
-  // (a pre-existing alias) are left alone — deletion must never reach through
-  // one owner's row into another's file (audit F-01).
-  if (await blobReferenced(ctx, storageId)) return;
-  // A missing blob is fine — this runs more than once on a resume, and the blob
-  // may already be gone. Never let a storage hiccup wedge the cascade.
-  try {
-    await ctx.storage.delete(storageId);
-  } catch {
-    // swallow — idempotent purge
-  }
+  // Called AFTER the owning row is gone, in the same transaction. Bytes another
+  // row still references (a pre-existing alias) are left alone — deletion must
+  // never reach through one owner's row into another's file (audit F-01). A
+  // missing blob is fine (a resumed pass); a REAL delete failure is not
+  // swallowed any more: it aborts this pass, so the row survives and the next
+  // pass or `reconcileOrphans` retries it (audit F-12 — swallowing it deleted
+  // the only handle on bytes that were still stored).
+  await deleteBlobIfUnreferenced(ctx, storageId);
 }
 
 /** Delete everything hanging off ONE message: streams, chunks, events, tool
@@ -512,6 +509,96 @@ export const reconcileOrphans = internalMutation({
       orphans,
       isDone: page.isDone,
       continueCursor: page.continueCursor,
+    };
+  },
+});
+
+/** Bytes younger than this are never swept: an upload intent lives one hour,
+ *  so a blob uploaded moments ago and not yet registered is still legitimate. */
+const ORPHAN_BLOB_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+const ORPHAN_BLOB_PAGE = 100;
+
+/** Storage ids held inside a share's frozen snapshot JSON (the /share/file
+ *  proxy serves them) — the one reference `blobReferenced` cannot see by index.
+ *  Every share that is not revoked counts, expired or not: conservative. */
+async function sharedBlobIds(ctx: MutationCtx): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n);
+    } else if (node && typeof node === "object") {
+      for (const [k, val] of Object.entries(node)) {
+        if (k === "storageId" && typeof val === "string") ids.add(val);
+        else walk(val);
+      }
+    }
+  };
+  for (const s of await ctx.db.query("chatShares").collect()) {
+    if (s.revokedAt !== undefined) continue;
+    try {
+      walk(JSON.parse(s.snapshot));
+    } catch {
+      // An unparsable snapshot serves nothing; it references nothing.
+    }
+  }
+  return ids;
+}
+
+/**
+ * RECONCILE stored BYTES that no row references (audit F-01/F-12). The row-level
+ * `reconcileOrphans` above cannot see these: they are what earlier deletion
+ * passes left once they had dropped the only row pointing at them — plus a
+ * replaced or reset avatar before that was fixed, and uploads that were never
+ * registered.
+ *
+ * "Referenced" is exactly `blobReferenced` (files, userFiles, chatAttachments,
+ * chatArtifacts, users.imageId) plus every storageId inside a non-revoked share
+ * snapshot. blobInventory.test.ts fails if a new place starts holding storage
+ * ids without being added to that list — a sweep is only as safe as its
+ * inventory. Anything younger than a day is skipped.
+ *
+ * Operator-run, one page per call, a dry run unless `apply: true`. Feed
+ * `continueCursor` back until `isDone`.
+ */
+export const reconcileOrphanBlobs = internalMutation({
+  args: {
+    apply: v.optional(v.boolean()),
+    cursor: v.optional(v.union(v.string(), v.null())),
+    minAgeMs: v.optional(v.number()),
+  },
+  handler: async (ctx, { apply, cursor, minAgeMs }) => {
+    const cutoff = Date.now() - Math.max(minAgeMs ?? ORPHAN_BLOB_MIN_AGE_MS, 0);
+    const shared = await sharedBlobIds(ctx);
+    const res = await ctx.db.system
+      .query("_storage")
+      .paginate({ numItems: ORPHAN_BLOB_PAGE, cursor: cursor ?? null });
+    const orphans: Array<{
+      storageId: string;
+      size: number;
+      contentType: string | null;
+      createdAt: number;
+    }> = [];
+    let bytes = 0;
+    for (const b of res.page) {
+      if (b._creationTime > cutoff) continue;
+      if (shared.has(b._id)) continue;
+      if (await blobReferenced(ctx, b._id)) continue;
+      orphans.push({
+        storageId: b._id,
+        size: b.size,
+        contentType: b.contentType ?? null,
+        createdAt: b._creationTime,
+      });
+      bytes += b.size;
+      if (apply) await ctx.storage.delete(b._id);
+    }
+    return {
+      apply: !!apply,
+      scanned: res.page.length,
+      orphans,
+      bytes,
+      isDone: res.isDone,
+      continueCursor: res.continueCursor,
     };
   },
 });

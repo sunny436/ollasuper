@@ -1,5 +1,5 @@
-"use node";
-
+import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { action } from "./_generated/server";
 
 /**
@@ -28,14 +28,16 @@ import { action } from "./_generated/server";
 export const list = action({
   args: {},
   handler: async (ctx): Promise<{ id: string; group: string }[] | null> => {
-    // SIGNED-IN CALLERS ONLY — same confused-deputy reasoning as
-    // chat/capabilities.ts, and the same use of `ctx.auth` rather than a
-    // runQuery hop: a "use node" action cannot runQuery on this self-hosted
-    // 1.19 backend (measured — "Transient error while running query"). Proves
-    // authentication, not account status; see the fuller note in that file.
+    // LIVE-SESSION CALLERS ONLY — same confused-deputy and revocation
+    // reasoning as chat/capabilities.ts (audit F-05), and the same move out of
+    // the Node runtime so the check can reach the session table.
     // Null keeps the documented contract (the form renders no picker rather
     // than an empty one) and logs no console.error for a signed-out render.
-    if ((await ctx.auth.getUserIdentity()) === null) return null;
+    const userId: Id<"users"> | null = await ctx.runQuery(
+      internal.accountState.activeCallerId,
+      {},
+    );
+    if (!userId) return null;
     const base = process.env.AI_BASE_URL;
     const key = process.env.AI_SERVICE_KEY;
     if (!base || !key) return null;
