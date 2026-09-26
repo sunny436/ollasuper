@@ -388,8 +388,9 @@ async def test_taint_and_rejections_are_rebuilt_on_an_approval_resume(monkeypatc
     """Measured on production: an approval resume is a NEW context, so the
     ledger built before the pause was gone and the re-issued Drive search ran.
     On resume the ledger is rebuilt from `completedTools`, and a destination
-    the user REJECTED a call to keeps asking — here the model retries the same
-    destination with fragments and it parks again instead of running."""
+    the user REJECTED a call to is refused for the rest of the turn — here the
+    model retries the same destination with fragments and it neither runs nor
+    asks the user a second time."""
     from langchain_core.messages import AIMessage
 
     from app.models.chat import ApprovalDecision, CompletedTool
@@ -475,7 +476,7 @@ async def test_taint_and_rejections_are_rebuilt_on_an_approval_resume(monkeypatc
     )
     assert stub.calls == [], "the fragment retry ran after a rejection"
     parked = [c for c in convex.calls if c.get("op") == "approval"]
-    assert parked and "google-drive" in parked[0]["reason"]
+    assert parked == [], "the user was asked again after saying no"
 
 
 def _stub_mcp_for_turn(registry, stub, tools):
@@ -498,3 +499,37 @@ def _stub_mcp_for_turn(registry, stub, tools):
         yield caps
 
     return fake
+
+
+async def test_a_destination_the_user_rejected_is_refused_not_asked_again():
+    """After an explicit Reject (the resume flags the destination), a new call
+    there is refused outright — no second card — even with clean arguments,
+    and never reaches the connector. Another destination is unaffected."""
+    from app.agent.policy import WRITE_SCOPE
+    from app.agent.taint import REJECTED_EARLIER
+
+    notion, drive = _mcp("notion", "search"), _mcp("drive", "search")
+    stub = _McpStub({notion.tool_id: {"text": "n"}, drive.tool_id: {"text": "d"}})
+    ctx, convex, client = _ctx(lambda r: httpx.Response(200, json={}), [notion, drive])
+    ctx.scope = WRITE_SCOPE
+    for t in (notion, drive):
+        ctx.adapters[t.provider] = stub
+    ctx.taint.flag("mcp:notion", {REJECTED_EARLIER})
+    try:
+        refused = await execute_tool_calls(
+            [_tc(notion.tool_id, {"q": "anything"}, "c1")], ctx
+        )
+        body = json.loads(refused[0].content)
+        assert body["status"] == "rejected"
+        assert "Do not retry" in body["reason"]
+        assert ctx.writer.suspended is False  # no card, no park
+        assert not [c for c in convex.calls if c.get("op") == "approval"]
+        assert stub.calls == []  # never sent
+
+        ok = await execute_tool_calls(
+            [_tc(drive.tool_id, {"q": "anything"}, "c2")], ctx
+        )
+        assert "rejected" not in ok[0].content
+        assert stub.calls and stub.calls[0][0] == drive.tool_id  # control runs
+    finally:
+        await client.aclose()

@@ -278,7 +278,21 @@ _DEFAULT_AS_BYTES = 2_500_000_000
 _DEFAULT_FSIZE_BYTES = 67_108_864
 _SCANNER_LIMITS: dict[str, dict] = {
     "opengrep": {"fsize_bytes": 402_653_184},
-    "gitleaks": {"as_bytes": 0, "env": {"GOMEMLIMIT": "1GiB", "GOMAXPROCS": "2"}},
+    "gitleaks": {
+        "as_bytes": 0,
+        "env": {
+            "GOMEMLIMIT": "1GiB",
+            "GOMAXPROCS": "2",
+            # gitleaks shells out to git. Under `unshare -r` run by a non-root
+            # service user (audit D-02), a root-owned repository reads as owned
+            # by `nobody`, and git refuses it as "dubious ownership" — the same
+            # reason local.py passes `-c safe.directory=*`. The repo is already
+            # allowlisted and read-only to the scanner.
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": "*",
+        },
+    },
 }
 # One scanner run at a time across the plane: the service shares one cgroup.
 _SCANNER_LOCK = asyncio.Semaphore(1)

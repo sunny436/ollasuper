@@ -743,6 +743,19 @@ def _not_approved(call_id: str, decision: str) -> ToolMessage:
     )
 
 
+def _declined_destination(ctx: ToolExecContext, tool: ToolDefinition) -> bool:
+    """The user explicitly REJECTED a call to this destination earlier in the
+    turn (the resume flags it `REJECTED_EARLIER`).
+
+    Such a call is refused, not asked about again. Re-asking after a "no" is
+    how a reworded retry reached the user a second time on production — and a
+    user asked the same question until they relent is consent fatigue, not
+    consent. Explicit rejection only: an expired request never flags this.
+    """
+    dest = _source_of(tool)
+    return bool(dest) and REJECTED_EARLIER in ctx.taint.flagged_sources(dest)
+
+
 def _fresh_approval_id(tc: dict, ctx: ToolExecContext) -> str | None:
     """PURE (no I/O): return the stable approval_id iff this tool_call needs a
     FRESH approval — a registry tool that `check_tool_policy`/force gates AND for
@@ -776,6 +789,8 @@ def _fresh_approval_id(tc: dict, ctx: ToolExecContext) -> str | None:
         return None  # already approved — runs normally (approvedPending/_run_one)
     if d and d.get("decision") in ("rejected", "expired"):
         return None  # already resolved — _run_one injects the rejection
+    if _declined_destination(ctx, tool):
+        return None  # never parked — _run_one refuses it (declined earlier)
     return approval_id
 
 
@@ -1219,6 +1234,23 @@ async def _run_one(
                 result={"status": d["decision"]},
             )
             return _not_approved(call_id, d["decision"])
+        elif _declined_destination(ctx, tool):
+            # A new call to a destination the user already said no to this
+            # turn: refused without asking again (see _declined_destination).
+            _advance(execution, ExecutionState.FAILED)
+            await _emit(
+                ctx,
+                execution,
+                EventType.TOOL_RESULT,
+                call_id=call_id,
+                status="error",
+                result={"status": "rejected"},
+            )
+            log.info(
+                "agent.declined_destination_refused",
+                extra={"tool_id": tool_id, "execution_id": execution.execution_id},
+            )
+            return _not_approved(call_id, "rejected")
         elif ctx.unattended:
             # UNATTENDED: refuse rather than park. Same shape as the `denied`
             # branch below — the execution is advanced to a real terminal state
