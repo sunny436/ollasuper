@@ -2,6 +2,64 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Closing the remaining opens (2026-09-26 evening) - LIVE 2768dab, prod-verified; D-04 awaits two operator values
+
+- **Dependency advisories:** `bun audit` went from 58 advisories over 29 packages to 1. The changes:
+  - react-form 1.x (zod schemas validated as Standard Schema; the adapter is gone), turbo 2.11.4,
+    vitest 4, webpack 5.111, tailwind 3.4.19, and overrides for the rest;
+  - lock drift was measured at every step;
+  - webpack-sources is pinned to 3.5.3, because the 3.6.0 tarball returns 404.
+
+  The one advisory left is `convex/esbuild@0.23.0`:
+  - convex 1.19.2 pins it exactly, and convex itself is pinned to the backend;
+  - the advisory covers esbuild's dev server, and the CLI only ever calls `esbuild.build`;
+  - it is reviewed in `security/advisory-backlog.json`.
+
+  The upgraded login form was checked on prod: the zod error renders and clears, with 0 console errors.
+- **MCP catalogue search** (the red CI test): the english text-search parser reads
+  `io.github.x/notion-mcp` as ONE path token. This was true for all 31.5k production rows. The fix
+  adds an escaped `ILIKE` on `name`, costing about 45 ms. Checked red/green on a pg16/pgvector
+  database; CI is now fully green.
+- **Composer, first second after load:** `add()` returned early while the workspace was still null,
+  so the file was dropped with no chip, no toast and no mutation. Files picked then are now queued
+  and upload once the workspace resolves. `e2e/qa-attach-early.js` passed 5/5 fresh loads, each
+  attaching the moment the input existed; `qa-security-remediation` attaches at 0 ms and passed 9/9.
+- **Automatic upload cleanup:** two daily crons now run:
+  - `sweepUnsentAttachments`: never-sent attachments older than 7 days;
+  - `sweepOrphanBlobs`: unreferenced bytes older than 24 h.
+
+  Each page commits on its own and schedules the next. A sweep stops rather than exceed 500
+  deletions. convex-test paginates by the last document's `_id`, so a test page boundary must not be
+  deleted; real cursors are index positions.
+
+  On prod: a census over 990 blobs found 103 stale unsent attachments and 0 orphan blobs. None of the
+  103 was referenced by a message, a share or another row, and the sweep removed exactly 103 blobs.
+  A fresh export then showed 887 blobs, 887 references and 0 dangling.
+- **Google sign-in:** `e2e/p-google-login.js` passes 13/13 up to consent. It checks:
+  - client_id, the login redirect_uri, scopes and response_type=code;
+  - PKCE S256 (Auth.js uses no `state`; RFC 9700 accepts PKCE instead);
+  - `__Host-` HttpOnly+Secure verifier cookies;
+  - that Google serves its sign-in page;
+  - that forged callbacks get a 302 to the app and no session.
+
+  Only a real Google login still needs a person.
+- **D-04:** `deploy/80-backup-offhost.sh --setup` ran on prod. It created the dedicated key
+  `/etc/myos/backup_ed25519` and a `backup.env` template; the nightly job is unchanged until both
+  values are set.
+
+  `--verify` was proven end to end with a throwaway key and a throwaway local destination, all
+  removed afterwards:
+  1. real backup;
+  2. 4 gpg copies sent;
+  3. pulled back byte-identical, encrypted to that key alone;
+  4. the key holder decrypted them, all 3 artifacts matched the manifest, the zip tested OK and the
+     dump listed its tables;
+  5. a flipped byte was detected.
+
+  **Operator action:** save the PUBLIC gpg key as `/etc/myos/backup-recipient.asc`, and authorize
+  `/etc/myos/backup_ed25519.pub` on an SSH destination. Set `BACKUP_OFFHOST_TARGET`, uncomment both
+  lines, then run `bash /opt/myos/deploy/80-backup-offhost.sh --verify` plus the printed decrypt check.
+
 ## Security audit remediation — SECURITY-AUDIT-FINAL.md F-01…F-14, D-01…D-06 (2026-09-26) - LIVE a093163 + 5bbefe8, completed 193abb4
 
 **Completion pass (2026-09-26 PM, fa3c2a9…193abb4, all LIVE).** A re-audit against each item's own
