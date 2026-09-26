@@ -561,7 +561,11 @@ async def test_a_rejected_web_destination_is_refused_on_the_resume(monkeypatch):
         name="Search Endpoint",
         description="Search the web for a query",
     )
-    retry = {"name": "search_endpoint_v1_search_post", "args": {"q": "7781"}, "id": "c9"}
+    retry = {
+        "name": "search_endpoint_v1_search_post",
+        "args": {"q": "7781"},
+        "id": "c9",
+    }
     monkeypatch.setattr(
         "app.runtime.runner.build_llm",
         lambda *a, **k: FakeLLM(
@@ -597,7 +601,9 @@ async def test_a_rejected_web_destination_is_refused_on_the_resume(monkeypatch):
             McpConnectionRef(connectionId="c-gmail", serverName="s", slug="gmail"),
         ],
         completedTools=[
-            CompletedTool(toolId=gmail.tool_id, args={"q": "latest"}, resultContent=framed)
+            CompletedTool(
+                toolId=gmail.tool_id, args={"q": "latest"}, resultContent=framed
+            )
         ],
         approvals=[
             ApprovalDecision(
