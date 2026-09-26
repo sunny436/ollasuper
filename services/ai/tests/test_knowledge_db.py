@@ -42,6 +42,8 @@ async def engine():
     finally:
         async with eng.begin() as conn:
             await conn.execute(text("DELETE FROM files"))  # cascade clears the rest
+            # F-13 tombstones would refuse a re-seeded id on the next run.
+            await conn.execute(text("DELETE FROM ingest_tombstones"))
         await eng.dispose()
 
 
@@ -125,3 +127,54 @@ async def test_reingest_is_idempotent(engine):
     mine = [r for r in rows if r["file_id"] == "fileD"]
     assert len(mine) == 1  # delete-then-reinsert, not duplicated
     assert "v2" in mine[0]["content"]
+
+
+# ------------------------------------------------ deletion is final (F-13)
+async def test_a_deleted_file_cannot_be_persisted_again(engine):
+    """Delete before persistence (the audit's interleaving): the DELETE finds
+    nothing yet, and the ingestion that resumes afterwards is refused by the
+    durable tombstone — nothing is written, nothing is retrievable."""
+    assert await store.delete_by_id(engine, file_id="fileT") is False
+    with pytest.raises(store.IngestDeleted):
+        await _seed(engine, "fileT", "userT", 0, "resurrected")
+    rows = await store.retrieve(
+        engine,
+        user_id="userT",
+        query_embedding=_vec(0),
+        fetch_k=10,
+        embedding_dimensions=DIM,
+    )
+    assert rows == []
+
+
+async def test_concurrent_persist_and_delete_never_leave_the_file_behind(engine):
+    """Real transactions racing on the same id, many times over: whichever
+    takes the per-file lock first, the file is gone once both finish."""
+    import asyncio
+
+    ids = [f"race{i}" for i in range(20)]
+
+    async def persist(fid: str) -> None:
+        try:
+            await _seed(engine, fid, "userR", 0, f"content {fid}")
+        except store.IngestDeleted:
+            pass
+
+    racers = []
+    for fid in ids:
+        racers += [persist(fid), store.delete_by_id(engine, file_id=fid)]
+    await asyncio.gather(*racers)
+    async with engine.begin() as conn:
+        left = (
+            await conn.execute(
+                text("SELECT count(*) FROM files WHERE id = ANY(:ids)"), {"ids": ids}
+            )
+        ).scalar_one()
+        chunks = (
+            await conn.execute(
+                text("SELECT count(*) FROM file_chunks WHERE file_id = ANY(:ids)"),
+                {"ids": ids},
+            )
+        ).scalar_one()
+    assert left == 0
+    assert chunks == 0

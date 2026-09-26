@@ -157,15 +157,23 @@ async def _document_text(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
     xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    if mime in (docx_mime, xlsx_mime):
-        from app.ingest.guards import guard_ooxml
-        from app.ingest.parsers import parse_docx, parse_xlsx
+    if mime == xlsx_mime:
+        # The shared, metered, sandboxed workbook path (audit F-04).
+        from app.ingest.xlsx_guard import parse_xlsx_guarded
 
-        parser = parse_docx if mime == docx_mime else parse_xlsx
+        try:
+            docs = await parse_xlsx_guarded(raw, name=att.name, settings=settings)
+        except Exception as e:  # noqa: BLE001 - untrusted file; surface a safe error
+            raise AttachmentError(f"could not read {att.name}") from e
+        return "\n\n".join(d.text for d in docs if d.text.strip())[:MAX_PDF_CHARS]
+    if mime == docx_mime:
+        from app.ingest.guards import guard_ooxml
+        from app.ingest.parsers import parse_docx
+
         try:
             guard_ooxml(raw, settings)  # zip-bomb guard on the untrusted archive
             docs = await asyncio.wait_for(
-                asyncio.to_thread(parser, raw, name=att.name),
+                asyncio.to_thread(parse_docx, raw, name=att.name),
                 timeout=settings.ai_ingest_parse_timeout_s,
             )
         except Exception as e:  # noqa: BLE001 - untrusted file; surface a safe error
@@ -175,6 +183,35 @@ async def _document_text(
         return raw.decode("utf-8", errors="replace")[:MAX_PDF_CHARS]
     except Exception as e:  # noqa: BLE001
         raise AttachmentError(f"could not read {att.name}") from e
+
+
+async def _guarded_preview(raw: bytes, att: Attachment, settings: Settings) -> str:
+    """The data-analysis preview, behind the SAME workbook guard ingestion uses
+    (audit F-04). It used to hand XLSX bytes straight to pandas, on the event
+    loop, with no compression-ratio check and no work ceiling."""
+    if _is_xlsx_name(att.name, att.contentType):
+        from app.ingest.xlsx_guard import XlsxRejected, check_xlsx_budget
+
+        try:
+            await check_xlsx_budget(raw, settings=settings)
+        except XlsxRejected as e:
+            return (
+                f'<dataset name="{_safe_name(att.name)}">\n'
+                f"(preview unavailable: {e}).\n</dataset>"
+            )
+    return await asyncio.to_thread(
+        render_preview,
+        raw,
+        att.name,
+        att.contentType,
+        rows=settings.ai_data_preview_rows,
+    )
+
+
+def _is_xlsx_name(name: str, mime: str) -> bool:
+    return mime.split(";")[0].strip().lower() == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ) or name.lower().endswith(".xlsx")
 
 
 async def build_user_content(
@@ -226,12 +263,7 @@ async def build_user_content(
         try:
             if data_enabled and is_tabular(att.name, att.contentType):
                 raw = await _fetch(att, convex, settings, stream_id)
-                text = render_preview(
-                    raw,
-                    att.name,
-                    att.contentType,
-                    rows=settings.ai_data_preview_rows,
-                )
+                text = await _guarded_preview(raw, att, settings)
             else:
                 text = await _document_text(att, convex, settings, stream_id)
         except (ConvexUnavailable, ConvexRejected) as e:

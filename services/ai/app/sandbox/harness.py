@@ -36,6 +36,7 @@ import signal
 import struct
 import subprocess  # noqa: S404 — fixed argv, no shell
 import sys
+import threading
 from collections.abc import Awaitable, Callable
 
 from app.logging import get_logger
@@ -156,8 +157,40 @@ def _argv(op: str, params: dict) -> list[str]:
     return [*ushare, *limit, *inner]
 
 
+class _ChildHandle:
+    """Lets the awaiting coroutine kill a child the worker THREAD started.
+
+    `asyncio.to_thread` cannot be interrupted: cancelling the awaiting task used
+    to leave the child running (up to its full timeout) while the caller's
+    concurrency slot was already released — work outliving the budget that was
+    meant to bound it (audit F-04). The kill may arrive before the child exists,
+    so it is remembered and applied the moment it is attached.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+        self._killed = False
+
+    def attach(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            self._proc = proc
+            if self._killed:
+                _kill_group(proc)
+
+    def kill(self) -> None:
+        with self._lock:
+            self._killed = True
+            if self._proc is not None:
+                _kill_group(self._proc)
+
+
 def _run_child(
-    op: str, payload: bytes, params: dict, timeout_s: float
+    op: str,
+    payload: bytes,
+    params: dict,
+    timeout_s: float,
+    handle: _ChildHandle | None = None,
 ) -> tuple[dict, bytes]:
     proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell, cwd is our own pkg root
         _argv(op, params),
@@ -168,6 +201,8 @@ def _run_child(
         cwd=os.getcwd(),
         start_new_session=True,  # own process group, so a timeout reaps forks too
     )
+    if handle is not None:
+        handle.attach(proc)
     try:
         out, _ = proc.communicate(input=payload, timeout=timeout_s)
     except subprocess.TimeoutExpired:
@@ -211,8 +246,22 @@ async def run_sandboxed(
     """
     if _TIER == 4:
         return await fallback()
+    handle = _ChildHandle()
+    work = asyncio.ensure_future(
+        asyncio.to_thread(_run_child, op, payload, params, timeout_s, handle)
+    )
     try:
-        return await asyncio.to_thread(_run_child, op, payload, params, timeout_s)
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        # The caller gave up (turn stopped, file deleted). Kill the child NOW
+        # and wait for the thread to reap it, so whatever slot the caller holds
+        # is released only after the process is actually gone (audit F-04).
+        handle.kill()
+        try:
+            await work
+        except BaseException:  # noqa: BLE001,S110 — the kill is the expected outcome
+            pass
+        raise
     except (TimeoutError, RuntimeError):
         raise
     except Exception as e:  # noqa: BLE001 — transport (spawn) failure, not a decode

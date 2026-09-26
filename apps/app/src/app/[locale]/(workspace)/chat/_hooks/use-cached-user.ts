@@ -1,6 +1,11 @@
 "use client";
 
-import { CACHE_KEYS } from "@/lib/display-cache";
+import {
+  CACHE_KEYS,
+  readOwnedCache,
+  writeOwnedCache,
+} from "@/lib/display-cache";
+import { useCacheOwner } from "@/lib/use-cache-owner";
 import { api } from "@v1/backend/convex/_generated/api";
 import { useQuery } from "convex/react";
 import { useEffect, useState } from "react";
@@ -35,31 +40,38 @@ type CachedUser = {
  */
 export function useCachedUser(): CachedUser | null | undefined {
   const live = useQuery(api.users.getUser);
+  const owner = useCacheOwner();
   const [cached, setCached] = useState<CachedUser | null>(null);
 
-  // Hydrate from cache once, post-mount.
+  // Hydrate from cache post-mount — and again whenever the verified owner
+  // changes, so mounted state never outlives the account it was read for.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const raw = window.localStorage.getItem(KEY);
-      if (raw) setCached(JSON.parse(raw) as CachedUser);
-    } catch {}
-  }, []);
+    setCached(readOwnedCache<CachedUser>(KEY, owner));
+  }, [owner]);
 
-  // Refresh the cache whenever the live value resolves.
+  // Refresh the cache whenever the live value resolves; a live NULL means the
+  // server does not recognise this session, so nothing may stay behind.
   useEffect(() => {
-    if (!live || typeof window === "undefined") return;
-    try {
-      const slice: CachedUser = {
-        name: live.name ?? undefined,
-        displayName: live.displayName ?? undefined,
-        email: live.email ?? undefined,
-        avatarUrl: live.avatarUrl ?? undefined,
-      };
-      window.localStorage.setItem(KEY, JSON.stringify(slice));
-    } catch {}
-  }, [live]);
+    if (live === null) {
+      setCached(null);
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.removeItem(KEY);
+        } catch {}
+      }
+      return;
+    }
+    if (!live) return;
+    writeOwnedCache<CachedUser>(KEY, owner, {
+      name: live.name ?? undefined,
+      displayName: live.displayName ?? undefined,
+      email: live.email ?? undefined,
+      avatarUrl: live.avatarUrl ?? undefined,
+    });
+  }, [live, owner]);
 
-  // Live wins the instant it lands; until then, the cached copy.
-  return live ?? cached;
+  // Live wins the instant it lands — INCLUDING null (signed out: show nothing,
+  // never the previous account). Until then, this owner's cached copy only.
+  if (live !== undefined) return live;
+  return owner ? cached : null;
 }

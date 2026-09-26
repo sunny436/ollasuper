@@ -26,6 +26,12 @@ import { internalAction, internalMutation, internalQuery } from "./_generated/se
  *
  * SVG is on the list deliberately — it is an image everywhere else in this
  * codebase, but a navigated SVG executes its own <script>.
+ *
+ * So are the two plain XML types (audit F-02): an XML document carrying
+ * `<?xml-stylesheet type="text/xsl" href="...">` is transformed by the browser
+ * into HTML that runs script on the serving origin. The edge proxy now also
+ * forces raw storage responses to download/sandbox (edge/proxy.js) — this list
+ * is the registration-time half, not the only control.
  */
 const EXECUTABLE_TYPES = new Set([
   "text/html",
@@ -33,6 +39,8 @@ const EXECUTABLE_TYPES = new Set([
   "image/svg+xml",
   "application/xslt+xml",
   "text/xsl",
+  "application/xml",
+  "text/xml",
 ]);
 
 export function isExecutableContentType(ct: string | null | undefined): boolean {

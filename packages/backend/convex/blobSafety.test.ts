@@ -72,6 +72,9 @@ describe("stored blobs cannot be browser-executable", () => {
   test("an ordinary image still registers — the guard is not a blanket ban", async () => {
     const t = convexTest(schema, modules);
     const { user, ws } = await seed(t);
+    await t
+      .withIdentity(as(user))
+      .mutation(api.chat.attachments.generateUploadUrl, { workspaceId: ws });
     const storageId = await t.run(async (ctx) =>
       ctx.storage.store(new Blob(["\x89PNG\r\n"], { type: "image/png" })),
     );

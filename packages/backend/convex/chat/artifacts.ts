@@ -1,5 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { activeUserId } from "../accountState";
+import { deleteBlobIfUnreferenced } from "../blobOwnership";
+import { hasWorkspaceAccess } from "../orgs";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import {
@@ -119,6 +121,10 @@ export const mintDownload = mutation({
     const id = ctx.db.normalizeId("chatArtifacts", artifactId);
     const art = id ? await ctx.db.get(id) : null;
     if (!art || art.userId !== userId) throw new ConvexError("Not found");
+    // Current entitlement, like every other chat surface (audit F-08).
+    if (!(await hasWorkspaceAccess(ctx, userId, art.workspaceId))) {
+      throw new ConvexError("Not found");
+    }
     const token = crypto.randomUUID() + crypto.randomUUID().slice(0, 8);
     await ctx.db.patch(art._id, {
       downloadToken: token,
@@ -145,7 +151,12 @@ export const previewUrls = query({
     if (!userId) return { pages: [] as { page: number; url: string }[] };
     const id = ctx.db.normalizeId("chatArtifacts", artifactId);
     const parent = id ? await ctx.db.get(id) : null;
-    if (!parent || parent.userId !== userId) {
+    if (
+      !parent ||
+      parent.userId !== userId ||
+      // Current entitlement, like every other chat surface (audit F-08).
+      !(await hasWorkspaceAccess(ctx, userId, parent.workspaceId))
+    ) {
       return { pages: [] as { page: number; url: string }[] };
     }
     const children = await ctx.db
@@ -191,8 +202,8 @@ export async function deleteArtifactsForMessage(
     .withIndex("by_message", (q) => q.eq("messageId", messageId))
     .collect();
   for (const r of rows) {
-    await ctx.storage.delete(r.storageId).catch(() => {});
     await ctx.db.delete(r._id);
+    await deleteBlobIfUnreferenced(ctx, r.storageId).catch(() => {});
   }
 }
 
@@ -205,7 +216,7 @@ export async function deleteArtifactsForThread(
     .withIndex("by_thread", (q) => q.eq("threadId", threadId))
     .collect();
   for (const r of rows) {
-    await ctx.storage.delete(r.storageId).catch(() => {});
     await ctx.db.delete(r._id);
+    await deleteBlobIfUnreferenced(ctx, r.storageId).catch(() => {});
   }
 }

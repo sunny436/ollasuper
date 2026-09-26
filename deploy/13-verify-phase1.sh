@@ -22,7 +22,7 @@ curl -s http://127.0.0.1:4000/whoami -H "authorization: Bearer $TOK"; echo
 
 echo
 echo "=== WEBHOOK PATH: echo backend -> Convex -> events table ==="
-curl -s -X POST http://127.0.0.1:4000/emit-webhook -H "content-type: application/json" -d "{\"note\":\"hello from echo\"}"; echo
+# (removed: /emit-webhook no longer exists — audit F-10)
 sleep 1
 echo "-> events table:"
 "$NODE" "$CVX" data events 2>&1 | tail -6

@@ -799,6 +799,11 @@ class Settings(BaseSettings):
     ai_zip_max_entries: int = 2_000
     ai_zip_max_uncompressed_bytes: int = 200 * 1024 * 1024
     ai_zip_max_ratio: int = 120
+    # Workbook WORK ceiling (audit F-04): logical cells/rows a spreadsheet may
+    # make the decoder iterate, enforced as it runs in the sandbox child. Size
+    # on disk bounds nothing — a 4.8 KB sheet can describe 12.8M cells.
+    ai_xlsx_max_cells: int = 5_000_000
+    ai_xlsx_max_rows: int = 1_048_576
 
     # --- retrieval (RAG at chat time) -------------------------------------
     # Fetch a wider candidate set, filter by a cosine-distance floor, keep top_k.

@@ -50,6 +50,23 @@ def main() -> int:
             text = ops.extract_pdf_text(payload)
             _emit({"ok": True}, text.encode("utf-8"))
             return 0
+        if op == "xlsx_docs":
+            docs = ops.xlsx_docs(
+                payload,
+                name=str(params.get("name", "")),
+                max_cells=int(params["max_cells"]),
+                max_rows=int(params["max_rows"]),
+            )
+            _emit({"ok": True}, json.dumps(docs).encode("utf-8"))
+            return 0
+        if op == "xlsx_scan":
+            stats = ops.xlsx_scan(
+                payload,
+                max_cells=int(params["max_cells"]),
+                max_rows=int(params["max_rows"]),
+            )
+            _emit({"ok": True, **stats})
+            return 0
         if op == "secret_sweep":
             # Security audit: rule-based secret scan over a repository's tracked
             # files. Runs HERE so a 16MB regex pass never holds the plane's GIL.

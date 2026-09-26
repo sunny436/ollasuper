@@ -1,13 +1,6 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
-import type { Id } from "./_generated/dataModel";
-import { internal } from "./_generated/api";
+import { activeUserId } from "./accountState";
 import { v } from "convex/values";
-import {
-  action,
-  internalAction,
-  internalMutation,
-  query,
-} from "./_generated/server";
+import { internalAction, internalMutation, query } from "./_generated/server";
 import { requireMember } from "./orgs";
 
 /**
@@ -48,28 +41,12 @@ async function doCall(
   return { status: res.status, ok: res.ok, body: safeJson(text) };
 }
 
-export const callBackend = action({
-  args: {
-    path: v.string(),
-    method: v.optional(v.string()),
-    body: v.optional(v.any()),
-  },
-  // Annotated to break the circular inference Convex hits when an action
-  // runQuery's through `internal` (TS7022/7023) — the same fix blobSafety.ts and
-  // dispatchPayload needed. Without it `callBackend` degrades to `any` and the
-  // failure cascades into unrelated files' type errors.
-  handler: async (
-    ctx,
-    args,
-  ): Promise<{ status: number; ok: boolean; body: unknown }> => {
-    const userId: Id<"users"> | null = await ctx.runQuery(
-      internal.accountState.activeCallerId,
-      {},
-    );
-    if (!userId) throw new Error("Not authenticated");
-    return doCall(userId, args.path, args.method ?? "POST", args.body);
-  },
-});
+// There is deliberately NO public `callBackend` action any more (audit F-10).
+// It forwarded an arbitrary caller-chosen path, method and body to the legacy
+// backend under the service key, which let any signed-in user drive every
+// operation that backend exposes — including its webhook relay back into
+// Convex. Nothing in the app called it. Operator scripts use the internal
+// variant below, which only other server code can reach.
 
 export const callBackendInternal = internalAction({
   args: {
@@ -105,7 +82,7 @@ export const ingestEvent = internalMutation({
 export const listEvents = query({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, { workspaceId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return [];
     await requireMember(ctx, userId, workspaceId);
     return ctx.db

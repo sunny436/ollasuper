@@ -5,6 +5,7 @@ import {
   nextjsMiddlewareRedirect,
 } from "@convex-dev/auth/nextjs/server";
 import { fetchQuery } from "convex/nextjs";
+import { shouldHandleAuthCode } from "./lib/auth-code";
 import { createI18nMiddleware } from "next-international/middleware";
 
 const I18nMiddleware = createI18nMiddleware({
@@ -268,10 +269,18 @@ const authMiddleware = convexAuthNextjsMiddleware(
 
     return I18nMiddleware(request);
   },
-  // Routes the /api/auth sign-in/sign-out proxy through the internal URL too.
-  // (Token refresh and OAuth code-exchange ignore this option and stay on the
-  // public URL — the library passes no `url` for those.)
-  { convexUrl: SERVER_CONVEX_URL },
+  {
+    // Routes the /api/auth sign-in/sign-out proxy through the internal URL too.
+    // (Token refresh and OAuth code-exchange ignore this option and stay on the
+    // public URL — the library passes no `url` for those.)
+    convexUrl: SERVER_CONVEX_URL,
+    // Exchange a `?code=` ONLY for a sign-in this browser actually started
+    // (audit F-14). By default the library treats ANY HTML GET carrying a
+    // `code` parameter as an OAuth return, and when the exchange fails it
+    // CLEARS the auth cookies — so a signed-in user who followed an unsolicited
+    // link like /chat?code=x was logged out. See shouldHandleAuthCode.
+    shouldHandleCode: shouldHandleAuthCode,
+  },
 );
 
 /**
@@ -299,7 +308,11 @@ export default async function middleware(
 
 export const config = {
   matcher: [
-    "/((?!_next/static|api|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // Excludes the REAL static files by name, never by suffix (audit F-09):
+    // an image-extension rule also matched dynamic pages whose last segment
+    // merely ends that way, so /en/chat/<threadId>.png skipped the auth gate.
+    // The only extension-bearing static file this app serves is app/icon.svg.
+    "/((?!_next/static|api|_next/image|favicon.ico|icon\\.svg$).*)",
 
     // all routes except static assets
     "/((?!.*\\..*|_next).*)",

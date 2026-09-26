@@ -18,6 +18,10 @@ const EXECUTABLE = new Set([
   "image/svg+xml",
   "application/xslt+xml",
   "text/xsl",
+  // An XML document with an <?xml-stylesheet?> is turned into script-running
+  // HTML by the browser (audit F-02). Must match convex/blobSafety.ts.
+  "application/xml",
+  "text/xml",
 ]);
 
 /** What to send as the upload POST's Content-Type. */

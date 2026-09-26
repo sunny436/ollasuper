@@ -380,6 +380,23 @@ describe("search does not leak across users", () => {
   });
 });
 
+/**
+ * Upload the way the client does (audit F-01): the uploader asks for an upload
+ * URL FIRST — which records their upload intent — and only then stores bytes.
+ * A blob stored without that step belongs to nobody and cannot be registered.
+ */
+async function uploadAs(
+  t: ReturnType<typeof convexTest>,
+  userId: Id<"users">,
+  ws: Id<"workspaces">,
+  blob: Blob,
+): Promise<Id<"_storage">> {
+  await t
+    .withIdentity(as(userId))
+    .mutation(api.chat.attachments.generateUploadUrl, { workspaceId: ws });
+  return await t.run(async (ctx) => ctx.storage.store(blob));
+}
+
 // ---------------------------------------------------------------------------
 describe("attachments", () => {
   async function seedAttachment(
@@ -387,8 +404,11 @@ describe("attachments", () => {
     userId: Id<"users">,
     ws: Id<"workspaces">,
   ) {
-    const storageId = await t.run(async (ctx) =>
-      ctx.storage.store(new Blob(["hello"], { type: "text/plain" })),
+    const storageId = await uploadAs(
+      t,
+      userId,
+      ws,
+      new Blob(["hello"], { type: "text/plain" }),
     );
     const attachmentId = await t
       .withIdentity(as(userId))
@@ -427,7 +447,7 @@ describe("attachments", () => {
         size: 5,
         contentType: "text/plain",
       }),
-    ).rejects.toThrow(/Already registered/);
+    ).rejects.toThrow(/Not found/);
   });
 
   test("storageId is never exposed to the client", async () => {
@@ -451,8 +471,11 @@ describe("attachments", () => {
     const { owner, ws } = await seedWorkspace(t);
     const u = t.withIdentity(as(owner));
 
-    const storageId = await t.run(async (ctx) =>
-      ctx.storage.store(new Blob(["hello"], { type: "text/plain" })),
+    const storageId = await uploadAs(
+      t,
+      owner,
+      ws,
+      new Blob(["hello"], { type: "text/plain" }),
     );
     const threadId = await u.mutation(api.chat.threads.create, {
       workspaceId: ws,
@@ -511,8 +534,11 @@ describe("attachments", () => {
     const t = convexTest(schema, modules);
     const { owner, ws } = await seedWorkspace(t);
     const body = "x".repeat(4096);
-    const storageId = await t.run(async (ctx) =>
-      ctx.storage.store(new Blob([body], { type: "text/plain" })),
+    const storageId = await uploadAs(
+      t,
+      owner,
+      ws,
+      new Blob([body], { type: "text/plain" }),
     );
     const attachmentId = await t
       .withIdentity(as(owner))
@@ -582,8 +608,11 @@ describe("/ai/file is capability-scoped, not just secret-gated", () => {
     const { owner, ws } = await seedWorkspace(t);
     const u = t.withIdentity(as(owner));
 
-    const storageId = await t.run(async (ctx) =>
-      ctx.storage.store(new Blob(["payload"], { type: "text/plain" })),
+    const storageId = await uploadAs(
+      t,
+      owner,
+      ws,
+      new Blob(["payload"], { type: "text/plain" }),
     );
     const threadId = await u.mutation(api.chat.threads.create, {
       workspaceId: ws,
@@ -614,8 +643,11 @@ describe("/ai/file is capability-scoped, not just secret-gated", () => {
     const { owner, member, ws } = await seedWorkspace(t);
 
     // The owner's private attachment.
-    const storageId = await t.run(async (ctx) =>
-      ctx.storage.store(new Blob(["private"], { type: "text/plain" })),
+    const storageId = await uploadAs(
+      t,
+      owner,
+      ws,
+      new Blob(["private"], { type: "text/plain" }),
     );
     const ownerThread = await t
       .withIdentity(as(owner))

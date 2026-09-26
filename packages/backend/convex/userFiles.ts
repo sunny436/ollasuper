@@ -1,5 +1,6 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import { claimUploadedBlob, deleteBlobIfUnreferenced, issueUploadIntent } from "./blobOwnership";
 import { isExecutableContentType } from "./blobSafety";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -15,7 +16,7 @@ import { audit } from "./auditLog";
 import { unlinkFileEverywhere } from "./projects";
 import { getUserIdOrNull, requireUserId } from "./chat/authz";
 import { bump } from "./counters";
-import { requireMember } from "./orgs";
+import { hasWorkspaceAccess, requireMember } from "./orgs";
 
 /**
  * Per-user File Knowledge System — the Convex METADATA MIRROR + orchestration.
@@ -46,11 +47,56 @@ export async function userHasReadyFiles(
   return one !== null;
 }
 
+/** Ceiling on the per-dispatch scope scan; past it the scope fails closed. */
+const RAG_SCOPE_SCAN = 4096;
+
+/**
+ * The retrieval scope for an ORDINARY (non-Project) chat (audit F-08).
+ *
+ * The knowledge files API is workspace-gated: list/remove/retry all require
+ * CURRENT membership of the file's workspace. Retrieval used to search the
+ * user's whole corpus, so files from a workspace the user had been removed
+ * from stayed retrievable. Same policy now for both:
+ *
+ *   null   -> every ready file is in a workspace the user still belongs to;
+ *             search the whole corpus exactly as before (no payload change).
+ *   [ids]  -> something is out of scope; retrieve only the allowed files
+ *             (possibly none — an empty list retrieves NOTHING, see
+ *             store.retrieve's three states).
+ */
+export async function accountRagScope(
+  ctx: QueryCtx,
+  userId: Id<"users">,
+): Promise<string[] | null> {
+  const ready = await ctx.db
+    .query("userFiles")
+    .withIndex("by_user_status", (q) =>
+      q.eq("userId", userId).eq("status", "ready"),
+    )
+    .take(RAG_SCOPE_SCAN);
+  const entitled = new Map<string, boolean>();
+  const allowed: string[] = [];
+  let excluded = false;
+  for (const f of ready) {
+    let ok = entitled.get(f.workspaceId);
+    if (ok === undefined) {
+      ok = await hasWorkspaceAccess(ctx, userId, f.workspaceId);
+      entitled.set(f.workspaceId, ok);
+    }
+    if (ok) allowed.push(f.ingestId);
+    else excluded = true;
+  }
+  // Fail closed past the scan ceiling: an unscanned file cannot be vouched for.
+  if (!excluded && ready.length < RAG_SCOPE_SCAN) return null;
+  return allowed;
+}
+
 export const generateUploadUrl = mutation({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, { workspaceId }) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, workspaceId);
+    await issueUploadIntent(ctx, userId, workspaceId);
     return await ctx.storage.generateUploadUrl();
   },
 });
@@ -68,9 +114,17 @@ export const saveFile = mutation({
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, a.workspaceId);
 
+    // PROVENANCE FIRST (audit F-01). The duplicate path below deletes the
+    // supplied blob, so it may only ever run on a blob proven to be the
+    // caller's own fresh, unregistered upload. This used to delete first and
+    // ask questions never: any known storage id plus one of the caller's own
+    // hashes destroyed someone else's bytes.
+    const meta = await claimUploadedBlob(ctx, userId, a.storageId, a.workspaceId);
+
     // Dedup identical content for THIS user (per-user hash, never global — a
     // global hash would be a cross-user existence oracle). Drop the redundant
-    // just-uploaded staging blob so it doesn't orphan.
+    // just-uploaded staging blob — now proven to be the caller's — so it
+    // doesn't orphan.
     const dupe = await ctx.db
       .query("userFiles")
       .withIndex("by_user_hash", (q) =>
@@ -82,15 +136,6 @@ export const saveFile = mutation({
       return dupe._id;
     }
 
-    // Anti-claim-squat: a storageId may be registered exactly once.
-    const claimed = await ctx.db
-      .query("userFiles")
-      .withIndex("by_storage", (q) => q.eq("storageId", a.storageId))
-      .first();
-    if (claimed) throw new ConvexError("Not found");
-
-    // Re-measure the real blob server-side; the client size is untrusted.
-    const meta = await ctx.db.system.get(a.storageId);
     if (isExecutableContentType(meta?.contentType)) {
       throw new ConvexError(
         `Unsupported file type: ${meta?.contentType}. Upload it declared as text/plain instead.`,
@@ -171,13 +216,14 @@ export const remove = mutation({
     // Same "Not found" for missing and not-yours — no existence oracle.
     if (!file || file.userId !== userId) throw new ConvexError("Not found");
     await requireMember(ctx, userId, file.workspaceId);
-    if (file.storageId) await ctx.storage.delete(file.storageId);
     const ingestId = file.ingestId;
     // Drop every Project association first, so a deleted file can never leave a
     // dangling edge that a Project sources list or a retrieval scope would try
     // to resolve.
     await unlinkFileEverywhere(ctx, fileId);
     await ctx.db.delete(fileId);
+    // Row first, then bytes nothing else references (audit F-01).
+    if (file.storageId) await deleteBlobIfUnreferenced(ctx, file.storageId);
     await bump(ctx, file.workspaceId, "userFiles", -1);
     await audit(ctx, file.workspaceId, userId, "userfile.delete", {
       name: file.name,
@@ -198,6 +244,9 @@ export const retry = mutation({
     const userId = await requireUserId(ctx);
     const file = await ctx.db.get(fileId);
     if (!file || file.userId !== userId) throw new ConvexError("Not found");
+    // CURRENT entitlement, the same gate list/remove apply: a member removed
+    // from the workspace must not keep dispatching processing for it (F-08).
+    await requireMember(ctx, userId, file.workspaceId);
     if (file.status !== "failed") return { ok: false, reason: "not_failed" };
     if (!file.storageId) return { ok: false, reason: "needs_reupload" };
     await ctx.db.patch(fileId, {
@@ -323,8 +372,8 @@ export const setStatus = internalMutation({
     // Staging blob is transient: drop it only on durable success, then null the
     // reference so /ai/ingest-file can never re-scope to a freed blob.
     if (a.status === "ready" && file.storageId) {
-      await ctx.storage.delete(file.storageId);
       await ctx.db.patch(file._id, { storageId: undefined });
+      await deleteBlobIfUnreferenced(ctx, file.storageId);
     }
     return { ok: true };
   },
@@ -411,7 +460,7 @@ export const reapStalled = internalMutation({
           updatedAt: now,
           storageId: undefined,
         });
-        if (f.storageId) await ctx.storage.delete(f.storageId);
+        if (f.storageId) await deleteBlobIfUnreferenced(ctx, f.storageId);
       } else {
         await ctx.db.patch(f._id, { attempts: f.attempts + 1, updatedAt: now });
         await ctx.scheduler.runAfter(0, internal.userFiles.dispatch, {

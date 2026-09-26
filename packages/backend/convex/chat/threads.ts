@@ -9,6 +9,7 @@ import {
   query,
 } from "../_generated/server";
 import { audit } from "../auditLog";
+import { deleteBlobIfUnreferenced } from "../blobOwnership";
 import { bump } from "../counters";
 import { requireMember } from "../orgs";
 import { clampText } from "./settings";
@@ -561,8 +562,8 @@ export const purge = internalMutation({
       .withIndex("by_thread", (q) => q.eq("threadId", threadId))
       .take(PURGE_BATCH);
     for (const a of attachments) {
-      await ctx.storage.delete(a.storageId);
       await ctx.db.delete(a._id);
+      await deleteBlobIfUnreferenced(ctx, a.storageId);
     }
     if (attachments.length === PURGE_BATCH) {
       await ctx.scheduler.runAfter(0, internal.chat.threads.purge, {
@@ -578,8 +579,8 @@ export const purge = internalMutation({
       .withIndex("by_thread", (q) => q.eq("threadId", threadId))
       .take(PURGE_BATCH);
     for (const a of artifacts) {
-      await ctx.storage.delete(a.storageId).catch(() => {});
       await ctx.db.delete(a._id);
+      await deleteBlobIfUnreferenced(ctx, a.storageId).catch(() => {});
     }
     if (artifacts.length === PURGE_BATCH) {
       await ctx.scheduler.runAfter(0, internal.chat.threads.purge, {

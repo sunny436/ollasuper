@@ -140,7 +140,11 @@ export function useAttachments(threadId: string | null) {
           storageId: storageId as Id<"_storage">,
           name: file.name,
           size: file.size,
-          contentType: file.type || "application/octet-stream",
+          // The SAME neutralised type the blob was stored under. register()
+          // refuses an executable declared type, and browsers declare .xml as
+          // text/xml (audit F-02 made that executable) — the row still
+          // classifies as text by extension, and the bytes are unchanged.
+          contentType: storageContentType(file.type),
           ...(threadId ? { threadId: threadId as Id<"chatThreads"> } : {}),
         });
 
@@ -166,7 +170,9 @@ export function useAttachments(threadId: string | null) {
             const kUrl = await generateUploadUrl({ workspaceId: current });
             const kRes = await fetch(kUrl, {
               method: "POST",
-              headers: { "content-type": contentType },
+              // Stored under a type no browser executes, like the attachment
+              // above; the declared type still reaches the row below.
+              headers: { "content-type": storageContentType(contentType) },
               body: file,
             });
             const { storageId: kStorageId } = await kRes.json();

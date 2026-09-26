@@ -90,3 +90,104 @@ def extract_pdf_text(raw: bytes) -> str:
         return "\n".join(parts)[:MAX_PDF_CHARS]
     except Exception:  # noqa: BLE001 — a corrupt/locked PDF must not fail the turn
         return "[This PDF could not be read inline (it may be corrupt or protected).]"
+
+
+# --- spreadsheets (audit F-04) ----------------------------------------------
+#
+# A workbook's SIZE ON DISK says nothing about the work it asks for. A sheet
+# is iterated over its LOGICAL range: every missing row between two populated
+# ones is yielded, and every row is padded out to a column width. A 4.8 KB
+# workbook passed the zip guard while describing 12.8 million cells. So work is
+# metered as it happens — every yielded row and every padded cell counts —
+# and the decode stops at a hard ceiling instead of finishing a runaway.
+#
+# Iteration ignores the sheet's declared <dimension> (reset_dimensions): that
+# element is attacker-written, and a forged SMALL one would under-report the
+# real extent to a counter that trusted it. The declared size is still checked
+# up front, because it is the cheap way to refuse the obvious case.
+
+
+def _xlsx_rows_bounded(ws, meter: dict, max_cells: int, max_rows: int):
+    """Yield (index, values) for every row of `ws`, charging each to `meter`."""
+    declared_rows, declared_cols = ws.max_row, ws.max_column
+    if declared_rows and declared_cols and declared_rows * declared_cols > max_cells:
+        raise DecodeError(
+            "this spreadsheet is too large to process "
+            f"({declared_rows} rows x {declared_cols} columns)"
+        )
+    ws.reset_dimensions()
+    for index, row in enumerate(ws.iter_rows(values_only=True)):
+        meter["rows"] += 1
+        meter["cells"] += max(len(row), 1)
+        if meter["rows"] > max_rows or meter["cells"] > max_cells:
+            raise DecodeError(
+                "this spreadsheet is too large to process "
+                f"(more than {max_cells:,} cells or {max_rows:,} rows)"
+            )
+        yield index, row
+
+
+def xlsx_scan(raw: bytes, *, max_cells: int, max_rows: int) -> dict:
+    """Walk every sheet under the work ceiling WITHOUT keeping anything. The
+    preview / data-analysis path runs this before pandas parses the same bytes,
+    so pandas never meets a workbook whose logical size was not bounded here."""
+    from openpyxl import load_workbook
+
+    meter = {"rows": 0, "cells": 0}
+    try:
+        wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    except Exception as e:  # noqa: BLE001 — a broken archive is a decode error
+        raise DecodeError("this spreadsheet could not be opened") from e
+    try:
+        for ws in wb.worksheets:
+            for _ in _xlsx_rows_bounded(ws, meter, max_cells, max_rows):
+                pass
+    finally:
+        wb.close()
+    return {"rows": meter["rows"], "cells": meter["cells"]}
+
+
+def xlsx_docs(
+    raw: bytes, *, name: str, max_cells: int, max_rows: int
+) -> list[dict]:
+    """The ingestion text of a workbook, one doc per non-empty sheet, under the
+    same work ceiling. Output is identical to the former in-process parser:
+    `row N: header=value, ...` lines (header-less when row 1 is blank)."""
+    from openpyxl import load_workbook
+
+    meter = {"rows": 0, "cells": 0}
+    try:
+        wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    except Exception as e:  # noqa: BLE001
+        raise DecodeError("this spreadsheet could not be opened") from e
+    docs: list[dict] = []
+    try:
+        for ws in wb.worksheets:
+            header: list[str] | None = None
+            lines: list[str] = []
+            for ri, row in _xlsx_rows_bounded(ws, meter, max_cells, max_rows):
+                if ri == 0:
+                    header = [str(c) if c is not None else "" for c in row]
+                    continue
+                if all(c is None for c in row):
+                    continue
+                if header:
+                    pairs = [
+                        (f"{h}={c}" if h else str(c))
+                        for h, c in zip(header, row, strict=False)
+                        if c is not None and str(c) != ""
+                    ]
+                else:
+                    pairs = [str(c) for c in row if c is not None]
+                lines.append(f"row {ri + 1}: " + ", ".join(pairs))
+            if lines:
+                docs.append(
+                    {
+                        "text": "\n".join(lines),
+                        "section": ws.title,
+                        "metadata": {"source": name, "sheet": ws.title},
+                    }
+                )
+    finally:
+        wb.close()
+    return docs

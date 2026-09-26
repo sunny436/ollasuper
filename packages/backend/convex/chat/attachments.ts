@@ -1,4 +1,9 @@
 import { ConvexError, v } from "convex/values";
+import {
+  claimUploadedBlob,
+  deleteBlobIfUnreferenced,
+  issueUploadIntent,
+} from "../blobOwnership";
 import { isExecutableContentType } from "../blobSafety";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
@@ -145,6 +150,7 @@ export const generateUploadUrl = mutation({
   handler: async (ctx, { workspaceId }) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, workspaceId);
+    await issueUploadIntent(ctx, userId, workspaceId);
     return await ctx.storage.generateUploadUrl();
   },
 });
@@ -212,13 +218,12 @@ export const register = mutation({
     }
     const kind = classify(args.contentType, args.name);
 
-    const clash = await ctx.db
-      .query("chatAttachments")
-      .withIndex("by_storage", (q) => q.eq("storageId", args.storageId))
-      .first();
-    if (clash) throw new ConvexError("Already registered");
-
     if (args.threadId) await requireThreadAccess(ctx, userId, args.threadId);
+
+    // Provenance (audit F-01): the caller must have uploaded this blob, and no
+    // row in ANY table may already reference it. Supersedes the per-table
+    // by_storage check, which let a blob registered elsewhere be claimed here.
+    await claimUploadedBlob(ctx, userId, args.storageId, args.workspaceId);
 
     return await ctx.db.insert("chatAttachments", {
       workspaceId: args.workspaceId,
@@ -269,8 +274,9 @@ export const remove = mutation({
     // Refuse to unpick an attachment already bound to a sent message —
     // otherwise the transcript would render a broken reference.
     if (a.messageId) throw new ConvexError("Attachment is already sent");
-    await ctx.storage.delete(a.storageId);
     await ctx.db.delete(attachmentId);
+    // Row first, then bytes nothing else references (audit F-01).
+    await deleteBlobIfUnreferenced(ctx, a.storageId);
   },
 });
 

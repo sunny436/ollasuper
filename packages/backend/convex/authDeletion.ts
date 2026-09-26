@@ -35,6 +35,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx } from "./_generated/server";
+import { blobReferenced } from "./blobOwnership";
 
 // Bounded so one pass never approaches a mutation's operation limit; the cascade
 // reschedules until done, so a small batch only means more passes, never missed
@@ -43,6 +44,10 @@ const THREADS_PER_PASS = 15;
 const ROWS_PER_SUBQUERY = 200;
 
 async function deleteBlob(ctx: MutationCtx, storageId: Id<"_storage">) {
+  // Called AFTER the owning row is gone. Bytes another row still references
+  // (a pre-existing alias) are left alone — deletion must never reach through
+  // one owner's row into another's file (audit F-01).
+  if (await blobReferenced(ctx, storageId)) return;
   // A missing blob is fine — this runs more than once on a resume, and the blob
   // may already be gone. Never let a storage hiccup wedge the cascade.
   try {
@@ -58,13 +63,18 @@ async function deleteBlob(ctx: MutationCtx, storageId: Id<"_storage">) {
 async function purgeMessageChildren(
   ctx: MutationCtx,
   messageId: Id<"chatMessages">,
-) {
+): Promise<boolean> {
+  // Returns whether every child is gone. The parent message is the ONLY handle
+  // on these rows, so deleting it with children still attached orphaned them
+  // for good (audit F-12) — it now waits for a pass that drains them all.
+  let drained = true;
   for (const table of ["chatStreamChunks", "chatStreamEvents"] as const) {
     const kids = await ctx.db
       .query(table)
       .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
       .take(ROWS_PER_SUBQUERY);
     for (const k of kids) await ctx.db.delete(k._id);
+    if (kids.length >= ROWS_PER_SUBQUERY) drained = false;
   }
   for (const table of ["chatStreams", "toolExecutions"] as const) {
     const rows = await ctx.db
@@ -72,7 +82,9 @@ async function purgeMessageChildren(
       .withIndex("by_message", (q) => q.eq("messageId", messageId))
       .take(ROWS_PER_SUBQUERY);
     for (const r of rows) await ctx.db.delete(r._id);
+    if (rows.length >= ROWS_PER_SUBQUERY) drained = false;
   }
+  return drained;
 }
 
 /** Every child row of ONE thread, blobs included. Returns false when the thread
@@ -85,33 +97,31 @@ async function purgeThread(ctx: MutationCtx, threadId: Id<"chatThreads">) {
     .withIndex("by_thread", (q) => q.eq("threadId", threadId))
     .take(ROWS_PER_SUBQUERY);
   for (const a of attachments) {
-    await deleteBlob(ctx, a.storageId);
     await ctx.db.delete(a._id);
+    await deleteBlob(ctx, a.storageId);
   }
 
-  // Artifacts — blob first, then the row.
+  // Artifacts — row, then the blob.
   const artifacts = await ctx.db
     .query("chatArtifacts")
     .withIndex("by_thread", (q) => q.eq("threadId", threadId))
     .take(ROWS_PER_SUBQUERY);
   for (const art of artifacts) {
-    await deleteBlob(ctx, art.storageId);
     await ctx.db.delete(art._id);
+    await deleteBlob(ctx, art.storageId);
   }
 
   // Conversation state + artifacts are thread-scoped and were never purged.
-  for (const r of await ctx.db
+  const convState = await ctx.db
     .query("conversationState")
     .withIndex("by_thread", (q) => q.eq("threadId", threadId))
-    .take(ROWS_PER_SUBQUERY)) {
-    await ctx.db.delete(r._id);
-  }
-  for (const r of await ctx.db
+    .take(ROWS_PER_SUBQUERY);
+  for (const r of convState) await ctx.db.delete(r._id);
+  const convArtifacts = await ctx.db
     .query("conversationArtifacts")
     .withIndex("by_thread_seq", (q) => q.eq("threadId", threadId))
-    .take(ROWS_PER_SUBQUERY)) {
-    await ctx.db.delete(r._id);
-  }
+    .take(ROWS_PER_SUBQUERY);
+  for (const r of convArtifacts) await ctx.db.delete(r._id);
 
   // Approvals ([threadId, status] index, queried by the threadId prefix).
   const approvals = await ctx.db
@@ -120,20 +130,31 @@ async function purgeThread(ctx: MutationCtx, threadId: Id<"chatThreads">) {
     .take(ROWS_PER_SUBQUERY);
   for (const ap of approvals) await ctx.db.delete(ap._id);
 
-  // Messages, and everything keyed on each message.
+  // Messages, and everything keyed on each message. A message whose children
+  // did not all fit in this pass keeps its row until a later pass drains them.
   const messages = await ctx.db
     .query("chatMessages")
     .withIndex("by_thread_seq", (q) => q.eq("threadId", threadId))
     .take(ROWS_PER_SUBQUERY);
+  let childrenPending = false;
   for (const m of messages) {
-    await purgeMessageChildren(ctx, m._id);
-    await ctx.db.delete(m._id);
+    if (await purgeMessageChildren(ctx, m._id)) {
+      await ctx.db.delete(m._id);
+    } else {
+      childrenPending = true;
+    }
   }
 
+  // EVERY capped collection counts: the thread row is the handle for all of
+  // them, so it may go only once each one came back short (audit F-12).
   const more =
+    childrenPending ||
     messages.length >= ROWS_PER_SUBQUERY ||
     attachments.length >= ROWS_PER_SUBQUERY ||
-    artifacts.length >= ROWS_PER_SUBQUERY;
+    artifacts.length >= ROWS_PER_SUBQUERY ||
+    convState.length >= ROWS_PER_SUBQUERY ||
+    convArtifacts.length >= ROWS_PER_SUBQUERY ||
+    approvals.length >= ROWS_PER_SUBQUERY;
   return !more;
 }
 
@@ -166,7 +187,6 @@ async function sweepAccountTables(
     .withIndex("by_user_ws_created", (q) => q.eq("userId", userId))
     .take(ROWS_PER_SUBQUERY);
   for (const f of uploads) {
-    if (f.storageId) await deleteBlob(ctx, f.storageId);
     // THE CONVEX ROW AND ITS BLOB ARE ONLY HALF THE FILE. The extracted text
     // and its embeddings live in the PYTHON plane's Postgres, keyed by the
     // `ingestId` capability. `userFiles.remove` purges them; account deletion
@@ -176,6 +196,21 @@ async function sweepAccountTables(
       ingestId: f.ingestId,
     });
     await ctx.db.delete(f._id);
+    if (f.storageId) await deleteBlob(ctx, f.storageId);
+    did = true;
+  }
+
+  // Chat attachments by OWNER. The thread cascade above only reaches
+  // attachments bound to a thread; an upload registered with no threadId
+  // (attached in the composer, never sent) was reachable by nothing and
+  // survived the account with its blob (audit F-12).
+  const orphanUploads = await ctx.db
+    .query("chatAttachments")
+    .withIndex("by_user_ws_created", (q) => q.eq("userId", userId))
+    .take(ROWS_PER_SUBQUERY);
+  for (const a of orphanUploads) {
+    await ctx.db.delete(a._id);
+    await deleteBlob(ctx, a.storageId);
     did = true;
   }
 
@@ -287,25 +322,40 @@ async function sweepAccountTables(
       .withIndex("by_workspace", (q) => q.eq("workspaceId", m.workspaceId))
       .take(2);
     const sole = others.filter((o) => o.userId !== userId).length === 0;
-    await ctx.db.delete(m._id);
-    if (sole) {
-      const ws = await ctx.db.get(m.workspaceId);
-      if (ws && ws.ownerId === userId) {
-        for (const f of await ctx.db
-          .query("files")
-          .withIndex("by_workspace", (q) => q.eq("workspaceId", m.workspaceId))
-          .take(ROWS_PER_SUBQUERY)) {
-          await deleteBlob(ctx, f.storageId);
-          await ctx.db.delete(f._id);
-        }
-        for (const i of await ctx.db
-          .query("invites")
-          .withIndex("by_workspace", (q) => q.eq("workspaceId", m.workspaceId))
-          .take(ROWS_PER_SUBQUERY)) {
-          await ctx.db.delete(i._id);
-        }
-        await ctx.db.delete(ws._id);
-      }
+    const ws = sole ? await ctx.db.get(m.workspaceId) : null;
+    if (!ws || ws.ownerId !== userId) {
+      // Not this user's workspace to tear down: only their membership goes.
+      await ctx.db.delete(m._id);
+      did = true;
+      continue;
+    }
+    // DRAIN BEFORE PARENT (audit F-12). This used to delete at most 200 files
+    // and 200 invites and then the workspace AND this membership row
+    // unconditionally — and the membership row was the only handle a later
+    // pass had on the workspace, so everything past 200 survived forever,
+    // including invites that could recreate membership against the missing
+    // workspace. Now: mark it deleting (it grants nothing from here on),
+    // revoke grants first, and keep the membership row until both collections
+    // come back empty.
+    if (ws.deletingAt === undefined) {
+      await ctx.db.patch(ws._id, { deletingAt: Date.now() });
+    }
+    const invites = await ctx.db
+      .query("invites")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+      .take(ROWS_PER_SUBQUERY);
+    for (const i of invites) await ctx.db.delete(i._id);
+    const files = await ctx.db
+      .query("files")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+      .take(ROWS_PER_SUBQUERY);
+    for (const f of files) {
+      await ctx.db.delete(f._id);
+      await deleteBlob(ctx, f.storageId);
+    }
+    if (invites.length < ROWS_PER_SUBQUERY && files.length < ROWS_PER_SUBQUERY) {
+      await ctx.db.delete(ws._id);
+      await ctx.db.delete(m._id);
     }
     did = true;
   }
@@ -373,5 +423,95 @@ export const cascadeUserContent = internalMutation({
     }
     // 4. Nothing left — done. (The avatar blob is handled synchronously in
     //    deleteUserAccount so a deleted account frees it immediately.)
+  },
+});
+
+/**
+ * RECONCILE rows left behind by account-deletion sweeps that ran before the
+ * drain-before-parent fix (audit F-12). Correcting future cleanup does not
+ * remove what earlier passes already stranded: files and invites pointing at a
+ * workspace that no longer exists, memberships of a missing workspace, and
+ * uploads/knowledge files whose owner is gone.
+ *
+ * Operator-run, ONE TABLE AND ONE PAGE PER CALL, and a dry run unless
+ * `apply: true` — a destructive sweep whose target set is computed at call
+ * time must be reviewable first. Feed `continueCursor` back until `isDone`.
+ */
+export const reconcileOrphans = internalMutation({
+  args: {
+    table: v.union(
+      v.literal("files"),
+      v.literal("invites"),
+      v.literal("members"),
+      v.literal("chatAttachments"),
+      v.literal("userFiles"),
+    ),
+    apply: v.optional(v.boolean()),
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, { table, apply, cursor }) => {
+    const opts = { numItems: ROWS_PER_SUBQUERY, cursor: cursor ?? null };
+    const orphans: string[] = [];
+    let page: { isDone: boolean; continueCursor: string };
+    if (table === "files") {
+      const res = await ctx.db.query("files").paginate(opts);
+      for (const f of res.page) {
+        if ((await ctx.db.get(f.workspaceId)) !== null) continue;
+        orphans.push(f._id);
+        if (apply) {
+          await ctx.db.delete(f._id);
+          await deleteBlob(ctx, f.storageId);
+        }
+      }
+      page = res;
+    } else if (table === "invites") {
+      const res = await ctx.db.query("invites").paginate(opts);
+      for (const i of res.page) {
+        if ((await ctx.db.get(i.workspaceId)) !== null) continue;
+        orphans.push(i._id);
+        if (apply) await ctx.db.delete(i._id);
+      }
+      page = res;
+    } else if (table === "members") {
+      const res = await ctx.db.query("members").paginate(opts);
+      for (const m of res.page) {
+        if ((await ctx.db.get(m.workspaceId)) !== null) continue;
+        orphans.push(m._id);
+        if (apply) await ctx.db.delete(m._id);
+      }
+      page = res;
+    } else if (table === "chatAttachments") {
+      const res = await ctx.db.query("chatAttachments").paginate(opts);
+      for (const a of res.page) {
+        if ((await ctx.db.get(a.userId)) !== null) continue;
+        orphans.push(a._id);
+        if (apply) {
+          await ctx.db.delete(a._id);
+          await deleteBlob(ctx, a.storageId);
+        }
+      }
+      page = res;
+    } else {
+      const res = await ctx.db.query("userFiles").paginate(opts);
+      for (const f of res.page) {
+        if ((await ctx.db.get(f.userId)) !== null) continue;
+        orphans.push(f._id);
+        if (apply) {
+          await ctx.scheduler.runAfter(0, internal.userFiles.purge, {
+            ingestId: f.ingestId,
+          });
+          await ctx.db.delete(f._id);
+          if (f.storageId) await deleteBlob(ctx, f.storageId);
+        }
+      }
+      page = res;
+    }
+    return {
+      table,
+      apply: !!apply,
+      orphans,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+    };
   },
 });

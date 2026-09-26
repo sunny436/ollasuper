@@ -198,6 +198,10 @@ describe("messages.createAndSend", () => {
     await t.run((ctx) =>
       ctx.db.insert("members", { workspaceId: ws, userId: outsider, role: "member", createdAt: Date.now() }),
     );
+    // The outsider's own upload: the upload URL (their intent) comes first.
+    await t
+      .withIdentity(as(outsider))
+      .mutation(api.chat.attachments.generateUploadUrl, { workspaceId: ws });
     const storageId = await t.run(async (ctx) =>
       ctx.storage.store(new Blob(["x"], { type: "text/plain" })),
     );

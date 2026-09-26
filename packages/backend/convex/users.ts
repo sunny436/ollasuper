@@ -1,5 +1,4 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
-import { activeUserId, isActiveUser } from "./accountState";
+import { activeUserId } from "./accountState";
 import { consumeWindow } from "./quotas";
 import { normalizeEmail } from "./authPolicy";
 import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
@@ -25,6 +24,7 @@ import {
   assertUsableUsername,
   normalizeDisplayName,
 } from "./profilePolicy";
+import { claimUploadedBlob, issueUploadIntent } from "./blobOwnership";
 import { assertNonExecutableBlob } from "./blobSafety";
 
 /**
@@ -115,11 +115,9 @@ export const updateName = mutation({
  * refused outright for a suspended or already-deleted account.
  */
 async function requireProfileUserId(ctx: MutationCtx): Promise<Id<"users">> {
-  const userId = await getAuthUserId(ctx);
+  // Live session + active account: a revoked session must not keep editing.
+  const userId = await activeUserId(ctx);
   if (!userId) throw new ConvexError("Not authenticated");
-  if (!(await isActiveUser(ctx, userId))) {
-    throw new ConvexError("Not authenticated");
-  }
   return userId;
 }
 
@@ -360,6 +358,7 @@ export const generateUploadUrl = mutation({
     if (!userId) {
       throw new Error("User not found");
     }
+    await issueUploadIntent(ctx, userId);
     return await ctx.storage.generateUploadUrl();
   },
 });
@@ -381,7 +380,9 @@ export const updateUserImage = mutation({
     // here, on the blob's real metadata, at the moment it becomes a row.
     // An avatar is an image; refusing costs the feature nothing.
     await assertNonExecutableBlob(ctx, args.imageId);
-    ctx.db.patch(userId, { imageId: args.imageId });
+    // Only a blob this caller uploaded and nobody registered (audit F-01).
+    await claimUploadedBlob(ctx, userId, args.imageId);
+    await ctx.db.patch(userId, { imageId: args.imageId });
   },
 });
 
@@ -442,6 +443,28 @@ export const deleteUserAccount = internalMutation({
     // same helper single-device enforcement uses, so there is one implementation
     // of "revoke everything" rather than two that can drift.
     await revokeOtherSessions(ctx, args.userId, null);
+
+    // Workspaces this user owns alone stop granting ANYTHING now, not when the
+    // durable cascade gets round to them (audit F-12): requireRole and invite
+    // acceptance refuse a deleting workspace, so an invite still sitting in it
+    // cannot be redeemed while its children drain.
+    for (const m of await ctx.db
+      .query("members")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .take(25)) {
+      const ws = await ctx.db.get(m.workspaceId);
+      if (!ws || ws.ownerId !== args.userId || ws.deletingAt !== undefined) {
+        continue;
+      }
+      // Exactly the set the cascade tears down: owned AND not shared.
+      const others = await ctx.db
+        .query("members")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", ws._id))
+        .take(2);
+      if (others.every((o) => o.userId === args.userId)) {
+        await ctx.db.patch(ws._id, { deletingAt: Date.now() });
+      }
+    }
 
     // Code-verification buckets are keyed on the email, not the account id.
     const user = await ctx.db.get(args.userId);
@@ -568,7 +591,7 @@ export const deletionFactorForUser = internalQuery({
 export const deletionFactor = query({
   args: {},
   handler: async (ctx): Promise<{ needs: "password" | "code" } | null> => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return null;
     const account = await ctx.db
       .query("authAccounts")
@@ -634,7 +657,12 @@ export const consumeDeletionCode = internalMutation({
 export const requestAccountDeletionCode = action({
   args: {},
   handler: async (ctx): Promise<{ ok: true }> => {
-    const userId = await getAuthUserId(ctx);
+    // Actions cannot read the database, so the live-session + active check
+    // hops through activeCallerId — a revoked session must not reach here.
+    const userId: Id<"users"> | null = await ctx.runQuery(
+      internal.accountState.activeCallerId,
+      {},
+    );
     if (!userId) throw new ConvexError("Not authenticated");
     const factor: Factor = await ctx.runQuery(
       internal.users.deletionFactorForUser,
@@ -644,6 +672,14 @@ export const requestAccountDeletionCode = action({
     // A password user re-authenticates with their password; issuing a code as
     // well would add a second, weaker route to the same irreversible action.
     if (factor.passwordHash || !factor.email) return { ok: true };
+    // Budget BEFORE the code is replaced (audit F-07): a throttled request
+    // leaves the code the user already holds valid.
+    const allowed: boolean = await ctx.runMutation(internal.authProbe.recordSend, {
+      email: factor.email,
+    });
+    if (!allowed) {
+      throw new ConvexError("Too many codes requested. Try again later.");
+    }
     const code = generateNumericCode();
     await ctx.runMutation(internal.users.putDeletionCode, {
       userId,
@@ -707,7 +743,11 @@ export const deleteCurrentUserAccount = action({
     code: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
+    // Irreversible: a revoked or suspended session must not get this far.
+    const userId: Id<"users"> | null = await ctx.runQuery(
+      internal.accountState.activeCallerId,
+      {},
+    );
     if (!userId) {
       return;
     }

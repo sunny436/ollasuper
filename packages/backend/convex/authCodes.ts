@@ -83,17 +83,16 @@ export async function deliverCode(
    */
   expires?: Date,
 ): Promise<void> {
-  // Per-email send throttle (cooldown + hourly cap). SKIP silently when over
-  // the limit — never throw, so requestPasswordReset and the library's signIn
-  // keep their constant "started" response. All three code providers (verify /
-  // reset / otp) reach here, so this one gate covers every emailed code.
-  if (ctx && typeof ctx.runMutation === "function") {
-    const allowed = await ctx.runMutation(internal.authProbe.recordSend, {
-      email,
-    });
-    if (allowed === false) return;
-  }
-  if (!hasMailTransport()) {
+  // The per-email send budget is NOT consumed here any more (audit F-07). By
+  // the time delivery runs the code has already been replaced, so throttling
+  // here suppressed the email but not the swap. Every caller now consumes the
+  // budget in the transaction that issues the code (auth.ts callback, and the
+  // account-deletion code), and a throttled request never reaches this line.
+  //
+  // Development-only code logging, and only on EXPLICIT opt-in (audit §14): a
+  // deployment that merely lacks mail variables must not start writing live
+  // authentication codes to its log stream.
+  if (!hasMailTransport() && process.env.AUTH_LOG_CODES === "1") {
     console.warn(`[auth] ${label} code for ${email}: ${token}`);
   }
   // A greeting is a nicety, never a precondition. Resolved AFTER the throttle

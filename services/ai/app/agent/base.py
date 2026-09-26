@@ -36,6 +36,7 @@ from app.agent.orchestration_tools import (
 )
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE, PolicyScope
 from app.agent.spec import AgentOutcome, AgentSpec
+from app.agent.taint import TaintLedger
 from app.logging import get_logger
 from app.models.tools import SideEffect
 
@@ -75,6 +76,12 @@ class AgentEnv:
     # Passed through unchanged when the agent binds the reserved built-ins.
     rag: Any = None
     memory: Any = None
+    # The PARENT turn's taint ledger (audit F-03). A delegated sub-agent used to
+    # start from an empty one, so private or connector content the parent put
+    # into `delegate_to_agent(task)` flowed out through the sub-agent's tools
+    # with no check at all. Shared by reference: one turn, one ledger, at every
+    # delegation depth (the orchestrator derives child envs with replace()).
+    taint: Any = None
     # Phase 5: the Project this execution belongs to, as trusted CONFIGURATION.
     # Server-authored by Convex (dispatchPayload) and carried here so a delegated
     # agent works inside the same Project as its parent.
@@ -244,6 +251,7 @@ class Agent:
             retry_ambiguous_side_effects=spec.execution.retry_ambiguous_side_effects,
             rag=env.rag,
             memory=env.memory,
+            taint=env.taint if env.taint is not None else TaintLedger(),
             run_id=env.run_id,
             run_attempt=env.attempt,
             # Phase 1 (v2) lineage — empty defaults keep the top-level step key

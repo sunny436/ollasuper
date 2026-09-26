@@ -74,6 +74,9 @@ class Registry:
     def has(self, message_id: str) -> bool:
         return message_id in self._tasks
 
+    def task(self, message_id: str) -> asyncio.Task | None:
+        return self._tasks.get(message_id)
+
     @property
     def active(self) -> int:
         return len(self._tasks)

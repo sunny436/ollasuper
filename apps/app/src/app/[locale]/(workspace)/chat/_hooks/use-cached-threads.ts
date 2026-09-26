@@ -1,6 +1,11 @@
 "use client";
 
-import { CACHE_KEYS } from "@/lib/display-cache";
+import {
+  CACHE_KEYS,
+  readOwnedCache,
+  writeOwnedCache,
+} from "@/lib/display-cache";
+import { useCacheOwner } from "@/lib/use-cache-owner";
 import { useEffect, useState } from "react";
 
 export type CachedThread = {
@@ -29,32 +34,31 @@ export function useCachedThreads(
   live: CachedThread[],
   loadingFirst: boolean,
 ): { threads: CachedThread[]; showSkeleton: boolean } {
+  const owner = useCacheOwner();
   const [cached, setCached] = useState<CachedThread[] | null>(null);
 
+  // Owner-bound (audit F-09): re-read whenever the verified account changes.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const raw = window.localStorage.getItem(CACHE_KEYS.threads);
-      if (raw) setCached(JSON.parse(raw) as CachedThread[]);
-    } catch {}
-  }, []);
+    setCached(readOwnedCache<CachedThread[]>(CACHE_KEYS.threads, owner));
+  }, [owner]);
 
   // Only write once the live list is real (not the empty first-page-loading
   // array), or a reload would immediately cache [] over the good copy.
   useEffect(() => {
-    if (loadingFirst || typeof window === "undefined") return;
-    try {
-      const slice = live.slice(0, MAX).map((t) => ({
+    if (loadingFirst) return;
+    writeOwnedCache<CachedThread[]>(
+      CACHE_KEYS.threads,
+      owner,
+      live.slice(0, MAX).map((t) => ({
         _id: String(t._id),
         title: t.title,
         pinned: t.pinned,
         updatedAt: t.updatedAt,
-      }));
-      window.localStorage.setItem(CACHE_KEYS.threads, JSON.stringify(slice));
-    } catch {}
-  }, [live, loadingFirst]);
+      })),
+    );
+  }, [live, loadingFirst, owner]);
 
   if (!loadingFirst) return { threads: live, showSkeleton: false };
-  if (cached?.length) return { threads: cached, showSkeleton: false };
+  if (owner && cached?.length) return { threads: cached, showSkeleton: false };
   return { threads: live, showSkeleton: true };
 }

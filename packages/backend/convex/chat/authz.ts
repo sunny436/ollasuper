@@ -1,8 +1,7 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { isActiveUser } from "../accountState";
+import { activeUserId } from "../accountState";
 import { requireMember } from "../orgs";
 
 /**
@@ -19,31 +18,13 @@ import { requireMember } from "../orgs";
  * must be refused. security.test.ts asserts exactly that.
  */
 
-/**
- * Is this account allowed to act at all?
- *
- * `users.accountStatus` was declared in schema.ts as "active" | "suspended" |
- * "deleted" and read in exactly ONE place in the whole codebase —
- * scheduled/authz.ts:ownerEntitlementFailure. Suspending someone therefore
- * stopped their scheduled tasks and nothing else: they kept signing in and using
- * the product. A field shaped like a kill switch that is not wired to anything is
- * worse than no field, because an operator reasonably believes it worked.
- *
- * Absent means active — every pre-migration row predates the column.
- */
-async function isActive(ctx: QueryCtx, userId: Id<"users">): Promise<boolean> {
-  // Moved to ./accountState so orgs.ts enforces the SAME predicate without the
-  // import cycle this file exists to avoid.
-  return isActiveUser(ctx, userId);
-}
-
 /** The userId is always derived from the session, never accepted as an argument. */
 export async function requireUserId(ctx: QueryCtx): Promise<Id<"users">> {
-  const userId = await getAuthUserId(ctx);
+  // Live session + active account (accountState.activeUserId). Same error a
+  // signed-out caller gets: a suspended account or a revoked session is not
+  // entitled to a more informative answer than a stranger.
+  const userId = await activeUserId(ctx);
   if (!userId) throw new ConvexError("Not authenticated");
-  // Same error a signed-out caller gets: a suspended account is not entitled to
-  // a more informative answer than a stranger.
-  if (!(await isActive(ctx, userId))) throw new ConvexError("Not authenticated");
   return userId;
 }
 
@@ -55,9 +36,7 @@ export async function requireUserId(ctx: QueryCtx): Promise<Id<"users">> {
 export async function getUserIdOrNull(
   ctx: QueryCtx,
 ): Promise<Id<"users"> | null> {
-  const userId = await getAuthUserId(ctx);
-  if (!userId) return null;
-  return (await isActive(ctx, userId)) ? userId : null;
+  return activeUserId(ctx);
 }
 
 /**

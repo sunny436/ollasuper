@@ -32,6 +32,7 @@ from app.ingest.ocr import ocr_image
 from app.ingest.parsers import REGISTRY
 from app.ingest.pdf import parse_pdf
 from app.ingest.types import FileType, IngestError, NormalizedDoc
+from app.ingest.xlsx_guard import XlsxRejected, parse_xlsx_guarded
 from app.logging import get_logger
 
 log = get_logger(__name__)
@@ -92,7 +93,17 @@ async def _parse(
             )
         return _ParseOutcome(docs=pdf.docs, note=note)
 
-    if file_type in ("docx", "xlsx", "pptx"):
+    if file_type == "xlsx":
+        # Metered, killable, sandboxed (audit F-04) — never the thread below,
+        # whose timeout ended the await but not the work.
+        try:
+            return _ParseOutcome(
+                docs=await parse_xlsx_guarded(raw, name=name, settings=settings)
+            )
+        except XlsxRejected as e:
+            raise IngestError(str(e)) from e
+
+    if file_type in ("docx", "pptx"):
         guard_ooxml(raw, settings)
     parser = REGISTRY.get(file_type)
     if parser is None:
@@ -273,6 +284,11 @@ async def run_ingest(
                 embedding_model=settings.openrouter_embedding_model,
                 embedding_dimensions=settings.embedding_dimensions,
             )
+        except store.IngestDeleted:
+            # The user deleted this file mid-ingestion. Nothing was written and
+            # there is no row left to report a status to (audit F-13).
+            log.info("ingest_deleted_during_run", extra={"file": ingest_id})
+            return
         except Exception as e:  # noqa: BLE001 - stage-specific label
             raise IngestError("Knowledge database write failed") from e
         db_ms = int((time.monotonic() - d0) * 1000)

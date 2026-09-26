@@ -36,6 +36,7 @@ def build_live_agent_env(
     resume_seen: dict | None = None,
     resume_seen_set: frozenset[str] = frozenset(),
     workflow_id: str = "",
+    taint: Any = None,
 ) -> AgentEnv:
     """Assemble the rich per-request env. Identity comes from `req` (streamId /
     userId / workspaceId / attempt); every context field is passed through so a
@@ -60,6 +61,8 @@ def build_live_agent_env(
         resume_seen_set=frozenset(resume_seen_set or ()),
         rag=rag,
         memory=memory,
+        # The parent turn's taint ledger, shared (audit F-03 — see AgentEnv).
+        taint=taint,
         # Trusted, server-authored. The delegated env is a replace() of this one,
         # so every sub-agent at every depth inherits the same Project.
         project_instructions=getattr(req, "projectInstructions", None),

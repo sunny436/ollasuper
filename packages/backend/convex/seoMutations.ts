@@ -4,6 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, query } from "./_generated/server";
 import { audit } from "./auditLog";
+import { hasWorkspaceAccess } from "./orgs";
 
 /**
  * Phase 7 — the durable, owner-scoped SEO MUTATION ledger.
@@ -166,7 +167,18 @@ export const listMyMutations = query({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .order("desc")
       .take(Math.min(Math.max(1, limit ?? 50), 200));
-    return rows.map(publicRow);
+    // Owner AND current member of the row's workspace (audit F-08).
+    const entitled = new Map<string, boolean>();
+    const visible: typeof rows = [];
+    for (const r of rows) {
+      let ok = entitled.get(r.workspaceId);
+      if (ok === undefined) {
+        ok = await hasWorkspaceAccess(ctx, userId, r.workspaceId);
+        entitled.set(r.workspaceId, ok);
+      }
+      if (ok) visible.push(r);
+    }
+    return visible.map(publicRow);
   },
 });
 
@@ -178,6 +190,9 @@ export const getMutation = query({
     if (!userId) throw new Error("Not found");
     const row = await ctx.db.get(mutationId);
     if (!row || row.userId !== userId) throw new Error("Not found");
+    if (!(await hasWorkspaceAccess(ctx, userId, row.workspaceId))) {
+      throw new Error("Not found");
+    }
     return publicRow(row);
   },
 });

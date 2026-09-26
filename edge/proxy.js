@@ -65,12 +65,66 @@ function safeHeaders(headers) {
   return rest;
 }
 
+// RAW STORAGE IS SERVED FROM THE APP'S OWN ORIGIN (audit F-02).
+//
+// ctx.storage.getUrl() mints /api/storage/<id> URLs that reach the browser
+// through /__cvx on app.ollasuper.com, and Convex serves each blob with the
+// content-type its UPLOAD declared. An XML document with an xml-stylesheet
+// (or HTML/SVG) opened from such a URL therefore ran script as the app.
+// Registration-time type checks cannot cover a blob that was never registered,
+// or one stored before a type was added to the list — and next.config.mjs's
+// headers never touch these responses, because they are not Next responses.
+// So the rule is enforced HERE, on the response itself:
+//
+//   * nosniff, always;
+//   * `Content-Security-Policy: sandbox` (no allow-scripts) — the document gets
+//     an opaque origin and runs no script — except for PDF, which Chromium's
+//     viewer refuses to render inside a sandbox, and which is not an
+//     app-origin script vector;
+//   * `Content-Disposition: attachment` for everything not on an explicit
+//     INLINE allowlist — an allowlist fails closed on the type nobody thought of.
+const STORAGE_UPSTREAM_PORTS = new Set([3210, 3211]);
+const INLINE_SAFE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/bmp",
+  "image/x-icon",
+  "application/pdf",
+  "text/plain",
+  "video/mp4",
+  "video/webm",
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/wav",
+]);
+
+function isStorageResponse(port, path) {
+  return STORAGE_UPSTREAM_PORTS.has(port) && /^\/api\/storage\//.test(path);
+}
+
+function storageHeaders(headers) {
+  const type = String(headers["content-type"] || "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  const out = { ...headers, "x-content-type-options": "nosniff" };
+  if (type !== "application/pdf") out["content-security-policy"] = "sandbox";
+  if (!INLINE_SAFE_TYPES.has(type)) out["content-disposition"] = "attachment";
+  return out;
+}
+
 const server = http.createServer((req, res) => {
   const { port, path } = route(req.headers.host, req.url);
   const up = http.request(
     { host: "127.0.0.1", port, path, method: req.method, headers: safeHeaders(req.headers) },
     (r) => {
-      res.writeHead(r.statusCode, r.headers);
+      const headers = isStorageResponse(port, path)
+        ? storageHeaders(r.headers)
+        : r.headers;
+      res.writeHead(r.statusCode, headers);
       r.pipe(res);
     },
   );
@@ -96,6 +150,11 @@ server.on("upgrade", (req, socket, head) => {
   socket.on("error", () => up.destroy());
 });
 
-server.listen(5150, "127.0.0.1", () => {
-  console.log("edge proxy on 127.0.0.1:5150", JSON.stringify({ HOST_ROUTES, PATH_ROUTES }));
-});
+// Listen only when run as the service, so tests can require the pure helpers.
+if (require.main === module) {
+  server.listen(5150, "127.0.0.1", () => {
+    console.log("edge proxy on 127.0.0.1:5150", JSON.stringify({ HOST_ROUTES, PATH_ROUTES }));
+  });
+}
+
+module.exports = { route, isStorageResponse, storageHeaders, safeHeaders };

@@ -1,6 +1,7 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
+import { activeUserId } from "./accountState";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
+import { claimUploadedBlob, deleteBlobIfUnreferenced, issueUploadIntent } from "./blobOwnership";
 import { assertNonExecutableBlob } from "./blobSafety";
 import { mutation, query } from "./_generated/server";
 import { audit } from "./auditLog";
@@ -12,9 +13,10 @@ import { requireMember } from "./orgs";
 export const generateUploadUrl = mutation({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, { workspaceId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     await requireMember(ctx, userId, workspaceId);
+    await issueUploadIntent(ctx, userId, workspaceId);
     return ctx.storage.generateUploadUrl();
   },
 });
@@ -28,16 +30,19 @@ export const saveFile = mutation({
     contentType: v.string(),
   },
   handler: async (ctx, a) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     await requireMember(ctx, userId, a.workspaceId);
     await assertNonExecutableBlob(ctx, a.storageId);
+    // Only a blob THIS caller uploaded, and nobody has registered, may become
+    // a row here — never a storage id lifted from someone else's URL (F-01).
+    const meta = await claimUploadedBlob(ctx, userId, a.storageId, a.workspaceId);
     const id = await ctx.db.insert("files", {
       workspaceId: a.workspaceId,
       userId,
       name: a.name,
       storageId: a.storageId,
-      size: a.size,
+      size: meta.size,
       contentType: a.contentType,
       createdAt: Date.now(),
     });
@@ -50,7 +55,7 @@ export const saveFile = mutation({
 export const list = query({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, { workspaceId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return [];
     await requireMember(ctx, userId, workspaceId);
     const rows = await ctx.db
@@ -77,7 +82,7 @@ export const listPaged = query({
     paginationOpts: paginationOptsValidator,
   },
   handler: async (ctx, { workspaceId, paginationOpts }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return { page: [], isDone: true, continueCursor: "" };
     await requireMember(ctx, userId, workspaceId);
     const res = await ctx.db
@@ -104,13 +109,15 @@ export const listPaged = query({
 export const remove = mutation({
   args: { fileId: v.id("files") },
   handler: async (ctx, { fileId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     const f = await ctx.db.get(fileId);
     if (!f) throw new Error("Not found");
     await requireMember(ctx, userId, f.workspaceId);
-    await ctx.storage.delete(f.storageId);
     await ctx.db.delete(fileId);
+    // Row first, then the bytes — and only if no other row still points at
+    // them, so a pre-existing alias can never destroy another owner's file.
+    await deleteBlobIfUnreferenced(ctx, f.storageId);
     await audit(ctx, f.workspaceId, userId, "file.delete", { name: f.name });
     await bump(ctx, f.workspaceId, "files", -1);
   },

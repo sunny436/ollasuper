@@ -22,6 +22,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 
+class IngestDeleted(RuntimeError):
+    """The file was deleted while this ingestion was running (audit F-13).
+
+    Raised by `persist_ingest` instead of writing: the deletion's tombstone was
+    found under the same advisory lock persistence holds, so committing now
+    would resurrect a document the user has already been told is gone."""
+
+
 def _vec_literal(vec: Sequence[float]) -> str:
     return "[" + ",".join(format(float(x), ".8g") for x in vec) + "]"
 
@@ -56,6 +64,17 @@ async def persist_ingest(
         await conn.execute(
             text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(file_id)}
         )
+        # THE FENCE (audit F-13). Deletion writes its tombstone under this same
+        # lock, so exactly one order is possible: either the delete ran first
+        # and is visible here, or this transaction commits first and the delete
+        # then removes what it wrote. A late or restarted worker is refused the
+        # same way — the tombstone is durable, not process memory.
+        tomb = await conn.execute(
+            text("SELECT 1 FROM ingest_tombstones WHERE file_id = :id"),
+            {"id": file_id},
+        )
+        if tomb.first() is not None:
+            raise IngestDeleted(file_id)
         await conn.execute(
             text("""
                 INSERT INTO files (id, user_id, workspace_id, original_filename,
@@ -117,9 +136,26 @@ async def persist_ingest(
     return len(chunks)
 
 
+async def _tombstone(conn: Any, file_id: str) -> None:
+    """Take the per-file lock and record the deletion BEFORE removing rows, in
+    the caller's transaction (audit F-13 — see persist_ingest's fence)."""
+    await conn.execute(
+        text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(file_id)}
+    )
+    await conn.execute(
+        text("""
+            INSERT INTO ingest_tombstones (file_id) VALUES (:id)
+            ON CONFLICT (file_id) DO NOTHING
+        """),
+        {"id": file_id},
+    )
+
+
 async def delete_file(engine: AsyncEngine, *, file_id: str, user_id: str) -> bool:
-    """Cascade delete (file_blobs + file_chunks via FK). Account-scoped."""
+    """Cascade delete (file_blobs + file_chunks via FK). Account-scoped.
+    Tombstoned first, so a running ingestion cannot write it back."""
     async with engine.begin() as conn:
+        await _tombstone(conn, file_id)
         res = await conn.execute(
             text("DELETE FROM files WHERE id = :id AND user_id = :uid"),
             {"id": file_id, "uid": user_id},
@@ -129,8 +165,10 @@ async def delete_file(engine: AsyncEngine, *, file_id: str, user_id: str) -> boo
 
 async def delete_by_id(engine: AsyncEngine, *, file_id: str) -> bool:
     """Cascade delete by id only. For the Convex purge path, which is
-    service-key-authenticated and already capability-scoped by the ingestId."""
+    service-key-authenticated and already capability-scoped by the ingestId.
+    Tombstoned first, so a running ingestion cannot write it back."""
     async with engine.begin() as conn:
+        await _tombstone(conn, file_id)
         res = await conn.execute(
             text("DELETE FROM files WHERE id = :id"), {"id": file_id}
         )

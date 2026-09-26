@@ -35,6 +35,16 @@ production: after the user rejected "send Gmail data to Drive", the model
 re-issued the Drive search with the value split into fragments too short to
 match — and it ran. The user's "no" to A -> B holds for the rest of the turn.
 
+PRIVATE SOURCES (audit F-03). Connector results were the only thing tracked,
+so the user's OWN private content — retrieved knowledge files, memories,
+uploaded attachments, data/document tool output — could leave through a web
+search or a connector call with nobody asked. Those are recorded too, under
+`private:*` keys that are never a destination, so ANY outbound tool whose
+arguments carry them needs approval. Text the USER typed this turn or earlier
+is recorded as BENIGN and never counts toward a private match: echoing their
+own words into a search is not a disclosure, and without that exclusion every
+search on a topic their files mention would ask.
+
 HONEST LIMITS, stated once: values shorter than 8 characters and paraphrased
 content do not match on their own (the sticky rule above is what catches the
 retry-in-fragments); the gate is a precise control over verbatim data
@@ -47,8 +57,15 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import unquote_plus
 
 __all__ = [
+    "PRIVATE_DATA",
+    "PRIVATE_DOCUMENT",
+    "PRIVATE_KNOWLEDGE",
+    "PRIVATE_MEMORY",
+    "PRIVATE_PREFIX",
+    "PRIVATE_UPLOAD",
     "REJECTED_EARLIER",
     "TaintLedger",
     "fingerprint",
@@ -60,6 +77,14 @@ __all__ = [
 #: The sentinel source a resume flags a destination with when the user REJECTED
 #: a call to it before the pause (no content to name, just the refusal).
 REJECTED_EARLIER = "rejected-earlier"
+#: The user's own in-account content (see PRIVATE SOURCES above). Never a
+#: destination, so any outbound call carrying it is gated.
+PRIVATE_PREFIX = "private:"
+PRIVATE_KNOWLEDGE = "private:knowledge"
+PRIVATE_MEMORY = "private:memory"
+PRIVATE_UPLOAD = "private:upload"
+PRIVATE_DATA = "private:data"
+PRIVATE_DOCUMENT = "private:document"
 SHINGLE = 32
 STEP = 16
 MIN_TOKEN = 8
@@ -69,6 +94,11 @@ MAX_SHINGLES = 200_000
 MAX_TOKENS = 100_000
 
 _WS = re.compile(r"\s+")
+#: Token boundaries beyond whitespace (audit F-03). A value embedded in a URI
+#: (`drive://search?q=<secret>`, a template variable, a path segment) or
+#: followed by punctuation (`<secret>.`) was one opaque token and never matched.
+_BOUNDARY = re.compile(r"[\s/?&=#,;|+]+")
+_EDGE_PUNCT = "\"'`.,:;!?()[]{}<>"
 
 
 def source_of(tool: Any) -> str:
@@ -125,6 +155,32 @@ def leaf_strings(
     return out
 
 
+def _tokens_of(text: str) -> set[str]:
+    """The matchable tokens of one normalised leaf: the leaf itself when it is
+    a single value (an OTP, a key — no spaces), and every dense token split on
+    whitespace AND URI/query delimiters, edge punctuation stripped."""
+    out: set[str] = set()
+    if len(text) >= MIN_TOKEN and " " not in text:
+        out.add(text)
+    for raw in _BOUNDARY.split(text):
+        tok = raw.strip(_EDGE_PUNCT)
+        if _dense(tok):
+            out.add(tok)
+    return out
+
+
+def _arg_texts(value: Any) -> list[str]:
+    """Normalised argument leaves, plus their URL-decoded form when it differs
+    — `%2D` must not be a way around the gate."""
+    texts: list[str] = []
+    for raw in leaf_strings(value):
+        for variant in {raw, unquote_plus(raw)}:
+            text = _normalise(variant)
+            if text:
+                texts.append(text)
+    return texts
+
+
 def fingerprint(value: Any) -> tuple[set[str], set[str]]:
     """`(shingles, tokens)` of a result or an argument set."""
     shingles: set[str] = set()
@@ -133,14 +189,7 @@ def fingerprint(value: Any) -> tuple[set[str], set[str]]:
         text = _normalise(raw)
         if not text:
             continue
-        if len(text) >= MIN_TOKEN:
-            # The leaf itself when it is one value (an OTP, a key — no spaces),
-            # and its dense tokens.
-            if " " not in text:
-                tokens.add(text)
-            for tok in text.split(" "):
-                if _dense(tok):
-                    tokens.add(tok)
+        tokens |= _tokens_of(text)
         if len(text) >= SHINGLE:
             for i in range(0, len(text) - SHINGLE + 1, STEP):
                 shingles.add(text[i : i + SHINGLE])
@@ -169,6 +218,19 @@ class TaintLedger:
     #: Destinations a flow was gated INTO this turn, with the sources that were
     #: named: every later call to that destination asks (see the docstring).
     flagged: dict[str, set[str]] = field(default_factory=dict)
+    #: Fingerprints of text the USER authored. Subtracted from PRIVATE matches
+    #: only — connector semantics are unchanged.
+    benign_shingles: set[str] = field(default_factory=set)
+    benign_tokens: set[str] = field(default_factory=set)
+
+    def record_benign(self, value: Any) -> None:
+        """Remember `value` as user-authored. Windows at EVERY offset, so any
+        argument window lifted from it is recognised wherever it sits."""
+        for text in _arg_texts(value):
+            self.benign_tokens |= _tokens_of(text)
+            if len(self.benign_shingles) < MAX_SHINGLES:
+                for i in range(0, len(text) - SHINGLE + 1):
+                    self.benign_shingles.add(text[i : i + SHINGLE])
 
     def record(self, source: str, value: Any) -> None:
         """Remember `value` (a tool result, any shape) as having come from
@@ -191,26 +253,28 @@ class TaintLedger:
         """
         skip = set(exclude)
         found: set[str] = set()
-        texts = [_normalise(s) for s in leaf_strings(args)]
-        texts = [t for t in texts if t]
+        texts = _arg_texts(args)
         if not texts:
             return found
         arg_tokens: set[str] = set()
         for text in texts:
-            if len(text) >= MIN_TOKEN and " " not in text:
-                arg_tokens.add(text)
-            arg_tokens.update(t for t in text.split(" ") if _dense(t))
+            arg_tokens |= _tokens_of(text)
         for name, entry in self.sources.items():
             if name in skip:
                 continue
-            if entry.tokens & arg_tokens:
+            private = name.startswith(PRIVATE_PREFIX)
+            tokens = arg_tokens - self.benign_tokens if private else arg_tokens
+            if entry.tokens & tokens:
                 found.add(name)
                 continue
             if entry.shingles and any(
-                text[i : i + SHINGLE] in entry.shingles
+                window in entry.shingles
+                and not (private and window in self.benign_shingles)
                 for text in texts
                 if len(text) >= SHINGLE
-                for i in range(0, len(text) - SHINGLE + 1)
+                for window in (
+                    text[i : i + SHINGLE] for i in range(0, len(text) - SHINGLE + 1)
+                )
             ):
                 found.add(name)
         return found

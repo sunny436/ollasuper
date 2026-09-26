@@ -87,6 +87,22 @@ export const heartbeat = mutation({
 });
 
 /**
+ * A password reset COMPLETED: the new credential is stored and every other
+ * session is gone. Called only from the reset-verification branch of
+ * passwordProvider, after both. Internal, so no client can stamp it.
+ */
+export const recordPasswordReset = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, { userId }): Promise<null> => {
+    const user = await ctx.db.get(userId);
+    if (user === null) return null;
+    await ctx.db.patch(userId, { passwordChangedAt: Date.now() });
+    await recordAuthEvent(ctx, { type: "password_reset", userId });
+    return null;
+  },
+});
+
+/**
  * Legacy rows only — those predating emailNormalized. The set shrinks on every
  * sign-in, so this ceiling exists to bound a pathological case, not a normal one.
  */

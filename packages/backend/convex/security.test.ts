@@ -168,6 +168,7 @@ describe("maintained counters stay accurate", () => {
     expect(await counter(ws, "members")).toBe(1); // owner
     expect(await counter(ws, "files")).toBe(0);
 
+    await u.mutation(api.files.generateUploadUrl, { workspaceId: ws });
     const storageId = await t.run((ctx) => ctx.storage.store(new Blob(["hi"])));
     const fileId = await u.mutation(api.files.saveFile, {
       workspaceId: ws,

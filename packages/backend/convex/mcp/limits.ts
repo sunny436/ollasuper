@@ -1,5 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { internalMutation } from "../_generated/server";
+import { activeUserId } from "../accountState";
 import { type QuotaKind, consumeWindow } from "../quotas";
 
 /**
@@ -64,11 +65,9 @@ const MESSAGE: Record<string, string> = {
 export const consume = internalMutation({
   args: { kind: KIND },
   handler: async (ctx, args): Promise<null> => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity === null) throw new ConvexError("Not authenticated");
-    // `subject` is "<userId>|<sessionId>" — the same derivation getAuthUserId
-    // uses, and the same one `mcp/connections.ts` already relies on.
-    const userId = String(identity.subject).split("|")[0] as never;
+    // Live session + active account (accountState.activeUserId).
+    const userId = await activeUserId(ctx);
+    if (userId === null) throw new ConvexError("Not authenticated");
 
     const kind = args.kind as QuotaKind;
     const res = await consumeWindow(

@@ -47,8 +47,12 @@ async def require_service_key(
 def _jwks(settings: Settings) -> PyJWKClient:
     global _jwks_client
     if _jwks_client is None:
+        # FETCHED over the internal URL (loopback), VERIFIED against the public
+        # issuer below: the keys are the same document either way, and the
+        # Convex listeners are bound to loopback (audit D-03), so the LAN
+        # address in CONVEX_SITE_URL is not reachable for the fetch.
         _jwks_client = PyJWKClient(
-            f"{settings.convex_site_url.rstrip('/')}/.well-known/jwks.json",
+            f"{settings.convex_internal_url.rstrip('/')}/.well-known/jwks.json",
             cache_keys=True,
             lifespan=600,
             max_cached_keys=8,

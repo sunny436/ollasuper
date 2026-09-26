@@ -2,6 +2,42 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Security audit remediation — SECURITY-AUDIT-FINAL.md F-01…F-14, D-01…D-06 (2026-09-26) - IMPLEMENTED, NOT DEPLOYED
+
+Every confirmed finding is fixed in code with a regression test that FAILS on the audited commit
+(verified by running the new tests against a HEAD worktree) and passes now. Local: backend 72 files,
+frontend 256 tests, edge 4, Python full suite + 4 new files; typecheck + lint clean.
+**Deploy is pending and needs a go-ahead**; nothing below is claimed live.
+
+| ID | Closed by | Regression test |
+|---|---|---|
+| F-01 | `convex/blobOwnership.ts`: every upload URL records an upload intent; a blob is claimable only against the caller's own intent (created after it) AND only if no row in any of the 5 blob tables references it; deletes are reference-aware; `userFiles.saveFile` proves provenance BEFORE its dedup delete. New indexes `files/chatArtifacts.by_storage`, `users.by_image`; table `uploadIntents`. | `security.remediation.test.ts` F-01 |
+| F-02 | Raw storage is made inert where it is served: `edge/proxy.js` adds `nosniff`, `CSP: sandbox` (not PDF) and `attachment` outside an inline allowlist to every `/api/storage/*` response. `text/xml`/`application/xml` added to both executable lists; attachments register the neutralised type. | `edge/proxy.test.js`, `upload-content-type.test.ts` |
+| F-03 | Private sources (`private:knowledge/memory/upload/data/document`) enter the taint ledger (built-ins, the up-front RAG block, attachment text, resume); the user's own typed words are benign; `mcp_read_resource` checks and records like any connector; sub-agents SHARE the parent ledger (they started empty — a bypass of H-06 too); tokens split on URI delimiters and URL-decode (a value in `?q=` used to be invisible). | `tests/test_egress_policy.py` |
+| F-04 | One guarded workbook path (`app/ingest/xlsx_guard.py`): zip guard + a metered decode (cells/rows, dimension-independent) in the killable sandbox child for ingestion, inline text, preview and the data loader; a cancelled caller kills the child before releasing its slot. `ai_xlsx_max_cells` 5M. | `tests/test_xlsx_guard.py` (kill test POSIX-only) |
+| F-05 | `activeUserId` requires the JWT's session row (exists, same user, unexpired); every direct `getAuthUserId`/`getUserIdentity` public path routed through it (incl. MCP actions). Test shim `packages/backend/vitest.setup.ts` gives placeholder test identities a real session. | F-05 |
+| F-06 | The auth callback does NOTHING for code issuance (`args.type` email/phone) but repair + budget; a completed reset stamps/logs from `passwordProvider` after the credential changes. | `auth.flows.test.ts` F-06 |
+| F-07 | The per-address budget is consumed IN the issuance transaction; exhausted → the issuance aborts, so the delivered code stays valid (generic "too many codes"); same for the deletion code. Code logging now needs `AUTH_LOG_CODES=1`. | `auth.flows.test.ts` throttle |
+| F-08 | Current membership on API-key resolution (+ removal revokes), scheduled list, artifact download/preview, SEO history, knowledge retry, `stream.active/committed`, MCP resolver; RAG scope = allowlist when any ready file is out of entitlement. | F-08 |
+| F-09 | localStorage caches are `{owner, at, v}`, read only for the JWT's user within 24 h, cleared on no-owner/null user/login; matcher excludes `icon.svg` by name instead of any image suffix. | `display-cache.test.ts` |
+| F-10 | Public `backend.callBackend` and echo `/emit-webhook` removed; webhook ignores `payload.workspaceId`; echo binds loopback. | F-10 |
+| F-11 | No invite to an existing member; re-invite refreshes; removal deletes invites to/from the removed person; acceptance requires age ≤ 7 d, a live non-deleting workspace and an issuer who is still an active owner/admin. | F-11 |
+| F-12 | Sole-owned workspaces marked `deletingAt` at deletion; invites/files drained before the workspace and membership go; unsent uploads swept by owner; message and thread children drained before parents; `authDeletion.reconcileOrphans` (dry-run default) for past residue. | F-12 |
+| F-13 | Alembic `0005_ingest_tombstones`; delete writes a tombstone under the per-file advisory lock that persistence checks; DELETE also cancels the in-process task. | `test_ingest_tombstone.py`, DB tests in `test_knowledge_db.py` (CI pgvector) |
+| F-14 | `shouldHandleCode` = an OAuth verifier cookie is present (`src/lib/auth-code.ts`). | `auth-code.test.ts` |
+| D-01 | Pinned Gitleaks job over each change's commits (`ci.yml secret-scan`). **Provider-side revocation/rotation of the historical Convex key and password is an operator action — still open.** | CI |
+| D-02 | `edge/myos-edge.service` → `DynamicUser` + no capabilities. `deploy/78-service-identities.sh` (preflight by default, `--apply`/`--rollback`) moves myos-ai/scheduler to `myos-ai`, read-only code, after proving `unshare -rnm` works for that user. **Not applied.** myos-app still root: bun lives in /root. | preflight |
+| D-03 | Compose publishes Convex/site/dashboard on `127.0.0.1` by default; Mailpit UI loopback, SMTP on the bridge gateway, quick tunnel removed; AI JWKS fetched over the internal URL. **Apply only after grepping VM env files for `172.16.70.25:321x`.** | — |
+| D-04 | `umask 077`, `0700` backup dir, existing dumps tightened. | — |
+| D-05 | httpx2 2.10.0 → 2.13.1; @tanstack/react-form + zod adapter 0.33 → 0.42.1 (form-core prototype pollution); `undici` override ≥ 6.23 (6.29.0). Remaining `bun audit` hits are build/dev tooling (brace-expansion, minimatch, glob, esbuild, vite, webpack, babel, postcss, browserslist, socket.io via a dev server) — backlog. | suites |
+| D-06 | Every action pinned by SHA, `permissions: contents: read`, uv via pinned `setup-uv`, check.yml frozen lockfile, `quickdesk_ref` via env + pattern. | — |
+
+**Deploy order** (no new dispatch field): `alembic upgrade head` → restart myos-ai (Python) → `convex
+deploy` (schema: `uploadIntents`, 3 indexes, `workspaces.deletingAt`) → rebuild app → copy edge
+`proxy.js` + unit, restart myos-edge → echo restart. **Operator follow-ups after deploy:**
+`blobSafety.neutralizeExecutableBlobs` dry-run (now also finds stored XML), `authDeletion.reconcileOrphans`
+dry-run per table, D-01 rotation, D-02 preflight, D-03 host precondition + `docker compose up -d`.
+
 ## Closing the hardening opens (2026-09-25) - LIVE 30778bd, prod-verified
 
 Every item under "Found, not fixed" in the entry below, in order. Deployed Python → Convex → frontend.

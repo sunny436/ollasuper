@@ -3,8 +3,11 @@
 import {
   CACHE_KEYS,
   onPrefetchedTranscript,
+  readOwnedCache,
   takePrefetchedTranscript,
+  writeOwnedCache,
 } from "@/lib/display-cache";
+import { useCacheOwner } from "@/lib/use-cache-owner";
 import { useEffect, useState } from "react";
 import type { ChatMessageDoc } from "../_components/chat-message";
 
@@ -39,6 +42,7 @@ export function useCachedTranscript(
   live: ChatMessageDoc[],
   loadingFirst: boolean,
 ): ChatMessageDoc[] {
+  const owner = useCacheOwner();
   const [cached, setCached] = useState<Entry | null>(null);
   const [prefetched, setPrefetched] = useState<ChatMessageDoc[] | null>(() =>
     threadId ? takePrefetchedTranscript<ChatMessageDoc>(threadId) : null,
@@ -55,30 +59,22 @@ export function useCachedTranscript(
     });
   }, [threadId, prefetched, loadingFirst]);
 
+  // Owner-bound (audit F-09): re-read whenever the verified account changes.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const raw = window.localStorage.getItem(CACHE_KEYS.transcript);
-      if (raw) setCached(JSON.parse(raw) as Entry);
-    } catch {}
-  }, []);
+    setCached(readOwnedCache<Entry>(CACHE_KEYS.transcript, owner));
+  }, [owner]);
 
   useEffect(() => {
-    if (!threadId || loadingFirst || typeof window === "undefined") return;
-    try {
-      const payload = JSON.stringify({
-        threadId,
-        msgs: live.slice(-MAX_MSGS),
-      } satisfies Entry);
-      if (payload.length <= MAX_BYTES) {
-        window.localStorage.setItem(CACHE_KEYS.transcript, payload);
-      } else {
-        window.localStorage.removeItem(CACHE_KEYS.transcript);
-      }
-    } catch {}
-  }, [threadId, live, loadingFirst]);
+    if (!threadId || loadingFirst) return;
+    writeOwnedCache<Entry>(
+      CACHE_KEYS.transcript,
+      owner,
+      { threadId, msgs: live.slice(-MAX_MSGS) },
+      MAX_BYTES,
+    );
+  }, [threadId, live, loadingFirst, owner]);
 
-  if (loadingFirst && cached?.threadId === threadId) return cached.msgs;
-  if (loadingFirst && prefetched) return prefetched;
+  if (loadingFirst && owner && cached?.threadId === threadId) return cached.msgs;
+  if (loadingFirst && owner && prefetched) return prefetched;
   return live;
 }

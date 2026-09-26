@@ -167,6 +167,9 @@ describe("D.1 root cause — register refuses an executable declared type", () =
   test("an ordinary declared type still registers", async () => {
     const t = convexTest(schema, modules);
     const { userId, ws } = await seed(t);
+    await t
+      .withIdentity(as(userId))
+      .mutation(api.chat.attachments.generateUploadUrl, { workspaceId: ws });
     const storageId = await t.run((ctx) =>
       ctx.storage.store(new Blob(["hello"], { type: "text/plain" })),
     );

@@ -42,7 +42,7 @@ async function drain(t: ReturnType<typeof convexTest>) {
 }
 
 async function seed(t: ReturnType<typeof convexTest>) {
-  return t.run(async (ctx) => {
+  const seeded = await t.run(async (ctx) => {
     const owner = await ctx.db.insert("users", { email: "owner@t.test" });
     const other = await ctx.db.insert("users", { email: "other@t.test" });
     const ws = await ctx.db.insert("workspaces", {
@@ -58,9 +58,17 @@ async function seed(t: ReturnType<typeof convexTest>) {
         createdAt: Date.now(),
       });
     }
-    const storageId = await ctx.storage.store(new Blob(["hello world"]));
-    return { owner, other, ws, storageId };
+    return { owner, other, ws };
   });
+  // The owner's upload, done the way the client does it (audit F-01): the
+  // upload URL — i.e. the owner's upload intent — comes BEFORE the bytes.
+  await t
+    .withIdentity(as(seeded.owner))
+    .mutation(api.userFiles.generateUploadUrl, { workspaceId: seeded.ws });
+  const storageId = await t.run(async (ctx) =>
+    ctx.storage.store(new Blob(["hello world"])),
+  );
+  return { ...seeded, storageId };
 }
 
 const pageOpts = { numItems: 20, cursor: null };
@@ -85,6 +93,7 @@ test("saveFile creates a processing row, schedules ingest, and dedups by hash", 
   expect(row?.status).toBe("processing");
 
   // Same content hash → same row, no duplicate (drops the redundant blob).
+  await u.mutation(api.userFiles.generateUploadUrl, { workspaceId: ws });
   const storageId2 = await t.run(async (ctx) =>
     ctx.storage.store(new Blob(["hello world 2"])),
   );

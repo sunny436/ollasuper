@@ -10,7 +10,7 @@ import {
   requireThreadAccess,
   requireUserId,
 } from "./chat/authz";
-import { requireMember } from "./orgs";
+import { hasWorkspaceAccess, requireMember } from "./orgs";
 import { cancelOpenForTask, holdOpenForTask } from "./scheduled/occurrences";
 
 /**
@@ -534,9 +534,18 @@ export async function projectFileIngestIds(
     .withIndex("by_project", (q) => q.eq("projectId", projectId))
     .collect();
   const out: string[] = [];
+  // Same current-entitlement rule as the account scope (audit F-08): a linked
+  // file from a workspace its owner no longer belongs to is out of scope.
+  const entitled = new Map<string, boolean>();
   for (const edge of edges) {
     const file = await ctx.db.get(edge.fileId);
-    if (file && file.status === "ready") out.push(file.ingestId);
+    if (!file || file.status !== "ready") continue;
+    let ok = entitled.get(file.workspaceId);
+    if (ok === undefined) {
+      ok = await hasWorkspaceAccess(ctx, file.userId, file.workspaceId);
+      entitled.set(file.workspaceId, ok);
+    }
+    if (ok) out.push(file.ingestId);
   }
   return out;
 }

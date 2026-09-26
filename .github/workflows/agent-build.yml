@@ -27,6 +27,10 @@ on:
         type: boolean
         default: false
 
+# Least privilege for the workflow token (audit D-06).
+permissions:
+  contents: read
+
 env:
   QT_VERSION: "6.8.3"
 
@@ -35,11 +39,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout (ollalink rebrand scripts)
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Fetch upstream QuickDesk source
         shell: bash
-        run: git clone --depth 1 --branch "${{ github.event.inputs.quickdesk_ref }}" https://github.com/barry-ran/QuickDesk.git qd-src
+        # The input reaches the shell as DATA (an env var), never as script text,
+        # and must look like a ref (audit D-06).
+        env:
+          QD_REF: ${{ github.event.inputs.quickdesk_ref }}
+        run: |
+          [[ "$QD_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "invalid quickdesk_ref" >&2; exit 1; }
+          git clone --depth 1 --branch "$QD_REF" https://github.com/barry-ran/QuickDesk.git qd-src
 
       - name: Apply ollalink rebrand
         shell: bash
@@ -48,14 +57,13 @@ jobs:
         run: bash quickdesk/agent-build/rebrand-agent.sh qd-src
 
       - name: Set up Qt ${{ env.QT_VERSION }}
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4
         with:
           version: ${{ env.QT_VERSION }}
           modules: "qtmultimedia qtwebsockets"
 
       - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
       - name: Build (Release)
         shell: cmd
         working-directory: qd-src
@@ -96,7 +104,7 @@ jobs:
           WIN_CODESIGN_PASSWORD: ${{ secrets.WIN_CODESIGN_PASSWORD }}
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ollalink-agent-windows
           path: qd-src/**/*setup*.exe
@@ -104,15 +112,19 @@ jobs:
   macos:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Fetch upstream QuickDesk source
-        run: git clone --depth 1 --branch "${{ github.event.inputs.quickdesk_ref }}" https://github.com/barry-ran/QuickDesk.git qd-src
+        env:
+          QD_REF: ${{ github.event.inputs.quickdesk_ref }}
+        run: |
+          [[ "$QD_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "invalid quickdesk_ref" >&2; exit 1; }
+          git clone --depth 1 --branch "$QD_REF" https://github.com/barry-ran/QuickDesk.git qd-src
       - name: Apply ollalink rebrand
         env:
           OLLALINK_SIGNALING: "wss://signaling.ollalink.com"
         run: bash quickdesk/agent-build/rebrand-agent.sh qd-src
       - name: Set up Qt ${{ env.QT_VERSION }}
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4
         with:
           version: ${{ env.QT_VERSION }}
           modules: "qtmultimedia qtwebsockets"
@@ -148,7 +160,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ollalink-agent-macos
           path: qd-src/**/*.dmg

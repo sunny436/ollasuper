@@ -40,9 +40,13 @@ async function tenantFor(
   ctx: ActionCtx,
   connectionId: Id<"mcpConnections">,
 ): Promise<Tenant> {
-  const identity = await ctx.auth.getUserIdentity();
-  if (identity === null) throw new ConvexError("Not authenticated");
-  const userId = String(identity.subject).split("|")[0] as Id<"users">;
+  // Live session + active account, via the one helper every other surface
+  // uses. The subject alone is a bare cast that a revoked session still carries.
+  const userId: Id<"users"> | null = await ctx.runQuery(
+    internal.accountState.activeCallerId,
+    {},
+  );
+  if (userId === null) throw new ConvexError("Not authenticated");
 
   const row = await ctx.runQuery(internal.mcp.connections.resolveForOperation, {
     connectionId,

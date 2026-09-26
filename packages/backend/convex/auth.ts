@@ -3,6 +3,7 @@ import { OllaSuperPassword } from "./passwordProvider";
 import { convexAuth, getAuthSessionId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import { ResendOTP } from "./ResendOTP";
+import type { Doc } from "./_generated/dataModel";
 import {
   assertPasswordNotIdentity,
   assertUsableEmail,
@@ -12,6 +13,7 @@ import {
   normalizeEmail,
 } from "./authPolicy";
 import { recordAuthEvent, revokeOtherSessions } from "./authEvents";
+import { consumeCodeSendBudget } from "./authProbe";
 import { reconcileDuplicateUsers } from "./authReconcile";
 import { ResendOTPReset, ResendOTPVerify } from "./passwordProviders";
 
@@ -104,42 +106,46 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
      */
     async afterUserCreatedOrUpdated(ctx, args) {
       const now = Date.now();
-      // Token refresh does not pass through here, but guard anyway: this must
-      // only fire for an actual authentication event.
-      const keep = await getAuthSessionId(ctx);
-      const revoked = await revokeOtherSessions(ctx, args.userId, keep);
+      // CODE ISSUANCE IS NOT AUTHENTICATION (audit F-06). The library calls
+      // this callback from createVerificationCode too — i.e. when ANYONE asks
+      // for a reset or OTP code for an address, before any proof of inbox
+      // ownership. Revoking sessions, stamping passwordChangedAt and logging a
+      // success here let an anonymous caller sign a victim out everywhere and
+      // forge their security history with nothing but their email. Issuance
+      // gets the row repair below and the send budget, nothing else.
+      const issuance = args.type === "email" || args.type === "phone";
 
       const providerId = String(args.provider?.id ?? args.type);
-      // reset-verification arrives here as a "verification" from the
-      // password-reset email provider. That is also the moment the credential
-      // actually changes, so stamp it and emit the event from the same place.
-      const isPasswordReset = providerId === "password-reset";
       const isOtp = providerId === "verify-otp" || providerId === "resend-otp";
 
       const user = await ctx.db.get(args.userId);
+      if (issuance) {
+        if (user !== null) {
+          const fix = repairFields(user);
+          if (Object.keys(fix).length > 0) await ctx.db.patch(user._id, fix);
+        }
+        // The budget is consumed HERE, in the transaction that is about to
+        // replace the address's code (audit F-07). Exhausted -> abort, which
+        // rolls the replacement back: the code already delivered stays valid.
+        // Same answer for every address, so it is not an existence oracle.
+        const email =
+          typeof args.profile?.email === "string" ? args.profile.email : user?.email;
+        if (email && !(await consumeCodeSendBudget(ctx, email))) {
+          throw new ConvexError(CODE_SEND_THROTTLED);
+        }
+        await reconcileDuplicateUsers(ctx, args.userId);
+        return;
+      }
+
+      // Proof has been given (verified code, OAuth, or a fresh credential).
+      const keep = await getAuthSessionId(ctx);
+      const revoked = await revokeOtherSessions(ctx, args.userId, keep);
+
       if (user !== null) {
         await ctx.db.patch(args.userId, {
           lastLoginAt: now,
           lastActivityAt: now,
-          ...(isPasswordReset ? { passwordChangedAt: now } : {}),
-          // Backfill AND repair. `emailNormalized` was added later, so old rows
-          // lack it — but `email` itself also needs guarding, because the
-          // library writes the RAW identifier over it: createVerificationCodeImpl
-          // does `profile: { email }` from whatever it was handed and upserts
-          // that onto the user. Every sign-up typed with a capital letter
-          // therefore left `users.email` as "Foo@Gmail.com".
-          //
-          // That column is the one `uniqueUserWithVerifiedEmail` indexes, so a
-          // corrupted value makes the next provider fail to find the user and
-          // create a SECOND one. Repairing here covers every provider — magic
-          // OTP and Google included — because they all reach this callback.
-          ...(user.email && user.email !== normalizeEmail(user.email)
-            ? { email: normalizeEmail(user.email) }
-            : {}),
-          ...(user.email && !user.emailNormalized
-            ? { emailNormalized: normalizeEmail(user.email) }
-            : {}),
-          ...(user.accountStatus ? {} : { accountStatus: "active" }),
+          ...repairFields(user),
         });
       }
 
@@ -162,22 +168,50 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       // second, separately-maintained mechanism.
       if (revoked > 0) {
         await recordAuthEvent(ctx, {
-          type: isPasswordReset ? "session_revoked" : "session_replaced",
+          type: "session_replaced",
           userId: args.userId,
           meta: { revoked },
         });
       }
+      // A completed password reset is recorded where the credential actually
+      // changes (passwordProvider reset-verification), not here.
       await recordAuthEvent(ctx, {
-        type: isPasswordReset
-          ? "password_reset"
-          : isOtp
-            ? "otp_verified"
-            : args.type === "oauth"
-              ? "google_login"
-              : "login",
+        type: isOtp
+          ? "otp_verified"
+          : args.type === "oauth"
+            ? "google_login"
+            : "login",
         userId: args.userId,
         meta: { provider: providerId },
       });
     },
   },
 });
+
+/**
+ * Backfill AND repair. `emailNormalized` was added later, so old rows lack it —
+ * but `email` itself also needs guarding, because the library writes the RAW
+ * identifier over it: createVerificationCodeImpl does `profile: { email }` from
+ * whatever it was handed and upserts that onto the user. Every sign-up typed
+ * with a capital letter therefore left `users.email` as "Foo@Gmail.com".
+ *
+ * That column is the one `uniqueUserWithVerifiedEmail` indexes, so a corrupted
+ * value makes the next provider fail to find the user and create a SECOND one.
+ * Repairing in the callback covers every provider — magic OTP and Google
+ * included — because they all reach it, at issuance and at sign-in alike.
+ */
+function repairFields(user: Doc<"users">): Partial<Doc<"users">> {
+  return {
+    ...(user.email && user.email !== normalizeEmail(user.email)
+      ? { email: normalizeEmail(user.email) }
+      : {}),
+    ...(user.email && !user.emailNormalized
+      ? { emailNormalized: normalizeEmail(user.email) }
+      : {}),
+    ...(user.accountStatus ? {} : { accountStatus: "active" }),
+  };
+}
+
+/** Generic on purpose: the same for every address, known or not. */
+const CODE_SEND_THROTTLED =
+  "Too many codes requested for this address. Please wait and try again.";

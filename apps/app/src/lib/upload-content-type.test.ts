@@ -10,6 +10,11 @@ describe("storageContentType", () => {
       "image/svg+xml",
       "application/xhtml+xml",
       "text/xsl",
+      // An XML document with an <?xml-stylesheet?> becomes script-running
+      // HTML in the browser (audit F-02).
+      "text/xml",
+      "application/xml",
+      "APPLICATION/XML; charset=utf-8",
     ]) {
       expect(storageContentType(t)).toBe("text/plain");
     }

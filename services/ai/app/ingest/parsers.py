@@ -20,7 +20,6 @@ import json
 import trafilatura
 from bs4 import BeautifulSoup
 from docx import Document
-from openpyxl import load_workbook
 from pptx import Presentation
 
 from app.ingest.types import FileType, IngestError, NormalizedDoc, Parser
@@ -106,39 +105,28 @@ def parse_pptx(raw: bytes, *, name: str) -> list[NormalizedDoc]:
     return docs
 
 
+# Same ceiling as Settings.ai_xlsx_max_cells/rows, for the registry entry,
+# which has no Settings. Ingestion and inline text do NOT come through here any
+# more — they use app/ingest/xlsx_guard.py (sandboxed, killable).
+_XLSX_MAX_CELLS = 5_000_000
+_XLSX_MAX_ROWS = 1_048_576
+
+
 def parse_xlsx(raw: bytes, *, name: str) -> list[NormalizedDoc]:
-    wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
-    docs: list[NormalizedDoc] = []
+    """In-process decode under the SAME work meter as the sandboxed path
+    (sandbox/ops.xlsx_docs), so no caller can reach an unbounded iteration."""
+    from app.sandbox import ops
+
     try:
-        for ws in wb.worksheets:
-            header: list[str] | None = None
-            lines: list[str] = []
-            for ri, row in enumerate(ws.iter_rows(values_only=True)):
-                if ri == 0:
-                    header = [str(c) if c is not None else "" for c in row]
-                    continue
-                if all(c is None for c in row):
-                    continue
-                if header:
-                    pairs = [
-                        (f"{h}={c}" if h else str(c))
-                        for h, c in zip(header, row, strict=False)
-                        if c is not None and str(c) != ""
-                    ]
-                else:
-                    pairs = [str(c) for c in row if c is not None]
-                lines.append(f"row {ri + 1}: " + ", ".join(pairs))
-            if lines:
-                docs.append(
-                    NormalizedDoc(
-                        text="\n".join(lines),
-                        section=ws.title,
-                        metadata={"source": name, "sheet": ws.title},
-                    )
-                )
-    finally:
-        wb.close()
-    return docs
+        docs = ops.xlsx_docs(
+            raw, name=name, max_cells=_XLSX_MAX_CELLS, max_rows=_XLSX_MAX_ROWS
+        )
+    except ops.DecodeError as e:
+        raise IngestError(str(e)) from e
+    return [
+        NormalizedDoc(text=d["text"], section=d["section"], metadata=d["metadata"])
+        for d in docs
+    ]
 
 
 def parse_csv(raw: bytes, *, name: str) -> list[NormalizedDoc]:

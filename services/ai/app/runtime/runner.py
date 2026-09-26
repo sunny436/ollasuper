@@ -35,6 +35,7 @@ from app.agent.executor import (
     bound_name_for_tool_id,
     build_tool_specs,
     execute_tool_calls,
+    private_source_for,
 )
 from app.agent.filegen_tool import GENERATE_FILE_TOOL_SPEC
 from app.agent.freshness import detect_requirement, prefetch_queries, render_directive
@@ -57,7 +58,13 @@ from app.agent.orchestration_tools import (
 from app.agent.personalization import compile_personalization
 from app.agent.policy import READ_SCOPE, WRITE_SCOPE
 from app.agent.search_guard import SEARCH_TOOL_IDS
-from app.agent.taint import REJECTED_EARLIER, source_of_id
+from app.agent.taint import (
+    PRIVATE_KNOWLEDGE,
+    PRIVATE_UPLOAD,
+    REJECTED_EARLIER,
+    TaintLedger,
+    source_of_id,
+)
 from app.clients.attachments import AttachmentError, build_user_content
 from app.clients.convex import ConvexClient, ConvexUnavailable
 from app.clients.ollagraph import OllagraphAdapter
@@ -204,6 +211,36 @@ def _compute_deadline_mono(
         return time.monotonic() + max(0.0, req.deadlineAt / 1000 - time.time())
     return started + settings.ai_agent_total_deadline_s
 
+
+
+def _seed_private_taint(
+    taint: TaintLedger,
+    *,
+    history: list,
+    latest_text: str,
+    content: object,
+    rag_text: str,
+) -> None:
+    """Seed the turn's ledger with what is ALREADY in context (audit F-03).
+
+    Tool results are recorded as they arrive, but some private content never
+    passes through a tool: the retrieved-knowledge block injected up front, and
+    the text of documents attached to this message. Both are recorded here so
+    an outbound call carrying them is gated like any other flow. Everything the
+    user TYPED — this turn and earlier ones — is recorded as benign, so echoing
+    their own words never counts as disclosure."""
+    taint.record_benign(latest_text)
+    for h in history:
+        if getattr(h, "role", None) == "user":
+            taint.record_benign(getattr(h, "content", "") or "")
+    if rag_text:
+        taint.record(PRIVATE_KNOWLEDGE, rag_text)
+    # With attachments, `content` is a parts list whose text part holds the
+    # <document> blocks plus the typed message (the benign part subtracts it).
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                taint.record(PRIVATE_UPLOAD, part.get("text") or "")
 
 async def _background_heartbeat(
     writer: DeltaWriter,
@@ -1611,6 +1648,13 @@ async def run_generation(
                     doc_soffice_timeout_s=settings.ai_documents_soffice_timeout_s,
                     doc_soffice_concurrency=settings.ai_documents_soffice_concurrency,
                 )
+                _seed_private_taint(
+                    tools_ctx.taint,
+                    history=history,
+                    latest_text=latest.content if latest is not None else "",
+                    content=content,
+                    rag_text=rag_text,
+                )
                 if sec_state is not None:
                     # Redaction, the read-only/GitHub guards and the security
                     # built-ins all key on this being set.
@@ -1737,6 +1781,8 @@ async def run_generation(
                                 candidates=candidates,
                                 bind=llm_for_tools.bind_tools,
                                 capabilities=resolver,
+                                # One turn, one ledger (audit F-03).
+                                taint=tools_ctx.taint,
                             )
                         )
 
@@ -2002,7 +2048,11 @@ async def run_generation(
                     # flow freely after it (measured on production: the Drive
                     # search re-issued after a rejection ran unasked).
                     tools_ctx.taint.record(
-                        source_of_id(ct.toolId, tools_ctx.registry), ct.resultContent
+                        source_of_id(ct.toolId, tools_ctx.registry)
+                        # A private built-in's result (knowledge/memory/data/
+                        # document) is re-recorded too (audit F-03).
+                        or private_source_for(ct.toolId),
+                        ct.resultContent,
                     )
             completed_steps = len(req.completedTools)
         if tools_ctx is not None:
@@ -2178,6 +2228,8 @@ async def run_generation(
                     approvals=dict(tools_ctx.approvals),
                     resume_seen=dict(tools_ctx.seen_calls),
                     resume_seen_set=frozenset(tools_ctx.seen_call_set),
+                    # One turn, one ledger (audit F-03).
+                    taint=tools_ctx.taint,
                 )
             )
 

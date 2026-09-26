@@ -1,7 +1,7 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { activeUserId } from "../accountState";
 import { requireMember } from "../orgs";
 
 /**
@@ -20,7 +20,9 @@ import { requireMember } from "../orgs";
 
 /** The userId is always derived from the session, never accepted as an argument. */
 export async function requireUserId(ctx: QueryCtx): Promise<Id<"users">> {
-  const userId = await getAuthUserId(ctx);
+  // Live session + active account — a bare getAuthUserId honoured a revoked
+  // session (and a suspended owner) until the access token expired.
+  const userId = await activeUserId(ctx);
   if (!userId) throw new ConvexError("Not authenticated");
   return userId;
 }

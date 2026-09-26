@@ -22,7 +22,7 @@ echo "-- members of workspace (expect owner A + member B) --"
 "$NODE" "$CVX" data members 2>&1 | grep "$WS"
 
 echo "=== events scoped to workspace ==="
-curl -s -X POST http://127.0.0.1:4000/emit-webhook -H "content-type: application/json" -d "{\"workspaceId\":\"$WS\",\"note\":\"scoped\"}" >/dev/null
+# (removed: /emit-webhook no longer exists — audit F-10)
 sleep 1
 echo "-- events carrying workspace --"
 "$NODE" "$CVX" data events 2>&1 | grep "$WS" | head -2

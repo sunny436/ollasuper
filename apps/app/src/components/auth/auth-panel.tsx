@@ -21,6 +21,7 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { clearDisplayCaches } from "@/lib/display-cache";
 import { consumeDisplacedFlag } from "@/lib/displaced-session";
 import { OAuthRow } from "./oauth-row";
 import {
@@ -215,7 +216,12 @@ export function AuthPanel() {
    * middleware redirect is still there for anyone who opens /login while already
    * signed in; this just stops a fresh sign-in waiting on it.
    */
-  const enter = () => router.replace("/chat");
+  const enter = () => {
+    // A fresh sign-in starts from nothing: no display cache written for
+    // whoever used this browser before may paint for this account (F-09).
+    clearDisplayCaches();
+    router.replace("/chat");
+  };
 
   const signInForm = useForm({
     validatorAdapter: zodValidator(),

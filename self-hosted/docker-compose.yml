@@ -4,9 +4,13 @@ services:
     image: ghcr.io/get-convex/convex-backend:latest
     stop_grace_period: 10s
     stop_signal: SIGINT
+    # LOOPBACK by default (audit D-03). Omitting the host address publishes on
+    # EVERY interface; every legitimate consumer here (the edge proxy, the Next
+    # server, the AI plane's internal URL, the CLI) is on this host. Set
+    # CONVEX_BIND_ADDR only if something off-host genuinely needs direct access.
     ports:
-      - "${PORT:-3210}:3210"
-      - "${SITE_PROXY_PORT:-3211}:3211"
+      - "${CONVEX_BIND_ADDR:-127.0.0.1}:${PORT:-3210}:3210"
+      - "${CONVEX_BIND_ADDR:-127.0.0.1}:${SITE_PROXY_PORT:-3211}:3211"
     volumes:
       - data:/convex/data
     environment:
@@ -55,8 +59,9 @@ services:
     image: ghcr.io/get-convex/convex-dashboard:latest
     stop_grace_period: 10s
     stop_signal: SIGINT
+    # The admin dashboard: loopback only (reach it through an SSH tunnel).
     ports:
-      - "${DASHBOARD_PORT:-6791}:6791"
+      - "${DASHBOARD_BIND_ADDR:-127.0.0.1}:${DASHBOARD_PORT:-6791}:6791"
     environment:
       - NEXT_PUBLIC_DEPLOYMENT_URL=${NEXT_PUBLIC_DEPLOYMENT_URL:-http://127.0.0.1:${PORT:-3210}}
       - NEXT_PUBLIC_LOAD_MONACO_INTERNALLY

@@ -7,8 +7,24 @@ Type=simple
 ExecStart=/usr/bin/node /opt/myos-edge/proxy.js
 Restart=always
 RestartSec=3
+
+# Least privilege (audit D-02). The proxy only reads its own script, listens on
+# an unprivileged loopback port and connects to loopback upstreams, so it needs
+# no identity, no capability and no writable path at all. DynamicUser gives it
+# a throwaway UID and implies ProtectSystem=strict, ProtectHome=read-only and
+# PrivateTmp. /opt/myos-edge/proxy.js must stay world-readable (0644).
+DynamicUser=yes
 NoNewPrivileges=true
-PrivateTmp=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target

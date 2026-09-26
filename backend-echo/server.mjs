@@ -114,12 +114,10 @@ const server = http.createServer(async (req, res) => {
       return send(res, 202, { accepted: true, jobId });
     }
 
-    // WEBHOOK EMIT — push a generic event back into Convex (demo of backend -> Convex).
-    if (req.method === "POST" && req.url === "/emit-webhook") {
-      const body = await readBody(req);
-      const r = await postWebhook({ type: "demo.echo", ...body });
-      return send(res, 200, { posted: true, convexStatus: r.status });
-    }
+    // NO /emit-webhook (audit F-10). It accepted an UNAUTHENTICATED body and
+    // relayed it to Convex under this server's webhook secret, with a
+    // caller-chosen workspace and type — turning the secret into a
+    // cross-tenant write for anyone who could reach this port.
 
     send(res, 404, { error: "not found" });
   } catch (e) {
@@ -127,6 +125,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "0.0.0.0", () =>
+// Loopback only: Convex (on this host) is the only legitimate caller.
+server.listen(PORT, process.env.BIND_HOST || "127.0.0.1", () =>
   console.log(`echo backend listening on :${PORT}`),
 );

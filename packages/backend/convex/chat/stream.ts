@@ -14,7 +14,8 @@ import { loadMemoriesForDispatch } from "../memories";
 import { loadActiveResearchRun } from "../researchRuns";
 import { loadSkillsForDispatch } from "../userSkills";
 import { projectFileIngestIds } from "../projects";
-import { userHasReadyFiles } from "../userFiles";
+import { accountRagScope, userHasReadyFiles } from "../userFiles";
+import { hasWorkspaceAccess } from "../orgs";
 import { resolvedApprovalsForStream } from "./approvals";
 import { loadThreadDatasets } from "./attachments";
 import { getUserIdOrNull, requireMessageAccess, requireUserId } from "./authz";
@@ -138,6 +139,10 @@ export const active = query({
     const thread = await ctx.db.get(tid);
     if (!thread || thread.userId !== userId) return null;
     if (!thread.streamingMessageId) return null;
+    // Current membership, like requireThreadAccess (audit F-08). One index
+    // read; the member row never changes during a stream, so this adds no
+    // re-fires to the per-delta hot path.
+    if (!(await hasWorkspaceAccess(ctx, userId, thread.workspaceId))) return null;
 
     const message = await ctx.db.get(thread.streamingMessageId);
     if (!message) return null;
@@ -219,6 +224,13 @@ export const committed = query({
     if (!userId) return null;
     const message = await ctx.db.get(messageId);
     if (!message || message.userId !== userId) return null;
+    const thread = await ctx.db.get(message.threadId);
+    if (
+      !thread ||
+      !(await hasWorkspaceAccess(ctx, userId, thread.workspaceId))
+    ) {
+      return null;
+    }
     const stream = await ctx.db
       .query("chatStreams")
       .withIndex("by_message", (q) => q.eq("messageId", messageId))
@@ -625,9 +637,12 @@ export const dispatchPayload = internalQuery({
         : null;
     const projectInstructions = liveProject?.instructions ?? null;
 
+    // An ordinary chat searches the whole corpus ONLY while every ready file is
+    // in a workspace the user still belongs to; otherwise it gets an explicit
+    // allowlist (audit F-08 — see accountRagScope).
     const ragFileIds: string[] | null = liveProject
       ? await projectFileIngestIds(ctx, liveProject._id)
-      : null;
+      : await accountRagScope(ctx, stream.userId);
     // Cheap existence check so the inference plane only pays the RAG embedding +
     // pgvector round-trip when there is something in scope to search. Stays 0|1
     // (every consumer tests `> 0`) but is now PROJECT-AWARE: an empty Project

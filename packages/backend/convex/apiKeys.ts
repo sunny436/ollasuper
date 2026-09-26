@@ -1,4 +1,3 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
 import type { Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -12,8 +11,8 @@ import {
 } from "./_generated/server";
 import { audit } from "./auditLog";
 import { requireDevSeed } from "./devGuard";
-import { isActiveUser } from "./accountState";
-import { requireMember } from "./orgs";
+import { activeUserId, isActiveUser } from "./accountState";
+import { hasWorkspaceAccess, requireMember } from "./orgs";
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -99,7 +98,7 @@ export const createForUser = internalAction({
 export const listMine = query({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, { workspaceId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return [];
     await requireMember(ctx, userId, workspaceId);
     const keys = await ctx.db
@@ -120,7 +119,7 @@ export const listMine = query({
 export const revoke = mutation({
   args: { id: v.id("apiKeys") },
   handler: async (ctx, { id }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     const k = await ctx.db.get(id);
     if (!k) throw new Error("Not found");
@@ -147,6 +146,15 @@ export const resolveByHash = internalQuery({
     // is not involved on this path at all, so nothing else would have caught it.
     // A credential must not outlive the identity it speaks for.
     if (!(await isActiveUser(ctx, k.userId))) return null;
+    // ...and neither is the key's owner merely HAVING BEEN a member. A key
+    // resolved to the former workspace identity after its owner was removed
+    // (audit F-08); removeMember now revokes, and this refuses independently.
+    if (
+      k.workspaceId &&
+      !(await hasWorkspaceAccess(ctx, k.userId, k.workspaceId))
+    ) {
+      return null;
+    }
     return {
       userId: k.userId,
       workspaceId: k.workspaceId ?? null,

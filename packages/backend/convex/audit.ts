@@ -1,4 +1,4 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
+import { activeUserId } from "./accountState";
 import { v } from "convex/values";
 import { internalMutation, query } from "./_generated/server";
 import { audit } from "./auditLog";
@@ -48,7 +48,7 @@ export const record = internalMutation({
 export const recent = query({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, { workspaceId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return [];
     await requireMember(ctx, userId, workspaceId);
     const rows = await ctx.db

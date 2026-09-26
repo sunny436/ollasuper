@@ -25,5 +25,8 @@ export default defineConfig({
       },
     },
     include: ["convex/**/*.test.ts"],
+    // Real authSessions rows behind the placeholder test identities — see the
+    // file header (audit F-05 made every helper require a live session).
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

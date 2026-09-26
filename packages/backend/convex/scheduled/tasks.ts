@@ -3,7 +3,7 @@ import { paginationOptsValidator } from "convex/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import { mutation, query } from "../_generated/server";
 import { toPublic } from "../chat/public";
-import { requireMember } from "../orgs";
+import { hasWorkspaceAccess, requireMember } from "../orgs";
 import { requireProjectAccess } from "../projects";
 import {
   optionalTaskAccess,
@@ -234,10 +234,23 @@ export const list = query({
       .withIndex("by_user_updated", (q) => q.eq("userId", userId))
       .order("desc")
       .take(200);
-    return rows
-      .filter((t) => t.status !== "deleted")
-      .filter((t) => !workspaceId || t.workspaceId === workspaceId)
-      .map(publicTask);
+    // The detail endpoint (optionalTaskAccess) requires CURRENT membership of
+    // the task's workspace; the list used to check only ownership, so a removed
+    // member kept reading their standing prompts here (audit F-08). One check
+    // per distinct workspace, not per row.
+    const entitled = new Map<string, boolean>();
+    const visible: typeof rows = [];
+    for (const t of rows) {
+      if (t.status === "deleted") continue;
+      if (workspaceId && t.workspaceId !== workspaceId) continue;
+      let ok = entitled.get(t.workspaceId);
+      if (ok === undefined) {
+        ok = await hasWorkspaceAccess(ctx, userId, t.workspaceId);
+        entitled.set(t.workspaceId, ok);
+      }
+      if (ok) visible.push(t);
+    }
+    return visible.map(publicTask);
   },
 });
 

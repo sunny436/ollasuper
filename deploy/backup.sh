@@ -90,7 +90,15 @@ verify_size() {
   fi
 }
 
+# PRIVATE BY CONSTRUCTION (audit D-04). These dumps hold every user's data
+# and auth state. With the conventional 022 umask a redirected pg_dump and the
+# export zip were world-readable, and so was the directory holding them. 077
+# makes every file this script creates 0600; the directory is forced to 0700,
+# and anything an older run left more open is tightened.
+umask 077
 mkdir -p "$DEST"
+chmod 700 "$DEST"
+find "$DEST" -maxdepth 1 -type f -perm /077 -exec chmod 600 {} + 2>/dev/null || true
 cd "$REPO/packages/backend"
 
 ts=$(date +%Y%m%d-%H%M%S)

@@ -47,7 +47,22 @@ export default defineSchema({
     // Additive, and purely so the abandoned-signup purge can select exactly the
     // unverified rows. Without it the purge would scan the whole users table on
     // every pass to find a set that is normally tiny.
-    .index("by_verification", ["emailVerificationTime"]),
+    .index("by_verification", ["emailVerificationTime"])
+    // Blob provenance (audit F-01): "is this storage id already referenced by
+    // any row?" must be answerable for every table that holds one.
+    .index("by_image", ["imageId"]),
+
+  // One row per issued upload URL, bound to the uploader (audit F-01). A blob
+  // may be claimed only by a user holding an unconsumed intent whose window
+  // contains the blob's creation — so a storage id learned from someone else's
+  // URL (always older than the thief's intent, or already referenced) can never
+  // be registered or deleted through another account.
+  uploadIntents: defineTable({
+    userId: v.id("users"),
+    workspaceId: v.optional(v.id("workspaces")),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  }).index("by_user_expires", ["userId", "expiresAt"]),
 
   // Account-level security history. Deliberately NOT auditLogs: those are
   // workspace-scoped product actions with a required workspaceId, whereas these
@@ -144,7 +159,10 @@ export default defineSchema({
     size: v.number(),
     contentType: v.string(),
     createdAt: v.number(),
-  }).index("by_workspace", ["workspaceId"]),
+  })
+    .index("by_workspace", ["workspaceId"])
+    // Blob provenance (audit F-01) — see users.by_image.
+    .index("by_storage", ["storageId"]),
 
   // Per-user file knowledge base (RAG). SEPARATE from `files` for the same
   // reason chatAttachments is: files.list returns every workspace row to any
@@ -205,6 +223,10 @@ export default defineSchema({
     name: v.string(),
     ownerId: v.id("users"),
     createdAt: v.number(),
+    // Set when an account-deletion cascade starts tearing this workspace down
+    // (audit F-12). A deleting workspace grants nothing: requireRole and invite
+    // acceptance refuse it while its children drain. Optional => additive.
+    deletingAt: v.optional(v.number()),
   }),
   members: defineTable({
     workspaceId: v.id("workspaces"),
@@ -785,7 +807,9 @@ export default defineSchema({
     .index("by_message", ["messageId"])
     .index("by_thread", ["threadId"])
     .index("by_stream_key", ["streamId", "artifactKey"])
-    .index("by_parent", ["parentArtifactId"]),
+    .index("by_parent", ["parentArtifactId"])
+    // Blob provenance (audit F-01) — see users.by_image.
+    .index("by_storage", ["storageId"]),
 
   // Phase 7 — the durable, owner-scoped SEO MUTATION ledger: the auditable RESULT
   // record for one approved site change (update metadata / structured data / redirect /

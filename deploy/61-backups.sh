@@ -26,7 +26,10 @@ BIN="$REPO/deploy/backup.sh"
 [ -f "$BIN" ] || { echo "FATAL: $BIN not found" >&2; exit 1; }
 
 echo "=== [1/4] directory + permissions ==="
+# 0700: backups hold every user's data (audit D-04; backup.sh also runs umask 077).
+umask 077
 mkdir -p "$DEST"
+chmod 700 "$DEST"
 chmod +x "$BIN"
 echo "  $DEST ready; $(ls -l "$BIN" | awk '{print $1}') $BIN"
 

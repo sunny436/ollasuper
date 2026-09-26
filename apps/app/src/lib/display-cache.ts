@@ -19,6 +19,92 @@ export const CACHE_KEYS = {
   transcript: "chat:transcript",
 } as const;
 
+/**
+ * OWNER-BOUND persistence (audit F-09).
+ *
+ * These keys used to be global: whatever the last account wrote, the next
+ * render on that browser painted — before the current account's own queries
+ * resolved, and after an expiry or a revocation that never passed through the
+ * explicit sign-out path. Every entry is now an envelope naming the verified
+ * user it belongs to and when it was written, and it is only ever read back
+ * for that same user, within MAX_AGE_MS. Anything else is deleted on sight.
+ *
+ * The owner is the `sub` of the session JWT (useCacheOwner), which the
+ * Next.js provider hands the client on first render — no network wait. An
+ * expired token counts as no owner.
+ */
+const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+type OwnedEntry<T> = { owner: string; at: number; v: T };
+
+/** The user id a session JWT speaks for, or null (absent, malformed, expired). */
+export function ownerFromToken(token: string | null | undefined): string | null {
+  if (!token) return null;
+  try {
+    const part = token.split(".")[1];
+    if (!part) return null;
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const claims = JSON.parse(atob(padded)) as { sub?: unknown; exp?: unknown };
+    if (typeof claims.exp === "number" && claims.exp * 1000 <= Date.now()) {
+      return null;
+    }
+    if (typeof claims.sub !== "string") return null;
+    const userId = claims.sub.split("|")[0];
+    return userId ? userId : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The cached value for `key`, only if it belongs to `owner` and is fresh. */
+export function readOwnedCache<T>(key: string, owner: string | null): T | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const entry = JSON.parse(raw) as Partial<OwnedEntry<T>>;
+    const fresh =
+      typeof entry.at === "number" && Date.now() - entry.at <= MAX_AGE_MS;
+    if (owner && entry.owner === owner && fresh && "v" in entry) {
+      return entry.v as T;
+    }
+    // Someone else's, stale, legacy (pre-envelope) or unowned: never shown.
+    window.localStorage.removeItem(key);
+  } catch {
+    // Private mode / blocked storage / corrupt JSON — nothing to show.
+  }
+  return null;
+}
+
+/**
+ * Persist `value` for `owner`. No owner, no write. Returns false (and drops the
+ * key) when the serialised entry exceeds `maxBytes`.
+ */
+export function writeOwnedCache<T>(
+  key: string,
+  owner: string | null,
+  value: T,
+  maxBytes = Number.POSITIVE_INFINITY,
+): boolean {
+  if (typeof window === "undefined" || !owner) return false;
+  try {
+    const payload = JSON.stringify({
+      owner,
+      at: Date.now(),
+      v: value,
+    } satisfies OwnedEntry<T>);
+    if (payload.length > maxBytes) {
+      window.localStorage.removeItem(key);
+      return false;
+    }
+    window.localStorage.setItem(key, payload);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function clearDisplayCaches(): void {
   prefetchedTranscripts.clear();
   prefetchWaiters.clear();

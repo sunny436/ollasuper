@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { exportJWK, exportPKCS8, generateKeyPair } from "jose";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
@@ -37,6 +37,9 @@ beforeAll(async () => {
   delete process.env.SMTP_HOST;
   // biome-ignore lint/performance/noDelete: same
   delete process.env.RESEND_API_KEY;
+  // Code logging is explicit opt-in now (authCodes.deliverCode, audit §14):
+  // an absent transport alone no longer writes live codes to the log.
+  process.env.AUTH_LOG_CODES = "1";
 });
 
 /** Run `fn`, returning whatever code it caused to be emitted. */
@@ -392,22 +395,103 @@ describe("domain allow-list scope", () => {
 
 // ------------------------------------------------------------- send throttle
 
+// ----------------------------------------- code issuance is not auth (F-06)
+
+/** Everything an anonymous code request must NOT be able to touch. */
+async function authState(t: TestConvex<typeof schema>, userId: Id<"users">) {
+  return t.run(async (ctx) => {
+    const sessions = await ctx.db
+      .query("authSessions")
+      .withIndex("userId", (q) => q.eq("userId", userId))
+      .collect();
+    const refresh = [];
+    for (const s of sessions) {
+      refresh.push(
+        ...(await ctx.db
+          .query("authRefreshTokens")
+          .withIndex("sessionId", (q) => q.eq("sessionId", s._id))
+          .collect()),
+      );
+    }
+    const user = await ctx.db.get(userId);
+    const events = await ctx.db
+      .query("authEvents")
+      .withIndex("by_user_at", (q) => q.eq("userId", userId))
+      .collect();
+    return {
+      sessions: sessions.map((s) => s._id).sort(),
+      refresh: refresh.map((r) => r._id).sort(),
+      passwordChangedAt: user?.passwordChangedAt ?? null,
+      lastLoginAt: user?.lastLoginAt ?? null,
+      events: events.map((e) => e.type),
+    };
+  });
+}
+
+describe("code issuance is not authentication (audit F-06)", () => {
+  test("an anonymous password-reset request changes nothing on the account", async () => {
+    const t = convexTest(schema, modules);
+    const email = "victim-reset@gmail.com";
+    const userId = await createVerifiedUser(t, email);
+    const before = await authState(t, userId);
+    expect(before.sessions.length).toBeGreaterThan(0);
+    // Anyone who knows the address can ask — no identity, no proof.
+    await captureCode(() => signIn(t, { email, flow: "reset" }));
+    expect(await authState(t, userId)).toEqual(before);
+  });
+
+  test("an anonymous magic-OTP request changes nothing on the account", async () => {
+    const t = convexTest(schema, modules);
+    const email = "victim-otp@gmail.com";
+    const userId = await createVerifiedUser(t, email);
+    const before = await authState(t, userId);
+    await captureCode(() => otpSend(t, email));
+    expect(await authState(t, userId)).toEqual(before);
+  });
+
+  test("a COMPLETED reset is what revokes, stamps and logs", async () => {
+    const t = convexTest(schema, modules);
+    const email = "completes-reset@gmail.com";
+    const userId = await createVerifiedUser(t, email);
+    const code = await captureCode(() => signIn(t, { email, flow: "reset" }));
+    const before = await authState(t, userId);
+    await signIn(t, { email, code, newPassword: NEW_PASSWORD, flow: "reset-verification" });
+    const after = await authState(t, userId);
+    expect(after.passwordChangedAt).not.toBeNull();
+    expect(after.events).toContain("password_reset");
+    // Every session that existed before the reset is gone.
+    expect(after.sessions.some((id) => before.sessions.includes(id))).toBe(false);
+  });
+});
+
 describe("emailed-code send throttle", () => {
-  test("caps codes per address, then skips silently (anti-bombing)", async () => {
+  test("caps codes per address, and a refused request keeps the last code valid", async () => {
     const t = convexTest(schema, modules);
     const email = "bomb@gmail.com";
     // Driven through magic-OTP rather than repeated sign-up: a sign-up
     // collision now sends nothing, so it can no longer exercise the cap.
-    // Every emailed code funnels through the same deliverCode gate.
+    let last = "";
     for (let i = 0; i < 6; i++) {
-      const code = await captureCode(() => otpSend(t, email));
-      expect(code).toMatch(/^\d{8}$/);
+      last = await captureCode(() => otpSend(t, email));
+      expect(last).toMatch(/^\d{8}$/);
     }
-    // The 7th is skipped: no code is emitted, yet sign-in still "starts" (the
-    // throttle never throws), so the flow — and any constant response — is intact.
-    await expect(captureCode(() => otpSend(t, email))).rejects.toThrow(
-      /no code emitted/,
+    const before = await t.run(async (ctx) =>
+      (await ctx.db.query("authVerificationCodes").collect()).map((c) => c.code),
     );
+    // The 7th is REFUSED — and refused BEFORE the stored code is replaced
+    // (audit F-07). It used to be "skipped" at delivery, after the swap, so a
+    // throttled request silently invalidated the code the user was holding.
+    await expect(otpSend(t, email)).rejects.toThrow(/Too many codes/);
+    const after = await t.run(async (ctx) =>
+      (await ctx.db.query("authVerificationCodes").collect()).map((c) => c.code),
+    );
+    expect(after).toEqual(before);
+    // ...so the last DELIVERED code still signs the user in.
+    const ok = await t.action(api.auth.signIn, {
+      provider: "resend-otp",
+      params: { email, code: last },
+    });
+    expect((ok as { tokens: unknown } | null)?.tokens).toBeTruthy();
   });
 
   test("a different address has its own budget", async () => {

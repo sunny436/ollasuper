@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-# Local email inbox: Mailpit (SMTP :1025, web UI :8025) + a CF tunnel for the UI.
+# Local email catcher: Mailpit (SMTP :1025, web UI :8025).
+#
+# AUDIT D-03. This used to publish BOTH ports on every interface AND open an
+# unauthenticated cloudflared quick tunnel to the UI — i.e. every auth code
+# Mailpit ever caught was readable by anyone holding a trycloudflare URL.
+#   * UI  -> 127.0.0.1 only (use an SSH tunnel: ssh -L 8025:127.0.0.1:8025 ...)
+#   * SMTP -> the pinned compose bridge gateway (172.18.0.1, see
+#             self-hosted/docker-compose.override.yml), which is where the
+#             Convex container reaches it — not the LAN.
+#   * the cf-mail quick tunnel is REMOVED (stopped, disabled, unit deleted).
 set -uo pipefail
-docker rm -f mailpit 2>/dev/null || true
-docker run -d --name mailpit --restart unless-stopped -p 1025:1025 -p 8025:8025 axllent/mailpit 2>&1 | tail -1
+SMTP_BIND=${MAILPIT_SMTP_BIND:-172.18.0.1}
 
-cat > /etc/systemd/system/cf-mail.service <<EOF
-[Unit]
-Description=cloudflared tunnel (mailpit UI -> :8025)
-After=network.target
-[Service]
-ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://localhost:8025
-Restart=always
-RestartSec=5
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable cf-mail >/dev/null 2>&1
-systemctl restart cf-mail
-sleep 12
-MURL=$(journalctl -u cf-mail --no-pager -n 80 2>/dev/null | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1)
-echo "MAILPIT_UI=$MURL"
-curl -s -o /dev/null -w "mailpit api: %{http_code}\n" http://localhost:8025/api/v1/messages
+docker rm -f mailpit 2>/dev/null || true
+docker run -d --name mailpit --restart unless-stopped \
+  -p "${SMTP_BIND}:1025:1025" -p 127.0.0.1:8025:8025 axllent/mailpit 2>&1 | tail -1
+
+if systemctl list-unit-files cf-mail.service >/dev/null 2>&1; then
+  systemctl disable --now cf-mail >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/cf-mail.service
+  systemctl daemon-reload
+  echo "cf-mail quick tunnel removed"
+fi
+
+curl -s -o /dev/null -w "mailpit api (loopback): %{http_code}\n" http://127.0.0.1:8025/api/v1/messages
 echo MAILPIT_DONE

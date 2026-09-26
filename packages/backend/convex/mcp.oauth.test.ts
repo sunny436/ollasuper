@@ -757,11 +757,15 @@ describe("the OAuth actions are the tenancy gate", () => {
     await t.run((ctx) => ctx.db.patch(s.owner, { accountStatus: "suspended" }));
     const calls = stubPlane({ auth_state: "CONNECTED" });
     for (const name of ["start", "status", "disconnect"] as const) {
+      // Since audit F-05 the action entry resolves the caller through
+      // activeCallerId (live session + active account), so a suspended account
+      // is refused as "Not authenticated" before the connection is even looked
+      // up — the same answer every other surface gives it.
       await expect(
         t
           .withIdentity(as(s.owner))
           .action(api.mcp.oauth[name], { connectionId: s.connectionId }),
-      ).rejects.toThrow("Not found");
+      ).rejects.toThrow("Not authenticated");
     }
     expect(calls).toHaveLength(0);
   });

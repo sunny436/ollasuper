@@ -2,7 +2,9 @@
 const { ConvexHttpClient } = require("convex/browser");
 const { anyApi } = require("convex/server");
 const api = anyApi;
-const URL = process.env.CONVEX_URL || "http://172.16.70.25:3210";
+// Loopback by default (Convex no longer listens on the LAN — audit D-03). From
+// off-host, pass CONVEX_URL=https://app.ollasuper.com/__cvx.
+const URL = process.env.CONVEX_URL || "http://127.0.0.1:3210";
 const ts = Date.now();
 const results = [];
 const rec = (name, pass, detail = "") => {
@@ -68,9 +70,10 @@ async function allowed(name, fn) {
   if (keyAId) await denied("B revokes A's apiKey", () => B.mutation(api.apiKeys.revoke, { id: keyAId }));
 
   console.log("--- RBAC: member cannot do admin ops ---");
-  await A.mutation(api.orgs.invite, { workspaceId: wsA, email: emailB, role: "member" });
+  // Invited in UPPERCASE: stored lowercased, so B still sees it (case probe).
+  await A.mutation(api.orgs.invite, { workspaceId: wsA, email: emailB.toUpperCase(), role: "member" });
   const invs = await B.query(api.orgs.myInvites, {});
-  rec("B sees own invite (same-case email)", !!(invs && invs.length), invs ? `${invs.length} invite(s)` : "none");
+  rec("invite with UPPERCASE email visible to B", !!(invs && invs.length), invs ? `${invs.length} invite(s)` : "none (case-sensitivity bug)");
   if (invs && invs.length) {
     await allowed("B accepts invite (becomes member)", () => B.mutation(api.orgs.acceptInvite, { inviteId: invs[0]._id }));
     await allowed("B(member) reads A.files.list", () => B.query(api.files.list, { workspaceId: wsA }));
@@ -78,12 +81,10 @@ async function allowed(name, fn) {
     await denied("B(member) cannot see pendingInvites", () => B.query(api.orgs.pendingInvites, { workspaceId: wsA }));
   }
 
-  console.log("--- email case-sensitivity probe ---");
-  await A.mutation(api.orgs.invite, { workspaceId: wsA, email: emailB.toUpperCase(), role: "member" });
-  const invs2 = await B.query(api.orgs.myInvites, {});
-  const seesUpper = invs2 && invs2.some((i) => true) && invs2.length > (invs ? invs.length - 1 : 0);
-  rec("invite with UPPERCASE email visible to B", !!(invs2 && invs2.length >= 1) && seesUpper === true ? true : false,
-    `myInvites now=${invs2 ? invs2.length : 0} (if 0, case-sensitivity bug)`);
+  console.log("--- stale-grant probe (audit F-11) ---");
+  // A grant to someone who is ALREADY a member is exactly what survived their
+  // removal and let them walk back in. It is refused at issuance now.
+  await denied("A cannot re-invite an existing member", () => A.mutation(api.orgs.invite, { workspaceId: wsA, email: emailB.toUpperCase(), role: "admin" }));
 
   console.log("--- unauth control ---");
   try {

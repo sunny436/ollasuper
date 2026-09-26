@@ -10,6 +10,7 @@ import {
 import { Scrypt } from "lucia";
 import { ConvexError } from "convex/values";
 import type { GenericActionCtxWithAuthConfig } from "@convex-dev/auth/server";
+import { internal } from "./_generated/api";
 import type { DataModel } from "./_generated/dataModel";
 
 /**
@@ -212,10 +213,17 @@ export function OllaSuperPassword(config: OllaSuperPasswordConfig) {
           return null;
         }
         if (resetAccount === null) return null;
-        return await signInViaProvider(ctx, config.reset, {
-          accountId: resetAccount._id as never,
-          params: verifyParams,
-        });
+        // Uniform with the unknown-address branch above: an issuance refused
+        // by the per-address send budget (auth.ts, audit F-07) must not answer
+        // differently from an address that has no account.
+        try {
+          return await signInViaProvider(ctx, config.reset, {
+            accountId: resetAccount._id as never,
+            params: verifyParams,
+          });
+        } catch {
+          return null;
+        }
       } else if (flow === "reset-verification") {
         if (!config.reset) {
           throw new Error(`Password reset is not enabled for ${provider}`);
@@ -236,6 +244,12 @@ export function OllaSuperPassword(config: OllaSuperPasswordConfig) {
         });
         // Every other session dies with the old password.
         await invalidateSessions(ctx, { userId, except: [sessionId] });
+        // THIS is the moment the credential changed — the only place a reset
+        // may be stamped and logged (audit F-06; it used to happen when the
+        // code was merely requested, by anyone).
+        await ctx.runMutation(internal.authSessions.recordPasswordReset, {
+          userId,
+        });
         return { userId, sessionId };
       } else if (flow === "email-verification") {
         if (!config.verify) {

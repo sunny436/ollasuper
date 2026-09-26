@@ -60,10 +60,23 @@ async def ingest(req: IngestRequest, request: Request) -> IngestAccepted:
     return IngestAccepted(ingestId=req.ingestId)
 
 
+# Bounded wait for a cancelled in-process ingestion to unwind. Correctness does
+# not depend on it — the durable tombstone already fences persistence.
+_CANCEL_WAIT_S = 5.0
+
+
 @router.delete("/ingest/{ingest_id}")
 async def purge(ingest_id: str, request: Request) -> dict:
     app = request.app.state
     if getattr(app, "db", None) is None:
         return {"ok": True}
+    # Tombstone + delete FIRST, in one transaction under the per-file lock
+    # (store.delete_by_id): from here on no worker — this one, a retry, or one
+    # started after a restart — can commit this file again (audit F-13).
     deleted = await delete_ingest(ingest_id, app.db)
+    # Then stop the in-process run so it spends nothing more on a deleted file.
+    task = app.ingest_registry.task(ingest_id)
+    if task is not None and not task.done():
+        task.cancel()
+        await asyncio.wait({task}, timeout=_CANCEL_WAIT_S)
     return {"ok": True, "deleted": deleted}

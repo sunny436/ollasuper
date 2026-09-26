@@ -38,6 +38,8 @@ async def engine():
     finally:
         async with eng.begin() as conn:
             await conn.execute(text("DELETE FROM files"))
+            # Deletion tombstones (F-13) would refuse a re-seeded id next run.
+            await conn.execute(text("DELETE FROM ingest_tombstones"))
         await eng.dispose()
 
 

@@ -1,12 +1,11 @@
 import { ConvexError, v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { audit } from "./auditLog";
 import { bump } from "./counters";
 import { requireDevSeed } from "./devGuard";
 import { notify } from "./notifications";
-import { getAuthUserId } from "@convex-dev/auth/server";
 import { activeUserId, isActiveUser } from "./accountState";
 
 type Role = "owner" | "admin" | "member";
@@ -26,6 +25,12 @@ const ASSIGNABLE_ROLES: readonly string[] = ["admin", "member"];
 function assertAssignableRole(role: string): void {
   if (!ASSIGNABLE_ROLES.includes(role)) throw new ConvexError("Invalid role");
 }
+
+/**
+ * How long an invitation stays redeemable. A grant is a standing capability to
+ * join; one issued months ago must not still work (audit F-11).
+ */
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function membership(
   ctx: QueryCtx,
@@ -53,9 +58,34 @@ export async function requireRole(
   // and none of them checked. Same "Forbidden" as a non-member: a suspended
   // account is not entitled to a more informative answer.
   if (!(await isActiveUser(ctx, userId))) throw new ConvexError("Forbidden");
+  // A membership row does not prove the workspace exists: an account-deletion
+  // sweep used to delete the workspace while rows pointing at it survived, and
+  // an orphan invite could then recreate membership against nothing (audit
+  // F-12). A missing or deleting workspace grants nothing.
+  const ws = await ctx.db.get(workspaceId);
+  if (!ws || ws.deletingAt !== undefined) throw new ConvexError("Forbidden");
   const m = await membership(ctx, userId, workspaceId);
   if (!m || !roles.includes(m.role as Role)) throw new ConvexError("Forbidden");
   return m;
+}
+
+/**
+ * Non-throwing CURRENT-entitlement check, for read paths that must degrade to
+ * "nothing" rather than throw (a thrown query logs a console.error, which every
+ * e2e run fails on). Same predicate as requireMember - one definition, so a
+ * list endpoint cannot drift from its detail endpoint again (audit F-08).
+ */
+export async function hasWorkspaceAccess(
+  ctx: QueryCtx,
+  userId: Id<"users">,
+  workspaceId: Id<"workspaces">,
+): Promise<boolean> {
+  try {
+    await requireMember(ctx, userId, workspaceId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function requireMember(
@@ -133,7 +163,7 @@ export const myWorkspaces = query({
     const rows = await Promise.all(
       mems.map(async (m) => {
         const ws = await ctx.db.get(m.workspaceId);
-        return ws ? { ...ws, role: m.role } : null;
+        return ws && ws.deletingAt === undefined ? { ...ws, role: m.role } : null;
       }),
     );
     return rows.filter((w) => w !== null);
@@ -143,7 +173,7 @@ export const myWorkspaces = query({
 export const members = query({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, { workspaceId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return [];
     await requireMember(ctx, userId, workspaceId);
     const mems = await ctx.db
@@ -169,26 +199,52 @@ export const members = query({
 export const invite = mutation({
   args: { workspaceId: v.id("workspaces"), email: v.string(), role: v.string() },
   handler: async (ctx, { workspaceId, email, role }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     await requireRole(ctx, userId, workspaceId, ["owner", "admin"]);
     assertAssignableRole(role);
-    const id = await ctx.db.insert("invites", {
-      workspaceId,
-      email: email.toLowerCase(),
-      role,
-      invitedBy: userId,
-      accepted: false,
-      createdAt: Date.now(),
-    });
-    await audit(ctx, workspaceId, userId, "member.invite", {
-      email: email.toLowerCase(),
-      role,
-    });
+    const address = email.toLowerCase();
     const invitee = await ctx.db
       .query("users")
-      .withIndex("email", (q) => q.eq("email", email.toLowerCase()))
+      .withIndex("email", (q) => q.eq("email", address))
       .unique();
+    // An invitation to someone who is ALREADY a member is never needed, and it
+    // is exactly the grant that outlives their removal and lets them walk back
+    // in (audit F-11) - including an admin's self-invite. Refuse it.
+    if (invitee && (await membership(ctx, invitee._id, workspaceId))) {
+      throw new ConvexError("Already a member of this workspace");
+    }
+    // One pending grant per address: a re-invite refreshes it rather than
+    // stacking a second one that would survive the first being revoked.
+    const pending = await ctx.db
+      .query("invites")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
+      .filter((q) =>
+        q.and(q.eq(q.field("email"), address), q.eq(q.field("accepted"), false)),
+      )
+      .first();
+    let id: Id<"invites">;
+    if (pending) {
+      await ctx.db.patch(pending._id, {
+        role,
+        invitedBy: userId,
+        createdAt: Date.now(),
+      });
+      id = pending._id;
+    } else {
+      id = await ctx.db.insert("invites", {
+        workspaceId,
+        email: address,
+        role,
+        invitedBy: userId,
+        accepted: false,
+        createdAt: Date.now(),
+      });
+    }
+    await audit(ctx, workspaceId, userId, "member.invite", {
+      email: address,
+      role,
+    });
     if (invitee) {
       await notify(
         ctx,
@@ -229,7 +285,7 @@ export const inviteForUser = internalMutation({
 export const pendingInvites = query({
   args: { workspaceId: v.id("workspaces") },
   handler: async (ctx, { workspaceId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) return [];
     await requireRole(ctx, userId, workspaceId, ["owner", "admin"]);
     return ctx.db
@@ -257,6 +313,8 @@ export const myInvites = query({
       .collect();
     const out = [];
     for (const inv of invs) {
+      // Only grants that acceptInvite would honour - never a dead one.
+      if (!(await inviteIsLive(ctx, inv))) continue;
       const ws = await ctx.db.get(inv.workspaceId);
       out.push({
         _id: inv._id,
@@ -269,6 +327,29 @@ export const myInvites = query({
   },
 });
 
+/**
+ * Would this invitation still grant anything? (audit F-11/F-12)
+ *
+ * A grant is only as good as the state it was issued in. It dies with time
+ * (INVITE_TTL_MS), with its workspace (missing or being deleted), and with its
+ * ISSUER's authority: an invite from someone who has since been removed,
+ * demoted, suspended or deleted confers nothing - which is also what stops a
+ * pre-removal self-invite, or an orphan invite surviving an account-deletion
+ * sweep, from restoring access.
+ */
+async function inviteIsLive(
+  ctx: QueryCtx,
+  inv: Doc<"invites">,
+): Promise<boolean> {
+  if (inv.accepted) return false;
+  if (Date.now() - inv.createdAt > INVITE_TTL_MS) return false;
+  const ws = await ctx.db.get(inv.workspaceId);
+  if (!ws || ws.deletingAt !== undefined) return false;
+  if (!(await isActiveUser(ctx, inv.invitedBy))) return false;
+  const issuer = await membership(ctx, inv.invitedBy, inv.workspaceId);
+  return issuer !== null && (issuer.role === "owner" || issuer.role === "admin");
+}
+
 async function acceptInviteImpl(
   ctx: MutationCtx,
   userId: Id<"users">,
@@ -279,6 +360,8 @@ async function acceptInviteImpl(
   // Fail closed on a role this system may not confer, including one stored by
   // an older build that had no issuance check.
   assertAssignableRole(inv.role);
+  // Same answer for expired, orphaned and issuer-revoked: not an oracle.
+  if (!(await inviteIsLive(ctx, inv))) throw new ConvexError("Invite not found");
   const existing = await membership(ctx, userId, inv.workspaceId);
   if (!existing) {
     await ctx.db.insert("members", {
@@ -320,17 +403,56 @@ export const acceptInviteForUser = internalMutation({
 export const removeMember = mutation({
   args: { workspaceId: v.id("workspaces"), memberId: v.id("members") },
   handler: async (ctx, { workspaceId, memberId }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new ConvexError("Not authenticated");
     await requireRole(ctx, userId, workspaceId, ["owner", "admin"]);
     const m = await ctx.db.get(memberId);
     if (!m || m.workspaceId !== workspaceId) throw new ConvexError("Not found");
     if (m.role === "owner") throw new ConvexError("Cannot remove the owner");
     await ctx.db.delete(memberId);
+    await revokeGrantsOnRemoval(ctx, workspaceId, m.userId);
     await bump(ctx, workspaceId, "members", -1);
     await audit(ctx, workspaceId, userId, "member.remove", { member: m.userId });
   },
 });
+
+/**
+ * Removal is a revocation boundary, so it takes every standing grant with it,
+ * in the same transaction (audit F-08/F-11):
+ *   - pending invitations ADDRESSED to the removed person - the duplicate or
+ *     self-invite that would otherwise let them accept their way back in;
+ *   - pending invitations ISSUED by them - their authority ends here;
+ *   - their API keys for this workspace - a credential must not outlive the
+ *     membership it speaks for (resolveByHash also re-checks, independently).
+ */
+async function revokeGrantsOnRemoval(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  removedUserId: Id<"users">,
+): Promise<void> {
+  const removed = await ctx.db.get(removedUserId);
+  const address = removed?.email?.toLowerCase();
+  const invites = await ctx.db
+    .query("invites")
+    .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
+    .collect();
+  for (const inv of invites) {
+    if (inv.accepted) continue;
+    const addressedToThem = address !== undefined && inv.email === address;
+    if (addressedToThem || inv.invitedBy === removedUserId) {
+      await ctx.db.delete(inv._id);
+    }
+  }
+  const keys = await ctx.db
+    .query("apiKeys")
+    .withIndex("by_user", (q) => q.eq("userId", removedUserId))
+    .collect();
+  for (const k of keys) {
+    if (k.workspaceId === workspaceId && !k.revoked) {
+      await ctx.db.patch(k._id, { revoked: true });
+    }
+  }
+}
 
 export const changeRole = mutation({
   args: {
@@ -339,7 +461,7 @@ export const changeRole = mutation({
     role: v.string(),
   },
   handler: async (ctx, { workspaceId, memberId, role }) => {
-    const userId = await getAuthUserId(ctx);
+    const userId = await activeUserId(ctx);
     if (!userId) throw new ConvexError("Not authenticated");
     await requireRole(ctx, userId, workspaceId, ["owner", "admin"]);
     assertAssignableRole(role);

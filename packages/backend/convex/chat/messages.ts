@@ -1,5 +1,6 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import { deleteBlobIfUnreferenced } from "../blobOwnership";
 import { peekWindow } from "../quotas";
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -862,8 +863,8 @@ async function deleteFromSeq(
       for (const aid of m.attachmentIds) {
         const a = await ctx.db.get(aid);
         if (a) {
-          await ctx.storage.delete(a.storageId);
           await ctx.db.delete(a._id);
+          await deleteBlobIfUnreferenced(ctx, a.storageId);
         }
       }
     }

@@ -200,6 +200,15 @@ async def load_dataset(
     if cached is not None:
         return cached
     raw, _mime = await convex.fetch_file(ref.storage_id, stream_id)
+    if _is_xlsx(ref.name, ref.mime):
+        # Same workbook guard as ingestion (audit F-04): archive limits plus a
+        # metered, killable scan BEFORE pandas walks the same bytes.
+        from app.ingest.xlsx_guard import XlsxRejected, check_xlsx_budget
+
+        try:
+            await check_xlsx_budget(raw, settings=settings)
+        except XlsxRejected as e:
+            raise DataError(f"could not load '{ref.name}': {e}") from e
     max_rows = getattr(settings, "ai_data_max_rows", 1_000_000)
     df, _trunc = await asyncio.to_thread(
         parse_dataframe, raw, ref.name, ref.mime, max_rows=max_rows, sheet=sheet

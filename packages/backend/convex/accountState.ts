@@ -1,6 +1,37 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
+import { getAuthSessionId, getAuthUserId } from "@convex-dev/auth/server";
 import type { Id } from "./_generated/dataModel";
 import { internalQuery, type QueryCtx } from "./_generated/server";
+
+/**
+ * Is the SESSION this caller's token was minted for still alive?
+ *
+ * A signed JWT outlives its session: signOut, single-device displacement, a
+ * password reset and suspension all DELETE the authSessions row, but the access
+ * token already handed out stays cryptographically valid until it expires
+ * (~1h). getAuthUserId never looks, so every helper that trusted it kept
+ * honouring a revoked session for that whole window. The session id is the
+ * second half of the JWT subject; its row must still exist, belong to this
+ * user and be unexpired.
+ *
+ * Fails CLOSED on a subject with no session part or a malformed id: every token
+ * @convex-dev/auth signs carries a real authSessions id, and a deleted row's id
+ * still normalises, so the row lookup — not the id format — is what decides.
+ */
+async function hasLiveSession(
+  ctx: QueryCtx,
+  userId: Id<"users">,
+): Promise<boolean> {
+  const raw = await getAuthSessionId(ctx);
+  if (!raw) return false;
+  const sessionId = ctx.db.normalizeId("authSessions", raw);
+  if (!sessionId) return false;
+  const session = await ctx.db.get(sessionId);
+  return (
+    session !== null &&
+    session.userId === userId &&
+    session.expirationTime > Date.now()
+  );
+}
 
 /**
  * Is this account entitled to act at all?
@@ -51,6 +82,7 @@ export async function activeUserId(
 ): Promise<Id<"users"> | null> {
   const userId = await getAuthUserId(ctx);
   if (!userId) return null;
+  if (!(await hasLiveSession(ctx, userId))) return null;
   return (await isActiveUser(ctx, userId)) ? userId : null;
 }
 
@@ -72,9 +104,5 @@ export async function activeUserId(
  */
 export const activeCallerId = internalQuery({
   args: {},
-  handler: async (ctx): Promise<Id<"users"> | null> => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) return null;
-    return (await isActiveUser(ctx, userId)) ? userId : null;
-  },
+  handler: async (ctx): Promise<Id<"users"> | null> => activeUserId(ctx),
 });

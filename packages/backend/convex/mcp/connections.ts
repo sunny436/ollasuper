@@ -283,6 +283,15 @@ export const resolveForOperation = internalQuery({
     if (!(await isActiveUser(ctx, args.userId))) return null;
     const row = await ctx.db.get(args.connectionId);
     if (!row || row.userId !== args.userId) return null;
+    // CURRENT entitlement, not past: a member removed from the workspace this
+    // connection belongs to must not keep driving it (audit F-08).
+    const member = await ctx.db
+      .query("members")
+      .withIndex("by_user_workspace", (q) =>
+        q.eq("userId", args.userId).eq("workspaceId", row.workspaceId),
+      )
+      .unique();
+    if (!member) return null;
     return row;
   },
 });
@@ -402,11 +411,13 @@ async function runOperation(
   operation: Operation,
   connectionId: Id<"mcpConnections">,
 ): Promise<Record<string, unknown>> {
-  const identity = await ctx.auth.getUserIdentity();
-  if (identity === null) throw new ConvexError("Not authenticated");
-  // `subject` is "<userId>|<sessionId>"; the user id is the part before the
-  // separator, matching how getAuthUserId derives it.
-  const userId = String(identity.subject).split("|")[0] as Id<"users">;
+  // Live session + active account, via the one helper every other surface
+  // uses. The subject alone is a bare cast that a revoked session still carries.
+  const userId: Id<"users"> | null = await ctx.runQuery(
+    internal.accountState.activeCallerId,
+    {},
+  );
+  if (userId === null) throw new ConvexError("Not authenticated");
 
   const row = await ctx.runQuery(internal.mcp.connections.resolveForOperation, {
     connectionId,

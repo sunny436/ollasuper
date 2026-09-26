@@ -65,7 +65,15 @@ from app.agent.search_guard import (
     prepare_args,
     process_result,
 )
-from app.agent.taint import REJECTED_EARLIER, TaintLedger, source_of
+from app.agent.taint import (
+    PRIVATE_DATA,
+    PRIVATE_DOCUMENT,
+    PRIVATE_KNOWLEDGE,
+    PRIVATE_MEMORY,
+    REJECTED_EARLIER,
+    TaintLedger,
+    source_of,
+)
 from app.data.tool import DATA_TOOL_NAMES, DataContext, run_tool
 from app.documents.context import DocumentsContext, run_document_ops
 from app.documents.tool import DOCUMENT_OPS_TOOL_NAME
@@ -798,6 +806,21 @@ def _failure_state(err_payload: dict, side_effect: SideEffect) -> ExecutionState
     return ExecutionState.FAILED
 
 
+def private_source_for(tool_id: str) -> str:
+    """The private-content source a built-in's RESULT belongs to (audit F-03),
+    or "" when its output is not the user's private data. Shared with the
+    runner's resume path, which re-records what ran before a pause."""
+    if tool_id == KNOWLEDGE_TOOL_NAME:
+        return PRIVATE_KNOWLEDGE
+    if tool_id == MEMORY_SEARCH_TOOL_NAME:
+        return PRIVATE_MEMORY
+    if tool_id == DOCUMENT_OPS_TOOL_NAME:
+        return PRIVATE_DOCUMENT
+    if tool_id in DATA_TOOL_NAMES:
+        return PRIVATE_DATA
+    return ""
+
+
 async def _run_builtin(
     ctx: ToolExecContext, execution: ToolExecution, coro, *, side_effect: str
 ) -> ToolMessage:
@@ -815,6 +838,12 @@ async def _run_builtin(
         # model and the report ever see them.
         msg.content, _ = sec_secrets.redact_text(msg.content)
     ok = msg.status == "success"
+    # TAINT (audit F-03): the user's private data (knowledge hits, memories,
+    # data/document output) is tracked like connector content, so a later
+    # outbound call that carries it asks first.
+    private = private_source_for(execution.tool_id)
+    if ok and private:
+        ctx.taint.record(private, msg.content)
     _advance(execution, ExecutionState.SUCCEEDED if ok else ExecutionState.FAILED)
     await ctx.writer.record_execution(
         execution,
@@ -2376,16 +2405,60 @@ async def _run_mcp_read_resource(
     """
     import json
 
+    from app.mcp.index import CapabilityLookupError
     from app.mcp.resource_tool import read_resource
 
     uri = args.get("uri") if isinstance(args, dict) else None
     connector = args.get("connector") if isinstance(args, dict) else None
+    uri_s = uri if isinstance(uri, str) else ""
+    connector_s = connector if isinstance(connector, str) else None
+
+    # THE SAME OUTBOUND POLICY AS EVERY CONNECTOR TOOL (audit F-03). The URI
+    # (and any template variables in it) is sent to the resource's server, so
+    # it is a destination like any other: content from ANOTHER connector, or
+    # the user's private data, may not ride out in it. This built-in has no
+    # approval card of its own, so a flow is REFUSED — and the destination
+    # stays flagged for the rest of the turn, exactly like a rejected flow.
+    dest = ""
+    try:
+        resource, _client = ctx.mcp_index.resolve_resource(
+            uri_s, connector=connector_s
+        )
+        dest = f"mcp:{resource.server_slug}"
+    except CapabilityLookupError:
+        dest = ""  # read_resource refuses it below, before anything is sent
+    if dest:
+        flow = ctx.taint.sources_in(args, exclude={dest})
+        flow |= ctx.taint.flagged_sources(dest)
+        if flow:
+            ctx.taint.flag(dest, flow)
+            log.info(
+                "agent.resource_read_refused_flow",
+                extra={"destination": dest, "sources": sorted(flow)},
+            )
+            return _tool_message(
+                call_id,
+                {
+                    "status": "refused",
+                    "reason": (
+                        "this resource request would send data that came from "
+                        "another source to that server; it was not made. Ask the "
+                        "user before moving data between services."
+                    ),
+                },
+                status="error",
+            )
+
     result = await read_resource(
         ctx.mcp_index,
-        uri if isinstance(uri, str) else "",
+        uri_s,
         max_bytes=ctx.mcp_resource_max_bytes,
-        connector=connector if isinstance(connector, str) else None,
+        connector=connector_s,
     )
+    # The content is this connector's: record it, so it cannot then flow to a
+    # DIFFERENT connector unasked (the resource read was never tracked).
+    if dest and not result.get("is_error"):
+        ctx.taint.record(dest, result)
     body = json.dumps(result, ensure_ascii=False, default=str)
     return ToolMessage(tool_call_id=call_id, content=body[: ctx.result_max_chars])
 

@@ -122,12 +122,13 @@ http.route({
       .catch(() => ({}))) as Record<string, unknown>;
     const type = typeof payload.type === "string" ? payload.type : "event";
 
+    // The TENANT is never taken from the payload (audit F-10). The secret
+    // authenticates the SERVICE, not whoever supplied the body it relays; a
+    // caller-chosen workspaceId let any payload the legacy backend forwarded
+    // land in another workspace's event feed. With no server-side
+    // authorization decision to derive a workspace from, the event is stored
+    // unscoped — visible to no workspace's listEvents.
     await ctx.runMutation(internal.backend.ingestEvent, {
-      workspaceId:
-        typeof payload.workspaceId === "string"
-          ? // biome-ignore lint/suspicious/noExplicitAny: id validated by Convex
-            (payload.workspaceId as any)
-          : undefined,
       source: "backend",
       type,
       payload,
