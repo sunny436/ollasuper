@@ -7,7 +7,7 @@ import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 export interface PendingAttachment {
@@ -49,6 +49,27 @@ export interface PendingAttachment {
 const MAX_FILES = 6;
 const MAX_BYTES = 20 * 1024 * 1024;
 
+/** A file picked before the workspace resolved, held until it does. */
+export interface WaitingUpload {
+  file: File;
+  localId: string;
+}
+
+/**
+ * The held files to start now that the workspace has resolved: every one whose
+ * chip was not removed meanwhile, in the order picked. Empties `waiting` and
+ * consumes the matching cancellations (a removed chip has no upload to undo).
+ */
+export function releaseWaiting(
+  waiting: WaitingUpload[],
+  cancelled: Set<string>,
+): WaitingUpload[] {
+  const start = waiting.filter((w) => !cancelled.has(w.localId));
+  for (const w of waiting) cancelled.delete(w.localId);
+  waiting.length = 0;
+  return start;
+}
+
 export function useAttachments(threadId: string | null) {
   const { current } = useWorkspace();
   const generateUploadUrl = useMutation(api.chat.attachments.generateUploadUrl);
@@ -88,6 +109,13 @@ export function useAttachments(threadId: string | null) {
    * state cannot, because that is the very thing that has not updated yet.
    */
   const retrying = useRef<Set<string>>(new Set());
+  /**
+   * Files attached before the workspace resolved (the first second after page
+   * load). `add` used to return on a null workspace, which dropped them with no
+   * chip, no toast and no upload at all. They now show as uploading at once and
+   * start the moment the workspace arrives.
+   */
+  const waiting = useRef<WaitingUpload[]>([]);
 
   const patch = useCallback(
     (localId: string, next: Partial<PendingAttachment>) => {
@@ -220,9 +248,15 @@ export function useAttachments(threadId: string | null) {
     ],
   );
 
+  useEffect(() => {
+    if (!current) return;
+    for (const w of releaseWaiting(waiting.current, cancelled.current)) {
+      void upload(w.file, w.localId);
+    }
+  }, [current, upload]);
+
   const add = useCallback(
     (files: File[]) => {
-      if (!current) return;
       const room = MAX_FILES - items.length;
       if (room <= 0) {
         toast.error(`At most ${MAX_FILES} attachments per message`);
@@ -256,7 +290,8 @@ export function useAttachments(threadId: string | null) {
             file,
           },
         ]);
-        void upload(file, localId);
+        if (current) void upload(file, localId);
+        else waiting.current.push({ file, localId });
       }
     },
     [current, items.length, upload],

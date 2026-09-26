@@ -59,9 +59,9 @@ async function step(name, fn) {
   });
 
   await step("chat: .txt + .xml attachments upload, register, and the reply streams", async () => {
-    // The composer ignores files until the workspace has resolved (a silent
-    // drop, measured: no upload mutation at all) — wait it out first.
-    await page.waitForTimeout(5000);
+    // Attached the instant the composer renders, before the workspace has
+    // resolved — the case that used to drop files silently (no chip, no upload
+    // mutation). They must now queue and upload once it resolves.
     const input = page.locator('input[type="file"]').first();
     await input.setInputFiles([
       { name: `note-${stamp}.txt`, mimeType: "text/plain", buffer: Buffer.from("remediation check") },
