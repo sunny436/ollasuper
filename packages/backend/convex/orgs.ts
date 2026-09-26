@@ -139,7 +139,12 @@ export const ensureWorkspace = mutation({
   args: {},
   handler: async (ctx) => {
     const userId = await activeUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
+    // SOFT, not a throw. WorkspaceProvider fires this whenever myWorkspaces is
+    // empty — which is also what a signed-out caller sees. On log-out the session
+    // row is deleted a moment before the browser drops its token, and since
+    // audit F-05 that token is refused at once, so a throw here logged a
+    // console.error on every log-out. Nothing is created either way.
+    if (!userId) return null;
     const existing = await ctx.db
       .query("members")
       .withIndex("by_user", (q) => q.eq("userId", userId))
