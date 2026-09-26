@@ -2,10 +2,16 @@
 
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
-import { useAuthActions } from "@convex-dev/auth/react";
+import { useAuthActions, useAuthToken } from "@convex-dev/auth/react";
 import { useMutation, useQuery } from "convex/react";
-import { clearDisplayCaches } from "./display-cache";
-import { DISPLACED_KEY } from "./displaced-session";
+import {
+  CACHE_KEYS,
+  clearDisplayCaches,
+  ownerFromToken,
+  readOwnedCache,
+  writeOwnedCache,
+} from "./display-cache";
+import { DISPLACED_KEY, isIntentionalSignOut } from "./displaced-session";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 type WS = { _id: Id<"workspaces">; name: string; role: string };
@@ -30,45 +36,58 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // because @convex-dev/auth has no callback that spans every sign-in path.
   const heartbeat = useMutation(api.authSessions.heartbeat);
   const { signOut } = useAuthActions();
+  // Whose browser state this is: the verified user id in the session JWT. The
+  // cached workspace is only ever read back for that same account (F-09).
+  const owner = ownerFromToken(useAuthToken());
+  const session = useQuery(api.authSessions.sessionState);
   const [selected, setSelected] = useState<Id<"workspaces"> | null>(null);
-  const [ensuring, setEnsuring] = useState(false);
   // Optimistic workspace from the last session, hydrated in an EFFECT (not during
   // render → no hydration mismatch). Lets the composer become usable at hydration
   // on a reload instead of waiting for myWorkspaces to land over the WebSocket —
-  // i.e. no "Preparing your workspace…" flash for a returning user.
+  // i.e. no "Preparing your workspace…" flash for a returning user. Read only
+  // once the owner is known: readOwnedCache drops an entry it cannot attribute.
   const [optimistic, setOptimistic] = useState<Id<"workspaces"> | null>(null);
   useEffect(() => {
+    if (!owner) return;
+    setOptimistic(readOwnedCache<Id<"workspaces">>(CACHE_KEYS.workspace, owner));
+  }, [owner]);
+
+  // Enforces the per-account session limit and records activity. It no longer
+  // decides anything for the client: `{ok:false}` also means "no identity yet",
+  // and the question it was used to answer is now asked reactively below.
+  useEffect(() => {
+    void heartbeat({}).catch(() => {});
+  }, []);
+
+  // This session was ended from elsewhere (a newer device past the limit, a
+  // password reset or change, suspension). The token still works for up to an
+  // hour while every query answers "signed out", which used to leave an empty
+  // app behind. End it here and leave a note for the login page — unless the
+  // user just signed out on purpose, which reads the same for a moment.
+  const ended = useRef(false);
+  useEffect(() => {
+    if (session !== "ended" || ended.current || isIntentionalSignOut()) return;
+    ended.current = true;
     try {
-      const saved = window.localStorage.getItem("ws");
-      if (saved) setOptimistic(saved as Id<"workspaces">);
+      window.sessionStorage.setItem(DISPLACED_KEY, "1");
     } catch {}
-  }, []);
+    clearDisplayCaches();
+    void signOut();
+  }, [session, signOut]);
 
+  // Creating a workspace is a write, so it stays in an effect. ONCE per mount,
+  // and only for a live session: myWorkspaces is also empty for a session that
+  // has ended, where ensureWorkspace answers null — and re-firing on every null
+  // was measured on production at ~30 calls a second from a single tab.
+  const ensured = useRef(false);
   useEffect(() => {
-    void heartbeat({})
-      .then((r) => {
-        // The server revoked this session because the account signed in
-        // elsewhere. The access token still works until it expires, so end the
-        // session here rather than leaving the user in a half-valid state, and
-        // leave a note for the login page to explain why they landed there.
-        if (r && r.ok === false) {
-          try {
-            window.sessionStorage.setItem(DISPLACED_KEY, "1");
-          } catch {}
-          clearDisplayCaches();
-          void signOut();
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  // Creating a workspace is a write, so it stays in an effect. Resolving which
-  // existing workspace is current does not, and used to — see below.
-  useEffect(() => {
-    if (workspaces === undefined || workspaces.length > 0 || ensuring) return;
-    setEnsuring(true);
-    void ensure({}).finally(() => setEnsuring(false));
-  }, [workspaces, ensure, ensuring]);
+    if (session !== "live" || ensured.current) return;
+    if (workspaces === undefined || workspaces.length > 0) return;
+    ensured.current = true;
+    void ensure({}).catch(() => {
+      ensured.current = false;
+    });
+  }, [session, workspaces, ensure]);
 
   /**
    * Derived during render, not committed by a post-paint effect.
@@ -85,21 +104,17 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const resolved = useMemo<Id<"workspaces"> | null>(() => {
     if (workspaces === undefined || workspaces.length === 0) return null;
     if (selected && workspaces.some((w) => w._id === selected)) return selected;
-    const saved = typeof window !== "undefined" ? window.localStorage.getItem("ws") : null;
+    const saved = owner ? readOwnedCache<string>(CACHE_KEYS.workspace, owner) : null;
     const match = workspaces.find((w) => w._id === saved);
     return match?._id ?? workspaces[0]?._id ?? null;
-  }, [workspaces, selected]);
+  }, [workspaces, selected, owner]);
 
   // Persist the resolved id so the NEXT reload can seed `optimistic` before the
   // query returns. (Previously only select() wrote it, so a user who never
   // switched workspaces had nothing cached.)
   useEffect(() => {
-    if (resolved && typeof window !== "undefined") {
-      try {
-        window.localStorage.setItem("ws", resolved);
-      } catch {}
-    }
-  }, [resolved]);
+    if (resolved) writeOwnedCache(CACHE_KEYS.workspace, owner, resolved);
+  }, [resolved, owner]);
 
   // Preserves the previous effect's `?? prev` behaviour: once a workspace has
   // resolved, a transiently empty or in-flight list never clears it back to null.
@@ -109,7 +124,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const current = resolved ?? sticky.current ?? optimistic;
 
   const select = (id: Id<"workspaces">) => {
-    if (typeof window !== "undefined") window.localStorage.setItem("ws", id);
+    writeOwnedCache(CACHE_KEYS.workspace, owner, id);
     setSelected(id);
   };
 

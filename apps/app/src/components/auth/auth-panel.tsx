@@ -21,6 +21,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { clearDisplayCaches } from "@/lib/display-cache";
+import { isStaleDeploymentError } from "@/lib/stale-deployment";
 import { consumeDisplacedFlag } from "@/lib/displaced-session";
 import { OAuthRow } from "./oauth-row";
 import {
@@ -206,6 +207,7 @@ export function AuthPanel() {
     try {
       await fn();
     } catch (err) {
+      if (isStaleDeploymentError(err)) return reenter();
       const data = (err as { data?: unknown })?.data;
       toast.error(
         typeof data === "string" ? data : (err as Error)?.message || "Something went wrong.",
@@ -232,6 +234,17 @@ export function AuthPanel() {
     router.replace("/chat");
   };
 
+  /**
+   * The sign-in SUCCEEDED but this page predates the running build, so its last
+   * step (the auth library's cache action) is unknown to the server. The auth
+   * cookies are already set: load /chat as a fresh document, which also brings
+   * the new bundle. See lib/stale-deployment.ts.
+   */
+  const reenter = () => {
+    clearDisplayCaches();
+    window.location.assign("/chat");
+  };
+
   const signInForm = useForm({
     defaultValues: { email: "", password: "" },
     // NOT the shared go(): login must NEVER reveal whether the email exists or
@@ -245,6 +258,7 @@ export function AuthPanel() {
           await signIn("password", { ...value, flow: "signIn" });
           enter();
         } catch (err) {
+          if (isStaleDeploymentError(err)) return reenter();
           const t = String(
             (err as { data?: unknown })?.data ?? (err as Error)?.message ?? "",
           ).toLowerCase();

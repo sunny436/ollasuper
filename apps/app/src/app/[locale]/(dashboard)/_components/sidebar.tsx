@@ -1,6 +1,7 @@
 "use client";
 
 import { clearDisplayCaches } from "@/lib/display-cache";
+import { markIntentionalSignOut } from "@/lib/displaced-session";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@v1/backend/convex/_generated/api";
@@ -107,6 +108,7 @@ export function Sidebar() {
           <button
             type="button"
             onClick={() => {
+              markIntentionalSignOut();
               clearDisplayCaches();
               signOut();
             }}

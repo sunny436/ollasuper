@@ -17,6 +17,13 @@ export const CACHE_KEYS = {
   threads: "chat:threads",
   /** The active thread's settled transcript — see use-cached-transcript.ts. */
   transcript: "chat:transcript",
+  /**
+   * The last resolved workspace id — see workspace-provider.tsx. It used to be a
+   * bare global: the next account on the browser started out querying the
+   * previous account's workspace, got "Forbidden", and landed on the error page
+   * (every time for a new sign-up, whose own workspace does not exist yet).
+   */
+  workspace: "ws",
 } as const;
 
 /**

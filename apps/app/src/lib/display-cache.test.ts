@@ -84,7 +84,29 @@ describe("owner-bound display caches (audit F-09)", () => {
   test("clearDisplayCaches removes every key", () => {
     writeOwnedCache(CACHE_KEYS.user, "alice", {});
     writeOwnedCache(CACHE_KEYS.threads, "alice", []);
+    writeOwnedCache(CACHE_KEYS.workspace, "alice", "ws_a");
     clearDisplayCaches();
     expect(store.size).toBe(0);
+  });
+});
+
+describe("the remembered workspace is bound to its account", () => {
+  // The next account on a browser used to start out on the previous account's
+  // workspace, get "Forbidden" from every workspace query, and land on the
+  // error page — every time for a new sign-up (reproduced on production).
+  test("another account never starts on it, and it is dropped on sight", () => {
+    writeOwnedCache(CACHE_KEYS.workspace, "alice", "ws_alice");
+    expect(readOwnedCache(CACHE_KEYS.workspace, "bob")).toBeNull();
+    expect(store.has(CACHE_KEYS.workspace)).toBe(false);
+  });
+
+  test("the pre-fix bare id (no owner) is never trusted", () => {
+    store.set(CACHE_KEYS.workspace, "ws_from_whoever");
+    expect(readOwnedCache(CACHE_KEYS.workspace, "bob")).toBeNull();
+  });
+
+  test("its own account still gets it back (no 'Preparing' flash on reload)", () => {
+    writeOwnedCache(CACHE_KEYS.workspace, "alice", "ws_alice");
+    expect(readOwnedCache(CACHE_KEYS.workspace, "alice")).toBe("ws_alice");
   });
 });

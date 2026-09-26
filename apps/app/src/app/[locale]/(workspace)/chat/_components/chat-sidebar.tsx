@@ -7,6 +7,7 @@ import { MoveToProjectDialog } from "./move-to-project-dialog";
 import { type RecentChat, SearchChats } from "./search-chats";
 import { OllaSuperBrand } from "@/components/branding";
 import { clearDisplayCaches } from "@/lib/display-cache";
+import { markIntentionalSignOut } from "@/lib/displaced-session";
 import { preloadLocale } from "@/locales/client";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
@@ -164,6 +165,7 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
             <button
               type="button"
               onClick={() => {
+                markIntentionalSignOut();
                 clearDisplayCaches();
                 void signOut();
               }}

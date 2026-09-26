@@ -1,6 +1,7 @@
 "use client";
 
 import { clearDisplayCaches } from "@/lib/display-cache";
+import { markIntentionalSignOut } from "@/lib/displaced-session";
 import { useScopedI18n } from "@/locales/client";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@v1/backend/convex/_generated/api";
@@ -181,6 +182,9 @@ export default function ProfileSection() {
     if (deleting) return;
     setDeleting(true);
     try {
+      // Before the await: the deletion ends this session server-side, and the
+      // live session check must not read that as "signed in elsewhere".
+      markIntentionalSignOut();
       await deleteCurrentUserAccount(
         needsCode ? { code: deleteSecret } : { password: deleteSecret },
       );
