@@ -2,6 +2,26 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Blank screen / "Something went wrong" after sign-in or sign-up (2026-09-26 night) - LIVE 32b560a, prod-verified
+
+Reported on desktop and mobile. The server logs held almost nothing, because every failure was client-side and no Sentry DSN is set. `e2e/qa-login-matrix.js` reproduced all three causes on prod **before** any change:
+
+- **An evicted tab stayed in an empty app.** Every sign-in and every workspace load revoked all of the account's other sessions, so a computer and a phone evicted each other. The evicted tab was never told:
+  - its JWT stays valid for up to 1 h while every query answers "signed out";
+  - the rail was empty ("No conversations yet"), the avatar showed "?", and sends failed;
+  - `ensureWorkspace` looped, 746 calls in 25 s.
+
+  Fix:
+  - `enforceSessionLimit` allows 2 sessions (`MAX_ACTIVE_SESSIONS`), applied at sign-in and in heartbeat. Password reset, password change, suspension and deletion still revoke everything.
+  - A new reactive query, `authSessions.sessionState` (`anonymous`, `live` or `ended`), makes the tab sign out the moment its session ends.
+  - `ensureWorkspace` now runs once, and only for a live session.
+- **"Something went wrong" after a new sign-up on a used browser, every time.** `localStorage["ws"]` was a bare global. The next account started on the previous account's workspace, `chat/settings:get` and the rail threw `Forbidden`, and the error reached `[locale]/error.tsx`. It is now the owner-bound `CACHE_KEYS.workspace`. The F-09 e2e had missed this because its second account was a member of the first account's workspace.
+- **A false "Invalid email or password" in a tab opened before a deploy.** The auth library's `invalidateCache` server action is unknown to the new build (Next throws `UnrecognizedActionError`) after the sign-in has already succeeded. The fix, `lib/stale-deployment.ts`, loads `/chat` as a fresh document instead.
+- **The "signed out because your account was used on another device" notice had never shown.** `<Toaster>` came after `AuthPanel`, and sonner does not replay a toast raised before it subscribes. The login page now mounts the Toaster first.
+- **A deliberate Log out must not read as displacement:** `markIntentionalSignOut()` sits at the three sign-out call sites.
+
+Verified on production with `qa-login-matrix.js`: desktop 8/8, iPhone 13 7/7, Pixel 7 7/7. Regression runs: security remediation 9/9, attach-early 5/5, Google 13/13, F-09 and F-14 5/5. CI is green. Physical phones are unverified.
+
 ## Closing the remaining opens (2026-09-26 evening) - LIVE 2768dab, prod-verified; D-04 awaits two operator values
 
 - **Dependency advisories:** `bun audit` went from 58 advisories over 29 packages to 1. The changes:
