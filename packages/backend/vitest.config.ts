@@ -21,7 +21,9 @@ export default defineConfig({
         // that; Vite resolves it. Without this, any test that loads http.ts
         // (which imports ./subscriptions -> polar) dies at import time — which
         // is every test that exercises an HTTP route via t.fetch().
-        inline: ["convex-test", "@convex-dev/polar"],
+        // Vitest 4's module runner matches the REAL package name, and
+        // @convex-dev/polar is an npm alias of @erquhart/convex-polar.
+        inline: ["convex-test", "@convex-dev/polar", "@erquhart/convex-polar"],
       },
     },
     include: ["convex/**/*.test.ts"],

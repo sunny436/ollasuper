@@ -5,7 +5,6 @@ import { OllaSuperBrand } from "@/components/branding";
 import { api } from "@v1/backend/convex/_generated/api";
 import { useAction } from "convex/react";
 import { useForm } from "@tanstack/react-form";
-import { zodValidator } from "@tanstack/zod-form-adapter";
 import { AnimatePresence, LazyMotion, m, useReducedMotion } from "framer-motion";
 import {
   ArrowRight,
@@ -71,8 +70,18 @@ const LINK =
 const loadMotionFeatures = () =>
   import("./motion-features").then((mod) => mod.default);
 
+// react-form 1.x validates zod schemas as Standard Schema and reports issue
+// objects ({ message }) rather than strings; accept both.
+function errorText(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object" && "message" in e) {
+    return String((e as { message: unknown }).message ?? "");
+  }
+  return "";
+}
+
 function FieldError({ errors }: { errors: unknown[] }) {
-  const first = errors.find((e): e is string => typeof e === "string" && e.length > 0);
+  const first = errors.map(errorText).find((m) => m.length > 0);
   if (!first) return null;
   return <span className="mt-1.5 inline-block font-medium text-[11px] text-destructive">{first}</span>;
 }
@@ -224,7 +233,6 @@ export function AuthPanel() {
   };
 
   const signInForm = useForm({
-    validatorAdapter: zodValidator(),
     defaultValues: { email: "", password: "" },
     // NOT the shared go(): login must NEVER reveal whether the email exists or
     // which field was wrong. The server already collapses unknown-email and
@@ -252,7 +260,6 @@ export function AuthPanel() {
   });
 
   const signUpForm = useForm({
-    validatorAdapter: zodValidator(),
     defaultValues: { name: "", email: "", password: "" },
     // Not the shared go(): a specific validation error (domain / password policy)
     // is a ConvexError with `.data` and SHOULD be shown; anything else — in
@@ -294,7 +301,6 @@ export function AuthPanel() {
   });
 
   const verifyForm = useForm({
-    validatorAdapter: zodValidator(),
     defaultValues: { code: "" },
     onSubmit: ({ value }) =>
       go(async () => {
@@ -304,7 +310,6 @@ export function AuthPanel() {
   });
 
   const forgotForm = useForm({
-    validatorAdapter: zodValidator(),
     defaultValues: { email: "" },
     onSubmit: ({ value }) =>
       go(async () => {
@@ -317,7 +322,6 @@ export function AuthPanel() {
   });
 
   const resetForm = useForm({
-    validatorAdapter: zodValidator(),
     defaultValues: { code: "", newPassword: "" },
     onSubmit: ({ value }) =>
       go(async () => {
@@ -332,7 +336,6 @@ export function AuthPanel() {
   });
 
   const otpEmailForm = useForm({
-    validatorAdapter: zodValidator(),
     defaultValues: { email: "" },
     onSubmit: ({ value }) =>
       go(async () => {
@@ -343,7 +346,6 @@ export function AuthPanel() {
   });
 
   const otpCodeForm = useForm({
-    validatorAdapter: zodValidator(),
     defaultValues: { code: "" },
     onSubmit: ({ value }) =>
       go(async () => {
