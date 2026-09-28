@@ -17,8 +17,24 @@
 #
 # Writes /var/lib/myos-backup/restore-drill.json {ok, at, stamp, summary}: the
 # host monitor alerts when it is missing, failed or older than 35 days.
+#
+# TWO PHASES, because check 1 is only exact before any code runs:
+#   verify-restore.sh tables   run by `staging.sh restore`, straight after the
+#                              import and BEFORE the deploy. No functions are
+#                              deployed yet, so no cron has touched a row; the
+#                              result goes to $ROOT/.restore-tables.
+#   verify-restore.sh          the full drill after `deploy` (checks 2-6 need
+#                              the deployed functions); it reports check 1 from
+#                              that recorded result. Exporting again here would
+#                              compare the backup with rows the crons have since
+#                              expired or patched.
 set -uo pipefail
-: "${ROOT:?}" "${SRC:?}" "${ADMIN_KEY:?}" "${CVX_PORT:?}" "${PG:?}" "${AI_URL:?}" "${BACKUPS:?}"
+MODE=${1:-full}
+if [ "$MODE" = tables ]; then
+  : "${ROOT:?}" "${SRC:?}" "${ADMIN_KEY:?}" "${CVX_PORT:?}" "${BACKUPS:?}"
+else
+  : "${ROOT:?}" "${SRC:?}" "${ADMIN_KEY:?}" "${CVX_PORT:?}" "${PG:?}" "${AI_URL:?}" "${BACKUPS:?}"
+fi
 STATUS_DIR=${RESTORE_STATUS_DIR:-/var/lib/myos-backup}
 pass=0; fail=0; notes=()
 ok() { pass=$((pass+1)); echo "PASS  $1"; }
@@ -29,31 +45,43 @@ stamp=$(sed -n 's/^RESTORED_STAMP=//p' "$ROOT/.restored" 2>/dev/null)
 ZIP="$BACKUPS/convex-$stamp.zip"
 echo "=== restore drill: backup set $stamp ==="
 
-# --- 1. tables: the backup vs a fresh export of what was restored -----------
+# --- 1. tables: the backup vs an export taken BEFORE the deploy --------------
 count_tables() {
   unzip -Z1 "$1" | grep '/documents.jsonl$' | grep -v '^_' | while read -r entry; do
     printf '%s %s\n' "${entry%/documents.jsonl}" "$(unzip -p "$1" "$entry" | grep -c .)"
   done | sort
 }
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
-( cd "$SRC/packages/backend" && CONVEX_SELF_HOSTED_URL="http://127.0.0.1:$CVX_PORT" \
-  CONVEX_SELF_HOSTED_ADMIN_KEY="$ADMIN_KEY" node "$SRC/node_modules/convex/bin/main.js" \
-  export --path "$WORK/staging.zip" >/dev/null 2>&1 )
-if [ -f "$WORK/staging.zip" ]; then
-  count_tables "$ZIP" > "$WORK/backup.txt"
-  count_tables "$WORK/staging.zip" > "$WORK/staging.txt"
-  tables=$(wc -l < "$WORK/backup.txt")
-  docs=$(awk '{s+=$2} END {print s+0}' "$WORK/backup.txt")
-  if diff -q "$WORK/backup.txt" "$WORK/staging.txt" >/dev/null; then
-    ok "all $tables tables restored with identical document counts ($docs documents)"
+if [ "$MODE" = tables ]; then
+  ( cd "$SRC/packages/backend" && CONVEX_SELF_HOSTED_URL="http://127.0.0.1:$CVX_PORT" \
+    CONVEX_SELF_HOSTED_ADMIN_KEY="$ADMIN_KEY" node "$SRC/node_modules/convex/bin/main.js" \
+    export --path "$WORK/staging.zip" >/dev/null 2>&1 )
+  if [ ! -f "$WORK/staging.zip" ]; then
+    printf 'FAIL\tstaging export failed\n' > "$ROOT/.restore-tables"
   else
-    no "table document counts" "$(diff "$WORK/backup.txt" "$WORK/staging.txt" | head -5 | tr '\n' ' ')"
+    count_tables "$ZIP" > "$WORK/backup.txt"
+    count_tables "$WORK/staging.zip" > "$WORK/staging.txt"
+    tables=$(wc -l < "$WORK/backup.txt")
+    docs=$(awk '{s+=$2} END {print s+0}' "$WORK/backup.txt")
+    if diff -q "$WORK/backup.txt" "$WORK/staging.txt" >/dev/null; then
+      printf 'PASS\tall %s tables restored with identical document counts (%s documents), checked before any deploy\n' \
+        "$tables" "$docs" > "$ROOT/.restore-tables"
+    else
+      printf 'FAIL\t%s\n' "$(diff "$WORK/backup.txt" "$WORK/staging.txt" | head -5 | tr '\n\t' '  ')" \
+        > "$ROOT/.restore-tables"
+    fi
   fi
-  backup_blobs=$(unzip -p "$ZIP" '_storage/documents.jsonl' 2>/dev/null | grep -c . || echo 0)
-else
-  no "staging export" "convex export failed"
-  backup_blobs=0
+  cut -f1,2 "$ROOT/.restore-tables" | tr '\t' ' '
+  grep -q '^PASS' "$ROOT/.restore-tables"
+  exit
 fi
+if [ -f "$ROOT/.restore-tables" ]; then
+  IFS=$'\t' read -r verdict detail < "$ROOT/.restore-tables"
+  if [ "$verdict" = PASS ]; then ok "$detail"; else no "table document counts" "$detail"; fi
+else
+  no "table document counts" "no pre-deploy check recorded - run 'staging.sh restore' on a fresh 'up'"
+fi
+backup_blobs=$(unzip -p "$ZIP" '_storage/documents.jsonl' 2>/dev/null | grep -c . || echo 0)
 
 # --- 2-4. blobs, rows, knowledge ownership (Convex functions) ---------------
 know_ids=$(docker exec "$PG" psql -U myos_ai -d myos_knowledge -At -c "SELECT id FROM files" 2>/dev/null)

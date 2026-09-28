@@ -200,6 +200,9 @@ cmd_restore() {
     docker exec -i "$PG" pg_restore -U myos_ai -d "$db" --no-owner --clean --if-exists < "$f" \
       || echo "   pg_restore reported warnings (checked by verify)"
   done
+  say "table-by-table check, BEFORE any deploy (no functions yet = no cron has moved a row)"
+  ADMIN_KEY=$ADMIN_KEY SRC=$SRC CVX_PORT=$CVX_PORT BACKUPS=$BACKUPS ROOT=$ROOT \
+    bash "$(dirname "$0")/verify-restore.sh" tables || echo "   (recorded as FAILED; 'verify' reports it)"
   say "restored $stamp"
 }
 
