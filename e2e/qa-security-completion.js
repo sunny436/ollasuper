@@ -704,10 +704,12 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
     for (let i = seeded; i < N; i++) {
       const bytes = Buffer.from(`F-12 seed ${i} ${hex(8)}\n`);
       const url = await call("mutation", await E.jwt(), "files:generateUploadUrl", { workspaceId: E.ws });
-      const up = await fetch(url, { method: "POST", headers: { "content-type": "text/plain" }, body: bytes });
+      // Kept-only (.bin): F-12 is about deletion at scale, not ingestion, and
+      // 201 processable files would (correctly) hit the 20-file intake cap.
+      const up = await fetch(url, { method: "POST", headers: { "content-type": "application/octet-stream" }, body: bytes });
       const { storageId } = await up.json();
       await call("mutation", await E.jwt(), "files:saveFile", {
-        workspaceId: E.ws, storageId, name: `seed-${i}.txt`, size: bytes.length, contentType: "text/plain",
+        workspaceId: E.ws, storageId, name: `seed-${i}.bin`, size: bytes.length, contentType: "application/octet-stream",
       });
     }
     const invited = (await call("query", await E.jwt(), "orgs:pendingInvites", { workspaceId: E.ws })).length;

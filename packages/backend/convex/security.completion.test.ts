@@ -384,7 +384,8 @@ describe("knowledge uploads queue behind the ingest limit instead of failing", (
     const fileId = await seedFile(t);
     globalThis.fetch = answer(429);
 
-    await t.action(internal.userFiles.dispatch, { fileId, queued: 120 });
+    const { QUEUE_MAX_ATTEMPTS } = await import("./userFiles");
+    await t.action(internal.userFiles.dispatch, { fileId, queued: QUEUE_MAX_ATTEMPTS });
     const row = await t.run((ctx) => ctx.db.get(fileId));
     expect(row?.status).toBe("failed");
     expect(row?.error).toMatch(/busy/i);

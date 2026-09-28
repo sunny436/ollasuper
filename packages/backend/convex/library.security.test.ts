@@ -224,6 +224,40 @@ describe("red-team cycle 1: abuse of the quota rules", () => {
   });
 });
 
+describe("processing intake (red-team cycle 6, found on prod)", () => {
+  test("no door can queue more than 20 files for processing; kept-only files are unaffected", async () => {
+    const t = convexTest(schema, modules);
+    const { b, ws } = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 20; i++) {
+        const storageId = await ctx.storage.store(new Blob([`p${i}`]));
+        await createLibraryFile(ctx, {
+          userId: b, workspaceId: ws, storageId, name: `p${i}.txt`, contentType: "text/plain", size: 2, source: "uploaded",
+        });
+      }
+    });
+    // The legacy door the F-12 suite used to queue 201 files.
+    const B = t.withIdentity(as(b));
+    const legacy = async (name: string, type: string) => {
+      const url = await B.mutation(api.files.generateUploadUrl, { workspaceId: ws });
+      expect(url).toBeTruthy();
+      const storageId = await t.run((ctx) => ctx.storage.store(new Blob([`x-${name}`], { type })));
+      return B.mutation(api.files.saveFile, { workspaceId: ws, storageId, name, size: 3, contentType: type });
+    };
+    await expect(legacy("p20.txt", "text/plain")).rejects.toThrow(/still processing/);
+    await expect(legacy("archive.zip", "application/zip")).resolves.toBeTruthy(); // kept, never processed
+  });
+
+  test("the queue's patience covers a FULL intake at the fastest retry rate", async () => {
+    const { QUEUE_MAX_ATTEMPTS, QUEUE_MIN_DELAY_MS, INGEST_DEADLINE_MS } = await import("./userFiles");
+    const { MAX_PROCESSING_PER_USER } = await import("./libraryCore");
+    // The last of 20 files waits for 19 ingestions of up to the whole-file deadline.
+    expect(QUEUE_MAX_ATTEMPTS * QUEUE_MIN_DELAY_MS).toBeGreaterThanOrEqual(
+      (MAX_PROCESSING_PER_USER - 1) * INGEST_DEADLINE_MS,
+    );
+  });
+});
+
 describe("upload flood limit (shared by every door)", () => {
   test("a folder of hundreds of files is fine; the 301st session in an hour is refused", async () => {
     const t = convexTest(schema, modules);

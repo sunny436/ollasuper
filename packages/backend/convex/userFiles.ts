@@ -262,8 +262,19 @@ export const dispatchPayload = internalQuery({
  * permanently saturated plane from queueing forever; past it the file fails
  * with a retryable error.
  */
-const QUEUE_MAX_ATTEMPTS = 120; // >= ~10 min at the 5 s floor, ~60 min at the cap
-const QUEUE_MIN_DELAY_MS = 5_000;
+/**
+ * Sized so a FULL intake never runs out of patience: MAX_PROCESSING_PER_USER
+ * files (20) ingest one at a time per user, each up to Python's whole-file
+ * deadline (ai_ingest_overall_deadline_s, 300 s) — up to 100 min for the last
+ * file in line. At Python's 5-10 s Retry-After (+ jitter) that needs well over
+ * 120 attempts, the old value, which failed the tail of a 20-PDF upload with
+ * "Processing is busy". 1,500 attempts ≈ 2-5 h. The polling is bounded by the
+ * same cap: at most 20 queued files per user.
+ */
+export const QUEUE_MAX_ATTEMPTS = 1_500;
+/** Python's ai_ingest_overall_deadline_s — one ingestion's worst case. */
+export const INGEST_DEADLINE_MS = 300_000;
+export const QUEUE_MIN_DELAY_MS = 5_000;
 const QUEUE_MAX_DELAY_MS = 30_000;
 
 function queueDelayMs(retryAfter: string | null): number {

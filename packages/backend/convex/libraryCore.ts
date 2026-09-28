@@ -286,6 +286,18 @@ export async function createLibraryFile(
   const sha256 = sha256Hex(a.sha256);
   const processable =
     a.source === "uploaded" && !a.forceStored && isProcessable(name, a.contentType);
+  if (processable) {
+    // The processing intake cap, enforced HERE so no door can skip it. It used
+    // to live only in library.beginUpload; the legacy saveFile/register doors
+    // let one script queue 200+ files, each polling Python for a slot.
+    const inFlight = await ctx.db
+      .query("userFiles")
+      .withIndex("by_user_status", (q) => q.eq("userId", a.userId).eq("status", "processing"))
+      .take(MAX_PROCESSING_PER_USER);
+    if (inFlight.length >= MAX_PROCESSING_PER_USER) {
+      throw libraryError("PROCESSING_BUSY", "Several of your files are still processing. Try again shortly.");
+    }
+  }
   const now = Date.now();
   const id = await ctx.db.insert("userFiles", {
     userId: a.userId,

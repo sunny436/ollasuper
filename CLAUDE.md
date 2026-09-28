@@ -468,6 +468,11 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
   are offered only for PNG/JPEG/GIF/WebP (`isInlineRaster`) and the route still
   checks magic bytes. CORP is `same-site` on purpose (the host and IP:port forms
   are cross-origin). Never return `storageId`, `ingestId` or a storage URL.
+- **The processing intake cap (20 in flight per user) lives in
+  `createLibraryFile`**, so every door honours it; `beginUpload` repeats it only
+  to refuse before any bytes move. The ingest queue's patience
+  (`QUEUE_MAX_ATTEMPTS`) is sized from that cap × Python's whole-file deadline —
+  a test pins the relation; change one and the test tells you to change both.
 - **Any code that deletes `userFiles` outside `removeLibraryFile`** (account
   deletion does) must call `releaseLibraryCharge`, or the global ledger drifts
   up with every deletion until uploads report "Storage is temporarily full".
