@@ -136,7 +136,9 @@ export const recomputeUsage = internalMutation({
       else await ctx.db.insert("storageUsage", { key: shadow, usedBytes: bytes, files: 1 });
     };
     for (const f of res.page) {
-      if (isCharged(f)) await add(userKey(f.userId), f.size);
+      // Uploads only, on both keys: generated rows add no bytes (libraryCore).
+      if (!isCharged(f)) continue;
+      await add(userKey(f.userId), f.size);
       await add(GLOBAL_KEY, f.size);
     }
     const diffs: { key: string; live: number; truth: number }[] = [];
@@ -314,7 +316,6 @@ export const backfillGenerated = internalMutation({
         created++;
         continue;
       }
-      // Null past the global ceiling: the file stays in its chat, uncounted here.
       const id = await addGeneratedToLibrary(ctx, {
         artifactId: a._id,
         userId: a.userId,

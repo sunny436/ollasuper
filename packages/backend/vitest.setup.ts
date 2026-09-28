@@ -1,4 +1,29 @@
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
+
+/**
+ * Every convex-test instance's scheduler, settled after each test.
+ *
+ * A scheduled job that outlives its test (a Library upload — including a chat
+ * attachment — schedules processing) writes into a finished test's database.
+ * vitest reports that as an unhandled error, and ONE unhandled error fails the
+ * whole run even when every test passed. This drains in-flight jobs while the
+ * test's instance is still alive. Real timers first: a test left on a fake
+ * clock would never fire the drain's own timers. Registered here, before any
+ * test file's hooks, so it runs after them (after-hooks run in reverse) — by
+ * then a test has unset AI_BASE_URL, so a drained dispatch fails fast rather
+ * than reaching any network.
+ */
+const live = new Set<{ finishInProgressScheduledFunctions: () => Promise<void> }>();
+afterEach(async () => {
+  vi.useRealTimers();
+  for (const t of live) {
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+      await t.finishInProgressScheduledFunctions();
+    }
+  }
+  live.clear();
+});
 
 /**
  * TEST-ONLY: give the conventional placeholder test identity a REAL
@@ -26,6 +51,7 @@ vi.mock("convex-test", async (importOriginal) => {
 
   const convexTest = ((...args: Parameters<typeof mod.convexTest>) => {
     const t = mod.convexTest(...args);
+    live.add(t);
     const sessions = new Map<string, Promise<string | null>>();
 
     // null = the user part is not a real users id (a deliberately bogus

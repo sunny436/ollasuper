@@ -32,6 +32,7 @@ afterEach(() => {
   delete process.env.AI_SERVICE_KEY;
 });
 
+
 async function seed(t: T) {
   return t.run(async (ctx) => {
     const a = await ctx.db.insert("users", { email: "a@t.test" });
@@ -166,6 +167,60 @@ describe("A vs B (same workspace)", () => {
     });
     expect((await t.fetch(`/library/file?t=${token}`)).status).toBe(404);
     await expect(B.mutation(api.library.mintAccess, { fileId, purpose: "download" })).rejects.toThrow();
+  });
+});
+
+describe("red-team cycle 1: abuse of the quota rules", () => {
+  test("generated files cannot fill the global ceiling and block other users' uploads", async () => {
+    const t = convexTest(schema, modules);
+    const { a, b, ws } = await seed(t);
+    // A floods 600 MB of generated files (the ceiling is 500 MB by default).
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 6; i++) {
+        const storageId = await ctx.storage.store(new Blob([`gen-${i}`]));
+        await createLibraryFile(ctx, {
+          userId: a, workspaceId: ws, storageId, name: `gen-${i}.pdf`, contentType: "application/pdf",
+          size: 100 * 1024 * 1024, source: "generated",
+        });
+      }
+    });
+    const global = await t.run(async (ctx) =>
+      ctx.db.query("storageUsage").withIndex("by_key", (q) => q.eq("key", "global")).unique(),
+    );
+    expect(global?.usedBytes ?? 0).toBe(0); // no new bytes, no charge
+    // B can still upload.
+    const begin = await t.withIdentity(as(b)).mutation(api.library.beginUpload, {
+      workspaceId: ws, name: "mine.txt", contentType: "text/plain", size: 5, purpose: "library",
+    });
+    expect(begin.ok).toBe(true);
+  });
+
+  test("a heavy generator's old uploads are still offered by Free up space", async () => {
+    const t = convexTest(schema, modules);
+    const { a, ws } = await seed(t);
+    const oldUpload = await t.run(async (ctx) => {
+      const storageId = await ctx.storage.store(new Blob(["old"]));
+      const id = await createLibraryFile(ctx, {
+        userId: a, workspaceId: ws, storageId, name: "old.zip", contentType: "application/zip",
+        size: 90 * 1024 * 1024, source: "uploaded", createdAt: 1,
+      });
+      // More generated rows than the bounded scan could ever skip past.
+      for (let i = 0; i < 2_100; i++) {
+        await ctx.db.insert("userFiles", {
+          userId: a, workspaceId: ws, name: `g${i}.pdf`, size: 1, contentType: "application/pdf",
+          ingestId: `g-${i}`, status: "stored", attempts: 0, source: "generated", kind: "pdf",
+          createdAt: 0, updatedAt: 0,
+        });
+      }
+      return id;
+    });
+    const res = await t.withIdentity(as(a)).mutation(api.library.beginUpload, {
+      workspaceId: ws, name: "new.zip", contentType: "application/zip", size: 20 * 1024 * 1024, purpose: "library",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("NEEDS_SPACE");
+    expect(res.candidates.map((c) => c._id)).toEqual([oldUpload]);
   });
 });
 

@@ -450,9 +450,13 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
 - **The Convex blob is the canonical original** and is never dropped on `ready`
   or on a processing timeout. `stored` is a terminal status (kept, not indexed);
   Python callbacks act only on `processing` rows.
-- **Quota:** 100 MB of UPLOADS per user across all workspaces; generated files
-  are free and never evicted; Project-linked files are never offered for
-  deletion. Reservations are computed live from open `uploadIntents` sessions —
+- **Quota:** 100 MB of UPLOADS per user across all workspaces; Project-linked
+  files are never offered for deletion. Generated files are charged to NOBODY —
+  not the user and not the global ceiling — because their row points at the
+  artifact's existing bytes. Counting them globally let one user's generations
+  fill the ceiling and block every other user's uploads (red-team cycle 1).
+  "Free up space" scans uploads through `by_user_source_created`, so a heavy
+  generator's rows cannot use up the bounded scan. Reservations are computed live from open `uploadIntents` sessions —
   never stored. Nothing is deleted without the user's selection
   (`approvedDeletions`), re-validated inside `finishUpload`'s transaction.
   `planSpaceWithCandidates` scans the deletable files ONCE per call: scanning

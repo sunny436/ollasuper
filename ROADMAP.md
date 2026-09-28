@@ -24,7 +24,9 @@ service, database or storage backend.
   an upload that does not fit opens "Free up space" (oldest pre-selected, sortable oldest/largest);
   the chosen files are deleted in the same transaction as the new upload, re-checked there. Stale
   choice → `QUOTA_PLAN_CHANGED`, nothing deleted. Project-linked files are never offered. One-time
-  90 % notice, re-armed below 80 %. Global ceiling `LIBRARY_GLOBAL_CEILING_BYTES` (default 500 MB).
+  90 % notice, re-armed below 80 %. Global ceiling `LIBRARY_GLOBAL_CEILING_BYTES` (default 500 MB)
+  over UPLOADED bytes only: a generated file points at its artifact's existing bytes, and counting
+  it let one user's generations block everyone's uploads (red-team cycle 1).
 - **Access** is a 256-bit capability (SHA-256 stored; 60 s download / 5 min preview), re-authorised
   on every use by `/library/file`, with per-user request and byte budgets (429). Inline only for a
   PNG/JPEG/GIF/WebP identified from its bytes; everything else is an `application/octet-stream`

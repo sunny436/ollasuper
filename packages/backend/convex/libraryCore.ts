@@ -120,14 +120,16 @@ export async function deletableForSpace(
   limit = 200,
 ): Promise<Doc<"userFiles">[]> {
   const out: Doc<"userFiles">[] = [];
-  // Bounded scan: generated or Project-linked rows are skipped, not counted.
+  // UPLOADS only, via their own index: generated rows are unbounded and would
+  // otherwise use up this bounded scan. Uploads are capped at
+  // MAX_FILES_PER_USER, so the scan covers them all; Project-linked ones are
+  // skipped.
   const rows = await ctx.db
     .query("userFiles")
-    .withIndex("by_user_created", (q) => q.eq("userId", userId))
+    .withIndex("by_user_source_created", (q) => q.eq("userId", userId).eq("source", "uploaded"))
     .order("asc")
     .take(MAX_FILES_PER_USER + 50);
   for (const f of rows) {
-    if (!isCharged(f)) continue;
     if (await projectLinked(ctx, f._id)) continue;
     out.push(f);
     if (out.length >= limit) break;
@@ -294,11 +296,15 @@ export async function createLibraryFile(
     createdAt: a.createdAt ?? now,
     updatedAt: now,
   });
+  // Generated rows reference their artifact's EXISTING bytes (no new disk), so
+  // they are charged to nobody — not the user, and not the global ceiling. If
+  // they counted globally, one user generating files could fill the ceiling
+  // and block every other user's uploads.
   if (a.source === "uploaded") {
     const user = await adjust(ctx, userKey(a.userId), a.size, 1);
     await maybeNearFull(ctx, a.userId, user);
+    await adjust(ctx, GLOBAL_KEY, a.size, 1);
   }
-  await adjust(ctx, GLOBAL_KEY, a.size, 1);
   await bump(ctx, a.workspaceId, "userFiles", 1);
   await audit(ctx, a.workspaceId, a.userId, "userfile.upload", { fileId: id });
   if (processable) {
@@ -358,8 +364,8 @@ export async function removeLibraryFile(
   if (isCharged(f)) {
     const user = await adjust(ctx, userKey(f.userId), -f.size, -1);
     await maybeNearFull(ctx, f.userId, user);
+    await adjust(ctx, GLOBAL_KEY, -f.size, -1);
   }
-  await adjust(ctx, GLOBAL_KEY, -f.size, -1);
   if (f.storageId) await deleteBlobIfUnreferenced(ctx, f.storageId);
   await bump(ctx, f.workspaceId, "userFiles", -1);
   await audit(ctx, f.workspaceId, f.userId, reason === "evicted" ? "userfile.evict" : "userfile.delete", {
@@ -412,9 +418,8 @@ export function capFor(name: string, contentType: string): number {
  * A generated artifact becomes a Library file on the artifact's OWN bytes —
  * the same blob, referenced by the chatArtifacts row and this row, both the
  * user's; it is deleted only when neither references it. Idempotent by
- * artifactId (a crash-resumed turn re-registers). Not charged to the user
- * (your decision: uploads only) but still under the global ceiling — past it
- * the file stays in its chat and simply gets no Library row.
+ * artifactId (a crash-resumed turn re-registers). Charged to nobody: it adds
+ * no bytes (your decision: uploads only count), so it cannot be refused.
  */
 export async function addGeneratedToLibrary(
   ctx: MutationCtx,
@@ -433,10 +438,6 @@ export async function addGeneratedToLibrary(
     .withIndex("by_artifact", (q) => q.eq("artifactId", a.artifactId))
     .first();
   if (existing) return existing._id;
-  if ((await usedBytes(ctx, GLOBAL_KEY)) + a.size > GLOBAL_CEILING_BYTES) {
-    console.log(JSON.stringify({ event: "LIB_QUOTA", reason: "global", artifactId: a.artifactId }));
-    return null;
-  }
   const meta = await ctx.db.system.get(a.storageId);
   return await createLibraryFile(ctx, {
     ...a,

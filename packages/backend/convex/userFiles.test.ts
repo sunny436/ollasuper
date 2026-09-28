@@ -34,6 +34,7 @@ afterEach(() => {
   delete process.env.AI_SERVICE_KEY;
 });
 
+
 async function drain(t: ReturnType<typeof convexTest>) {
   for (let i = 0; i < 3; i++) {
     await new Promise((r) => setTimeout(r, 0));

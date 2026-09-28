@@ -247,6 +247,9 @@ export default defineSchema({
   })
     .index("by_user_ws_created", ["userId", "workspaceId", "createdAt"])
     .index("by_user_created", ["userId", "createdAt"])
+    // The user's UPLOADS oldest-first ("Free up space"): generated rows must not
+    // eat the bounded scan, or a heavy generator is told nothing can be freed.
+    .index("by_user_source_created", ["userId", "source", "createdAt"])
     .index("by_user_ws_kind_created", ["userId", "workspaceId", "kind", "createdAt"])
     .index("by_user_ws_source_created", ["userId", "workspaceId", "source", "createdAt"])
     .index("by_user_ws_namekey", ["userId", "workspaceId", "nameKey"])
