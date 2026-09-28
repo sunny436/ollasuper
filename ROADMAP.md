@@ -2,7 +2,7 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
-## File Library (2026-09-28) - branch `feat/library`, NOT deployed; blocked by B1–B4
+## File Library (2026-09-28) - LIVE on production, prod-verified; deployed on the operator's decision with B1–B4 open
 
 A private, persistent Library of every upload and generated file, at `/library` (rail link; `/files`
 and `/settings/files` redirect there). Built on the existing planes: Convex metadata + Convex private
@@ -46,19 +46,52 @@ service, database or storage backend.
   4,096-index-read limit for a user near the 2,000-file cap; a fold migration that aborted its whole
   page forever on a legacy row sharing bytes with a Library file.
 
-**Verified locally (not on any deployment):** backend 1161 + new Library 35 tests (A-vs-B matrix,
-tokens, headers, quota races, migrations); Python 3380 + hardening 25; edge 8; frontend 282;
-typecheck, biome, sherif, ruff and a production Next build. **Not run:** the DB-backed Python tests
-(no local PostgreSQL — CI runs them), the Linux-only real-sandbox test (CI/VM), and every e2e script
-(`qa-library.js` is written; it needs a staging stack).
+**Verified locally:** backend 1167 (vitest exit 0 — see the scheduler-leak fix below); Python 3384;
+edge 8; frontend 282; typecheck, biome, sherif, ruff and a production Next build.
+**Verified on the VM (the real Linux host; GitHub Actions is unavailable — account billing):**
+sandbox smoke 12/12 as `myos-ai` with the service PATH (PID namespace, 64 MB tmpfs, secrets masked,
+no network, new sandboxed parsers, image bomb refused, output flood killed); the 51 DB-backed Python
+tests against a throwaway pgvector container; alembic 0006 upgrade → downgrade → upgrade; the
+ingest/sandbox test group 72/72 as the service user.
 
-**Blockers before any deploy:** B1 no staging environment; B2 no Convex restore target (backups are
-exported but never restore-tested); B3 capacity — 15 GB free and each Library byte costs ~16× on
-disk (8× once `ai_ingest_store_original_copy=false`), so the 500 MB ceiling is the honest limit
-under today's backup policy; B4 no malware scanner (acceptable for staging only). `OPS_ALERT_EMAIL`
-is needed for alerts.
+**Production (deployed 2026-09-28, pre-deploy backup pinned as `/opt/backups/predeploy-library-*`):**
+migrations ran dry-run first — 189 rows backfilled, 10 legacy shared files folded and verified,
+289 generated files joined, 105 originals restored from Python's copy with all three hashes agreeing
+(second pass restored 0), ledger recomputed to 10.47 MB with a zero-drift re-check, reconcile clean.
+Headed Chrome: `qa-library.js` 12/12, `qa-library-quota.js` 6/6 (92 MB fill, one notice, Project
+protection, ask-first Free up space: Cancel deletes nothing, approving deletes exactly the server's
+oldest-first selection), `qa-library-redteam.js` 28/28 (account B against A on every door, token
+forgery/purpose/TTL, active content, size lies, a 30 MB chunked stream to a VALID upload URL cut off
+with 413, header injection). Regression on prod: p-chat 18/18, qa-projects 25/25, p-sidebar 7/7,
+p-settings, qa-files-upload, qa-monochrome light+dark, qa-redteam-security 20/20,
+qa-redteam-public 5/5 — all with 0 console errors.
 
-**Deploy order when unblocked (load-bearing):**
+**Red-team cycles (attack → fix → redeploy → re-attack):**
+1. Generated files counted against the global ceiling: one user's generations (120/h) could fill
+   it and block every other user's uploads. The ceiling now counts uploads only (a generated row
+   points at its artifact's existing bytes). Free up space scans uploads through their own index,
+   so a heavy generator's rows cannot hide deletable uploads.
+2. vitest counted scheduled jobs that outlived their tests as unhandled errors — exit 1 with every
+   test green, which would fail CI. `vitest.setup.ts` now settles every convex-test scheduler.
+3. On the host: the new pid-namespace probe correctly fell back where unshare was unprofiled;
+   one async test deadlocked on Linux (anyio vs the pytest-asyncio fixture) — fixed.
+4. Prod: a generated SVG (kind image) was offered a preview the route correctly refuses, so every
+   Library load logged a 404 and re-requested it — previews are now offered only for PNG/JPEG/GIF/
+   WebP. Prod logs showed OCC retries on `resolveAccess`: every fetch wrote the user's quota row, so
+   thumbnail grids contended — budgets are now charged once at mint and uses counted on the token's
+   own row (hard bound: maxUses × the hourly budget).
+5. Account deletion removed Library rows without releasing their charge, so every deleted account
+   inflated the global ledger toward a false "Storage is temporarily full" — fixed via
+   `releaseLibraryCharge`.
+Also found: several e2e scripts drove the removed Files pages or re-sent identical bytes, which now
+(correctly) ask "You already have this file"; they were updated, not the product.
+
+**Still open:** B1 no staging (prod is the test bed); B2 backups are exported but never restore-
+tested; B3 capacity — 15 GB free, so the 500 MB ceiling stays the honest limit under today's backup
+policy; B4 no malware scanner (files are owner-only and never rendered inline, but unscanned);
+`OPS_ALERT_EMAIL` for alerts; CI cannot run until GitHub billing is restored.
+
+**Deploy order (load-bearing, as executed):**
 1. `alembic upgrade head` (0006) — the new Python writes the version columns on every persist.
 2. Python (`IngestRequest.sha256` is optional, so it accepts the old Convex).
 3. Convex (new indexes; `dispatchPayload` starts sending `sha256`, which an old Python would 422).

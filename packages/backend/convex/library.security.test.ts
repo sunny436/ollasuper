@@ -224,6 +224,29 @@ describe("red-team cycle 1: abuse of the quota rules", () => {
   });
 });
 
+describe("upload flood limit (shared by every door)", () => {
+  test("a folder of hundreds of files is fine; the 301st session in an hour is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { b, ws } = await seed(t);
+    const B = t.withIdentity(as(b));
+    for (let i = 0; i < 300; i++) {
+      const r = await B.mutation(api.library.beginUpload, {
+        workspaceId: ws, name: `f${i}.txt`, contentType: "text/plain", size: 1, purpose: "library",
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) await B.mutation(api.library.abortUpload, { intentId: r.intentId });
+    }
+    await expect(
+      B.mutation(api.library.beginUpload, {
+        workspaceId: ws, name: "f300.txt", contentType: "text/plain", size: 1, purpose: "library",
+      }),
+    ).rejects.toThrow(/Too many uploads/);
+    // The legacy doors draw on the same window — no way around it.
+    await expect(B.mutation(api.userFiles.generateUploadUrl, { workspaceId: ws })).rejects.toThrow(/Too many uploads/);
+    await expect(B.mutation(api.chat.attachments.generateUploadUrl, { workspaceId: ws })).rejects.toThrow(/Too many uploads/);
+  });
+});
+
 describe("access capabilities and the /library/file route", () => {
   test("a download is an attachment of an inert type, with every protective header", async () => {
     const t = convexTest(schema, modules);

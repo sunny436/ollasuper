@@ -14,6 +14,8 @@ import {
 } from "./_generated/server";
 import { getUserIdOrNull, requireUserId } from "./chat/authz";
 import {
+  UPLOAD_WINDOW_MS,
+  UPLOADS_PER_HOUR,
   assertRoomWithoutEviction,
   capFor,
   createLibraryFile,
@@ -83,7 +85,7 @@ export const generateUploadUrl = mutation({
   handler: async (ctx, { workspaceId }) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, workspaceId);
-    const rate = await consumeWindow(ctx, userId, "libraryUpload", 60, 60 * 60_000);
+    const rate = await consumeWindow(ctx, userId, "libraryUpload", UPLOADS_PER_HOUR, UPLOAD_WINDOW_MS);
     if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many uploads. Please wait a moment.");
     await issueUploadIntent(ctx, userId, workspaceId);
     return await ctx.storage.generateUploadUrl();

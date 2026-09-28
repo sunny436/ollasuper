@@ -434,7 +434,7 @@ TOC in the renderers, and a preview the model never sees.
   loaded`) until Writer was added on 19-09 (`apt-get install -y
   --no-install-recommends libreoffice-writer`). A rebuilt VM must install both.
 
-### File Library (2026-09-28 — branch `feat/library`, not deployed)
+### File Library (2026-09-28 — LIVE, prod-verified; see ROADMAP)
 
 `convex/libraryCore.ts` is the ONE place a Library file is created, charged,
 released and deleted; `library.ts` is its public API. Every upload door —
@@ -462,9 +462,15 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
   `planSpaceWithCandidates` scans the deletable files ONCE per call: scanning
   twice can pass Convex's 4,096-index-read limit for a big Library.
 - **Access** is `mintAccess` → `/library/file?t=` (hash stored, 60 s / 5 min,
-  re-authorised per use, byte budget). Inline ONLY for a raster identified by
-  magic bytes. CORP is `same-site` on purpose (the host and IP:port forms are
-  cross-origin). Never return `storageId`, `ingestId` or a storage URL.
+  re-authorised per use). Budgets are charged ONCE at mint and uses are counted
+  on the token's OWN row (download 3, preview 4) — never write a shared per-user
+  row on every fetch: thumbnail grids made it an OCC hot spot on prod. Previews
+  are offered only for PNG/JPEG/GIF/WebP (`isInlineRaster`) and the route still
+  checks magic bytes. CORP is `same-site` on purpose (the host and IP:port forms
+  are cross-origin). Never return `storageId`, `ingestId` or a storage URL.
+- **Any code that deletes `userFiles` outside `removeLibraryFile`** (account
+  deletion does) must call `releaseLibraryCharge`, or the global ledger drifts
+  up with every deletion until uploads report "Storage is temporarily full".
 - **`attachmentInStream` looks up `(storageId, threadId)` exactly.** One file
   reused in many chats is many rows on one blob; `send` binds the thread onto
   each attachment before the stream exists.
@@ -473,6 +479,10 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
   2 × `ai_ingest_max_chars` (`ops.trim_docs`). Any new sandbox op that returns
   text needs the same budget, or a large legitimate file fails instead of
   indexing.
+- **Tests:** `vitest.setup.ts` settles every convex-test scheduler after each
+  test — a scheduled job outliving its test is an "unhandled error" that makes
+  vitest exit 1 with every test green. e2e that uploads must use UNIQUE bytes
+  per run: identical bytes (correctly) ask "You already have this file".
 - **Deploy order:** alembic `0006` → Python → Convex → migrations (dry-run
   first, `verifyFold` before `cleanupFoldedFiles`, `restoreOriginals` before
   `ai_ingest_store_original_copy=false`) → edge → frontend. The new Python

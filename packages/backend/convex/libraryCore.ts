@@ -37,6 +37,16 @@ export const GLOBAL_CEILING_BYTES =
     : 500 * 1024 * 1024;
 /** Keeps the degenerate "100 MB of tiny files" case inside the eviction bound. */
 export const MAX_FILES_PER_USER = 2_000;
+/**
+ * Upload sessions per user per hour, shared by EVERY upload door (Library,
+ * chat, Projects, the legacy saveFile paths). It only stops floods — bytes are
+ * bounded by the quota, the global ceiling and the edge's 26 MB cap. It was 60,
+ * which failed a folder of 80 documents partway through (found by the F-12
+ * production suite seeding 201 files).
+ */
+export const UPLOADS_PER_HOUR = 300;
+export const UPLOAD_WINDOW_MS = 60 * 60_000;
+
 /** At most this many files are removed by one upload. */
 export const MAX_EVICTIONS = 50;
 /** Processing intake: files a user may have in flight at once. */

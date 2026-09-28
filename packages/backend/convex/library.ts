@@ -20,6 +20,7 @@ import {
   GLOBAL_KEY,
   MAX_EVICTIONS,
   MAX_PROCESSING_PER_USER,
+  UPLOADS_PER_HOUR,
   USER_QUOTA_BYTES,
   assertFileCap,
   capFor,
@@ -30,8 +31,8 @@ import {
   planSpaceWithCandidates,
   removeLibraryFile,
   stillDeletable,
-  userKey,
   usedBytes,
+  userKey,
 } from "./libraryCore";
 import { notify } from "./notifications";
 import { hasWorkspaceAccess, requireMember } from "./orgs";
@@ -44,7 +45,6 @@ import { consumeWindow } from "./quotas";
  */
 
 const HOUR = 60 * 60 * 1000;
-const UPLOADS_PER_HOUR = 60;
 const ACCESS_PER_HOUR = 300;
 const BYTES_PER_HOUR = 500 * 1024 * 1024;
 const DOWNLOAD_TTL_MS = 60_000;
