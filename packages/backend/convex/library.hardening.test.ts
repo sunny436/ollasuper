@@ -594,6 +594,31 @@ describe("generated files have their own bounds", () => {
     expect(fixed).toMatchObject({ usedBytes: 6, files: 1 });
   });
 
+  test("recomputeUsage creates a generated ledger that never existed (production's backfill predates it)", async () => {
+    const t = makeTest();
+    const { a, ws } = await seed(t);
+    const { streamId } = await streamFor(t, a, ws);
+    const blob = await t.run((ctx) => ctx.storage.store(new Blob(["abcdef"], { type: "application/pdf" })));
+    await t.mutation(internal.chat.artifacts.registerArtifact, {
+      streamId, storageId: blob, filename: "g.pdf", format: "pdf", mime: "application/pdf", size: 6,
+    });
+    const genRow = (ctx: Parameters<Parameters<typeof t.run>[0]>[0]) =>
+      ctx.db.query("storageUsage").withIndex("by_key", (q) => q.eq("key", genKey(a))).unique();
+    // Production's generated rows were backfilled by the previous release, which
+    // kept no generated ledger at all: the row is ABSENT, not merely wrong.
+    await t.run(async (ctx) => {
+      const row = await genRow(ctx);
+      if (row) await ctx.db.delete(row._id);
+    });
+    const dry = await t.mutation(internal.libraryMigrations.recomputeUsage, {});
+    expect(dry.diffs).toContainEqual({ key: genKey(a), live: 0, truth: 6 });
+    expect(await t.run(genRow)).toBeNull(); // a dry run creates nothing
+    await t.mutation(internal.libraryMigrations.recomputeUsage, { dryRun: false });
+    expect(await t.run(genRow)).toMatchObject({ usedBytes: 6, files: 1 });
+    const again = await t.mutation(internal.libraryMigrations.recomputeUsage, {});
+    expect(again.diffs).toEqual([]);
+  });
+
   test("the upload quota is untouched by generated files", async () => {
     const t = makeTest();
     const { a, ws } = await seed(t);
