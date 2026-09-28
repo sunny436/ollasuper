@@ -25,6 +25,8 @@ const VOLUME = "/var/lib/docker/volumes/myos-staging-data/_data/storage";
 const { email, password } = account();
 const results = [];
 const errors = [];
+const OUT = require("node:path").join(__dirname, "out", "library-delete");
+let shotPage = null; // the page a failing step photographs
 
 const step = async (name, fn) => {
   try {
@@ -33,7 +35,12 @@ const step = async (name, fn) => {
     console.log(`PASS  ${name}${d ? ` — ${d}` : ""}`);
   } catch (e) {
     results.push([false, name]);
-    console.log(`FAIL  ${name} — ${String(e.message || e).split("\n")[0]}`);
+    const shot = `${OUT}/fail-${results.length}.png`;
+    if (shotPage) {
+      require("node:fs").mkdirSync(OUT, { recursive: true });
+      await shotPage.screenshot({ path: shot }).catch(() => {});
+    }
+    console.log(`FAIL  ${name} — ${String(e.message || e).split("\n")[0]}${shotPage ? ` (screenshot ${shot})` : ""}`);
   }
 };
 
@@ -121,6 +128,7 @@ async function ask(page, question) {
   const ctx = await browser.newContext({ viewport: { width: 1366, height: 860 } });
   const page = await ctx.newPage();
   page.on("console", (m) => m.type() === "error" && errors.push(m.text().slice(0, 200)));
+  shotPage = page;
   const tag = Date.now().toString(36);
   const code = `ZX${tag.toUpperCase()}Q`;
   const name = `canary-${tag}.txt`;

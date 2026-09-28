@@ -70,6 +70,15 @@ async function apiUpload(jwt, ws, name, bytes) {
 
   await step("sign in (throwaway account)", async () => {
     await page.goto(`${BASE}/login`, { waitUntil: "domcontentloaded" });
+    // Hydrated first: filled before React attaches, the form submits empty.
+    await page.waitForFunction(
+      () => {
+        const f = document.querySelector("form");
+        return !!f && Object.keys(f).some((k) => k.startsWith("__reactFiber"));
+      },
+      null,
+      { timeout: 30000 },
+    );
     await page.locator('input[type="email"]').first().fill(who.email);
     await page.locator('input[type="password"]').first().fill(who.password);
     await page.click('button[type="submit"]');

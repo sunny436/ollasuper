@@ -35,6 +35,15 @@ const step = async (name, fn) => {
 
 async function login(p, who) {
   await p.goto(`${BASE}/login`, { waitUntil: "domcontentloaded" });
+  // Hydrated first: filled before React attaches, the form submits empty.
+  await p.waitForFunction(
+    () => {
+      const f = document.querySelector("form");
+      return !!f && Object.keys(f).some((k) => k.startsWith("__reactFiber"));
+    },
+    null,
+    { timeout: 30000 },
+  );
   await p.locator('input[type="email"]').first().fill(who.email);
   await p.locator('input[type="password"]').first().fill(who.password);
   await p.click('button[type="submit"]');

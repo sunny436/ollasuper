@@ -20,10 +20,21 @@ function fixtures() {
   const token = `amber-otter-${Date.now() % 100000}`;
   const txt = path.join(OUT, "smoke-notes-with-a-long-file-name-for-the-attachment-chip.txt");
   fs.writeFileSync(txt, `Internal note.\nThe release passphrase is ${token}.\n`);
+  // UNIQUE bytes per run, all three: the Library answers identical bytes with
+  // "You already have this file" (by design), and that prompt holds the chip
+  // back and makes the rest of the page inert. The same 1x1 PNG is already in
+  // an account that ran the Library suites. A tEXt chunk keeps it a valid PNG.
   const png = path.join(OUT, "smoke-image.png");
-  fs.writeFileSync(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
+  const base = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+  const text = Buffer.concat([Buffer.from("tEXt"), Buffer.from(`run\0${token}`)]);
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(text.length - 4);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(require("node:zlib").crc32(text));
+  const iend = base.length - 12; // the IEND chunk is the last 12 bytes
+  fs.writeFileSync(png, Buffer.concat([base.subarray(0, iend), len, text, crc, base.subarray(iend)]));
   const pdf = path.join(OUT, "smoke.pdf");
-  fs.writeFileSync(pdf, "%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
+  fs.writeFileSync(pdf, `%PDF-1.1\n%${token}\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n`);
   return { token, files: [png, pdf, txt] };
 }
 
