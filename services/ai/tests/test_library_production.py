@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from types import SimpleNamespace
 
 import pandas as pd
@@ -395,10 +394,16 @@ async def test_purge_drops_the_deleted_files_cached_frames():
     assert loader._CACHE.get(("sid-2", "")) is not None
 
 
-def test_cached_frames_expire():
-    c = loader._DataframeCache(4, ttl_s=0.0)
+def test_cached_frames_expire(monkeypatch):
+    # A fake clock, not a sleep: Windows' monotonic clock ticks every ~15.6 ms,
+    # so a 10 ms sleep could read the same instant twice and never "expire".
+    now = [1_000.0]
+    monkeypatch.setattr(loader.time, "monotonic", lambda: now[0])
+    c = loader._DataframeCache(4, ttl_s=600.0)
     c.put(("s", ""), pd.DataFrame({"a": [1]}))
-    time.sleep(0.01)
+    now[0] += 599
+    assert c.get(("s", "")) is not None
+    now[0] += 2
     assert c.get(("s", "")) is None
 
 
