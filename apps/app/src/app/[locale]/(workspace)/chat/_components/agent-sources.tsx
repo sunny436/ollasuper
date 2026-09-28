@@ -146,6 +146,9 @@ function CitationCard({
 function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
   const mintDownload = useMutation(api.chat.artifacts.mintDownload);
   const [busy, setBusy] = useState(false);
+  // The file was deleted (from the Library, which deletes its chat card too):
+  // the card stays as history, without a dead download or endless skeletons.
+  const [deleted, setDeleted] = useState(false);
   const preview = artifact.preview;
   // Only query when this artifact actually declares a preview (else "skip").
   const previewData = useQuery(
@@ -153,6 +156,7 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
     preview && artifact.artifactId ? { artifactId: artifact.artifactId } : "skip",
   );
   const pages = previewData?.pages ?? [];
+  const gone = deleted || previewData?.gone === true;
   const title =
     artifact.filename ||
     (typeof artifact.metadata.title === "string" && artifact.metadata.title) ||
@@ -174,8 +178,9 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
       try {
         const { token } = await mintDownload({ artifactId: artifact.artifactId });
         url = safeUrl(`${convexSite()}/artifact/file?t=${token}`);
-      } catch {
-        // ownership/expiry → keep the card, no navigation
+      } catch (e) {
+        // Missing (deleted) and not-yours answer alike: the file is gone here.
+        if (String((e as Error)?.message ?? "").includes("Not found")) setDeleted(true);
       } finally {
         setBusy(false);
       }
@@ -195,7 +200,7 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
       data-artifact-card
       className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card p-2 text-xs"
     >
-      {preview && (
+      {preview && !gone && (
         <div data-artifact-preview className="flex flex-col gap-1">
           <div className="flex snap-x gap-2 overflow-x-auto pb-1">
             {pages.length === 0
@@ -232,7 +237,12 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
           <span className="shrink-0 text-primary/60 tabular-nums">{size}</span>
         )}
         {badge && <Badge>{badge}</Badge>}
-        {downloadable && (
+        {gone && (
+          <span data-artifact-deleted className="shrink-0 text-primary/55">
+            Deleted
+          </span>
+        )}
+        {downloadable && !gone && (
           <button
             type="button"
             data-artifact-download

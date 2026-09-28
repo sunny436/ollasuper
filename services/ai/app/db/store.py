@@ -22,6 +22,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 
+class IngestStale(RuntimeError):
+    """A NEWER attempt already wrote this file (the generation fence).
+
+    Raised by `persist_ingest` instead of writing: this worker was dispatched
+    as generation N, but the row already carries a later one - a retry or a
+    re-index that finished first. Writing would roll the file back to an older
+    result, so nothing is written and nothing is reported."""
+
+
 class IngestDeleted(RuntimeError):
     """The file was deleted while this ingestion was running (audit F-13).
 
@@ -59,6 +68,7 @@ async def persist_ingest(
     embedding_dimensions: int,
     versions: dict[str, int] | None = None,
     store_original: bool = True,
+    generation: int | None = None,
 ) -> int:
     """One transaction: files row + (optionally) blob + chunks. Returns chunk count.
 
@@ -84,14 +94,26 @@ async def persist_ingest(
         )
         if tomb.first() is not None:
             raise IngestDeleted(file_id)
+        # THE GENERATION FENCE, under the same lock: an older attempt never
+        # overwrites a newer one's chunks (a slow worker the reaper gave up on,
+        # the predecessor of a retry or a re-index).
+        if generation is not None:
+            cur = await conn.execute(
+                text("SELECT generation FROM files WHERE id = :id"), {"id": file_id}
+            )
+            row = cur.first()
+            if row is not None and row[0] is not None and int(row[0]) > generation:
+                raise IngestStale(file_id)
         await conn.execute(
             text("""
                 INSERT INTO files (id, user_id, workspace_id, original_filename,
                     mime_type, detected_type, file_size, content_hash, parser_used,
                     page_count, status, metadata, created_at, updated_at, completed_at,
-                    parser_version, chunker_version, pipeline_version)
+                    parser_version, chunker_version, pipeline_version, generation,
+                    embedding_model)
                 VALUES (:id, :uid, :wid, :fn, :mime, :dt, :sz, :ch, :pu, :pc,
-                    'ready', '{}'::jsonb, now(), now(), now(), :pv, :cv, :plv)
+                    'ready', '{}'::jsonb, now(), now(), now(), :pv, :cv, :plv, :gen,
+                    :em)
                 ON CONFLICT (id) DO UPDATE SET
                     detected_type = EXCLUDED.detected_type,
                     parser_used = EXCLUDED.parser_used,
@@ -101,6 +123,8 @@ async def persist_ingest(
                     parser_version = EXCLUDED.parser_version,
                     chunker_version = EXCLUDED.chunker_version,
                     pipeline_version = EXCLUDED.pipeline_version,
+                    generation = COALESCE(EXCLUDED.generation, files.generation),
+                    embedding_model = EXCLUDED.embedding_model,
                     status = 'ready', error = NULL,
                     updated_at = now(), completed_at = now()
             """),
@@ -109,6 +133,10 @@ async def persist_ingest(
                 "mime": mime_type, "dt": detected_type, "sz": file_size,
                 "ch": content_hash, "pu": parser_used, "pc": page_count,
                 "pv": v.get("parser"), "cv": v.get("chunker"), "plv": v.get("pipeline"),
+                "gen": generation,
+                # NULL when nothing was embedded: a file with no chunks is not
+                # stale under any model.
+                "em": embedding_model if chunks else None,
             },
         )
         if store_original:
@@ -298,3 +326,126 @@ async def retrieve(
             )
         ).mappings().all()
     return [dict(r) for r in rows]
+
+
+async def models_for_files(
+    engine: AsyncEngine, *, user_id: str, file_ids: list[str] | None
+) -> dict[str, list[str]]:
+    """{embedding_model: [file ids]} for the caller's files in scope - which
+    query embeddings retrieval needs. `None` scope = every file of the user."""
+    clause = "AND id = ANY(:fids)" if file_ids is not None else ""
+    params: dict[str, Any] = {"uid": user_id}
+    if file_ids is not None:
+        if not file_ids:
+            return {}
+        params["fids"] = list(file_ids)
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(f"""
+                    SELECT embedding_model, id FROM files
+                    WHERE user_id = :uid {clause} AND embedding_model IS NOT NULL
+                """),
+                params,
+            )
+        ).all()
+    out: dict[str, list[str]] = {}
+    for model, fid in rows:
+        out.setdefault(str(model), []).append(str(fid))
+    return out
+
+
+async def stale_files(
+    engine: AsyncEngine,
+    *,
+    embedding_model: str,
+    versions: dict[str, int],
+    limit: int,
+) -> list[str]:
+    """Ingests whose chunks were made by another embedding model or an older
+    pipeline. A NULL version was written before versions were recorded, by the
+    code that became version 1, so it counts as 1. Tombstoned ids never."""
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("""
+                    SELECT f.id FROM files f
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM ingest_tombstones t WHERE t.file_id = f.id)
+                      AND (
+                        (f.embedding_model IS NOT NULL AND f.embedding_model <> :em)
+                        OR COALESCE(f.parser_version, 1) < :pv
+                        OR COALESCE(f.chunker_version, 1) < :cv
+                        OR COALESCE(f.pipeline_version, 1) < :plv)
+                    ORDER BY f.updated_at NULLS FIRST, f.id
+                    LIMIT :lim
+                """),
+                {
+                    "em": embedding_model,
+                    "pv": int(versions.get("parser", 1)),
+                    "cv": int(versions.get("chunker", 1)),
+                    "plv": int(versions.get("pipeline", 1)),
+                    "lim": int(limit),
+                },
+            )
+        ).all()
+    return [str(r[0]) for r in rows]
+
+
+async def known_ids(engine: AsyncEngine, *, after: str, limit: int) -> list[str]:
+    """Every file id this store holds, in id order from `after` (the cross-plane
+    reconcile pages through them). Chunks and copies hang off `files` by FK, so
+    a row here is the only way they can exist."""
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("SELECT id FROM files WHERE id > :after ORDER BY id LIMIT :lim"),
+                {"after": after, "lim": int(limit)},
+            )
+        ).all()
+    return [str(r[0]) for r in rows]
+
+
+async def original_copies(
+    engine: AsyncEngine, *, after: str, limit: int
+) -> list[tuple[str, str]]:
+    """(file_id, content_hash) of every BYTEA copy still held - the migration
+    remnants the Convex migration verifies against its own original."""
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("""
+                    SELECT file_id, content_hash FROM file_blobs
+                    WHERE file_id > :after ORDER BY file_id LIMIT :lim
+                """),
+                {"after": after, "lim": int(limit)},
+            )
+        ).all()
+    return [(str(r[0]), str(r[1])) for r in rows]
+
+
+async def delete_original_copy(engine: AsyncEngine, *, file_id: str) -> bool:
+    """Drop ONLY the BYTEA copy of one file (the file, its chunks and its
+    embeddings stay). Called once Convex has verified its own original."""
+    async with engine.begin() as conn:
+        res = await conn.execute(
+            text("DELETE FROM file_blobs WHERE file_id = :id"), {"id": file_id}
+        )
+    return (res.rowcount or 0) > 0
+
+
+async def embedding_column_dimension(engine: AsyncEngine) -> int | None:
+    """The dimension baked into file_chunks.embedding (vector(N)); pgvector
+    stores N as the column's typmod."""
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(
+                text("""
+                    SELECT atttypmod FROM pg_attribute
+                    WHERE attrelid = 'file_chunks'::regclass AND attname = 'embedding'
+                """)
+            )
+        ).first()
+    if row is None or row[0] is None or int(row[0]) <= 0:
+        return None
+    return int(row[0])

@@ -549,6 +549,13 @@ class IngestRequest(BaseModel):
     # Optional so an older Convex (which does not send it) is never 400'd —
     # deploy Python before Convex.
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # This attempt's identity (Convex userFiles.generation). Echoed on every
+    # callback and fenced on every write, so a late worker can never overwrite
+    # a newer attempt's result. Optional for the same deploy-order reason.
+    generation: int | None = Field(default=None, ge=1)
+    # A re-index of a READY file (new embedding model / pipeline): the file
+    # stays searchable on its old chunks until this run swaps them atomically.
+    reindex: bool | None = None
 
 
 class IngestAccepted(BaseModel):

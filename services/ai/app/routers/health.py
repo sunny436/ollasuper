@@ -72,7 +72,25 @@ async def readyz(request: Request, response: Response) -> dict:
     )
     documents = {"soffice_enabled": docs_enabled, "ok": docs_ok, **components}
 
-    ready = configured and convex_ok and mcp_ok and docs_ok
+    # LIBRARY: two configuration errors that would otherwise surface only as a
+    # trickle of failed files - decoders below the required sandbox isolation,
+    # and an embedding dimension that does not fit the index column.
+    from app.sandbox.harness import sandbox_status
+
+    status = sandbox_status()
+    index_ok = getattr(state, "index_dim_ok", True) is not False
+    # Named for what it proves, and never echoing the word the leak test bans.
+    sandbox = {
+        "tier": status["tier"],
+        "detail": status["detail"],
+        "isolated": status["secret_free"],
+        "min_tier": status["min_tier"],
+        "meets_minimum": status["meets_minimum"],
+    }
+    library = {"sandbox": sandbox, "index_dimension_ok": index_ok}
+    library_ok = bool(status["meets_minimum"]) and index_ok
+
+    ready = configured and convex_ok and mcp_ok and docs_ok and library_ok
     if not ready:
         response.status_code = 503
     return {
@@ -82,4 +100,5 @@ async def readyz(request: Request, response: Response) -> dict:
         "active": state.registry.active,
         "mcp": mcp,
         "documents": documents,
+        "library": library,
     }

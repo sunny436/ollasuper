@@ -23,20 +23,36 @@
 // The 'upgrade' handler is load-bearing: the Convex browser client is a WSS
 // connection, so a proxy handling only 'request' would serve pages fine and
 // silently break every chat stream.
+const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
 const { Transform } = require("node:stream");
 
+// Ports and the upload gate are configurable (EnvironmentFile=/etc/myos/edge.env
+// in production; a staging copy runs on other ports). Defaults = production.
+const CONFIG = {
+  port: Number(process.env.EDGE_PORT) || 5150,
+  appPort: Number(process.env.EDGE_APP_PORT) || 3000,
+  cvxPort: Number(process.env.EDGE_CVX_PORT) || 3210,
+  sitePort: Number(process.env.EDGE_SITE_PORT) || 3211,
+  // Shared with Convex (EDGE_TICKET_SECRET) to redeem upload tickets. Unset =
+  // every upload refused (fail closed), never an unmetered upload.
+  ticketSecret: process.env.EDGE_TICKET_SECRET || "",
+  // Below this much free disk, uploads are refused (507) before a byte lands.
+  minFreeBytes: Number(process.env.EDGE_MIN_FREE_BYTES) || 4 * 1024 * 1024 * 1024,
+  diskPath: process.env.EDGE_DISK_PATH || "/",
+};
+
 const HOST_ROUTES = {
-  "app.ollasuper.com": 3000,
-  "convex.ollasuper.com": 3210,
-  "convex-site.ollasuper.com": 3211,
+  "app.ollasuper.com": CONFIG.appPort,
+  "convex.ollasuper.com": CONFIG.cvxPort,
+  "convex-site.ollasuper.com": CONFIG.sitePort,
 };
 const PATH_ROUTES = [
-  { prefix: "/__cvx-site", port: 3211 },
-  { prefix: "/__cvx", port: 3210 },
+  { prefix: "/__cvx-site", port: CONFIG.sitePort },
+  { prefix: "/__cvx", port: CONFIG.cvxPort },
 ];
-const DEFAULT = 3000;
+const DEFAULT = CONFIG.appPort;
 
 // Returns { port, path }. Path routing wins so it works on the app hostname.
 function route(hostHeader, url) {
@@ -84,7 +100,7 @@ function safeHeaders(headers) {
 //     app-origin script vector;
 //   * `Content-Disposition: attachment` for everything not on an explicit
 //     INLINE allowlist — an allowlist fails closed on the type nobody thought of.
-const STORAGE_UPSTREAM_PORTS = new Set([3210, 3211]);
+const STORAGE_UPSTREAM_PORTS = new Set([CONFIG.cvxPort, CONFIG.sitePort]);
 const INLINE_SAFE_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -197,14 +213,127 @@ function forward(req, res, target) {
   req.pipe(cap).pipe(up);
 }
 
+// HOST-ONLY ROUTES. The Convex site serves two paths meant for callers on
+// this VM (the ticket redemption below and the host monitor's health read).
+// Each needs its own secret anyway; they are also never reachable from outside.
+function isPrivateSitePath(port, path) {
+  return port === CONFIG.sitePort && /^\/(edge|ops)(\/|$)/.test(path);
+}
+
+// UPLOAD TICKETS (File Library disk safety). Every upload URL Convex issues
+// carries a single-use ticket (`lt`) bound to one user and a byte count,
+// already charged to that user's daily budget. It is redeemed here, BEFORE a
+// byte is forwarded, and the body is cut off past the ticket's size. Without
+// it an upload URL was an anonymous slot: bytes written, never finished, never
+// charged to anyone.
+const TICKET_PARAM = "lt";
+const TICKET_RE = /^[A-Za-z0-9_-]{43}$/;
+
+function takeTicket(path) {
+  const q = path.indexOf("?");
+  if (q < 0) return { ticket: "", path };
+  let ticket = "";
+  const keep = [];
+  for (const part of path.slice(q + 1).split("&")) {
+    if (part.startsWith(`${TICKET_PARAM}=`)) {
+      try {
+        ticket = decodeURIComponent(part.slice(TICKET_PARAM.length + 1));
+      } catch {
+        ticket = "";
+      }
+    } else if (part) {
+      keep.push(part);
+    }
+  }
+  return { ticket, path: path.slice(0, q) + (keep.length ? `?${keep.join("&")}` : "") };
+}
+
+function freeBytes(dir) {
+  try {
+    const s = fs.statfsSync(dir);
+    return s.bavail * s.bsize;
+  } catch {
+    return Number.POSITIVE_INFINITY; // unmeasurable: the host monitor alerts instead
+  }
+}
+
+function redeemTicket(ticket) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ ticket });
+    const r = http.request(
+      {
+        host: "127.0.0.1",
+        port: CONFIG.sitePort,
+        path: "/edge/upload-ticket",
+        method: "POST",
+        timeout: 5000,
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+          "x-edge-key": CONFIG.ticketSecret,
+        },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => {
+          data += c;
+        });
+        res.on("end", () => {
+          if (res.statusCode !== 200) return resolve(null);
+          try {
+            const j = JSON.parse(data);
+            resolve(j.ok && Number(j.maxBytes) > 0 ? Number(j.maxBytes) : null);
+          } catch {
+            resolve(null);
+          }
+        });
+      },
+    );
+    r.on("timeout", () => r.destroy());
+    r.on("error", () => resolve(null));
+    r.end(body);
+  });
+}
+
+function refuse(req, res, status, reason) {
+  console.log(JSON.stringify({ event: "EDGE_UPLOAD_REFUSED", status, reason }));
+  if (!res.headersSent) {
+    res.writeHead(status, { "content-type": "text/plain", connection: "close" });
+  }
+  res.end(reason, () => req.destroy());
+}
+
+async function handleUpload(req, res, target) {
+  if (!CONFIG.ticketSecret) return refuse(req, res, 503, "uploads are unavailable");
+  if (freeBytes(CONFIG.diskPath) < CONFIG.minFreeBytes) {
+    return refuse(req, res, 507, "storage is temporarily full");
+  }
+  if (declaredTooLarge(req.headers, MAX_UPLOAD_BYTES)) return tooLarge(req, res);
+  const { ticket, path } = takeTicket(target.path);
+  if (!TICKET_RE.test(ticket)) return refuse(req, res, 403, "upload not authorised");
+  const max = await redeemTicket(ticket);
+  if (!max) return refuse(req, res, 403, "upload not authorised");
+  forward(req, res, { ...target, path, maxUpload: Math.min(max, MAX_UPLOAD_BYTES) });
+}
+
 const server = http.createServer((req, res) => {
   const { port, path } = route(req.headers.host, req.url);
-  forward(req, res, {
+  if (isPrivateSitePath(port, path)) {
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("not found");
+    return;
+  }
+  const target = {
     port,
     path,
     storage: isStorageResponse(port, path),
     upload: isUploadRequest(port, path),
-  });
+  };
+  if (target.upload) {
+    handleUpload(req, res, target).catch(() => refuse(req, res, 502, "upload failed"));
+    return;
+  }
+  forward(req, res, target);
 });
 
 server.on("upgrade", (req, socket, head) => {
@@ -224,8 +353,11 @@ server.on("upgrade", (req, socket, head) => {
 
 // Listen only when run as the service, so tests can require the pure helpers.
 if (require.main === module) {
-  server.listen(5150, "127.0.0.1", () => {
-    console.log("edge proxy on 127.0.0.1:5150", JSON.stringify({ HOST_ROUTES, PATH_ROUTES }));
+  server.listen(CONFIG.port, "127.0.0.1", () => {
+    console.log(
+      `edge proxy on 127.0.0.1:${CONFIG.port}`,
+      JSON.stringify({ HOST_ROUTES, PATH_ROUTES, uploadGate: Boolean(CONFIG.ticketSecret) }),
+    );
   });
 }
 
@@ -235,6 +367,10 @@ module.exports = {
   storageHeaders,
   safeHeaders,
   isUploadRequest,
+  isPrivateSitePath,
+  takeTicket,
+  handleUpload,
   forward,
+  CONFIG,
   MAX_UPLOAD_BYTES,
 };

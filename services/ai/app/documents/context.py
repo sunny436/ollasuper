@@ -18,6 +18,7 @@ import asyncio
 from dataclasses import dataclass, field
 
 from app.documents import pdf_ops, pptx_ooxml, pptx_ops
+from app.documents.isolated import run_doc_call
 from app.documents.pdf_ops import DocumentError
 from app.documents.tool import PDF_OPS, PPTX_OPS
 
@@ -107,13 +108,12 @@ async def run_document_ops(
             if not isinstance(names, list) or len(names) < 2:
                 raise DocumentError("`files` must list at least two file names.")
             blobs = [await _fetch(ctx, _resolve(ctx, n)) for n in names]
+            # In the SANDBOX (app/documents/isolated.py), like every document op.
             if operation == "pdf_merge":
-                out = await asyncio.wait_for(
-                    asyncio.to_thread(pdf_ops.merge_pdfs, blobs), timeout
-                )
+                out = await run_doc_call("pdf.merge", blobs, [], timeout_s=timeout)
                 return DocOpResult(file=out, fmt="pdf", warnings=[])
-            merged, warns = await asyncio.wait_for(
-                asyncio.to_thread(pptx_ooxml.merge_pptx, blobs), timeout
+            merged, warns = await run_doc_call(
+                "pptx.merge", blobs, [], timeout_s=timeout
             )
             return DocOpResult(file=merged, fmt="pptx", warnings=warns)
 
@@ -141,7 +141,11 @@ async def run_document_ops(
 async def _dispatch_single(
     ctx, operation, args, raw, ref, pages, pw, run_in_pool, pool_workers
 ) -> DocOpResult:
-    T = asyncio.to_thread
+    timeout = float(getattr(ctx.settings, "ai_documents_op_timeout_s", 60.0))
+
+    async def T(fn, data: bytes, *rest):  # noqa: N802 - the name the ops below use
+        # Every document op runs in the SANDBOX child, by allowlisted name.
+        return await run_doc_call(_DOC_NAMES[fn], [data], list(rest), timeout_s=timeout)
 
     # --- PDF data ops ---
     if operation == "pdf_read":
@@ -285,3 +289,32 @@ def _pdf_to_pptx_inline(raw: bytes, scale: float) -> bytes:
     from app.ingest.render import render_page
 
     return pptx_ops.pdf_to_pptx(raw, render_fn=render_page, scale=scale)
+
+
+# Each in-process document function and the allowlisted name the sandbox runs
+# it under (app/sandbox/ops.py DOC_FUNCS).
+_DOC_NAMES = {
+    pdf_ops.read_pdf: "pdf.read",
+    pdf_ops.extract_tables: "pdf.extract_tables",
+    pdf_ops.set_metadata: "pdf.set_metadata",
+    pdf_ops.read_metadata: "pdf.read_metadata",
+    pdf_ops.form_fields: "pdf.form_fields",
+    pdf_ops.form_structure: "pdf.form_structure",
+    pdf_ops.extract_images: "pdf.extract_images",
+    pdf_ops.split_pdf: "pdf.split",
+    pdf_ops.rotate_pdf: "pdf.rotate",
+    pdf_ops.crop_pdf: "pdf.crop",
+    pdf_ops.encrypt_pdf: "pdf.encrypt",
+    pdf_ops.decrypt_pdf: "pdf.decrypt",
+    pdf_ops.watermark_pdf: "pdf.watermark",
+    pdf_ops.fill_form: "pdf.fill_form",
+    pdf_ops.fill_overlay: "pdf.fill_overlay",
+    _pdf_to_pptx_inline: "pdf.to_pptx",
+    pptx_ops.read_pptx: "pptx.read",
+    pptx_ops.read_comments: "pptx.comments",
+    pptx_ops.edit_pptx: "pptx.edit",
+    pptx_ops.delete_slides: "pptx.delete_slides",
+    pptx_ops.reorder_slides: "pptx.reorder_slides",
+    pptx_ops.split_pptx: "pptx.split",
+    pptx_ooxml.duplicate_slide: "pptx.duplicate_slide",
+}

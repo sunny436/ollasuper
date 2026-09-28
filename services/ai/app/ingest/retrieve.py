@@ -19,6 +19,12 @@ from app.config import Settings
 from app.db import store
 from app.ingest import embed
 from app.ingest.guards import safe_name
+from app.logging import get_logger
+
+log = get_logger(__name__)
+# Reciprocal-rank-fusion constant: distances under DIFFERENT embedding models
+# are not comparable, ranks are.
+_RRF_K = 60
 
 _RAG_HEADER = (
     "<retrieved_context>\n"
@@ -65,15 +71,8 @@ async def retrieve_context(
     # enforces the same thing independently — this only saves the cost.
     if file_ids is not None and not file_ids:
         return []
-    qvec = await embed.embed_query(settings, query)
-    rows = await store.retrieve(
-        engine,
-        user_id=user_id,
-        query_embedding=qvec,
-        fetch_k=settings.ai_rag_fetch_k,
-        embedding_dimensions=settings.embedding_dimensions,
-        embedding_model=settings.openrouter_embedding_model,
-        file_ids=file_ids,
+    rows = await _retrieve_all_models(
+        settings, engine, user_id=user_id, query=query, file_ids=file_ids
     )
     cutoff = 1.0 - settings.ai_rag_min_similarity
     kept = [
@@ -94,6 +93,82 @@ async def retrieve_context(
             if r.get("distance") is None or r["distance"] <= ceil
         ]
     return kept[: settings.ai_rag_top_k]
+
+
+async def _retrieve_all_models(
+    settings: Settings,
+    engine: AsyncEngine,
+    *,
+    user_id: str,
+    query: str,
+    file_ids: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Retrieve under EVERY embedding model the in-scope files are indexed with.
+
+    A model change must never make files silently disappear from search: until
+    the re-index swaps a file's chunks they are vectors of the OLD model, which
+    a query embedded with the new one cannot be compared with. So when the
+    in-scope files span more than one model, the query is embedded once per
+    model and each file is searched under its own. With one model - the normal
+    case - this is exactly the old single query.
+    """
+    current = settings.openrouter_embedding_model
+    try:
+        by_model = await store.models_for_files(
+            engine, user_id=user_id, file_ids=file_ids
+        )
+    except Exception:  # noqa: BLE001 - the single-model query below still runs
+        log.warning("LIB_INDEX_MODELS_PROBE_FAILED")
+        by_model = {}
+    others = [m for m in by_model if m != current]
+    if not others:
+        qvec = await embed.embed_query(settings, query)
+        return await store.retrieve(
+            engine,
+            user_id=user_id,
+            query_embedding=qvec,
+            fetch_k=settings.ai_rag_fetch_k,
+            embedding_dimensions=settings.embedding_dimensions,
+            embedding_model=current,
+            file_ids=file_ids,
+        )
+    results: list[list[dict[str, Any]]] = []
+    for model in [current, *others]:
+        scope = by_model.get(model, [])
+        if not scope:
+            continue
+        try:
+            qvec = await embed.embed_query(settings, query, model=model)
+        except Exception:  # noqa: BLE001 - a retired model: counted, not silent
+            log.warning(
+                "LIB_INDEX_MODEL_UNAVAILABLE",
+                extra={"model": model, "files": len(scope)},
+            )
+            continue
+        results.append(
+            await store.retrieve(
+                engine,
+                user_id=user_id,
+                query_embedding=qvec,
+                fetch_k=settings.ai_rag_fetch_k,
+                embedding_dimensions=settings.embedding_dimensions,
+                embedding_model=model,
+                file_ids=scope,
+            )
+        )
+    log.info("LIB_INDEX_MIXED_MODELS", extra={"models": len(results)})
+    # Mixed models (mid-migration): fuse by RANK - distances under different
+    # models are not comparable - keeping each row's own distance for the
+    # similarity floor, which is judged within its model.
+    scored: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+    for rows in results:
+        for rank, row in enumerate(rows):
+            key = (str(row.get("file_id")), str(row.get("content"))[:200])
+            prev = scored.get(key)
+            score = 1.0 / (_RRF_K + rank + 1) + (prev[0] if prev else 0.0)
+            scored[key] = (score, row)
+    fused = sorted(scored.values(), key=lambda x: x[0], reverse=True)
+    return [row for _, row in fused[: settings.ai_rag_fetch_k]]
 
 
 def render_rag_block(

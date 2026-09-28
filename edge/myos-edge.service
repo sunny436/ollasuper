@@ -4,6 +4,9 @@ After=network.target myos-app.service
 
 [Service]
 Type=simple
+# EDGE_TICKET_SECRET (shared with Convex) and optional EDGE_MIN_FREE_BYTES.
+# Read by systemd as root before the DynamicUser drop; keep it 0600.
+EnvironmentFile=-/etc/myos/edge.env
 ExecStart=/usr/bin/node /opt/myos-edge/proxy.js
 Restart=always
 RestartSec=3

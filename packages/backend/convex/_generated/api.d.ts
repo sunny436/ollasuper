@@ -61,6 +61,8 @@ import type * as init from "../init.js";
 import type * as library from "../library.js";
 import type * as libraryCore from "../libraryCore.js";
 import type * as libraryMigrations from "../libraryMigrations.js";
+import type * as libraryOps from "../libraryOps.js";
+import type * as libraryProcessing from "../libraryProcessing.js";
 import type * as mailSubject from "../mailSubject.js";
 import type * as mcp_activation from "../mcp/activation.js";
 import type * as mcp_audit from "../mcp/audit.js";
@@ -170,6 +172,8 @@ declare const fullApi: ApiFromModules<{
   library: typeof library;
   libraryCore: typeof libraryCore;
   libraryMigrations: typeof libraryMigrations;
+  libraryOps: typeof libraryOps;
+  libraryProcessing: typeof libraryProcessing;
   mailSubject: typeof mailSubject;
   "mcp/activation": typeof mcp_activation;
   "mcp/audit": typeof mcp_audit;

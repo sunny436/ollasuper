@@ -9,6 +9,7 @@ import { env } from "./env";
 import { polar } from "./subscriptions";
 import { isInlineSafeImageType, neutralizedBlobType } from "./blobSafety";
 import { contentDisposition, inlineImageType } from "./fileKind";
+import { hashToken } from "./libraryCore";
 
 const http = httpRouter();
 
@@ -538,6 +539,9 @@ http.route({
           contentHash: str(body.contentHash),
           error: str(body.error),
           note: str(body.note),
+          // The attempt this answer belongs to + a stable failure code.
+          generation: num(body.generation),
+          failureCode: str(body.failureCode),
         });
         if ("unknown" in r && r.unknown)
           return aiJson({ error: "unknown file" }, 404);
@@ -559,6 +563,7 @@ http.route({
           processedUnits: num(body.processedUnits),
           totalUnits: num(body.totalUnits),
           stageMessage: str(body.stageMessage),
+          generation: num(body.generation),
         });
         return aiJson(r);
       }
@@ -1016,6 +1021,16 @@ http.route({
     if (ab.byteLength === 0 || ab.byteLength > MAX_ARTIFACT_BYTES) {
       return aiJson({ error: "bad size" }, 400);
     }
+    // Generated files have their own bounds (libraryCore GENERATED_*): checked
+    // BEFORE the bytes are stored, so a refusal costs no disk. 507 + a code the
+    // inference plane turns into words for the model.
+    const room = await ctx.runQuery(internal.chat.artifacts.artifactRoom, {
+      streamId,
+      bytes: ab.byteLength,
+    });
+    if (!room.ok) {
+      return aiJson({ error: room.code, message: room.message }, room.code === "UNKNOWN_STREAM" ? 404 : 507);
+    }
     // Phase 3 (optional, additive): integrity verification. If the worker declared a
     // SHA-256, recompute it over the received bytes and REJECT a mismatch BEFORE
     // storing (a corrupted/tampered upload never becomes an artifact). Filegen sends
@@ -1368,6 +1383,49 @@ http.route({
       event,
     });
     return new Response("ok", { status: 200 });
+  }),
+});
+
+// ------------------------------------------------------------ host services
+//
+// Two callers that live on the VM itself, each with its OWN secret, so neither
+// key opens the other's door (and neither is AI_INGRESS_SECRET). The edge
+// proxy refuses the public path to both (edge/proxy.js isPrivateSitePath).
+
+function hostKeyOk(req: Request, header: string, secret: string | undefined): boolean {
+  return timingSafeEqual(req.headers.get(header), secret);
+}
+
+// The edge proxy redeems an upload URL's ticket before it forwards one byte
+// (libraryCore.mintUploadUrl). The answer is the byte ceiling it enforces on
+// the stream; any failure is one uniform 403.
+http.route({
+  path: "/edge/upload-ticket",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!hostKeyOk(req, "x-edge-key", process.env.EDGE_TICKET_SECRET)) {
+      return new Response("unauthorized", { status: 401 });
+    }
+    const body = (await req.json().catch(() => null)) as { ticket?: unknown } | null;
+    const ticket = typeof body?.ticket === "string" ? body.ticket : "";
+    if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) return aiJson({ ok: false }, 403);
+    const r = await ctx.runMutation(internal.library.redeemUploadTicket, {
+      ticketHash: await hashToken(ticket),
+    });
+    return r.ok ? aiJson({ ok: true, maxBytes: r.maxBytes }) : aiJson({ ok: false }, 403);
+  }),
+});
+
+// The host monitor's snapshot of the Library (counts only — see
+// libraryProcessing.healthSnapshot). Read by services/ai/app/ops/monitor.py.
+http.route({
+  path: "/ops/library-health",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    if (!hostKeyOk(req, "x-ops-key", process.env.OPS_HEALTH_SECRET)) {
+      return new Response("unauthorized", { status: 401 });
+    }
+    return aiJson(await ctx.runQuery(internal.libraryProcessing.healthSnapshot, {}));
   }),
 });
 

@@ -31,6 +31,12 @@ class ConvexUnavailable(RuntimeError):
     """
 
 
+class StorageRefused(RuntimeError):
+    """A generated file was refused for STORAGE reasons, before any byte was
+    kept: the host is low on disk, or the user's generated-file allowance is
+    used up. The message is written for the user; the tool reports it as is."""
+
+
 class ConvexRejected(RuntimeError):
     """Convex refused the request and will keep refusing it.
 
@@ -339,6 +345,7 @@ class ConvexClient:
             headers["x-artifact-role"] = role
         if page is not None:
             headers["x-artifact-page"] = str(page)
+        _assert_disk_room(self._s, len(blob))
         r = await self._c.post(
             self._s.artifact_url,
             content=blob,
@@ -349,6 +356,15 @@ class ConvexClient:
             raise ConvexRejected("artifact checksum mismatch")
         if r.status_code == 404:
             raise ConvexRejected("artifact stream not available")
+        if r.status_code == 507:
+            # The user's generated-file allowance (libraryCore.generatedRoom).
+            try:
+                msg = str(r.json().get("message") or "")
+            except ValueError:
+                msg = ""
+            raise StorageRefused(
+                msg or "Your generated files are using all the space allowed."
+            )
         if r.status_code >= 400:
             raise ConvexUnavailable(f"artifact store failed: {r.status_code}")
         try:
@@ -730,6 +746,8 @@ class ConvexClient:
         content_hash: str | None = None,
         error: str | None = None,
         note: str | None = None,
+        generation: int | None = None,
+        failure_code: str | None = None,
     ) -> dict:
         """Report terminal ingestion status back to Convex (op:"file").
 
@@ -754,6 +772,12 @@ class ConvexClient:
             body["error"] = error[:500]
         if note is not None:
             body["note"] = note[:300]
+        # Only for a Convex that sent a generation (it then also accepts a code):
+        # an older Convex would reject fields it does not declare.
+        if generation is not None:
+            body["generation"] = generation
+            if failure_code is not None:
+                body["failureCode"] = failure_code[:40]
         return await self.ingress(body)
 
     async def set_file_progress(
@@ -765,6 +789,7 @@ class ConvexClient:
         processed_units: int | None = None,
         total_units: int | None = None,
         message: str | None = None,
+        generation: int | None = None,
     ) -> dict:
         """Report intermediate ingestion progress (op:"file-progress"), status
         stays `processing`. Best-effort and coarse/throttled by the caller: the
@@ -780,6 +805,8 @@ class ConvexClient:
             body["totalUnits"] = total_units
         if message is not None:
             body["stageMessage"] = message[:120]
+        if generation is not None:
+            body["generation"] = generation
         return await self.ingress(body)
 
     async def healthy(self) -> bool:
@@ -790,3 +817,25 @@ class ConvexClient:
             return r.status_code < 500
         except httpx.HTTPError:
             return False
+
+
+def _assert_disk_room(settings: Any, incoming: int) -> None:
+    """Refuse to store a generated file when the host disk is low - BEFORE the
+    bytes are sent. The edge proxy applies the same floor to uploads; together
+    they keep the disk from filling (File Library disk safety)."""
+    import os
+
+    floor = int(getattr(settings, "ai_min_free_disk_bytes", 0) or 0)
+    if floor <= 0:
+        return
+    path = str(getattr(settings, "ai_disk_check_path", "/") or "/")
+    try:
+        st = os.statvfs(path)
+    except (AttributeError, OSError):
+        return  # no statvfs (the Windows dev box): nothing to measure
+    free = st.f_bavail * st.f_frsize
+    if free - incoming < floor:
+        raise StorageRefused(
+            "The server is low on storage right now, so the file was not saved. "
+            "Please try again later."
+        )

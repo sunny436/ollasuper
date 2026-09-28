@@ -8,7 +8,7 @@ import re
 
 from app.clients.convex import ConvexClient, ConvexRejected, ConvexUnavailable
 from app.config import Settings
-from app.data.loader import is_tabular, render_preview
+from app.data.loader import is_tabular, render_preview_isolated
 from app.logging import get_logger
 from app.models.chat import IMAGE_LONG_EDGE, Attachment, HistoryMessage
 from app.sandbox import ops as sandbox_ops
@@ -220,12 +220,13 @@ async def _guarded_preview(raw: bytes, att: Attachment, settings: Settings) -> s
                 f'<dataset name="{_safe_name(att.name)}">\n'
                 f"(preview unavailable: {e}).\n</dataset>"
             )
-    return await asyncio.to_thread(
-        render_preview,
+    # Parsed in the SANDBOX child, like every decoder of user bytes.
+    return await render_preview_isolated(
         raw,
         att.name,
         att.contentType,
         rows=settings.ai_data_preview_rows,
+        settings=settings,
     )
 
 

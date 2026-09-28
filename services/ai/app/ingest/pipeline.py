@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.clients.convex import ConvexClient
+from app.clients.convex import ConvexClient, ConvexRejected, ConvexUnavailable
 from app.config import Settings
 from app.db import store
 from app.ingest import embed as embedding
@@ -106,7 +106,7 @@ async def _sanitize_image(raw: bytes, settings: Settings) -> bytes:
     except TimeoutError as e:
         raise IngestError("The image took too long to read") from e
     except RuntimeError as e:
-        raise IngestError("The image could not be read") from e
+        raise _sandbox_error(e, "The image could not be read") from e
     if not meta.get("ok"):
         raise IngestError(str(meta.get("error") or "The image could not be read"))
     return body
@@ -203,7 +203,7 @@ async def parse_isolated(
     except TimeoutError as e:
         raise IngestError("Parsing timed out") from e
     except RuntimeError as e:
-        raise IngestError("Parsing failed") from e
+        raise _sandbox_error(e, "Parsing failed") from e
     if not meta.get("ok"):
         raise IngestError(str(meta.get("error") or "Parsing failed"))
     return [
@@ -217,7 +217,25 @@ async def parse_isolated(
     ]
 
 
-def _progress_emitter(convex: ConvexClient, ingest_id: str, settings: Settings):
+def _sandbox_error(e: RuntimeError, fallback: str) -> IngestError:
+    """A sandbox that could not RUN (unavailable, or below the required
+    isolation) is a transient, retryable failure; a child that ran and crashed
+    on the file is the file's failure."""
+    msg = str(e)
+    if "unavailable" in msg or "below the required isolation" in msg:
+        return IngestError(
+            "Processing is temporarily unavailable", code="SANDBOX_UNAVAILABLE"
+        )
+    return IngestError(fallback)
+
+
+def _progress_emitter(
+    convex: ConvexClient,
+    ingest_id: str,
+    settings: Settings,
+    generation: int | None = None,
+    silent: bool = False,
+):
     """Coarse + throttled progress. Stage changes always flush; percentage
     updates coalesce to at most one per ai_ingest_progress_min_interval_ms."""
     state = {"stage": None, "last": 0.0}
@@ -232,6 +250,9 @@ def _progress_emitter(convex: ConvexClient, ingest_id: str, settings: Settings):
         message: str | None = None,
         force: bool = False,
     ) -> None:
+        if silent:
+            # A re-index runs on a READY file: the user sees no progress.
+            return
         now = time.monotonic()
         changed = stage != state["stage"]
         if not (changed or force) and (now - state["last"]) < min_gap:
@@ -246,6 +267,7 @@ def _progress_emitter(convex: ConvexClient, ingest_id: str, settings: Settings):
                 processed_units=processed,
                 total_units=total,
                 message=message,
+                generation=generation,
             )
         except Exception:  # noqa: BLE001,S110 - best-effort; status is the authority
             pass
@@ -264,13 +286,22 @@ async def run_ingest(
     convex: ConvexClient,
     settings: Settings,
     expected_sha256: str | None = None,
+    generation: int | None = None,
+    reindex: bool = False,
 ) -> None:
     safe = safe_name(name)
     t0 = time.monotonic()
-    progress = _progress_emitter(convex, ingest_id, settings)
+    progress = _progress_emitter(
+        convex, ingest_id, settings, generation=generation, silent=reindex
+    )
     try:
         await progress("processing", message="Processing file")
-        raw, _ = await convex.fetch_ingest_file(ingest_id)
+        try:
+            raw, _ = await convex.fetch_ingest_file(ingest_id)
+        except (ConvexRejected, ConvexUnavailable) as e:
+            raise IngestError(
+                "The file could not be fetched for processing", code="FETCH_FAILED"
+            ) from e
         if len(raw) > settings.ai_max_attachment_bytes:
             mb = len(raw) / (1024 * 1024)
             cap = settings.ai_max_attachment_bytes / (1024 * 1024)
@@ -338,12 +369,13 @@ async def run_ingest(
                     settings, [c.content for c in chunks], progress_cb=_on_batch
                 )
             except Exception as e:  # noqa: BLE001 - stage-specific label
-                msg = (
+                limited = _is_rate_limit(e)
+                raise IngestError(
                     "Embedding rate limit exceeded"
-                    if _is_rate_limit(e)
-                    else "Embedding provider failed"
-                )
-                raise IngestError(msg) from e
+                    if limited
+                    else "Embedding provider failed",
+                    code="EMBED_RATE_LIMIT" if limited else "EMBED_PROVIDER",
+                ) from e
             embed_ms = int((time.monotonic() - e0) * 1000)
             log.info(
                 "embedding_batch_complete",
@@ -388,14 +420,25 @@ async def run_ingest(
                 embedding_dimensions=settings.embedding_dimensions,
                 versions=PROCESSING_VERSIONS,
                 store_original=settings.ai_ingest_store_original_copy,
+                generation=generation,
             )
+        except store.IngestStale:
+            # A NEWER attempt already wrote this file: writing now would roll it
+            # back, and reporting would answer for an attempt that is not the
+            # current one. Neither happens (the generation fence).
+            log.info(
+                "LIB_STALE_WRITE", extra={"file": ingest_id, "generation": generation}
+            )
+            return
         except store.IngestDeleted:
             # The user deleted this file mid-ingestion. Nothing was written and
             # there is no row left to report a status to (audit F-13).
             log.info("ingest_deleted_during_run", extra={"file": ingest_id})
             return
         except Exception as e:  # noqa: BLE001 - stage-specific label
-            raise IngestError("Knowledge database write failed") from e
+            raise IngestError(
+            "Knowledge database write failed", code="KNOWLEDGE_DB"
+        ) from e
         db_ms = int((time.monotonic() - d0) * 1000)
         log.info(
             "knowledge_persist_complete", extra={"file": ingest_id, "db_ms": db_ms}
@@ -420,6 +463,7 @@ async def run_ingest(
             detected_type=file_type,
             content_hash=content_hash,
             note=note,
+            generation=generation,
         )
         total_ms = int((time.monotonic() - t0) * 1000)
         log.info(
@@ -438,16 +482,32 @@ async def run_ingest(
             },
         )
     except IngestError as e:
-        log.warning("ingest_failed", extra={"file": ingest_id, "error": str(e)})
-        await _fail(convex, ingest_id, str(e))
+        log.warning(
+            "ingest_failed",
+            extra={
+                "file": ingest_id,
+                "error": str(e),
+                "code": e.code,
+                "reindex": reindex,
+            },
+        )
+        await _fail(convex, ingest_id, str(e), e.code, generation)
     except Exception:  # noqa: BLE001 - any error becomes a `failed` status
         log.exception("ingest_error", extra={"file": ingest_id})
-        await _fail(convex, ingest_id, "Ingestion failed")
+        await _fail(convex, ingest_id, "Ingestion failed", "INTERNAL", generation)
 
 
-async def _fail(convex: ConvexClient, ingest_id: str, error: str) -> None:
+async def _fail(
+    convex: ConvexClient,
+    ingest_id: str,
+    error: str,
+    code: str,
+    generation: int | None,
+) -> None:
     try:
-        await convex.set_file_status(ingest_id, "failed", error=error)
+        await convex.set_file_status(
+            ingest_id, "failed", error=error, generation=generation, failure_code=code
+        )
     except Exception:  # noqa: BLE001 - the stall reaper is the backstop
         log.exception("ingest_status_callback_failed", extra={"file": ingest_id})
 

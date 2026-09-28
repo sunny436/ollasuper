@@ -1,9 +1,9 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { claimUploadedBlob, issueUploadIntent } from "./blobOwnership";
+import { claimUploadedBlob } from "./blobOwnership";
 import { isExecutableContentType } from "./blobSafety";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   internalAction,
   internalMutation,
@@ -14,14 +14,21 @@ import {
 } from "./_generated/server";
 import { getUserIdOrNull, requireUserId } from "./chat/authz";
 import {
-  UPLOAD_WINDOW_MS,
-  UPLOADS_PER_HOUR,
   assertRoomWithoutEviction,
   capFor,
   createLibraryFile,
+  legacyUploadBytes,
   libraryError,
+  mintUploadUrl,
   removeLibraryFile,
 } from "./libraryCore";
+import {
+  applyFailure,
+  codeFromMessage,
+  endReindex,
+  isFailureCode,
+  reapStalledReindex,
+} from "./libraryProcessing";
 import { hasWorkspaceAccess, requireMember } from "./orgs";
 import { consumeWindow } from "./quotas";
 
@@ -81,14 +88,17 @@ export async function accountRagScope(
 }
 
 export const generateUploadUrl = mutation({
-  args: { workspaceId: v.id("workspaces") },
-  handler: async (ctx, { workspaceId }) => {
+  // `size` (optional, the file's byte count) sizes the URL's ticket; without
+  // it the URL admits — and is charged for — the largest file there is.
+  args: { workspaceId: v.id("workspaces"), size: v.optional(v.number()) },
+  handler: async (ctx, { workspaceId, size }) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, workspaceId);
-    const rate = await consumeWindow(ctx, userId, "libraryUpload", UPLOADS_PER_HOUR, UPLOAD_WINDOW_MS);
-    if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many uploads. Please wait a moment.");
-    await issueUploadIntent(ctx, userId, workspaceId);
-    return await ctx.storage.generateUploadUrl();
+    const { uploadUrl } = await mintUploadUrl(ctx, userId, {
+      workspaceId,
+      maxBytes: legacyUploadBytes(size),
+    });
+    return uploadUrl;
   },
 });
 
@@ -218,6 +228,13 @@ export const retry = mutation({
       attempts: 0,
       retryDay: day,
       retriesToday: today + 1,
+      // A new attempt: a late answer from the old one must not land on it.
+      generation: (file.generation ?? 1) + 1,
+      // A hand retry starts a fresh automatic budget and leaves the dead letter.
+      failureCode: undefined,
+      nextRetryAt: undefined,
+      deadLetteredAt: undefined,
+      autoRetries: 0,
       stage: undefined,
       progress: undefined,
       processedUnits: undefined,
@@ -236,8 +253,10 @@ export const dispatchPayload = internalQuery({
   args: { fileId: v.id("userFiles") },
   handler: async (ctx, { fileId }) => {
     const file = await ctx.db.get(fileId);
-    // No-op if the row vanished or already reached a terminal state.
-    if (!file || file.status !== "processing") return null;
+    // No-op if the row vanished or reached a terminal state — except a READY
+    // file being re-indexed, which stays ready on its old chunks meanwhile.
+    const reindex = file?.status === "ready" && file.reindexing === true;
+    if (!file || (file.status !== "processing" && !reindex)) return null;
     return {
       ingestId: file.ingestId,
       userId: file.userId,
@@ -248,6 +267,11 @@ export const dispatchPayload = internalQuery({
       // The canonical original's server-computed SHA-256 (Convex _storage),
       // so the processing copy can never silently diverge from it.
       ...(file.sha256 ? { sha256: file.sha256 } : {}),
+      // This attempt's identity: Python echoes it on every callback and write,
+      // and only the current generation may move the row (setStatus).
+      // DEPLOY ORDER: Python accepts these before Convex sends them.
+      generation: file.generation ?? 1,
+      ...(reindex ? { reindex: true } : {}),
     };
   },
 });
@@ -308,6 +332,7 @@ export const dispatch = internalAction({
       await ctx.runMutation(internal.userFiles.failById, {
         fileId,
         error: "Inference plane not configured",
+        failureCode: "NOT_CONFIGURED",
       });
       return;
     }
@@ -339,16 +364,40 @@ export const dispatch = internalAction({
             res.status === 429
               ? "Processing is busy right now — retry this file"
               : `Ingest service responded ${res.status}`,
+          failureCode: res.status === 429 ? "QUEUE_EXHAUSTED" : "DISPATCH_REJECTED",
+          generation: payload.generation,
         });
       }
     } catch {
       await ctx.runMutation(internal.userFiles.failById, {
         fileId,
         error: "Ingest dispatch failed",
+        failureCode: "DISPATCH_FAILED",
+        generation: payload.generation,
       });
     }
   },
 });
+
+/**
+ * Is this callback from the file's CURRENT attempt? An answer carries the
+ * generation it was dispatched with; any other generation — a worker the
+ * reaper gave up on, the predecessor of a retry or a re-index — moves nothing.
+ * An answer with no generation comes from a Python that predates the fence
+ * (the deploy window) and is judged by status alone, as before.
+ */
+function currentAttempt(file: Doc<"userFiles">, generation: number | undefined): boolean {
+  if (generation === undefined || generation === (file.generation ?? 1)) return true;
+  console.log(
+    JSON.stringify({
+      event: "LIB_STALE_CALLBACK",
+      fileId: file._id,
+      got: generation,
+      current: file.generation ?? 1,
+    }),
+  );
+  return false;
+}
 
 /** Terminal status from Python's callback. Capability-scoped by ingestId. */
 export const setStatus = internalMutation({
@@ -362,6 +411,8 @@ export const setStatus = internalMutation({
     contentHash: v.optional(v.string()),
     error: v.optional(v.string()),
     note: v.optional(v.string()),
+    generation: v.optional(v.number()),
+    failureCode: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
     const file = await ctx.db
@@ -369,27 +420,49 @@ export const setStatus = internalMutation({
       .withIndex("by_ingestId", (q) => q.eq("ingestId", a.fileId))
       .unique();
     if (!file) return { ok: false, unknown: true };
+    if (!currentAttempt(file, a.generation)) return { ok: true, stale: true };
+    // A re-index answer: the file stays `ready` either way — on the new chunks
+    // after a successful swap, on its old ones after a failure.
+    if (file.status === "ready" && file.reindexing) {
+      if (a.status === "ready") {
+        await ctx.db.patch(file._id, {
+          chunkCount: a.chunkCount,
+          parserUsed: a.parserUsed,
+          pageCount: a.pageCount,
+          detectedType: a.detectedType,
+          note: a.note ?? undefined,
+        });
+      }
+      await endReindex(ctx, file, a.status === "failed" ? (a.error ?? "Re-index failed") : undefined);
+      return { ok: true, reindex: true };
+    }
     // Idempotent; never resurrect or move a terminal row (mirrors
     // finishStream). `stored` is terminal too: a late or forged callback must
     // not turn a kept-only file into a processed one.
     if (file.status !== "processing") {
       return { ok: true, alreadyFinal: true };
     }
+    if (a.status === "failed") {
+      const code = isFailureCode(a.failureCode) ? a.failureCode : codeFromMessage(a.error);
+      await applyFailure(ctx, file, code, a.error ?? "Ingestion failed");
+      return { ok: true };
+    }
     const now = Date.now();
     await ctx.db.patch(file._id, {
-      status: a.status,
+      status: "ready",
       chunkCount: a.chunkCount,
       parserUsed: a.parserUsed,
       pageCount: a.pageCount,
       detectedType: a.detectedType,
       contentHash: a.contentHash ?? file.contentHash,
-      error:
-        a.status === "failed"
-          ? (a.error ?? "Ingestion failed").slice(0, 500)
-          : undefined,
+      error: undefined,
+      failureCode: undefined,
+      nextRetryAt: undefined,
+      deadLetteredAt: undefined,
+      autoRetries: undefined,
       // A partial-success note (e.g. content-limit truncation) rides onto a
       // `ready` row so the UI can tell the user what was processed.
-      note: a.status === "ready" ? (a.note ?? undefined) : undefined,
+      note: a.note ?? undefined,
       // Progress is transient: clear the live fields on any terminal status.
       stage: undefined,
       progress: undefined,
@@ -416,6 +489,7 @@ export const setProgress = internalMutation({
     processedUnits: v.optional(v.number()),
     totalUnits: v.optional(v.number()),
     stageMessage: v.optional(v.string()),
+    generation: v.optional(v.number()),
   },
   handler: async (ctx, a) => {
     const file = await ctx.db
@@ -423,6 +497,8 @@ export const setProgress = internalMutation({
       .withIndex("by_ingestId", (q) => q.eq("ingestId", a.fileId))
       .unique();
     if (!file) return { ok: false, unknown: true };
+    if (!currentAttempt(file, a.generation)) return { ok: true, stale: true };
+    // A re-index runs on a READY row and shows no progress: the file is usable.
     if (file.status !== "processing") return { ok: true, alreadyFinal: true };
     await ctx.db.patch(file._id, {
       stage: a.stage,
@@ -438,15 +514,22 @@ export const setProgress = internalMutation({
 
 /** Internal failure path (dispatch / reaper), scoped by the Convex id. */
 export const failById = internalMutation({
-  args: { fileId: v.id("userFiles"), error: v.string() },
-  handler: async (ctx, { fileId, error }) => {
+  args: {
+    fileId: v.id("userFiles"),
+    error: v.string(),
+    failureCode: v.optional(v.string()),
+    generation: v.optional(v.number()),
+  },
+  handler: async (ctx, { fileId, error, failureCode, generation }) => {
     const file = await ctx.db.get(fileId);
-    if (!file || file.status !== "processing") return;
-    await ctx.db.patch(fileId, {
-      status: "failed",
-      error: error.slice(0, 500),
-      updatedAt: Date.now(),
-    });
+    if (!file || !currentAttempt(file, generation)) return;
+    if (file.status === "ready" && file.reindexing) {
+      await endReindex(ctx, file, error);
+      return;
+    }
+    if (file.status !== "processing") return;
+    const code = isFailureCode(failureCode) ? failureCode : codeFromMessage(error);
+    await applyFailure(ctx, file, code, error);
   },
 });
 
@@ -482,19 +565,18 @@ export const reapStalled = internalMutation({
         // Failed, and RETRYABLE: the blob is the file's only original, so it is
         // kept (this used to delete it, destroying the upload of a file whose
         // processing had merely timed out).
-        await ctx.db.patch(f._id, {
-          status: "failed",
-          error: "Processing timed out — retry the file",
-          updatedAt: now,
-        });
+        await applyFailure(ctx, f, "TIMEOUT", "Processing timed out — retry the file");
       } else {
+        // The SAME generation: a re-dispatch of the same attempt. If the old
+        // worker is merely slow, Python refuses the duplicate (409) and its
+        // answer still counts; if it died, this one finishes the attempt.
         await ctx.db.patch(f._id, { attempts: f.attempts + 1, updatedAt: now });
         await ctx.scheduler.runAfter(0, internal.userFiles.dispatch, {
           fileId: f._id,
         });
       }
     }
-    return stalled.length;
+    return stalled.length + (await reapStalledReindex(ctx));
   },
 });
 
@@ -519,31 +601,47 @@ const PURGE_MAX_ATTEMPTS = 175; // 7 quick retries, then hourly for ~7 days
 const PURGE_MAX_DELAY_MS = 60 * 60_000;
 
 export const purge = internalAction({
-  args: { ingestId: v.string(), attempt: v.optional(v.number()) },
-  handler: async (ctx, { ingestId, attempt = 0 }) => {
+  args: {
+    ingestId: v.string(),
+    attempt: v.optional(v.number()),
+    // The deleted file's blob id, so Python can also drop any in-memory copy
+    // keyed by it (the Data Analysis frame cache). Never used to fetch.
+    storageId: v.optional(v.string()),
+  },
+  handler: async (ctx, { ingestId, attempt = 0, storageId }) => {
     const base = process.env.AI_BASE_URL;
     const key = process.env.AI_SERVICE_KEY;
-    if (!base || !key) return;
     let ok = false;
-    try {
-      const res = await fetch(
-        `${base.replace(/\/$/, "")}/v1/ingest/${encodeURIComponent(ingestId)}`,
-        { method: "DELETE", headers: { "x-service-key": key } },
-      );
-      ok = res.ok;
-    } catch {
-      ok = false;
+    if (base && key) {
+      try {
+        const q = storageId ? `?storage=${encodeURIComponent(storageId)}` : "";
+        const res = await fetch(
+          `${base.replace(/\/$/, "")}/v1/ingest/${encodeURIComponent(ingestId)}${q}`,
+          { method: "DELETE", headers: { "x-service-key": key } },
+        );
+        ok = res.ok;
+      } catch {
+        ok = false;
+      }
     }
-    if (ok) return;
-    if (attempt + 1 >= PURGE_MAX_ATTEMPTS) {
-      console.error("userfile purge exhausted", { ingestId });
+    // An unconfigured plane is a FAILED purge, not a finished one: returning
+    // here used to drop the deletion on the floor with nothing to retry it.
+    if (ok) {
+      console.log(JSON.stringify({ event: "LIB_PURGE_OK", ingestId, attempt }));
       return;
     }
+    if (attempt + 1 >= PURGE_MAX_ATTEMPTS) {
+      // The daily cross-plane reconcile (libraryProcessing.reconcileKnowledge)
+      // purges whatever this could not.
+      console.error(JSON.stringify({ event: "LIB_PURGE_EXHAUSTED", ingestId }));
+      return;
+    }
+    console.log(JSON.stringify({ event: "LIB_PURGE_RETRY", ingestId, attempt }));
     // Backoff: 30s, 60s, 2m, … capped at hourly.
     await ctx.scheduler.runAfter(
       Math.min(30_000 * 2 ** attempt, PURGE_MAX_DELAY_MS),
       internal.userFiles.purge,
-      { ingestId, attempt: attempt + 1 },
+      { ingestId, attempt: attempt + 1, ...(storageId ? { storageId } : {}) },
     );
   },
 });

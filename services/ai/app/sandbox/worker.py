@@ -90,6 +90,46 @@ def main() -> int:
             )
             _emit({"ok": True, **stats})
             return 0
+        if op == "doc_call":
+            from app.documents.pdf_ops import DocumentError
+
+            name = str(params.get("fn", ""))
+            fn = ops.doc_function(name)
+            sizes = [int(n) for n in params.get("sizes") or [len(payload)]]
+            blobs = ops.split_blobs(payload, sizes)
+            first = blobs if name in ops.MULTI_BLOB_DOC_FUNCS else blobs[0]
+            try:
+                result = fn(first, *list(params.get("args") or []))
+            except DocumentError as e:
+                _emit({"ok": False, "error": str(e), "kind": "document"})
+                return 0
+            meta, body = ops.doc_encode(result)
+            _emit(meta, body)
+            return 0
+        if op in ("dataset_frame", "dataset_preview"):
+            from app.data.analysis import DataError
+
+            try:
+                if op == "dataset_frame":
+                    frame = ops.dataset_frame(
+                        payload,
+                        name=str(params.get("name", "")),
+                        mime=str(params.get("mime", "")),
+                        max_rows=int(params["max_rows"]),
+                        sheet=params.get("sheet") or None,
+                    )
+                    _emit({"ok": True}, json.dumps(frame).encode("utf-8"))
+                else:
+                    text = ops.dataset_preview(
+                        payload,
+                        name=str(params.get("name", "")),
+                        mime=str(params.get("mime", "")),
+                        rows=int(params.get("rows", 10)),
+                    )
+                    _emit({"ok": True}, text.encode("utf-8"))
+            except DataError as e:
+                _emit({"ok": False, "error": str(e), "kind": "data"})
+            return 0
         if op == "secret_sweep":
             # Security audit: rule-based secret scan over a repository's tracked
             # files. Runs HERE so a 16MB regex pass never holds the plane's GIL.

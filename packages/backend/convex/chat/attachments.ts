@@ -2,7 +2,6 @@ import { ConvexError, v } from "convex/values";
 import {
   claimUploadedBlob,
   deleteBlobIfUnreferenced,
-  issueUploadIntent,
 } from "../blobOwnership";
 import { isExecutableContentType } from "../blobSafety";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -10,14 +9,13 @@ import type { QueryCtx } from "../_generated/server";
 import { mutation, query } from "../_generated/server";
 import { chatKindOf, fileKind } from "../fileKind";
 import {
-  UPLOAD_WINDOW_MS,
-  UPLOADS_PER_HOUR,
   assertRoomWithoutEviction,
   createLibraryFile,
+  legacyUploadBytes,
   libraryError,
+  mintUploadUrl,
 } from "../libraryCore";
 import { requireMember } from "../orgs";
-import { consumeWindow } from "../quotas";
 import {
   getUserIdOrNull,
   requireAttachmentAccess,
@@ -155,14 +153,15 @@ async function toPublic(ctx: QueryCtx, a: Doc<"chatAttachments">) {
 }
 
 export const generateUploadUrl = mutation({
-  args: { workspaceId: v.id("workspaces") },
-  handler: async (ctx, { workspaceId }) => {
+  args: { workspaceId: v.id("workspaces"), size: v.optional(v.number()) },
+  handler: async (ctx, { workspaceId, size }) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, workspaceId);
-    const rate = await consumeWindow(ctx, userId, "libraryUpload", UPLOADS_PER_HOUR, UPLOAD_WINDOW_MS);
-    if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many uploads. Please wait a moment.");
-    await issueUploadIntent(ctx, userId, workspaceId);
-    return await ctx.storage.generateUploadUrl();
+    const { uploadUrl } = await mintUploadUrl(ctx, userId, {
+      workspaceId,
+      maxBytes: legacyUploadBytes(size),
+    });
+    return uploadUrl;
   },
 });
 

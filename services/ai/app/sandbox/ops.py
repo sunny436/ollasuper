@@ -321,3 +321,165 @@ def xlsx_docs(
     finally:
         wb.close()
     return docs
+
+
+# ---------------------------------------------------------------- documents
+# The document operations (app/documents) run HERE whole - the parse AND the
+# transform of a user's PDF/PPTX. Only these names can be called: the child
+# never imports a module path it was handed.
+DOC_FUNCS: dict[str, tuple[str, str]] = {
+    "pdf.read": ("app.documents.pdf_ops", "read_pdf"),
+    "pdf.extract_tables": ("app.documents.pdf_ops", "extract_tables"),
+    "pdf.set_metadata": ("app.documents.pdf_ops", "set_metadata"),
+    "pdf.read_metadata": ("app.documents.pdf_ops", "read_metadata"),
+    "pdf.form_fields": ("app.documents.pdf_ops", "form_fields"),
+    "pdf.form_structure": ("app.documents.pdf_ops", "form_structure"),
+    "pdf.extract_images": ("app.documents.pdf_ops", "extract_images"),
+    "pdf.split": ("app.documents.pdf_ops", "split_pdf"),
+    "pdf.rotate": ("app.documents.pdf_ops", "rotate_pdf"),
+    "pdf.crop": ("app.documents.pdf_ops", "crop_pdf"),
+    "pdf.encrypt": ("app.documents.pdf_ops", "encrypt_pdf"),
+    "pdf.decrypt": ("app.documents.pdf_ops", "decrypt_pdf"),
+    "pdf.watermark": ("app.documents.pdf_ops", "watermark_pdf"),
+    "pdf.fill_form": ("app.documents.pdf_ops", "fill_form"),
+    "pdf.fill_overlay": ("app.documents.pdf_ops", "fill_overlay"),
+    "pdf.merge": ("app.documents.pdf_ops", "merge_pdfs"),
+    "pdf.to_pptx": ("app.sandbox.ops", "pdf_to_pptx_images"),
+    "pptx.read": ("app.documents.pptx_ops", "read_pptx"),
+    "pptx.comments": ("app.documents.pptx_ops", "read_comments"),
+    "pptx.edit": ("app.documents.pptx_ops", "edit_pptx"),
+    "pptx.delete_slides": ("app.documents.pptx_ops", "delete_slides"),
+    "pptx.reorder_slides": ("app.documents.pptx_ops", "reorder_slides"),
+    "pptx.split": ("app.documents.pptx_ops", "split_pptx"),
+    "pptx.duplicate_slide": ("app.documents.pptx_ooxml", "duplicate_slide"),
+    "pptx.merge": ("app.documents.pptx_ooxml", "merge_pptx"),
+}
+# These take a LIST of files as their first argument.
+MULTI_BLOB_DOC_FUNCS = frozenset({"pdf.merge", "pptx.merge"})
+
+
+def doc_function(name: str):
+    import importlib
+
+    if name not in DOC_FUNCS:
+        raise DecodeError(f"unknown document operation {name!r}")
+    module, attr = DOC_FUNCS[name]
+    return getattr(importlib.import_module(module), attr)
+
+
+def pdf_to_pptx_images(raw: bytes, scale: float) -> bytes:
+    """pdf_to_pptx with page rendering done right here, in the same child."""
+    from app.documents import pptx_ops
+    from app.ingest.render import render_page
+
+    return pptx_ops.pdf_to_pptx(raw, render_fn=render_page, scale=scale)
+
+
+def split_blobs(payload: bytes, sizes: list[int]) -> list[bytes]:
+    out, off = [], 0
+    for n in sizes:
+        out.append(payload[off : off + int(n)])
+        off += int(n)
+    if off != len(payload):
+        raise DecodeError("document framing mismatch")
+    return out
+
+
+def doc_encode(result) -> tuple[dict, bytes]:
+    """A document op's return value -> (meta, body): file bytes, bytes plus
+    warnings, a list of images, or JSON data."""
+    if isinstance(result, (bytes, bytearray)):
+        return {"ok": True, "kind": "bytes"}, bytes(result)
+    if (
+        isinstance(result, tuple)
+        and len(result) == 2
+        and isinstance(result[0], (bytes, bytearray))
+    ):
+        return {"ok": True, "kind": "bytes_warn", "warnings": list(result[1])}, bytes(
+            result[0]
+        )
+    if (
+        isinstance(result, list)
+        and result
+        and all(
+            isinstance(x, tuple)
+            and len(x) == 2
+            and isinstance(x[0], (bytes, bytearray))
+            for x in result
+        )
+    ):
+        return (
+            {
+                "ok": True,
+                "kind": "images",
+                "images": [[len(b), str(m)] for b, m in result],
+            },
+            b"".join(bytes(b) for b, _ in result),
+        )
+    return {"ok": True, "kind": "json", "value": result}, b""
+
+
+def doc_decode(meta: dict, body: bytes):
+    kind = meta.get("kind")
+    if kind == "bytes":
+        return body
+    if kind == "bytes_warn":
+        return body, list(meta.get("warnings") or [])
+    if kind == "images":
+        out, off = [], 0
+        for n, mime in meta.get("images") or []:
+            out.append((body[off : off + int(n)], str(mime)))
+            off += int(n)
+        return out
+    return meta.get("value")
+
+
+# ---------------------------------------------------------------- datasets
+def dataset_frame(
+    payload: bytes, *, name: str, mime: str, max_rows: int, sheet: str | None
+) -> dict:
+    """A tabular upload -> a bounded, JSON-safe COLUMNAR frame. pandas parses
+    the file HERE; the service rebuilds the frame from plain JSON values
+    (frame_from_columns), so no native parser of user bytes runs in it."""
+    import pandas as pd
+
+    from app.data.loader import parse_dataframe
+
+    df, truncated = parse_dataframe(payload, name, mime, max_rows=max_rows, sheet=sheet)
+    columns, kinds, data = [], [], []
+    for col in df.columns:
+        s = df[col]
+        k = s.dtype.kind
+        if k == "M":
+            kind = "datetime"
+            vals = [None if pd.isna(v) else pd.Timestamp(v).isoformat() for v in s]
+        elif k == "b":
+            kind = "bool"
+            vals = [bool(v) for v in s]
+        elif k in "iu":
+            kind = "int"
+            vals = [int(v) for v in s]
+        elif k == "f":
+            kind = "float"
+            vals = [None if pd.isna(v) else float(v) for v in s]
+        else:
+            kind = "str"
+            vals = [
+                None if (v is None or (isinstance(v, float) and v != v)) else str(v)
+                for v in s
+            ]
+        columns.append(str(col))
+        kinds.append(kind)
+        data.append(vals)
+    return {
+        "columns": columns,
+        "kinds": kinds,
+        "data": data,
+        "truncated": bool(truncated),
+    }
+
+
+def dataset_preview(payload: bytes, *, name: str, mime: str, rows: int) -> str:
+    from app.data.loader import render_preview
+
+    return render_preview(payload, name, mime, rows=rows)

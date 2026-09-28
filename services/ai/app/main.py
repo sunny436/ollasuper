@@ -149,6 +149,24 @@ async def lifespan(app: FastAPI):
     # Knowledge DB (pgvector). None when unconfigured — RAG then degrades to off
     # and /v1/ingest returns 503, but chat is unaffected.
     app.state.db = create_knowledge_engine(settings) if settings.rag_enabled else None
+    # The embedding dimension is part of the index COLUMN TYPE (vector(N)). A
+    # configured model whose dimension differs cannot write a single vector,
+    # and would otherwise fail every file quietly. Checked once, reported by
+    # /readyz, and ingestion refuses (503) while it is wrong.
+    app.state.index_dim_ok = True
+    if app.state.db is not None:
+        try:
+            from app.db.store import embedding_column_dimension
+
+            dim = await embedding_column_dimension(app.state.db)
+            if dim is not None and dim != settings.embedding_dimensions:
+                app.state.index_dim_ok = False
+                log.critical(
+                    "LIB_INDEX_DIM_MISMATCH",
+                    extra={"column": dim, "configured": settings.embedding_dimensions},
+                )
+        except Exception:  # noqa: BLE001 - a probe failure must not stop startup
+            log.warning("LIB_INDEX_DIM_PROBE_FAILED")
     # Tool Registry (Ollagraph). None when unconfigured — the introspection
     # route then 503s, but chat is unaffected. It is a CATALOGUE only: never
     # wired to the LLM/graph, and discovery below is best-effort.

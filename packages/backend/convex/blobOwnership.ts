@@ -34,7 +34,10 @@ export const INTENT_TTL_MS = 60 * 60 * 1000;
 /** Bounded bookkeeping per user: the oldest open intents are dropped beyond it. */
 const MAX_OPEN_INTENTS = 64;
 
-/** Record an upload intent for `userId`. Call from every generateUploadUrl. */
+/**
+ * Record an upload intent for `userId`. Called ONLY by
+ * libraryCore.mintUploadUrl, which every door uses to get an upload URL.
+ */
 export async function issueUploadIntent(
   ctx: MutationCtx,
   userId: Id<"users">,
@@ -42,6 +45,8 @@ export async function issueUploadIntent(
   // A Library upload SESSION (libraryCore): the declared bytes are reserved
   // against the quota while it is open. Legacy callers pass nothing.
   session?: { purpose: "library" | "chat"; declaredBytes: number },
+  // The URL's single-use ticket (hash only) and the bytes it admits.
+  ticket?: { ticketHash: string; maxBytes: number },
 ): Promise<Id<"uploadIntents">> {
   const now = Date.now();
   // Prune intents that can no longer match any blob (expired a full TTL ago,
@@ -72,6 +77,7 @@ export async function issueUploadIntent(
     createdAt: now,
     expiresAt: now + INTENT_TTL_MS,
     ...(session ? { ...session, status: "created" as const } : {}),
+    ...(ticket ?? {}),
   });
 }
 
@@ -133,7 +139,10 @@ export async function claimUploadedBlob(
       // A Library session is finished only by library.finishUpload, which
       // accounts for its reservation; the legacy doors never consume one.
       i.status === undefined &&
-      (!workspaceId || !i.workspaceId || i.workspaceId === workspaceId),
+      (!workspaceId || !i.workspaceId || i.workspaceId === workspaceId) &&
+      // Never more bytes than the URL's ticket admitted (the edge enforces
+      // it on the wire; this is the same rule on the stored blob).
+      (i.maxBytes === undefined || meta.size <= i.maxBytes),
   );
   if (!intent) throw new ConvexError("Not found");
   await ctx.db.delete(intent._id);

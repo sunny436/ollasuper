@@ -15,6 +15,7 @@ import {
   GLOBAL_KEY,
   addGeneratedToLibrary,
   createLibraryFile,
+  genKey,
   isCharged,
   userKey,
 } from "./libraryCore";
@@ -136,8 +137,12 @@ export const recomputeUsage = internalMutation({
       else await ctx.db.insert("storageUsage", { key: shadow, usedBytes: bytes, files: 1 });
     };
     for (const f of res.page) {
-      // Uploads only, on both keys: generated rows add no bytes (libraryCore).
-      if (!isCharged(f)) continue;
+      // Uploads on the user and global keys; generated rows on their own
+      // per-user ledger (libraryCore.genKey — GENERATED_LIVE_BYTES).
+      if (!isCharged(f)) {
+        await add(genKey(f.userId), f.size);
+        continue;
+      }
       await add(userKey(f.userId), f.size);
       await add(GLOBAL_KEY, f.size);
     }

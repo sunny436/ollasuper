@@ -97,13 +97,22 @@ def test_the_sandbox_gets_a_capped_private_tmp_and_the_op_cpu_budget(monkeypatch
     )
     monkeypatch.setattr(harness.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(harness, "_secret_masks", lambda: ["/srv/.env"])
+    monkeypatch.setattr(harness, "_ro_root_works", lambda: True)
     argv = harness._argv("ingest_parse", {"file_type": "docx"}, cpu_s=315)
     assert argv[:4] == ["unshare", "-rnmpf", "--mount-proc", "--"]
     script = argv[argv.index("-c") + 1]
-    tmpfs = f"mount -t tmpfs -o size={harness.TMP_SIZE},mode=1777 tmpfs /tmp"
-    assert script.startswith(tmpfs)
-    assert "mount --bind /dev/null /srv/.env" in script
+    # Read-only root first, then a size- AND inode-capped /tmp, then the masks;
+    # every step fails CLOSED (exit 97), never `|| true`.
+    assert script.startswith("mount -o remount,bind,ro / || exit 97; ")
+    tmpfs = (
+        f"mount -t tmpfs -o size={harness.TMP_SIZE},nr_inodes={harness.TMP_INODES},"
+        "mode=1777 tmpfs /tmp || exit 97; "
+    )
+    assert tmpfs in script
+    assert "mount --bind /dev/null /srv/.env || exit 97; " in script
+    assert "|| true" not in script
     assert "--cpu=315" in argv
+    assert f"--nproc={harness.MAX_PROCS}" in argv
     env = harness._child_env()
     private_tmp = "/tmp"  # noqa: S108 — the sandbox's own capped tmpfs
     assert env["TMPDIR"] == private_tmp and env["HOME"] == private_tmp

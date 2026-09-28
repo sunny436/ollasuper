@@ -11,7 +11,7 @@ import {
 } from "./_generated/server";
 import { activeUserId, isActiveUser } from "./accountState";
 import { audit } from "./auditLog";
-import { blobReferenced, issueUploadIntent } from "./blobOwnership";
+import { blobReferenced } from "./blobOwnership";
 import { isExecutableContentType } from "./blobSafety";
 import { requireUserId } from "./chat/authz";
 import { fileKind, isInlineRaster, nameKeyOf, sanitizeFileName } from "./fileKind";
@@ -27,9 +27,12 @@ import {
   capFor,
   createLibraryFile,
   deletableForSpace,
+  hashToken,
   isCharged,
   libraryError,
+  mintUploadUrl,
   planSpaceWithCandidates,
+  randomToken,
   removeLibraryFile,
   stillDeletable,
   usedBytes,
@@ -87,6 +90,11 @@ export function toLibraryRow(f: Doc<"userFiles">) {
     source: f.source ?? "uploaded",
     status: f.status,
     error: f.error ?? null,
+    // Failure lifecycle (libraryProcessing): the stable code, whether an
+    // automatic retry is scheduled (and when), or whether it gave up.
+    failureCode: f.failureCode ?? null,
+    retryAt: f.status === "failed" ? (f.nextRetryAt ?? null) : null,
+    deadLettered: f.status === "failed" && f.deadLetteredAt !== undefined,
     stage: f.stage ?? null,
     progress: f.progress ?? null,
     stageMessage: f.stageMessage ?? null,
@@ -186,11 +194,15 @@ export const beginUpload = mutation({
         };
       }
     }
-    const intentId = await issueUploadIntent(ctx, userId, a.workspaceId, {
-      purpose: a.purpose,
-      declaredBytes: a.size,
+    const { intentId, uploadUrl } = await mintUploadUrl(ctx, userId, {
+      workspaceId: a.workspaceId,
+      session: { purpose: a.purpose, declaredBytes: a.size },
+      // The ticket admits exactly the declared size: the edge cuts off
+      // anything longer, and finishUpload re-checks the stored blob.
+      maxBytes: a.size,
+      sessionCounted: true,
     });
-    return { ok: true as const, intentId, uploadUrl: await ctx.storage.generateUploadUrl() };
+    return { ok: true as const, intentId, uploadUrl };
   },
 });
 
@@ -337,6 +349,34 @@ export const abortUpload = mutation({
       }
     }
     return { ok: true };
+  },
+});
+
+/**
+ * The edge proxy's gate on an upload body (http.ts /edge/upload-ticket).
+ * A ticket is redeemed exactly once, only while its URL is unexpired and its
+ * session is still open; the answer is the byte ceiling the edge enforces on
+ * the stream. Every failure is the same `ok: false` — no oracle.
+ */
+export const redeemUploadTicket = internalMutation({
+  args: { ticketHash: v.string() },
+  handler: async (ctx, { ticketHash }) => {
+    const intent = await ctx.db
+      .query("uploadIntents")
+      .withIndex("by_ticket", (q) => q.eq("ticketHash", ticketHash))
+      .first();
+    if (
+      !intent ||
+      intent.ticketUsedAt !== undefined ||
+      intent.expiresAt < Date.now() ||
+      !intent.maxBytes ||
+      (intent.status !== undefined && intent.status !== "created")
+    ) {
+      logEvent("LIB_TICKET_REFUSED", { reason: intent ? "state" : "unknown" });
+      return { ok: false as const };
+    }
+    await ctx.db.patch(intent._id, { ticketUsedAt: Date.now() });
+    return { ok: true as const, maxBytes: intent.maxBytes };
   },
 });
 
@@ -538,17 +578,6 @@ export const removeMany = mutation({
 
 // ------------------------------------------------------------------ access
 
-async function sha256Hex(s: string): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function randomToken(): string {
-  const b = new Uint8Array(32); // 256 bits
-  crypto.getRandomValues(b);
-  return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 async function mintOne(
   ctx: MutationCtx,
   userId: Id<"users">,
@@ -557,7 +586,7 @@ async function mintOne(
 ): Promise<string> {
   const token = randomToken();
   await ctx.db.insert("fileAccessTokens", {
-    tokenHash: await sha256Hex(token),
+    tokenHash: await hashToken(token),
     fileId: f._id,
     userId,
     purpose,

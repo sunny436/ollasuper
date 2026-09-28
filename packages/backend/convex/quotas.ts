@@ -83,7 +83,11 @@ export type QuotaKind =
   | "libraryRetry"
   | "libraryAccess"
   | "libraryBytes"
-  | "libraryUploadBytes";
+  | "libraryUploadBytes"
+  // Bytes of GENERATED files stored per day (chat artifacts and their preview
+  // pages). Generated files sit outside the 100 MB upload quota, so without
+  // this a user generating at the turn limit grew the disk without bound.
+  | "libraryGenBytes";
 
 export type WindowResult =
   | { ok: true }

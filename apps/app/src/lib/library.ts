@@ -149,6 +149,9 @@ export function xhrUpload(
     };
     xhr.onload = () => {
       if (xhr.status === 413) return reject(new Error("The file is too large."));
+      // The edge proxy's upload gate (edge/proxy.js handleUpload).
+      if (xhr.status === 507) return reject(new Error("Storage is temporarily full. Please try again later."));
+      if (xhr.status === 403) return reject(new Error("The upload link expired. Please try again."));
       if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(`Upload failed (${xhr.status})`));
       try {
         resolve(JSON.parse(xhr.responseText).storageId);

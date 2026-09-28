@@ -36,6 +36,10 @@ export type LibraryRow = {
   source: "uploaded" | "generated";
   status: "processing" | "ready" | "failed" | "stored";
   error: string | null;
+  /** Failure lifecycle (libraryProcessing): an automatic retry is scheduled
+   *  for `retryAt`, or the file gave up (`deadLettered`) and waits for the user. */
+  retryAt?: number | null;
+  deadLettered?: boolean;
   progress: number | null;
   stageMessage: string | null;
   note: string | null;
@@ -174,6 +178,15 @@ function Status({ file }: { file: LibraryRow }) {
         <span aria-hidden>·</span>
         <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
         {file.progress != null ? `Processing ${file.progress}%` : "Processing"}
+      </span>
+    );
+  }
+  if (file.status === "failed" && file.retryAt && !file.deadLettered) {
+    // A transient failure: the server retries it on its own.
+    return (
+      <span className="inline-flex items-center gap-1" title={file.error ?? undefined}>
+        <span aria-hidden>·</span>
+        <RotateCcw className="h-3 w-3" aria-hidden /> Retrying automatically
       </span>
     );
   }

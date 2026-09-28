@@ -1,21 +1,20 @@
 import { activeUserId } from "./accountState";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
-import { claimUploadedBlob, deleteBlobIfUnreferenced, issueUploadIntent } from "./blobOwnership";
+import { claimUploadedBlob, deleteBlobIfUnreferenced } from "./blobOwnership";
 import { assertNonExecutableBlob } from "./blobSafety";
 import { mutation, query } from "./_generated/server";
 import { audit } from "./auditLog";
 import { bump } from "./counters";
 import {
-  UPLOAD_WINDOW_MS,
-  UPLOADS_PER_HOUR,
   assertRoomWithoutEviction,
   capFor,
   createLibraryFile,
+  legacyUploadBytes,
   libraryError,
+  mintUploadUrl,
 } from "./libraryCore";
 import { requireMember } from "./orgs";
-import { consumeWindow } from "./quotas";
 
 /**
  * Files module — the LEGACY workspace-shared store.
@@ -28,15 +27,16 @@ import { consumeWindow } from "./quotas";
  */
 
 export const generateUploadUrl = mutation({
-  args: { workspaceId: v.id("workspaces") },
-  handler: async (ctx, { workspaceId }) => {
+  args: { workspaceId: v.id("workspaces"), size: v.optional(v.number()) },
+  handler: async (ctx, { workspaceId, size }) => {
     const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     await requireMember(ctx, userId, workspaceId);
-    const rate = await consumeWindow(ctx, userId, "libraryUpload", UPLOADS_PER_HOUR, UPLOAD_WINDOW_MS);
-    if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many uploads. Please wait a moment.");
-    await issueUploadIntent(ctx, userId, workspaceId);
-    return ctx.storage.generateUploadUrl();
+    const { uploadUrl } = await mintUploadUrl(ctx, userId, {
+      workspaceId,
+      maxBytes: legacyUploadBytes(size),
+    });
+    return uploadUrl;
   },
 });
 

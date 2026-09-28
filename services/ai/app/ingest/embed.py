@@ -34,9 +34,11 @@ log = get_logger(__name__)
 ProgressCb = Callable[[int, int], Awaitable[None]]
 
 
-def build_embeddings(settings: Settings) -> OpenAIEmbeddings:
+def build_embeddings(
+    settings: Settings, model: str | None = None
+) -> OpenAIEmbeddings:
     return OpenAIEmbeddings(
-        model=settings.openrouter_embedding_model,
+        model=model or settings.openrouter_embedding_model,
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
         dimensions=settings.embedding_dimensions,
@@ -102,5 +104,9 @@ async def embed_documents(
     return out
 
 
-async def embed_query(settings: Settings, text: str) -> list[float]:
-    return await build_embeddings(settings).aembed_query(text)
+async def embed_query(
+    settings: Settings, text: str, *, model: str | None = None
+) -> list[float]:
+    """The query vector under `model` (default: the current model). Retrieval
+    asks once per model its in-scope files were indexed with."""
+    return await build_embeddings(settings, model).aembed_query(text)

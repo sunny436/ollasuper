@@ -170,6 +170,42 @@ crons.interval(
 );
 
 /**
+ * File Library: AUTOMATIC RETRY of files that failed for a transient reason
+ * (libraryProcessing.autoRetryDue). Backoff lives on each row (nextRetryAt);
+ * this only picks up what is due, at most 10 files a run, and nothing while
+ * the processing plane is already busy — a queue, never a storm.
+ */
+crons.interval(
+  "retry failed library files",
+  { minutes: 5 },
+  internal.libraryProcessing.autoRetryDue,
+  {},
+);
+
+/**
+ * File Library: RE-INDEX files whose chunks were made by an older embedding
+ * model or pipeline (Python reports which). Each file stays searchable on its
+ * old chunks until the new ones are swapped in.
+ */
+crons.interval(
+  "reindex stale library files",
+  { hours: 1 },
+  internal.libraryProcessing.reindexStale,
+  {},
+);
+
+/**
+ * File Library: CROSS-PLANE RECONCILE. Purges every Python row that no Convex
+ * file owns — the backstop for a purge that exhausted its retries or was lost.
+ */
+crons.daily(
+  "reconcile library knowledge",
+  { hourUTC: 22, minuteUTC: 15 },
+  internal.libraryProcessing.reconcileKnowledge,
+  {},
+);
+
+/**
  * Expire abandoned sign-ups.
  *
  * Security, not housekeeping: an unverified account is what lets someone squat

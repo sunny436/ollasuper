@@ -80,16 +80,13 @@ describe("blob reference inventory (F-01 deletion, F-12 orphan sweep)", () => {
     // columns above (or immediately deletes them on failure).
     expect(creators).toEqual([
       "blobSafety.ts",
-      "chat/attachments.ts",
-      "files.ts",
       "http.ts",
-      // Library upload sessions (generateUploadUrl → a userFiles row at finish)
-      // and the hash-verified restore of originals (bound to its row, or deleted).
-      "library.ts",
+      // EVERY upload URL, for every door (Library, chat, Projects, legacy,
+      // avatar), is issued by libraryCore.mintUploadUrl — ticketed and charged.
+      "libraryCore.ts",
+      // The hash-verified restore of originals (bound to its row, or deleted).
       "libraryMigrations.ts",
       "scheduled/delivery.ts",
-      "userFiles.ts",
-      "users.ts",
     ]);
   });
 });

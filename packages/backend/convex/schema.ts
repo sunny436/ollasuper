@@ -71,7 +71,17 @@ export default defineSchema({
     status: v.optional(
       v.union(v.literal("created"), v.literal("completed"), v.literal("aborted")),
     ),
-  }).index("by_user_expires", ["userId", "expiresAt"]),
+    // UPLOAD TICKET (libraryCore.mintUploadUrl). Every upload URL carries a
+    // single-use ticket; the edge proxy redeems it (http.ts /edge/upload-ticket)
+    // and refuses the body past `maxBytes`. Only the SHA-256 is stored. Without
+    // it an upload URL was an anonymous slot: bytes written, never finished,
+    // swept — and never charged to anyone's daily budget.
+    ticketHash: v.optional(v.string()),
+    maxBytes: v.optional(v.number()),
+    ticketUsedAt: v.optional(v.number()),
+  })
+    .index("by_user_expires", ["userId", "expiresAt"])
+    .index("by_ticket", ["ticketHash"]),
 
   // Account-level security history. Deliberately NOT auditLogs: those are
   // workspace-scoped product actions with a required workspaceId, whereas these
@@ -184,8 +194,8 @@ export default defineSchema({
     userId: v.id("users"),
     workspaceId: v.id("workspaces"),
     name: v.string(),
-    // Convex STAGING blob. Deleted once Python confirms durable persistence;
-    // the durable original is Postgres BYTEA, not this.
+    // The file's CANONICAL ORIGINAL (File Library). Never dropped on `ready`;
+    // absent only on a row whose original is being restored.
     storageId: v.optional(v.id("_storage")),
     size: v.number(),
     contentType: v.string(),
@@ -244,6 +254,24 @@ export default defineSchema({
     // Manual-retry budget per file per day.
     retryDay: v.optional(v.number()),
     retriesToday: v.optional(v.number()),
+    // ---- Processing lifecycle (libraryProcessing.ts; all optional → additive).
+    // `generation` names the CURRENT processing attempt. Every dispatch — the
+    // first, a manual or automatic retry, a reaper re-dispatch, a re-index —
+    // bumps it; Python echoes it on every callback and every write, and a
+    // callback from any other generation is ignored, so a late worker can never
+    // overwrite a newer result.
+    generation: v.optional(v.number()),
+    // Stable, machine-readable failure code (libraryProcessing.FAILURE_CODES).
+    failureCode: v.optional(v.string()),
+    autoRetries: v.optional(v.number()),
+    nextRetryAt: v.optional(v.number()),
+    deadLetteredAt: v.optional(v.number()),
+    // Background re-index (embedding model / pipeline version change). The
+    // file STAYS `ready` on its old chunks until Python swaps them atomically.
+    reindexing: v.optional(v.boolean()),
+    reindexStartedAt: v.optional(v.number()),
+    reindexAttempts: v.optional(v.number()),
+    reindexError: v.optional(v.string()),
   })
     .index("by_user_ws_created", ["userId", "workspaceId", "createdAt"])
     .index("by_user_created", ["userId", "createdAt"])
@@ -271,7 +299,12 @@ export default defineSchema({
     .index("by_user_status", ["userId", "status"])
     // Anti-claim-squat: a storageId registers exactly once (mirrors
     // chatAttachments.by_storage).
-    .index("by_storage", ["storageId"]),
+    .index("by_storage", ["storageId"])
+    // Automatic retries due now (failed rows WITHOUT nextRetryAt sort first as
+    // undefined, so callers bound the range from above 0).
+    .index("by_status_next_retry", ["status", "nextRetryAt"])
+    // Re-index runs that stalled.
+    .index("by_reindex_started", ["reindexStartedAt"]),
 
   workspaces: defineTable({
     name: v.string(),

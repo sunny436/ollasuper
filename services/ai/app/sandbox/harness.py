@@ -55,6 +55,10 @@ def safe_child_env() -> dict[str, str]:
     env["HOME"] = env.get("TMPDIR") or "/tmp"  # noqa: S108 — deliberate scratch home
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONNOUSERSITE"] = "1"  # no ~/.local packages influencing the child
+    # A decoder needs no thread pool; one thread each keeps a child far inside
+    # its process cap (threads count against RLIMIT_NPROC).
+    for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        env[k] = "1"
     return env
 
 
@@ -64,8 +68,18 @@ DEFAULT_CPU_S = 20
 # unbounded result. Past it the child's process group is killed.
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 # Total scratch disk inside the mount namespace (a tmpfs over /tmp). --fsize
-# caps ONE file; this caps them all.
+# caps ONE file; this caps them all, and nr_inodes caps how MANY.
 TMP_SIZE = "64m"
+TMP_INODES = 4096
+# Processes AND threads the child may have at once. Counted per user namespace
+# (measured on the VM, kernel 6.8: a cap of 16 stopped the 15th fork), so the
+# service's own threads do not count against it. A fork bomb stops here; the
+# process-group kill and the PID namespace clean up whatever it started.
+MAX_PROCS = 64
+# The least isolation this process may run untrusted decoders at. Production
+# sets AI_SANDBOX_MIN_TIER=1 (the service .env); anything weaker then REFUSES
+# the decode instead of running it less isolated. The dev box keeps 4.
+_MIN_TIER = int(os.environ.get("AI_SANDBOX_MIN_TIER", "4") or "4")
 _READ_CHUNK = 1 << 16
 
 
@@ -73,15 +87,22 @@ class SandboxOutputExceeded(RuntimeError):
     """The child produced more than MAX_OUTPUT_BYTES and was killed."""
 
 
-def _prlimit_prefix(cpu_s: int = DEFAULT_CPU_S) -> list[str]:
+DEFAULT_MEM_BYTES = 1_500_000_000
+
+
+def _prlimit_prefix(
+    cpu_s: int = DEFAULT_CPU_S, mem_bytes: int = DEFAULT_MEM_BYTES
+) -> list[str]:
     if shutil.which("prlimit"):
-        # address space 1.5GB, CPU seconds, 256 fds, 64MB max output file.
+        # address space (default 1.5GB), CPU seconds, 256 fds, 64MB max output
+        # file, and the process cap.
         return [
             "prlimit",
-            "--as=1500000000",
+            f"--as={int(mem_bytes)}",
             f"--cpu={max(1, int(cpu_s))}",
             "--nofile=256",
             "--fsize=67108864",
+            f"--nproc={MAX_PROCS}",
             "--",
         ]
     return []
@@ -100,6 +121,25 @@ def _pid_namespace_works() -> bool:
     try:
         done = subprocess.run(  # noqa: S603 — fixed argv, no shell
             ["unshare", "-rnmpf", "--mount-proc", "true"],  # noqa: S607
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+@functools.cache
+def _ro_root_works() -> bool:
+    """Whether the mount namespace may remount / read-only (probed once, like
+    the PID namespace): with it, a decoder RCE cannot write ANYWHERE on the host
+    filesystem the service user can - only to its private, capped /tmp."""
+    try:
+        done = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            ["unshare", "-rnm", "--", "/bin/sh", "-c", "mount -o remount,bind,ro /"],  # noqa: S607
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -157,6 +197,14 @@ def _secret_masks() -> list[str]:
     for d, dirs, files in os.walk(root):
         dirs[:] = [x for x in dirs if x not in _MASK_WALK_SKIP]
         candidates += [os.path.join(d, f) for f in files if f in (".env", ".env.local")]
+    # Other deployments on the same host (a staging copy under /opt/<name>):
+    # the SAME service user can read their secrets, so a decoder here must not.
+    for pattern in (
+        "/opt/*/services/ai/.env*",
+        "/opt/*/apps/app/.env*",
+        "/opt/*/packages/backend/.env*",
+    ):
+        candidates += glob.glob(pattern)
     # Convex admin key + cloud key live outside the repo too.
     candidates += ["/root/.cvx-cloud-key", "/root/cloud-logs.sh"]
     # REAL paths, de-duped: a bind mount over the real file masks every path
@@ -172,7 +220,11 @@ def _tier() -> tuple[int, str]:
     has_prlimit = bool(_prlimit_prefix())
     if ushare and has_prlimit:
         pid = " + pid namespace" if "-rnmpf" in ushare else " (no pid namespace)"
-        return 1, f"unshare -rnm + prlimit + tmpfs /tmp + stripped-env subprocess{pid}"
+        ro = " + read-only root" if _ro_root_works() else " (root writable)"
+        return 1, (
+            "unshare -rnm + prlimit(nproc) + tmpfs /tmp + stripped-env subprocess"
+            f"{pid}{ro}"
+        )
     if has_prlimit:
         return 2, "prlimit + stripped-env subprocess (no network namespace)"
     return 3, "stripped-env subprocess (no prlimit, no network namespace)"
@@ -183,33 +235,67 @@ log.info("sandbox.mode", extra={"tier": _TIER, "detail": _TIER_DESC})
 
 
 def sandbox_status() -> dict:
-    """For the health endpoint / tests: the achievable tier and whether the child
-    is guaranteed secret-free (tiers 1-3) vs an in-process dev fallback (4)."""
-    return {"tier": _TIER, "detail": _TIER_DESC, "secret_free": _TIER <= 3}
+    """For the health endpoint / tests: the achievable tier, whether the child
+    is guaranteed secret-free (tiers 1-3) vs an in-process dev fallback (4), and
+    whether it meets this deployment's required minimum (AI_SANDBOX_MIN_TIER)."""
+    return {
+        "tier": _TIER,
+        "detail": _TIER_DESC,
+        "secret_free": _TIER <= 3,
+        "min_tier": _MIN_TIER,
+        "meets_minimum": _TIER <= _MIN_TIER,
+    }
 
 
-def _argv(op: str, params: dict, cpu_s: int = DEFAULT_CPU_S) -> list[str]:
-    inner = [sys.executable, "-m", "app.sandbox.worker", op, json.dumps(params)]
+def _assert_minimum() -> None:
+    """Refuse - never downgrade - when this host cannot give the isolation the
+    deployment requires (a missing unshare, a profile that stopped allowing
+    namespaces). Surfaces as a retryable 'unavailable' failure."""
+    if _TIER > _MIN_TIER:
+        log.warning(
+            "LIB_SANDBOX_BELOW_MINIMUM", extra={"tier": _TIER, "min": _MIN_TIER}
+        )
+        raise RuntimeError("the sandbox is below the required isolation")
+
+
+def mount_script() -> str:
+    """The shell run INSIDE the mount namespace before the real command:
+    read-only root (where the host allows it), a size- and inode-capped private
+    /tmp, and /dev/null over every secret file. Each step FAILS CLOSED - a
+    decoder never runs with a mask or a cap that did not take."""
+    script = ""
+    if _ro_root_works():
+        script += "mount -o remount,bind,ro / || exit 97; "
+    script += (
+        f"mount -t tmpfs -o size={TMP_SIZE},nr_inodes={TMP_INODES},mode=1777 "
+        "tmpfs /tmp || exit 97; "
+    )
+    script += "".join(
+        f"mount --bind /dev/null {shlex.quote(m)} || exit 97; " for m in _secret_masks()
+    )
+    return script + 'exec "$@"'
+
+
+def isolation_prefix(limits: list[str]) -> list[str]:
+    """argv that runs a command in the sandbox: the namespaces, the mount script,
+    then `limits` (a prlimit prefix). Empty on a host with no mount namespace."""
     ushare = _unshare_prefix()
-    limit = _prlimit_prefix(cpu_s)
-    # With a mount namespace (unshare -m present), mask the secret files with
-    # /dev/null before exec, inside a tiny /bin/sh. `exec "$@"` runs the real
-    # command from POSITIONAL args, so the op/params JSON never goes through the
-    # shell as text (no quoting/injection surface).
-    if _has_mount_namespace(ushare):
-        # A size-capped private /tmp first: the child's scratch writes then
-        # land in RAM it cannot grow past TMP_SIZE, never on the host disk.
-        script = (
-            f"mount -t tmpfs -o size={TMP_SIZE},mode=1777 tmpfs /tmp "
-            "2>/dev/null || true; "
-        )
-        script += "".join(
-            f'mount --bind /dev/null {shlex.quote(m)} 2>/dev/null || true; '
-            for m in _secret_masks()
-        )
-        script += 'exec "$@"'
-        return [*ushare, "/bin/sh", "-c", script, "sandbox", *limit, *inner]
-    return [*ushare, *limit, *inner]
+    if not _has_mount_namespace(ushare):
+        return [*ushare, *limits]
+    return [*ushare, "/bin/sh", "-c", mount_script(), "sandbox", *limits]
+
+
+def _argv(
+    op: str,
+    params: dict,
+    cpu_s: int = DEFAULT_CPU_S,
+    mem_bytes: int = DEFAULT_MEM_BYTES,
+) -> list[str]:
+    inner = [sys.executable, "-m", "app.sandbox.worker", op, json.dumps(params)]
+    # `exec "$@"` in the mount script runs the real command from POSITIONAL
+    # args, so the op/params JSON never goes through the shell as text (no
+    # quoting/injection surface).
+    return [*isolation_prefix(_prlimit_prefix(cpu_s, mem_bytes)), *inner]
 
 
 def _child_env() -> dict[str, str]:
@@ -310,9 +396,12 @@ def _run_child(
     timeout_s: float,
     handle: _ChildHandle | None = None,
     cpu_s: int = DEFAULT_CPU_S,
+    mem_bytes: int = DEFAULT_MEM_BYTES,
+    max_output: int = MAX_OUTPUT_BYTES,
 ) -> tuple[dict, bytes]:
+    _assert_minimum()
     proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell, cwd is our own pkg root
-        _argv(op, params, cpu_s),
+        _argv(op, params, cpu_s, mem_bytes),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -323,7 +412,7 @@ def _run_child(
     if handle is not None:
         handle.attach(proc)
     try:
-        out = collect_bounded(proc, payload, timeout_s, MAX_OUTPUT_BYTES)
+        out = collect_bounded(proc, payload, timeout_s, max_output)
     except TimeoutError:
         log.warning("LIB_SANDBOX_KILL", extra={"op": op, "why": "timeout"})
         raise TimeoutError(f"sandbox op {op!r} exceeded {timeout_s}s") from None
@@ -358,6 +447,8 @@ async def run_sandboxed(
     timeout_s: float,
     fallback: Callable[[], Awaitable[tuple[dict, bytes]]],
     cpu_s: int = DEFAULT_CPU_S,
+    mem_bytes: int = DEFAULT_MEM_BYTES,
+    max_output: int = MAX_OUTPUT_BYTES,
 ) -> tuple[dict, bytes]:
     """Decode `payload` in a sandboxed child and return (meta, body).
 
@@ -366,10 +457,23 @@ async def run_sandboxed(
     sandbox could not be spawned) FAILS CLOSED — see the handler below.
     """
     if _TIER == 4:
+        # The in-process path exists for the dev box only; a deployment that
+        # requires isolation refuses it.
+        _assert_minimum()
         return await fallback()
     handle = _ChildHandle()
     work = asyncio.ensure_future(
-        asyncio.to_thread(_run_child, op, payload, params, timeout_s, handle, cpu_s)
+        asyncio.to_thread(
+            _run_child,
+            op,
+            payload,
+            params,
+            timeout_s,
+            handle,
+            cpu_s,
+            mem_bytes,
+            max_output,
+        )
     )
     try:
         return await asyncio.shield(work)

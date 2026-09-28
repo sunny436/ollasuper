@@ -27,8 +27,8 @@ import {
 import {
   claimUploadedBlob,
   deleteBlobIfUnreferenced,
-  issueUploadIntent,
 } from "./blobOwnership";
+import { LIMITS, mintUploadUrl } from "./libraryCore";
 import { assertNonExecutableBlob } from "./blobSafety";
 
 /**
@@ -362,8 +362,10 @@ export const generateUploadUrl = mutation({
     if (!userId) {
       throw new Error("User not found");
     }
-    await issueUploadIntent(ctx, userId);
-    return await ctx.storage.generateUploadUrl();
+    // Ticketed like every upload door (libraryCore.mintUploadUrl): the avatar
+    // uploader declares no size, so the URL admits the largest stored file.
+    const { uploadUrl } = await mintUploadUrl(ctx, userId, { maxBytes: LIMITS.stored });
+    return uploadUrl;
   },
 });
 

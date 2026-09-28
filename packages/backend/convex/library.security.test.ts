@@ -262,24 +262,47 @@ describe("upload-delete churn (red-team cycle 7, measured on prod)", () => {
   test("deleting does not refund the daily upload budget: churn is bounded at 1 GiB/day", async () => {
     const t = convexTest(schema, modules);
     const { b, ws } = await seed(t);
-    const churn = (i: number) =>
-      t.run(async (ctx) => {
-        const storageId = await ctx.storage.store(new Blob([`c${i}`]));
-        const id = await createLibraryFile(ctx, {
-          userId: b, workspaceId: ws, storageId, name: `c${i}.zip`, contentType: "application/zip",
-          size: 100 * 1024 * 1024, source: "uploaded",
-        });
-        const f = await ctx.db.get(id);
-        if (f) await removeLibraryFile(ctx, f, "user");
+    const B = t.withIdentity(as(b));
+    const MB = 1024 * 1024;
+    const churn = async (i: number) => {
+      const r = await B.mutation(api.library.beginUpload, {
+        workspaceId: ws, name: `c${i}.zip`, contentType: "application/zip", size: 25 * MB, purpose: "library",
       });
-    for (let i = 0; i < 10; i++) await churn(i); // 1,000 MB uploaded, all deleted
-    await expect(churn(10)).rejects.toThrow(/uploaded a lot today/);
-    // …and the Library door refuses BEFORE any bytes move.
+      if (!r.ok) throw new Error("no room");
+      const storageId = await t.run((ctx) => ctx.storage.store(new Blob([`c${i}`], { type: "application/zip" })));
+      const done = await B.mutation(api.library.finishUpload, {
+        intentId: r.intentId, storageId, name: `c${i}.zip`, contentType: "application/zip",
+      });
+      if (!done.ok) throw new Error("finish failed");
+      await B.mutation(api.library.removeMany, { fileIds: [done.fileId] });
+    };
+    for (let i = 0; i < 40; i++) await churn(i); // 1,000 MB of upload URLs, every file deleted
+    await expect(churn(40)).rejects.toThrow(/uploaded a lot today/);
+  });
+
+  test("an upload URL that is never finished is charged all the same", async () => {
+    // The bytes can be written the moment the URL exists. Charging at finish
+    // let an upload that was never finished write to the disk for free.
+    const t = convexTest(schema, modules);
+    const { b, ws } = await seed(t);
+    const B = t.withIdentity(as(b));
+    for (let i = 0; i < 40; i++) {
+      const r = await B.mutation(api.library.beginUpload, {
+        workspaceId: ws, name: `u${i}.zip`, contentType: "application/zip", size: 25 * 1024 * 1024, purpose: "library",
+      });
+      expect(r.ok).toBe(true);
+      // Abandoned: the session closes (its reservation lapses), the charge stays.
+      if (r.ok) await B.mutation(api.library.abortUpload, { intentId: r.intentId });
+    }
     await expect(
-      t.withIdentity(as(b)).mutation(api.library.beginUpload, {
+      B.mutation(api.library.beginUpload, {
         workspaceId: ws, name: "more.zip", contentType: "application/zip", size: 25 * 1024 * 1024, purpose: "library",
       }),
     ).rejects.toThrow(/uploaded a lot today/);
+    // The legacy doors are charged the same way (their declared or maximum size).
+    await expect(B.mutation(api.userFiles.generateUploadUrl, { workspaceId: ws })).rejects.toThrow(
+      /uploaded a lot today/,
+    );
   });
 });
 

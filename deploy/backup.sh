@@ -33,6 +33,40 @@
 set -euo pipefail
 
 DEST=${BACKUP_DIR:-/opt/backups}
+
+# --- status file + storage lock (File Library operations) --------------------
+# STATUS: the host monitor (services/ai/app/ops/monitor.py) alerts on a failed
+# or missing backup from this file - written on EVERY exit, success or not, so
+# a backup that died half-way is a red alert, not silence.
+# LOCK: the blob reclaimer (services/ai/app/ops/blob_reclaim.py) takes the same
+# lock and skips its run while it is held, so no blob is removed while an
+# export may still be reading it.
+STATUS_DIR=${BACKUP_STATUS_DIR:-/var/lib/myos-backup}
+STORAGE_LOCK=${STORAGE_LOCK:-/run/lock/myos-storage.lock}
+mkdir -p "$STATUS_DIR" 2>/dev/null || STATUS_DIR=""
+write_status() {
+  [ -n "$STATUS_DIR" ] || return 0
+  local rc=$1 now
+  now=$(date +%s)
+  if [ "$rc" -eq 0 ]; then
+    printf '{"ok":true,"at":%s,"stamp":"%s"}
+' "$now" "${ts:-}" > "$STATUS_DIR/status.json.tmp"
+  else
+    printf '{"ok":false,"at":%s,"error":"backup.sh exited %s"}
+' "$now" "$rc" > "$STATUS_DIR/status.json.tmp"
+  fi
+  mv -f "$STATUS_DIR/status.json.tmp" "$STATUS_DIR/status.json"
+}
+on_exit() {
+  local rc=$?
+  [ -n "${stage:-}" ] && rm -rf "$stage"
+  write_status "$rc"
+}
+trap on_exit EXIT
+if command -v flock >/dev/null 2>&1 && [ -d "$(dirname "$STORAGE_LOCK")" ]; then
+  exec 9>"$STORAGE_LOCK"
+  flock -w 900 9 || { echo "FATAL: the storage lock stayed busy for 15 minutes" >&2; exit 1; }
+fi
 REPO=${REPO:-/opt/myos}
 KEEP=${BACKUP_KEEP:-7}
 # The old blanket 1KB floor only ever proved "not empty". Real archives are
@@ -98,6 +132,20 @@ verify_size() {
 umask 077
 mkdir -p "$DEST"
 chmod 700 "$DEST"
+
+# DISK PREFLIGHT. The export is written twice on this host (the server-side zip
+# under the Convex volume, then the copy here) and a backup that fills the disk
+# takes the live stack down with it. Refuse, loudly, below ~3x the last zip
+# plus 2 GiB of headroom.
+last_zip=$(ls -1t "$DEST"/convex-*.zip 2>/dev/null | head -1 || true)
+last_size=0
+[ -n "$last_zip" ] && last_size=$(wc -c < "$last_zip")
+need=$(( last_size * 3 + 2147483648 ))
+free=$(df -P -B1 "$DEST" 2>/dev/null | awk 'NR==2 {print $4}')
+if [ -n "${free:-}" ] && [ "$free" -lt "$need" ]; then
+  echo "FATAL: only $free bytes free under $DEST; this backup needs about $need" >&2
+  exit 1
+fi
 find "$DEST" -maxdepth 1 -type f -perm /077 -exec chmod 600 {} + 2>/dev/null || true
 cd "$REPO/packages/backend"
 
@@ -227,8 +275,7 @@ if [ -n "${BACKUP_GPG_RECIPIENT_FILE:-}${BACKUP_OFFHOST_TARGET:-}" ]; then
     echo "FATAL: off-host copy needs BOTH BACKUP_GPG_RECIPIENT_FILE and BACKUP_OFFHOST_TARGET" >&2
     exit 1
   fi
-  stage=$(mktemp -d "$DEST/.offhost-XXXXXX")
-  trap 'rm -rf "$stage"' EXIT
+  stage=$(mktemp -d "$DEST/.offhost-XXXXXX")  # removed by on_exit
   for f in "$out" "${kout:-}" "${dout:-}" "$man"; do
     [ -n "$f" ] && [ -f "$f" ] || continue
     gpg --batch --yes --trust-model always \

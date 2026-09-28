@@ -21,6 +21,10 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import multiprocessing
+import os
+import shlex
+import sys
+import tempfile
 import threading
 from collections.abc import Callable
 from concurrent.futures.process import BrokenProcessPool
@@ -32,6 +36,65 @@ log = get_logger(__name__)
 
 _pool: concurrent.futures.ProcessPoolExecutor | None = None
 _lock = threading.Lock()
+_wrapper: str | None = None
+
+# The workers run UNTRUSTED renders (pypdfium2 on user PDFs, ONNX OCR). They
+# used to be plain children of this service: its environment (every secret),
+# its network, its filesystem. They now start inside the same sandbox as every
+# other decoder (harness.isolation_prefix): namespaces, read-only root, masked
+# secrets, a process cap and a stripped environment. They are long-lived (the
+# ONNX model loads once per worker), so each is recycled after a bounded
+# number of tasks and killed past a CPU budget.
+POOL_TASKS_PER_CHILD = 50
+POOL_CPU_S = 900
+
+
+def _sandboxed_executable() -> str | None:
+    """A tiny executable that starts the real interpreter inside the sandbox,
+    for multiprocessing's `spawn` (set_executable). None where the host has no
+    sandbox (the dev box), which keeps the old in-process-children behaviour
+    there only; a deployment that requires isolation refuses instead."""
+    global _wrapper
+    from app.sandbox import harness
+
+    status = harness.sandbox_status()
+    if not status["meets_minimum"]:
+        raise RuntimeError("the sandbox is below the required isolation")
+    if not status["secret_free"]:
+        return None
+    if _wrapper is not None and os.path.exists(_wrapper):
+        return _wrapper
+    limits = []
+    if harness.shutil.which("prlimit"):
+        limits = [
+            "prlimit",
+            f"--cpu={POOL_CPU_S}",
+            "--nofile=512",
+            "--fsize=67108864",
+            f"--nproc={harness.MAX_PROCS}",
+            "--",
+        ]
+    env = harness.safe_child_env()
+    # Workers use threads (ONNX intra-op), so no thread caps here.
+    for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        env.pop(k, None)
+    env["TMPDIR"] = env["HOME"] = "/tmp"  # noqa: S108 — the private tmpfs
+    argv = [
+        *harness.isolation_prefix(limits),
+        "env",
+        "-i",
+        *[f"{k}={v}" for k, v in sorted(env.items())],
+        sys.executable,
+    ]
+    d = tempfile.mkdtemp(prefix="myos-pool-")
+    os.chmod(d, 0o700)
+    path = os.path.join(d, "python-sandboxed")
+    with open(path, "w", encoding="utf-8") as fh:
+        cmd = " ".join(shlex.quote(a) for a in argv)
+        fh.write("#!/bin/sh\nexec " + cmd + ' "$@"\n')
+    os.chmod(path, 0o700)
+    _wrapper = path
+    return path
 
 
 def get_pool(workers: int) -> concurrent.futures.ProcessPoolExecutor:
@@ -40,9 +103,14 @@ def get_pool(workers: int) -> concurrent.futures.ProcessPoolExecutor:
     if _pool is None:
         with _lock:
             if _pool is None:
+                ctx = multiprocessing.get_context("spawn")
+                exe = _sandboxed_executable()
+                if exe is not None:
+                    ctx.set_executable(exe)
                 _pool = concurrent.futures.ProcessPoolExecutor(
                     max_workers=max(1, workers),
-                    mp_context=multiprocessing.get_context("spawn"),
+                    mp_context=ctx,
+                    max_tasks_per_child=POOL_TASKS_PER_CHILD,
                 )
     return _pool
 

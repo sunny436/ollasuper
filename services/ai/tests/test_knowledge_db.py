@@ -261,3 +261,65 @@ async def test_concurrent_persist_and_delete_never_leave_the_file_behind(engine)
         ).scalar_one()
     assert left == 0
     assert chunks == 0
+
+
+# ------------------------------------------------ File Library (migration 0007)
+V1 = {"parser": 1, "chunker": 1, "pipeline": 1}
+
+
+async def _stale(engine, model: str, versions: dict[str, int] = V1) -> list[str]:
+    return await store.stale_files(
+        engine, embedding_model=model, versions=versions, limit=10
+    )
+
+
+async def test_an_older_generation_can_never_overwrite_a_newer_one(engine):
+    # Generation 2 (a retry / re-index) wrote first; generation 1's late worker
+    # must write NOTHING - its chunks would roll the file back.
+    await _seed(engine, "g1", "u1", 1, "newer", generation=2)
+    with pytest.raises(store.IngestStale):
+        await _seed(engine, "g1", "u1", 2, "older", generation=1)
+    rows = await _q(engine, "SELECT content FROM file_chunks WHERE file_id = 'g1'")
+    assert [r[0] for r in rows] == ["newer"]
+    # The current and a NEWER generation still write (a re-index swaps chunks).
+    await _seed(engine, "g1", "u1", 3, "reindexed", generation=3)
+    rows = await _q(
+        engine,
+        "SELECT c.content, f.generation FROM file_chunks c "
+        "JOIN files f ON f.id = c.file_id WHERE c.file_id = 'g1'",
+    )
+    assert [tuple(r) for r in rows] == [("reindexed", 3)]
+
+
+async def test_the_embedding_model_drives_stale_detection(engine):
+    await _seed(engine, "m1", "u1", 1, "one")  # embedding_model="test"
+    models = await store.models_for_files(engine, user_id="u1", file_ids=["m1"])
+    assert models == {"test": ["m1"]}
+    assert await store.models_for_files(engine, user_id="u2", file_ids=["m1"]) == {}
+    assert await store.models_for_files(engine, user_id="u1", file_ids=[]) == {}
+    # Current model, current versions -> not stale.
+    assert await _stale(engine, "test") == []
+    # A new model, or a newer pipeline, makes it stale; a tombstone never is.
+    assert await _stale(engine, "new") == ["m1"]
+    assert await _stale(engine, "test", {**V1, "pipeline": 2}) == ["m1"]
+    await store.delete_by_id(engine, file_id="m1")
+    assert await _stale(engine, "new") == []
+
+
+async def test_known_ids_and_copies_page_in_order(engine):
+    for fid in ("k1", "k2", "k3"):
+        await _seed(engine, fid, "u1", 1, fid, store_original=True)
+    assert await store.known_ids(engine, after="", limit=2) == ["k1", "k2"]
+    assert await store.known_ids(engine, after="k2", limit=2) == ["k3"]
+    copies = await store.original_copies(engine, after="", limit=10)
+    assert [c[0] for c in copies] == ["k1", "k2", "k3"]
+    assert await store.delete_original_copy(engine, file_id="k2") is True
+    left = await store.original_copies(engine, after="", limit=10)
+    assert [c[0] for c in left] == ["k1", "k3"]
+    # The file itself, its chunks and its embeddings stay.
+    rows = await _q(engine, "SELECT count(*) FROM file_chunks WHERE file_id = 'k2'")
+    assert rows[0][0] == 1
+
+
+async def test_the_index_column_reports_its_dimension(engine):
+    assert await store.embedding_column_dimension(engine) == DIM

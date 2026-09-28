@@ -764,6 +764,13 @@ class Settings(BaseSettings):
     # stays ON until libraryMigrations.restoreOriginals has verified every
     # Convex original (it is that migration's source), then goes OFF.
     ai_ingest_store_original_copy: bool = True
+    # Disk the host must keep free for a GENERATED file to be stored (the edge
+    # proxy refuses uploads below its own floor). Refused, never queued.
+    ai_min_free_disk_bytes: int = 4 * 1024 * 1024 * 1024
+    ai_disk_check_path: str = "/"
+    # Data Analysis frames are cached per process. A deleted file's frame also
+    # leaves on purge (routers/files.py); none outlives this.
+    ai_data_cache_ttl_s: int = 600
     ai_ingest_embed_batch: int = 64
     # Embedding is the primary throughput lever: langchain's aembed_documents
     # awaits its 64-text batches SEQUENTIALLY (base.py:778, our
