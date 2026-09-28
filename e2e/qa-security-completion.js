@@ -236,13 +236,15 @@ async function waitTurnDone(page, timeoutMs = 180000) {
   await stopBtn(page).waitFor({ state: "detached", timeout: timeoutMs });
 }
 
+// Every upload door — including the legacy files:saveFile this suite seeds
+// through — now creates a File Library file, so the Library is what to count.
 async function allFiles(u) {
   const rows = [];
   let cursor = null;
   for (;;) {
-    const res = await call("query", await u.jwt(), "files:listPaged", {
+    const res = await call("query", await u.jwt(), "library:list", {
       workspaceId: u.ws,
-      paginationOpts: { numItems: 100, cursor },
+      paginationOpts: { numItems: 50, cursor },
     });
     rows.push(...res.page);
     if (res.isDone) return rows;
@@ -723,21 +725,20 @@ const threadIdOf = (page) => /\/chat\/([a-z0-9]+)/.exec(page.url())?.[1];
     const files = await allFiles(E);
     const pending = await call("query", await E.jwt(), "orgs:pendingInvites", { workspaceId: E.ws });
     if (files.length < N || pending.length < N) throw new Error(`seeded ${files.length} files / ${pending.length} invites`);
-    const probeUrls = [files[0].url, files[Math.floor(files.length / 2)].url, files[files.length - 1].url];
-    for (const u of probeUrls) if ((await fetch(u)).status !== 200) throw new Error("seed file not served");
-    await deleteViaSettings(browser, E);
-    const deadline = Date.now() + 240000;
-    let live = probeUrls.length;
-    while (Date.now() < deadline) {
-      live = 0;
-      for (const u of probeUrls) if ((await fetch(u)).status !== 404) live += 1;
-      if (live === 0) break;
-      await sleep(5000);
+    // Library files are served only through short-lived capabilities (60 s,
+    // 3 uses), so they prove the files are SERVED before deletion; a link
+    // polled after deletion would 404 from expiry alone and prove nothing.
+    // That half — rows, bytes and the quota ledger gone — is checked on the VM
+    // from the ids in OUT.
+    const site = CONVEX.replace("/__cvx", "/__cvx-site");
+    for (const f of [files[0], files[Math.floor(files.length / 2)], files[files.length - 1]]) {
+      const { token } = await call("mutation", await E.jwt(), "library:mintAccess", { fileId: f._id, purpose: "download" });
+      if ((await fetch(`${site}/library/file?t=${token}`)).status !== 200) throw new Error("seed file not served");
     }
-    if (live) throw new Error(`${live} of ${probeUrls.length} probed file URLs still served`);
+    await deleteViaSettings(browser, E);
     out.E.deletedAt = Date.now();
     await E.ctx.close();
-    return `${files.length} files + ${pending.length} invites + 1 unsent upload seeded; deleted via Settings; sign-in refused; probed file URLs 404 (row counts checked on the VM)`;
+    return `${files.length} files + ${pending.length} invites + 1 unsent upload seeded and served; deleted via Settings; sign-in refused (rows, bytes and ledger checked on the VM)`;
   });
 
   // --------------------------------------------------------------- cleanup
