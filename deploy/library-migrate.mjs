@@ -1,6 +1,6 @@
 // Run one File Library migration to completion, page by page.
 //
-//   node deploy/library-migrate.mjs <module:function> [--apply] [--arg k=v ...]
+//   node deploy/library-migrate.mjs <module:function> [--apply] [--raw] [--arg k=v ...]
 //
 // DRY RUN unless --apply (every migration takes `dryRun`, default true). Pages
 // with the returned `continueCursor` until `isDone`, and prints each page's
@@ -24,6 +24,8 @@ if (!process.env.CONVEX_SELF_HOSTED_URL || !process.env.CONVEX_SELF_HOSTED_ADMIN
   process.exit(2);
 }
 const apply = rest.includes("--apply");
+// --raw: a one-shot operator function with no dryRun/cursor (e.g. verifyFold).
+const raw = rest.includes("--raw");
 const extra = {};
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] !== "--arg") continue;
@@ -53,7 +55,7 @@ function lastJson(text) {
 let cursor = null;
 let pages = 0;
 for (;;) {
-  const args = { ...extra, dryRun: !apply, ...(cursor ? { cursor } : {}) };
+  const args = raw ? extra : { ...extra, dryRun: !apply, ...(cursor ? { cursor } : {}) };
   const r = spawnSync("node", [join(repo, "node_modules/convex/bin/main.js"), "run", fn, JSON.stringify(args)], {
     cwd: join(repo, "packages/backend"),
     encoding: "utf8",
