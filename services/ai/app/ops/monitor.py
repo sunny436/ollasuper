@@ -1,6 +1,6 @@
 """The host monitor: File Library + storage health, alerting by email.
 
-Runs as root from a systemd timer (deploy/66-library-ops.sh, every 5 minutes),
+Runs as root from a systemd timer (deploy/81-library-ops.sh, every 5 minutes),
 OUTSIDE the services it watches - so it still reports when one of them is the
 thing that is down. Each run:
 
@@ -277,14 +277,18 @@ def evaluate(cfg: Config, m: Metrics) -> list[Alert]:
                     f"A file has been processing for {mins} minutes.",
                 )
             )
-        dead = int(lib.get("deadLettered") or 0)
+        # Only files whose RETRYABLE fault outlasted every automatic retry, and
+        # only new ones: a user's corrupt file is not an ops event, and one old
+        # dead letter must not re-alert every few hours forever.
+        dead = int(lib.get("deadLetteredLastDay") or 0)
         if dead > 0:
             out.append(
                 Alert(
                     "DEAD_LETTERS",
                     "warning",
-                    f"{dead} files are dead-lettered (failed for good; "
-                    "users can retry them by hand).",
+                    f"{dead} files exhausted their automatic retries in the last "
+                    "24 hours - a retryable fault (embedding provider, knowledge "
+                    "DB, sandbox) kept failing. Users can retry them by hand.",
                 )
             )
     if m.ai_error or m.ai is None:

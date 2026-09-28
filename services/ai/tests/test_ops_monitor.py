@@ -19,6 +19,7 @@ def _healthy(**over) -> Metrics:
             "retryOverdue": 0,
             "oldestProcessingAgeMs": 0,
             "deadLettered": 0,
+            "deadLetteredLastDay": 0,
         },
         ai={
             "ready": True,
@@ -56,7 +57,9 @@ def test_every_failure_mode_has_its_own_stable_alert():
         "PROCESSING_FAILURE_SPIKE"
     }
     assert _keys(_healthy(library={**lib, "retryOverdue": 2})) == {"RETRY_STALLED"}
-    assert _keys(_healthy(library={**lib, "deadLettered": 3})) == {"DEAD_LETTERS"}
+    assert _keys(_healthy(library={**lib, "deadLetteredLastDay": 3})) == {
+        "DEAD_LETTERS"
+    }
     assert _keys(_healthy(library={**lib, "oldestProcessingAgeMs": 3_600_000})) == {
         "PROCESSING_STALE"
     }
@@ -113,3 +116,11 @@ def test_the_config_reads_its_environment():
     assert cfg.alert_email == "ops@example.com"
     assert cfg.disk_paths == ("/", "/opt")
     assert cfg.disk_crit_bytes == 123
+
+
+def test_old_dead_letters_and_corrupt_files_do_not_page_anyone():
+    """A dead letter older than a day (already alerted) and a user's corrupt
+    file (a non-retryable code, counted apart as failedFinal) raise nothing."""
+    lib = _healthy().library
+    quiet = {**lib, "deadLettered": 4, "deadLetteredLastDay": 0, "failedFinal": 9}
+    assert _keys(_healthy(library=quiet)) == set()

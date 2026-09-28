@@ -499,6 +499,15 @@ export const healthSnapshot = internalQuery({
       .query("userFiles")
       .withIndex("by_reindex_started", (q) => q.gt("reindexStartedAt", 0))
       .take(5_000);
+    // Two different kinds of "failed for good". A NON-retryable code is the
+    // file itself (a corrupt PDF): the user's problem, shown in their Library,
+    // and never an ops alert. A RETRYABLE code that used up its automatic
+    // retries is a fault that kept recurring (the embedding provider, the
+    // knowledge DB, the sandbox): that is the ops signal.
+    const final = failed.filter((f) => f.deadLetteredAt !== undefined);
+    const exhausted = final.filter((f) =>
+      isRetryable(isFailureCode(f.failureCode) ? f.failureCode : codeFromMessage(f.error)),
+    );
     const usage = await ctx.db.query("storageUsage").take(10_000);
     const generatedBytes = usage.filter((u) => u.key.startsWith("gen:")).reduce((s, u) => s + u.usedBytes, 0);
     const usersOverGenerated = usage.filter((u) => u.key.startsWith("gen:") && u.usedBytes >= GENERATED_LIVE_BYTES * 0.9).length;
@@ -512,7 +521,9 @@ export const healthSnapshot = internalQuery({
       },
       failedLastHour: failed.filter((f) => f.updatedAt > now - HOUR).length,
       failedLastDay: failed.filter((f) => f.updatedAt > now - 24 * HOUR).length,
-      deadLettered: failed.filter((f) => f.deadLetteredAt !== undefined).length,
+      deadLettered: exhausted.length,
+      deadLetteredLastDay: exhausted.filter((f) => (f.deadLetteredAt ?? 0) > now - 24 * HOUR).length,
+      failedFinal: final.length - exhausted.length,
       retryScheduled: failed.filter((f) => f.nextRetryAt !== undefined).length,
       retryOverdue: failed.filter((f) => f.nextRetryAt !== undefined && f.nextRetryAt < now - 30 * 60_000).length,
       oldestProcessingAgeMs: oldestProcessing ? now - oldestProcessing.updatedAt : 0,

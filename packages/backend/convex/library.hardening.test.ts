@@ -319,6 +319,22 @@ describe("failures, automatic retry and the dead letter", () => {
     expect(byName["p.txt"]).toMatchObject({ failureCode: "PARSE_FAILED", deadLettered: true, retryAt: null });
   });
 
+  test("the health snapshot tells a corrupt file from a fault that outlasted its retries", async () => {
+    const t = makeTest();
+    const { a, ws } = await seed(t);
+    const corrupt = await processingFile(t, a, ws, "c.txt");
+    const flaky = await processingFile(t, a, ws, "f.txt");
+    await fail(t, corrupt.ingestId, "PARSE_FAILED", 1);
+    // A retryable fault on its last automatic retry: dead-lettered, not rescheduled.
+    await t.run((ctx) => ctx.db.patch(flaky._id, { autoRetries: AUTO_RETRY_MAX }));
+    await fail(t, flaky.ingestId, "EMBED_PROVIDER", 1);
+    const h = await t.query(internal.libraryProcessing.healthSnapshot, {});
+    expect(h.files.failed).toBe(2);
+    expect(h.failedFinal).toBe(1);
+    expect(h.deadLettered).toBe(1);
+    expect(h.deadLetteredLastDay).toBe(1);
+  });
+
   test("the retry cron re-dispatches due files with a NEW generation, at most a batch per run", async () => {
     const t = makeTest();
     const { a, ws } = await seed(t);
