@@ -62,6 +62,8 @@ async function apiUpload(jwt, ws, name, bytes) {
   const page = await ctx.newPage();
   page.on("console", (m) => m.type() === "error" && errors.push(m.text().slice(0, 200)));
   const tag = Date.now().toString(36);
+  // Measured skew is 0 s; a generous window swept in the PREVIOUS run's notice.
+  const runStart = Date.now() - 2_000;
   let jwt;
   let ws;
   const mine = [];
@@ -74,6 +76,16 @@ async function apiUpload(jwt, ws, name, bytes) {
     await page.waitForURL(/\/chat/, { timeout: 30000 });
     jwt = (await ctx.cookies()).find((k) => /convexAuthJWT/i.test(k.name)).value;
     ws = (await call("query", jwt, "orgs:myWorkspaces", {}))[0]._id;
+    // A previous run that failed mid-way may have left its own files, which
+    // would change how much room there is. Remove ONLY this suite's names.
+    const all = await call("query", jwt, "library:list", {
+      workspaceId: ws, paginationOpts: { numItems: 50, cursor: null },
+    });
+    for (const f of all.page) {
+      if (/^q-(\d|new)-[a-z0-9]+\.zip$/.test(f.name)) {
+        await call("mutation", jwt, "userFiles:remove", { fileId: f._id });
+      }
+    }
   });
 
   await step("fill to ~92 MB: the one-time 'almost out of space' notice fires once", async () => {
@@ -85,9 +97,11 @@ async function apiUpload(jwt, ws, name, bytes) {
     }
     const s = await call("query", jwt, "library:storageSummary", {});
     if (s.usedBytes < 90 * MB) throw new Error(`only ${(s.usedBytes / MB).toFixed(1)} MB used`);
+    // Only THIS run's notices: it re-arms below 80 %, so an earlier run that
+    // emptied the account legitimately earned one of its own.
     const notes = (await call("query", jwt, "notifications:myNotifications", {})).page;
-    const near = notes.filter((n) => n.type === "library.near_full");
-    if (near.length !== 1) throw new Error(`${near.length} near-full notices`);
+    const near = notes.filter((n) => n.type === "library.near_full" && n.createdAt >= runStart);
+    if (near.length !== 1) throw new Error(`${near.length} near-full notices this run`);
     return `${(s.usedBytes / MB).toFixed(1)} MB used, 1 notice`;
   });
 
