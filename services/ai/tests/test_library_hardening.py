@@ -33,7 +33,8 @@ from app.routers import files as files_router
 from app.sandbox import harness
 from tests.conftest import make_settings
 
-pytestmark = pytest.mark.anyio
+# Async tests run under the project's pytest-asyncio auto mode — NOT anyio,
+# whose separate event loop deadlocks against the async fake-Convex fixture.
 
 SETTINGS = make_settings("http://localhost:9999")
 linux_sandbox = pytest.mark.skipif(
