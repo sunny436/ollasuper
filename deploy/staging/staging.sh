@@ -296,9 +296,12 @@ cmd_deploy() {
   cvx env set JWT_PRIVATE_KEY -- "$(cat "$ROOT/.jwt")" >/dev/null
   cvx env set JWKS "$(cat "$ROOT/.jwks")" >/dev/null
   cvx env set SCHEDULED_DELIVERY_ENABLED false >/dev/null
-  if [ -n "${STAGING_ALLOWED_DOMAINS:-}" ]; then
-    cvx env set AUTH_EXTRA_ALLOWED_DOMAINS "$STAGING_ALLOWED_DOMAINS" >/dev/null
-  fi
+  # No mail transport here, on purpose (the data is a copy of every real
+  # user's): sign-up and sign-in codes go to STAGING's own log, which is how
+  # e2e/staging-account.js makes a second account. The e2e inbox domain is
+  # allowed to sign up; production's allowlist is not touched.
+  cvx env set AUTH_LOG_CODES 1 >/dev/null
+  cvx env set AUTH_EXTRA_ALLOWED_DOMAINS "${STAGING_ALLOWED_DOMAINS:-agent.ollastack.com}" >/dev/null
   say "convex deploy (dry run first)"
   cvx deploy --dry-run --yes >/dev/null
   cvx deploy --yes

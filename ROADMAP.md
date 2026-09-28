@@ -2,6 +2,78 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## File Library — closing the production gaps (2026-09-28) - branch `feat/library-hardening`, STAGING-verified, NOT on production
+
+The operator's 23-item "no half-fixes" directive, built on the File Library below and verified on a
+throwaway staging copy of production (`deploy/staging/staging.sh`: same VM, own network, ports,
+Postgres, Convex and AI unit; a fail-closed check refuses any production address). **Production is
+untouched** — the directive forbids deploying until the operator approves.
+
+**What it adds**
+- **A delete reaches every layer, including the disk.** The row, its chat attachments (by file AND
+  by blob), its generated chat card and preview pages, access tokens, Project links, the finished
+  upload session, the ledger, Python's file/chunks/embeddings/original copy (behind a tombstone),
+  cached data frames — and the bytes, which this Convex never frees on its own: `app.ops.blob_reclaim`
+  unlinks only keys no live file-storage record names (grace, min-age, backup lock, 200-per-run
+  stop). Not rewritten, by design: past replies derived from a deleted file, and backups until they
+  rotate (7 days).
+- **Upload tickets** (single-use, hashed, charged to the daily budget at mint) redeemed by the edge
+  before a byte is forwarded; the edge cuts the stream at the ticket's size and refuses with 507 on
+  low disk without spending the ticket.
+- **Failure codes, automatic retry (10 min / 1 h / 6 h), dead letter**; a **generation fence** on
+  every processing answer; **reindex without disappearance**; `AI_SANDBOX_MIN_TIER=1`.
+- **Ops:** `/ops/library-health`, readyz `library` section, `app.ops.monitor` (email alerts with
+  dedupe/re-alert/RESOLVED; fails loudly when undeliverable), `deploy/81-library-ops.sh`
+  (installs everything; reclaimers dry-run until approved; `CHECK_ONLY=1`), `backup.sh` status +
+  storage lock + disk preflight, a two-phase restore drill.
+
+**Found on the way — a live production bug (pre-existing, not Library):** `chat/stream:reapStalled`
+has thrown every minute for ~86 h — one 451-event research turn folded to 1.23 MiB, over Convex's
+1 MiB document cap, and the reaper finalized its whole batch in one transaction, so no stalled
+stream anywhere has been reaped since (production has 2 stuck `running` streams, 2 users; stuck
+turns lock their conversation, three lock a user out). Fixed on the branch: the fold and the answer
+are bounded in bytes, and each terminal fail is its own sub-transaction. RED-checked; it unwedged
+staging on deploy (5 stuck streams reaped in the first pass).
+
+**Verified (staging / VM / local):** `qa-library-delete.js` 9/9 (upload → every layer has it → RAG
+finds it → delete → every layer empty, RAG does not find it, bytes gone from the volume, 975 live
+blobs re-hashed intact, a generated file deleted with its card), 0 console errors;
+`qa-upload-compat.js` (new Convex + old edge uploads; low-disk 507 before forwarding, ticket
+unspent); earlier: `qa-library` 12/12, `qa-library-quota` 6/6, `qa-library-redteam` 28/28,
+`qa-attach-early` 5/5. Backend 77 files / 1201 tests; the Python suite on the VM as `myos-ai` with
+the real tier-1 sandbox and a throwaway pgvector DB 3485 passed (2 secaudit failures reproduce on
+main — pre-existing); alembic 0007 up/down/up. Monitor against staging: every signal read, alerts
+raised, `OPS_ALERT_UNDELIVERABLE` exit 2 with no address.
+
+**Restore drill, from nothing (155 s):** `down` → `up` → `restore` of the newest production set →
+tables checked BEFORE the deploy → `deploy` → `verify`: **7/7** — all 63 tables with identical
+counts (34,959 documents), all 898 blobs restored and re-hashed (94.6 MB), all 189 Library rows
+have their blob, knowledge DB 105 files / 1,350 chunks each owned by a Convex file, DBOS, Convex,
+AI plane. `restore-drill.json` written for the monitor. **Migration replay:** that backup predates
+the first release's migrations, so they were replayed in production's order and reproduced its
+record exactly (189 kind/source, 10 folded + verified + cleaned, 289 generated joined, 105
+originals restored, 0 failures); then `recomputeUsage` (0 diffs) and `requeueFailed` (84 failed:
+82 requeued — embedding provider 34, knowledge DB 29, queue exhausted 19 — and 2 PARSE_FAILED final).
+Note: production backfilled its generated rows under the old code, so its generated ledger is
+ABSENT and `recomputeUsage` will create it there (tested: dry run reports `live 0`, creates nothing).
+
+**Measured on production, read-only — each needs the operator's approval before anything is deleted:**
+- Orphan blobs: 1,748 files = 796,137,772 B of 2,761 on disk. Proof: every one of the 1,306
+  storage-id values in every live row resolves to a live record (0 dangling, decoder 1306/1306),
+  no candidate is live on re-read. The run stops above 200 per pass, so the one-off needs `--max`.
+- Export zips: 43 = 3,133,910,769 B, but only 4 have a byte-identical copy in `/opt/backups`; 39
+  (2.66 GB, back to the 08-18 cutover) are the ONLY copies of those snapshots — a retention choice.
+- Knowledge DB original copies: 111 = 7.8 MB, none orphaned.
+- QA account test fixtures to delete: 37 uploads (41,847 B); 27 older generated files are not mine.
+
+**Still open / blocked:** CI (GitHub billing); physical devices (emulation only); `OPS_ALERT_EMAIL`
+(operator value); B3 capacity; B4 malware scanning.
+
+**Deploy order (when approved):** backup → alembic 0007 → Python (restart) → Convex (dry run first)
+→ `81-library-ops.sh` (reclaimers dry-run) → frontend (`rm -rf .next`, rebuild) → migrations
+(`recomputeUsage`, `requeueFailed`: dry run, apply, dry run) → approved cleanup
+(`RECLAIM_APPLY=1`, one-off `--max`). The edge may follow Convex (proven); never the reverse.
+
 ## File Library (2026-09-28) - LIVE on production, prod-verified; deployed on the operator's decision with B1–B4 open
 
 A private, persistent Library of every upload and generated file, at `/library` (rail link; `/files`
