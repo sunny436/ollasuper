@@ -79,10 +79,12 @@ const step = async (n, f) => {
   const originalPrefs = await capturePrefs(page);
 
   await step("Chat appears in the sidebar and navigates", async () => {
-    // /chat is full-bleed and has no dashboard aside, so drive the shell nav
-    // from a route that kept it. Still proves shell -> chat navigation works.
-    await page.goto(BASE + "/en/files", { waitUntil: "domcontentloaded" });
-    await page.locator("aside").getByRole("link", { name: "Chat" }).click();
+    // The dashboard aside no longer renders anywhere (/files became the File
+    // Library, a workspace surface beside the rail). Drive the navigation from
+    // the Library through the rail's New chat — still shell -> chat.
+    await page.goto(BASE + "/en/library", { waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { name: "Library" }).waitFor({ timeout: 20000 });
+    await page.getByRole("button", { name: "New chat" }).first().click();
     await page.waitForURL(/\/chat/, { timeout: 10000 });
   });
 

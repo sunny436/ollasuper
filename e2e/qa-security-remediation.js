@@ -123,15 +123,18 @@ async function step(name, fn) {
     return out.join(" | ");
   });
 
-  await step("Files page: a non-knowledge upload registers (files.saveFile)", async () => {
-    await page.goto(`${BASE}/en/settings/files`, { waitUntil: "domcontentloaded" });
+  // Settings → Files is now the File Library; a non-processable upload goes
+  // through library.beginUpload / finishUpload and is kept as-is.
+  await step("Library: a non-processable upload is kept (library.finishUpload)", async () => {
+    await page.goto(`${BASE}/en/library`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(5000); // same workspace resolution as the composer
     const name = `stored-${stamp}.bin`;
     await page
       .locator('input[type="file"]')
       .first()
-      .setInputFiles({ name, mimeType: "application/octet-stream", buffer: Buffer.from([1, 2, 3]) });
-    const ok = page.getByText(`Uploaded ${name}`);
+      // Unique bytes: identical bytes ask "You already have this file" first.
+      .setInputFiles({ name, mimeType: "application/octet-stream", buffer: Buffer.from(`stored ${name}`) });
+    const ok = page.getByText(`Added ${name}`);
     const bad = page.getByText("Upload failed");
     await Promise.race([
       ok.first().waitFor({ timeout: 30000 }),
@@ -139,7 +142,7 @@ async function step(name, fn) {
         throw new Error("the page reported: Upload failed");
       }),
     ]);
-    return `toast: Uploaded ${name}`;
+    return `toast: Added ${name}`;
   });
 
   await step("display caches are owner-bound envelopes", async () => {

@@ -80,16 +80,31 @@ const rowOf = (name) => page.getByText(name, { exact: true }).first();
 
   await step("upload on the Library page → listed", async () => {
     await page.waitForTimeout(1500); // the workspace resolves before uploads are accepted
+    const jwt0 = await jwtOf(ctx);
+    const ws0 = await call("query", jwt0, "orgs:myWorkspaces", {});
+    workspaceId = ws0.value?.[0]?._id ?? null;
+    // Earlier runs that failed mid-way leave their own files behind; remove
+    // ONLY this suite's artifacts (strict name pattern), so a leftover can't
+    // trigger the duplicate prompt where the flow does not expect it.
+    const old = await call("query", jwt0, "library:list", {
+      workspaceId,
+      paginationOpts: { numItems: 50, cursor: null },
+    });
+    for (const f of old.value?.page ?? []) {
+      if (/^(lib|chat)-[a-z0-9]{6,}(-renamed)?\.txt$/.test(f.name)) {
+        await call("mutation", jwt0, "userFiles:remove", { fileId: f._id });
+      }
+    }
     await page.locator('input[type="file"]').first().setInputFiles({
       name,
       mimeType: "text/plain",
-      buffer: Buffer.from("The quarterly library canary says hello."),
+      // Unique bytes per run: identical bytes would (correctly) ask
+      // "You already have this file" — covered by its own step below.
+      buffer: Buffer.from(`The quarterly library canary ${tag} says hello.`),
     });
     await page.getByText(`Added ${name}`).first().waitFor({ timeout: 30000 });
     await rowOf(name).waitFor({ timeout: 15000 });
     const jwt = await jwtOf(ctx);
-    const ws = await call("query", jwt, "orgs:myWorkspaces", {});
-    workspaceId = ws.value?.[0]?._id ?? null;
     const list = await call("query", jwt, "library:list", {
       workspaceId,
       paginationOpts: { numItems: 50, cursor: null },
@@ -99,6 +114,23 @@ const rowOf = (name) => page.getByText(name, { exact: true }).first();
     if (!fileId) throw new Error("uploaded file not returned by library:list");
     if ("storageId" in list.value.page[0] || "ingestId" in list.value.page[0]) {
       throw new Error("the client row exposes a storage or ingest id");
+    }
+  });
+
+  await step("identical bytes ask 'You already have this file' first", async () => {
+    await page.locator('input[type="file"]').first().setInputFiles({
+      name: `dup-${tag}.txt`,
+      mimeType: "text/plain",
+      buffer: Buffer.from(`The quarterly library canary ${tag} says hello.`),
+    });
+    const dialog = page.getByRole("dialog");
+    await dialog.getByText("You already have this file").waitFor({ timeout: 20000 });
+    if (!(await dialog.getByText(name).first().isVisible())) throw new Error("the prompt does not name the existing file");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await dialog.waitFor({ state: "detached", timeout: 10000 });
+    await page.waitForTimeout(1000);
+    if (await page.getByText(`dup-${tag}.txt`, { exact: true }).count()) {
+      throw new Error("Cancel still uploaded the duplicate");
     }
   });
 
@@ -159,7 +191,7 @@ const rowOf = (name) => page.getByText(name, { exact: true }).first();
     await page.locator('input[type="file"]').first().setInputFiles({
       name: chatName,
       mimeType: "text/plain",
-      buffer: Buffer.from("attached in chat"),
+      buffer: Buffer.from(`attached in chat ${tag}`),
     });
     const remove = page.getByRole("button", { name: `Remove ${chatName}` });
     await remove.waitFor({ timeout: 15000 });
