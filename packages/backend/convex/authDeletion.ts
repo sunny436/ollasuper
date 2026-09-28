@@ -36,6 +36,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import { blobReferenced, deleteBlobIfUnreferenced } from "./blobOwnership";
+import { releaseLibraryCharge } from "./libraryCore";
 
 // Bounded so one pass never approaches a mutation's operation limit; the cascade
 // reschedules until done, so a small batch only means more passes, never missed
@@ -192,6 +193,8 @@ async function sweepAccountTables(
     await ctx.scheduler.runAfter(0, internal.userFiles.purge, {
       ingestId: f.ingestId,
     });
+    // The Library quota ledger too, or every deleted account inflates it.
+    await releaseLibraryCharge(ctx, f);
     await ctx.db.delete(f._id);
     if (f.storageId) await deleteBlob(ctx, f.storageId);
     did = true;
@@ -497,6 +500,7 @@ export const reconcileOrphans = internalMutation({
           await ctx.scheduler.runAfter(0, internal.userFiles.purge, {
             ingestId: f.ingestId,
           });
+          await releaseLibraryCharge(ctx, f);
           await ctx.db.delete(f._id);
           if (f.storageId) await deleteBlob(ctx, f.storageId);
         }

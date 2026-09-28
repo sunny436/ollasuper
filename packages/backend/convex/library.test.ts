@@ -114,6 +114,10 @@ const usage = (t: T, userId: Id<"users">) =>
       ?.usedBytes ?? 0,
   );
 const page = { numItems: 20, cursor: null };
+const usedBytesOf = (t: T, key: string) =>
+  t.run(async (ctx) =>
+    (await ctx.db.query("storageUsage").withIndex("by_key", (q) => q.eq("key", key)).unique())?.usedBytes ?? 0,
+  );
 
 describe("upload", () => {
   test("a readable file is processed; an archive is only stored and never reaches processing", async () => {
@@ -494,6 +498,22 @@ describe("list: server-side filters, sorts and name search", () => {
       expect(Object.keys(row)).not.toContain("storageId");
       expect(Object.keys(row)).not.toContain("ingestId");
     }
+  });
+});
+
+describe("account deletion (red-team cycle 5)", () => {
+  test("deleting an account releases its Library charge — the global ledger does not drift", async () => {
+    const t = convexTest(schema, modules);
+    const { a, b, ws } = await seed(t);
+    await bigFile(t, a, ws, "keep.zip", 7 * MB, 1);
+    const globalBefore = await usedBytesOf(t, "global");
+    await bigFile(t, b, ws, "gone.zip", 30 * MB, 2);
+    expect(await usedBytesOf(t, "global")).toBe(globalBefore + 30 * MB);
+    await t.mutation(internal.authDeletion.cascadeUserContent, { userId: b });
+    await drain(t);
+    expect(await usedBytesOf(t, "global")).toBe(globalBefore);
+    expect(await usage(t, b)).toBe(0);
+    expect(await usage(t, a)).toBe(7 * MB); // nobody else's charge moves
   });
 });
 

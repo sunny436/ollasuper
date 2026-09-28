@@ -335,6 +335,24 @@ async function maybeNearFull(
 }
 
 /**
+ * Release a Library row's quota charge (once) and revoke its capabilities.
+ * For callers that delete rows in bulk outside removeLibraryFile — account
+ * deletion — so the global ledger cannot drift upward with every deleted
+ * account until uploads falsely report "Storage is temporarily full".
+ */
+export async function releaseLibraryCharge(ctx: MutationCtx, f: Doc<"userFiles">): Promise<void> {
+  if (isCharged(f)) {
+    await adjust(ctx, userKey(f.userId), -f.size, -1);
+    await adjust(ctx, GLOBAL_KEY, -f.size, -1);
+  }
+  const tokens = await ctx.db
+    .query("fileAccessTokens")
+    .withIndex("by_file", (q) => q.eq("fileId", f._id))
+    .take(500);
+  for (const t of tokens) await ctx.db.delete(t._id);
+}
+
+/**
  * Delete ONE Library file completely, inside the caller's transaction:
  * its chat references, its Project links, its access tokens, its charge (once),
  * its row, its bytes (when nothing else references them) and — scheduled — its
