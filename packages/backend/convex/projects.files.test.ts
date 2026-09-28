@@ -286,7 +286,7 @@ describe("retrieval scope resolution", () => {
     expect(scope).not.toBeNull();
   });
 
-  test("dispatchPayload sends [] for an empty project, null for an ordinary chat", async () => {
+  test("dispatchPayload sends [] for an empty project and an EXPLICIT list for an ordinary chat", async () => {
     const t = convexTest(schema, modules);
     const { userId, workspaceId } = await seed(t);
     const asUser = t.withIdentity(as(userId));
@@ -328,9 +328,11 @@ describe("retrieval scope resolution", () => {
       streamId: b.streamId as string,
     });
 
-    // The three states, at the seam that produces them.
+    // An empty Project retrieves nothing; an ordinary chat gets the caller's
+    // ready files spelled out — never null ("whole corpus"), so a deleted file
+    // whose purge has not landed can never be retrieved.
     expect(pa?.ragFileIds).toEqual([]);
-    expect(pb?.ragFileIds).toBeNull();
+    expect(pb?.ragFileIds).toEqual(["ing-account"]);
     // And the gate follows the scope, not the account: an empty Project reports
     // 0 so the search_knowledge tool is not even bound.
     expect(pa?.ragFileCount).toBe(0);

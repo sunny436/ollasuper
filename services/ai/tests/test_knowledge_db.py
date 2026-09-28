@@ -77,6 +77,27 @@ async def _seed(eng, file_id: str, user_id: str, hot: int, content: str) -> None
     )
 
 
+async def test_a_tombstoned_file_never_surfaces_even_when_the_scope_lists_it(engine):
+    """Convex state dominates the derived index: a turn dispatched before a delete
+    still names the file in its scope, but once the tombstone exists nothing of
+    the file may be retrieved."""
+    await _seed(engine, "fileT", "userT", 0, "tango content that was deleted")
+    await _seed(engine, "fileK", "userT", 1, "kilo content that stays")
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("INSERT INTO ingest_tombstones (file_id) VALUES ('fileT')")
+        )
+    rows = await store.retrieve(
+        engine,
+        user_id="userT",
+        query_embedding=_vec(0),
+        fetch_k=10,
+        embedding_dimensions=DIM,
+        file_ids=["fileT", "fileK"],
+    )
+    assert [r["file_id"] for r in rows] == ["fileK"]
+
+
 async def test_retrieval_is_account_isolated(engine):
     await _seed(engine, "fileA", "userA", 0, "alpha secret from A")
     await _seed(engine, "fileB", "userB", 1, "bravo secret from B")

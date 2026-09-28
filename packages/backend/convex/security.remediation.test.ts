@@ -428,8 +428,11 @@ describe("F-08: current entitlement, not past", () => {
       return p;
     });
     const { accountRagScope } = await import("./userFiles");
-    // Every file entitled: the whole corpus, exactly as before (null).
-    expect(await t.run((ctx) => accountRagScope(ctx, member))).toBeNull();
+    // Every file entitled: still an EXPLICIT list, never null ("whole corpus"),
+    // so a deleted file whose purge has not landed cannot be retrieved.
+    expect((await t.run((ctx) => accountRagScope(ctx, member))).sort()).toEqual(
+      ["in-personal", "in-shared"].sort(),
+    );
     await removeMember(t, ws, owner, member);
     // Removed from `ws`: only the still-entitled file is in scope.
     expect(await t.run((ctx) => accountRagScope(ctx, member))).toEqual([

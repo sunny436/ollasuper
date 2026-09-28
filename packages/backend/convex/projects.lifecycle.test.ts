@@ -328,9 +328,10 @@ describe("a trashed project contributes no context, immediately", () => {
       streamId: second.streamId as string,
     });
     expect(after?.projectInstructions).toBeNull();
-    // null, not [] — the chat behaves as an ordinary chat, which is what it
-    // will permanently become once the purge unassigns it.
-    expect(after?.ragFileIds).toBeNull();
+    // The chat behaves as an ordinary chat, which is what it will permanently
+    // become once the purge unassigns it: the account scope, spelled out.
+    expect(after?.ragFileIds).not.toBeNull();
+    expect(after?.ragFileIds).toEqual(expect.any(Array));
     expect(after?.memories?.map((m) => m.content)).not.toContain("project fact");
   });
 });

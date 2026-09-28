@@ -232,7 +232,8 @@ describe("project scope survives every regeneration path", () => {
     // Scope is re-resolved from the thread, so removal takes effect at once —
     // and it narrows to unassigned rather than lingering as the old Project.
     expect(after?.projectInstructions).toBeNull();
-    expect(after?.ragFileIds).toBeNull();
+    // The account scope, spelled out (never null = "whole corpus").
+    expect(Array.isArray(after?.ragFileIds)).toBe(true);
   });
 
   test("an ordinary chat's recovery payload is unchanged by any of this", async () => {
@@ -249,7 +250,7 @@ describe("project scope survives every regeneration path", () => {
     await drain(t);
     const p = await payloadOf(t, sent.streamId as string);
     expect(p?.projectInstructions).toBeNull();
-    expect(p?.ragFileIds).toBeNull();
+    expect(Array.isArray(p?.ragFileIds)).toBe(true);
     expect(p?.unattended).toBe(false);
   });
 });

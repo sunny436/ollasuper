@@ -32,42 +32,28 @@ import { hasWorkspaceAccess, requireMember } from "./orgs";
 const INGEST_STALL_MS = 10 * 60_000; // embedding a big PDF is slow; >> chat's 90s
 const MAX_ATTEMPTS = 3;
 
-// Exported for the chat dispatch gate (stream.ts): does the user have any ready
-// file so RAG retrieval is worth the extra embedding + query latency?
-export async function userHasReadyFiles(
-  ctx: QueryCtx,
-  userId: Id<"users">,
-): Promise<boolean> {
-  const one = await ctx.db
-    .query("userFiles")
-    .withIndex("by_user_status", (q) =>
-      q.eq("userId", userId).eq("status", "ready"),
-    )
-    .first();
-  return one !== null;
-}
-
 /** Ceiling on the per-dispatch scope scan; past it the scope fails closed. */
 const RAG_SCOPE_SCAN = 4096;
 
 /**
- * The retrieval scope for an ORDINARY (non-Project) chat (audit F-08).
+ * The retrieval scope for an ORDINARY (non-Project) chat: ALWAYS an explicit
+ * allowlist of the caller's ready files in workspaces they still belong to
+ * (audit F-08).
  *
- * The knowledge files API is workspace-gated: list/remove/retry all require
- * CURRENT membership of the file's workspace. Retrieval used to search the
- * user's whole corpus, so files from a workspace the user had been removed
- * from stayed retrievable. Same policy now for both:
+ * It used to return `null` — "search the whole corpus" — whenever every file
+ * was entitled. But the corpus is Python's copy, which lags Convex: a file
+ * deleted here stays in pgvector until its purge lands, and a purge that failed
+ * transiently retries with backoff. With `null`, the retrieval in between could
+ * still surface a file the user had already deleted. Convex's own state must
+ * dominate the derived index, so the scope is always spelled out; an empty list
+ * retrieves nothing (store.retrieve's three states).
  *
- *   null   -> every ready file is in a workspace the user still belongs to;
- *             search the whole corpus exactly as before (no payload change).
- *   [ids]  -> something is out of scope; retrieve only the allowed files
- *             (possibly none — an empty list retrieves NOTHING, see
- *             store.retrieve's three states).
+ * Fails closed past the scan ceiling: an unscanned file cannot be vouched for.
  */
 export async function accountRagScope(
   ctx: QueryCtx,
   userId: Id<"users">,
-): Promise<string[] | null> {
+): Promise<string[]> {
   const ready = await ctx.db
     .query("userFiles")
     .withIndex("by_user_status", (q) =>
@@ -76,7 +62,6 @@ export async function accountRagScope(
     .take(RAG_SCOPE_SCAN);
   const entitled = new Map<string, boolean>();
   const allowed: string[] = [];
-  let excluded = false;
   for (const f of ready) {
     let ok = entitled.get(f.workspaceId);
     if (ok === undefined) {
@@ -84,10 +69,7 @@ export async function accountRagScope(
       entitled.set(f.workspaceId, ok);
     }
     if (ok) allowed.push(f.ingestId);
-    else excluded = true;
   }
-  // Fail closed past the scan ceiling: an unscanned file cannot be vouched for.
-  if (!excluded && ready.length < RAG_SCOPE_SCAN) return null;
   return allowed;
 }
 

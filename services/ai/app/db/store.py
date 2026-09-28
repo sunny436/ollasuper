@@ -193,7 +193,11 @@ async def retrieve(
     When ``embedding_model`` is given, only vectors from that model are compared —
     cosine distance across DIFFERENT embedding models is meaningless, so a model
     swap must not silently return stale vectors (dimension is already pinned by
-    the column type; model is the only thing not enforced by the schema)."""
+    the column type; model is the only thing not enforced by the schema).
+
+    A TOMBSTONED file never surfaces, whatever the scope says: deletion writes the
+    tombstone before its rows go, so a turn that was dispatched before the delete
+    (and so still lists the file) cannot retrieve it once the purge has begun."""
     dim = int(embedding_dimensions)
     ef = int(ef_search)
     _valid = {"relaxed_order", "strict_order", "off"}
@@ -207,7 +211,9 @@ async def retrieve(
     #
     # THREE STATES, and they must never collapse into two:
     #
-    #   None  -> no narrowing. The caller's whole corpus. (An ordinary chat.)
+    #   None  -> no narrowing. The caller's whole corpus. (No longer sent by
+    #            Convex, which always spells the scope out — kept for callers
+    #            that pass nothing.)
     #   []    -> narrow to NOTHING. Return no rows.        (A Project with no files.)
     #   [ids] -> narrow to exactly those ids.               (A Project with files.)
     #
@@ -246,6 +252,10 @@ async def retrieve(
                         AS distance
                     FROM file_chunks
                     WHERE user_id = :uid {model_clause} {file_clause}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM ingest_tombstones t
+                          WHERE t.file_id = file_chunks.file_id
+                      )
                     ORDER BY embedding::halfvec({dim})
                         <=> CAST(:qvec AS halfvec({dim}))
                     LIMIT :k

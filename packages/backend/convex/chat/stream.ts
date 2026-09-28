@@ -14,7 +14,7 @@ import { loadMemoriesForDispatch } from "../memories";
 import { loadActiveResearchRun } from "../researchRuns";
 import { loadSkillsForDispatch } from "../userSkills";
 import { projectFileIngestIds } from "../projects";
-import { accountRagScope, userHasReadyFiles } from "../userFiles";
+import { accountRagScope } from "../userFiles";
 import { hasWorkspaceAccess } from "../orgs";
 import { resolvedApprovalsForStream } from "./approvals";
 import { loadThreadDatasets } from "./attachments";
@@ -646,24 +646,18 @@ export const dispatchPayload = internalQuery({
         : null;
     const projectInstructions = liveProject?.instructions ?? null;
 
-    // An ordinary chat searches the whole corpus ONLY while every ready file is
-    // in a workspace the user still belongs to; otherwise it gets an explicit
-    // allowlist (audit F-08 — see accountRagScope).
-    const ragFileIds: string[] | null = liveProject
+    // Always an explicit allowlist — a Project's files, or the caller's ready,
+    // still-entitled files — never `null` ("whole corpus"): Convex's state must
+    // dominate the derived index, or a deleted file whose purge has not landed
+    // yet stays retrievable (see accountRagScope).
+    const ragFileIds: string[] = liveProject
       ? await projectFileIngestIds(ctx, liveProject._id)
       : await accountRagScope(ctx, stream.userId);
-    // Cheap existence check so the inference plane only pays the RAG embedding +
-    // pgvector round-trip when there is something in scope to search. Stays 0|1
-    // (every consumer tests `> 0`) but is now PROJECT-AWARE: an empty Project
-    // reports 0, which also unbinds the search_knowledge tool rather than
-    // offering the model a search that can only ever return nothing.
-    const ragFileCount = ragFileIds
-      ? ragFileIds.length > 0
-        ? 1
-        : 0
-      : (await userHasReadyFiles(ctx, stream.userId))
-        ? 1
-        : 0;
+    // Only pay the RAG embedding + pgvector round-trip when something is in
+    // scope. Stays 0|1 (every consumer tests `> 0`); an empty scope also unbinds
+    // the search_knowledge tool rather than offering a search that returns
+    // nothing.
+    const ragFileCount = ragFileIds.length > 0 ? 1 : 0;
 
     // Phase 6: memory is on unless the user explicitly turned it off. When on,
     // pre-load the bounded, scope-correct active set so the agent's search_memory
