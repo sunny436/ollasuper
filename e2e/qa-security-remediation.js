@@ -20,6 +20,46 @@ const BASE = process.env.E2E_BASE_URL || "https://app.ollasuper.com";
 const CVX = process.env.E2E_CONVEX_URL || `${BASE}/__cvx`;
 const { email: EMAIL, password: PASSWORD } = account();
 const results = [];
+/**
+ * A valid 1x1 PNG whose colour depends on `seed`. Sent chat attachments now
+ * stay in the File Library, so identical bytes would (correctly) ask "You
+ * already have this file" on every later run — each run needs its own bytes.
+ */
+function uniquePng(seed) {
+  const zlib = require("node:zlib");
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf) => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, sum]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0); // width
+  ihdr.writeUInt32BE(1, 4); // height
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // RGB
+  const h = [...String(seed)].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7);
+  const pixel = Buffer.from([0, h & 0xff, (h >> 8) & 0xff, (h >> 16) & 0xff]);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(pixel)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
 const PNG_1PX = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   "base64",
@@ -64,15 +104,15 @@ async function step(name, fn) {
     // mutation). They must now queue and upload once it resolves.
     const input = page.locator('input[type="file"]').first();
     await input.setInputFiles([
-      { name: `note-${stamp}.txt`, mimeType: "text/plain", buffer: Buffer.from("remediation check") },
+      { name: `note-${stamp}.txt`, mimeType: "text/plain", buffer: Buffer.from(`remediation check ${stamp}`) },
       {
         name: `feed-${stamp}.xml`,
         mimeType: "text/xml",
-        buffer: Buffer.from('<?xml version="1.0"?><root><item>ok</item></root>'),
+        buffer: Buffer.from(`<?xml version="1.0"?><root><item>ok ${stamp}</item></root>`),
       },
       // An image renders with its storage URL, so the header check below sees
       // a real stored blob as the browser receives it.
-      { name: `dot-${stamp}.png`, mimeType: "image/png", buffer: PNG_1PX },
+      { name: `dot-${stamp}.png`, mimeType: "image/png", buffer: uniquePng(stamp) },
     ]);
     // Both chips must reach "ready": no "Couldn't upload" toast.
     await page.waitForTimeout(6000);
