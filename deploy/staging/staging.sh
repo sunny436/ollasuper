@@ -269,6 +269,12 @@ cmd_deploy() {
   say "AI service ($UNIT), 1.5 GB cap, as myos-ai on $GW:$AI_PORT"
   systemctl stop "$UNIT" 2>/dev/null || true
   systemctl reset-failed "$UNIT" 2>/dev/null || true
+  # A transient unit unloads a moment AFTER stop returns; starting the next
+  # one before that fails with "already loaded".
+  for _ in $(seq 1 30); do
+    systemctl list-units --all --no-legend "$UNIT.service" | grep -q . || break
+    sleep 1
+  done
   systemd-run --unit="$UNIT" --collect \
     -p User=myos-ai -p MemoryMax=1500M -p PrivateTmp=yes \
     -p WorkingDirectory="$SRC/services/ai" -p EnvironmentFile="$SRC/services/ai/.env" \
