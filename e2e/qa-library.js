@@ -103,10 +103,12 @@ const rowOf = (name) => page.getByText(name, { exact: true }).first();
   });
 
   await step("name search finds it; a nonsense query finds nothing", async () => {
-    const box = page.getByLabel("Search file names");
+    const box = page.getByLabel("Search file names", { exact: true });
     await box.fill(tag);
     await rowOf(name).waitFor({ timeout: 10000 });
-    await box.fill(`zz-${tag}-none`);
+    // Text search matches ANY term (ranked), so the nonsense query must share
+    // no term with a real file name — `zz-${tag}-none` still matched via tag.
+    await box.fill(`qzxv${Date.now().toString(36)}nomatch`);
     await page.getByText("No files match.").waitFor({ timeout: 10000 });
     await box.fill("");
   });
@@ -114,7 +116,8 @@ const rowOf = (name) => page.getByText(name, { exact: true }).first();
   await step("rename through the card menu", async () => {
     await page.getByRole("button", { name: `Actions for ${name}` }).first().click();
     await page.getByRole("menuitem", { name: "Rename" }).click();
-    const input = page.getByLabel("File name");
+    // exact: a substring label match also hits "Search file names".
+    const input = page.getByLabel("File name", { exact: true });
     await input.fill(renamed);
     await page.getByRole("button", { name: "Save" }).click();
     await rowOf(renamed).waitFor({ timeout: 10000 });

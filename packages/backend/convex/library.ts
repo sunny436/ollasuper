@@ -14,7 +14,7 @@ import { audit } from "./auditLog";
 import { blobReferenced, issueUploadIntent } from "./blobOwnership";
 import { isExecutableContentType } from "./blobSafety";
 import { requireUserId } from "./chat/authz";
-import { fileKind, nameKeyOf, sanitizeFileName } from "./fileKind";
+import { fileKind, isInlineRaster, nameKeyOf, sanitizeFileName } from "./fileKind";
 import {
   GLOBAL_CEILING_BYTES,
   GLOBAL_KEY,
@@ -81,7 +81,11 @@ export function toLibraryRow(f: Doc<"userFiles">) {
     stageMessage: f.stageMessage ?? null,
     note: f.note ?? null,
     hasBlob: f.storageId !== undefined,
-    canPreview: kind === "image" && f.storageId !== undefined && f.size <= PREVIEW_MAX_BYTES,
+    canPreview:
+      kind === "image" &&
+      isInlineRaster(f.name, f.contentType) &&
+      f.storageId !== undefined &&
+      f.size <= PREVIEW_MAX_BYTES,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
   };

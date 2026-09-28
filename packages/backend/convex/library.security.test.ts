@@ -253,6 +253,12 @@ describe("access capabilities and the /library/file route", () => {
     expect(res.headers.get("content-disposition")).toMatch(/^inline;/);
     const bad = await A.mutation(api.library.mintAccess, { fileId: fake.fileId, purpose: "preview" });
     expect((await t.fetch(`/library/file?t=${bad.token}&p=preview`)).status).toBe(404);
+    // SVG is an image but never inline: no preview is even offered (it used to
+    // be offered, 404, and be re-requested every 30 s — red-team cycle 2).
+    const svg = await fileOf(t, a, ws, "chart.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>", "image/svg+xml");
+    expect((await A.query(api.library.get, { fileId: svg.fileId }))?.canPreview).toBe(false);
+    await expect(A.mutation(api.library.mintAccess, { fileId: svg.fileId, purpose: "preview" })).rejects.toThrow();
+    expect(await A.mutation(api.library.mintPreviews, { fileIds: [svg.fileId, png.fileId] })).toHaveLength(1);
     // A non-image can never even get a preview capability.
     const doc = await fileOf(t, a, ws, "d.pdf", "%PDF", "application/pdf");
     await expect(A.mutation(api.library.mintAccess, { fileId: doc.fileId, purpose: "preview" })).rejects.toThrow();

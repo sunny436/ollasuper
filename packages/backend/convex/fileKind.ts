@@ -150,6 +150,19 @@ export function inlineImageType(head: Uint8Array): string | null {
 }
 
 /**
+ * Could this file have an inline preview at all? Only the four rasters the
+ * /library/file route will ever render (inlineImageType). `kind === "image"`
+ * alone also covers SVG, BMP, TIFF and HEIC, which are never served inline —
+ * offering a preview for them made every such card request, 404 and retry.
+ * The route still checks the BYTES; this only decides what to ask for.
+ */
+export function isInlineRaster(name: string, contentType: string): boolean {
+  const ct = baseType(contentType);
+  if (["image/png", "image/jpeg", "image/gif", "image/webp"].includes(ct)) return true;
+  return ["png", "jpg", "jpeg", "gif", "webp"].includes(extOf(name));
+}
+
+/**
  * `Content-Disposition` for a stored name: an ASCII fallback plus the RFC 5987
  * UTF-8 form, so non-Latin names survive and nothing can break the header.
  */
