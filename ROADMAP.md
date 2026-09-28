@@ -66,6 +66,16 @@ ABSENT and `recomputeUsage` will create it there (tested: dry run reports `live 
 - Knowledge DB original copies: 111 = 7.8 MB, none orphaned.
 - QA account test fixtures to delete: 37 uploads (41,847 B); 27 older generated files are not mine.
 
+**Responsive / WebKit (Chromium + WebKit, touch and desktop):** the Library's file menu ran 9-10 px
+off a 844x390 landscape screen (Radix cannot shift along the main axis) — capped at Radix's
+available height and scrolls, like the notifications bell; re-run clean.
+**Found, not fixed (outside this change, reproduce on `/en/chat` too):** at WebKit 1024 landscape the
+rail's account footer covers the last visible rail item; at 375 px, Escape does not close the rail's
+"Move to project" / "Chat instructions" dialogs; WebKit logs "Failed to fetch RSC payload … Load
+failed" when a navigation aborts an in-flight rail prefetch (reproduced in isolation; every prefetch
+that completes returns 200 — noise from Next's fallback, not a failure, but it trips suites that
+assert zero console errors).
+
 **Still open / blocked:** CI (GitHub billing); physical devices (emulation only); `OPS_ALERT_EMAIL`
 (operator value); B3 capacity; B4 malware scanning.
 
