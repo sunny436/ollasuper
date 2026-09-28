@@ -217,8 +217,15 @@ function FileMenu({ file, actions }: { file: LibraryRow; actions: FileActions })
           <MoreHorizontal className="h-4 w-4" />
         </button>
       </DropdownMenuTrigger>
-      {/* Radix portals to <body>: re-enter the workspace palette. */}
-      <DropdownMenuContent align="end" className="workspace w-48">
+      {/* Radix portals to <body>: re-enter the workspace palette. On a short
+          landscape phone a mid-screen row has room for the menu on NEITHER
+          side, and Radix only shifts across the other axis - so it is capped
+          at the height Radix measured and scrolls (as the notifications bell). */}
+      <DropdownMenuContent
+        align="end"
+        collisionPadding={8}
+        className="scrollbar-quiet workspace max-h-[var(--radix-dropdown-menu-content-available-height)] w-48 overflow-y-auto"
+      >
         <DropdownMenuItem onSelect={() => actions.onOpen(file)} disabled={!file.hasBlob}>
           <ExternalLink className="mr-2 h-4 w-4" /> Open
         </DropdownMenuItem>
