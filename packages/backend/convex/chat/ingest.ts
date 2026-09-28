@@ -6,7 +6,7 @@ import { internalMutation } from "../_generated/server";
 import { audit } from "../auditLog";
 import { notify } from "../notifications";
 import { recordUsage } from "../usage";
-import { eventObject, stripForDisplay } from "./events";
+import { eventObject, fitEvents, fitUtf8, stripForDisplay } from "./events";
 import { deleteExecutions } from "./executions";
 
 /**
@@ -38,6 +38,14 @@ const COMPACT_LAG = 4;
 
 /** Convex documents cap at 1MB; stop well short of it. */
 const MAX_MESSAGE_CHARS = 400_000;
+/**
+ * The same cap in BYTES, for each part of a finalized message (Convex measures
+ * UTF-8 bytes). Together they stay under 1 MiB with room for the other fields;
+ * fitEvents in ./events says why this is load-bearing.
+ */
+const MAX_CONTENT_BYTES = 400_000;
+const MAX_REASONING_BYTES = 50_000;
+const MAX_EVENTS_BYTES = 450_000;
 
 /**
  * Server-side bounds on one delta batch.
@@ -216,8 +224,9 @@ async function foldEvents(
   events.push({ ...terminal, seq: nextSeq });
   await deleteEvents(ctx, messageId);
   // The folded copy is display-only (resume reads the live rows, which are
-  // gone after this) — drop the model-context blocks here, at the source.
-  return events.map(stripForDisplay);
+  // gone after this) — drop the model-context blocks here, at the source, and
+  // bound it: it shares the message row with the answer.
+  return fitEvents(events.map(stripForDisplay), MAX_EVENTS_BYTES);
 }
 
 /**
@@ -479,10 +488,13 @@ export const finishStream = internalMutation({
       endedAt: now,
     });
     await ctx.db.patch(stream.messageId, {
-      content: args.text.slice(0, MAX_MESSAGE_CHARS),
+      content: fitUtf8(args.text.slice(0, MAX_MESSAGE_CHARS), MAX_CONTENT_BYTES),
       status: "complete",
       finishReason: args.finishReason,
-      reasoning: args.reasoning?.slice(0, 50_000),
+      reasoning:
+        args.reasoning === undefined
+          ? undefined
+          : fitUtf8(args.reasoning.slice(0, 50_000), MAX_REASONING_BYTES),
       tokensIn: args.tokensIn,
       tokensOut: args.tokensOut,
       costUsd: args.costUsd,
@@ -666,7 +678,7 @@ export async function finalizeError(
     endedAt: now,
   });
   await ctx.db.patch(stream.messageId, {
-    content: partial.slice(0, MAX_MESSAGE_CHARS),
+    content: fitUtf8(partial.slice(0, MAX_MESSAGE_CHARS), MAX_CONTENT_BYTES),
     status: "error",
     // Record the model even on failure: the router learns health from
     // failures, and a failure that does not name its model teaches nothing.

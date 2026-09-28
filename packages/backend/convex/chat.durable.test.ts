@@ -3,6 +3,7 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { fitEvents, fitUtf8 } from "./chat/events";
 import schema from "./schema";
 
 // Owner identity — mirrors chat.security.test.ts (getAuthUserId reads the part
@@ -233,6 +234,87 @@ describe("Phase 7 reaper resume", () => {
     expect(r).toMatchObject({ failed: 1 });
     const s = await loadStream(t, streamId);
     expect(s?.status).toBe("error");
+  });
+});
+
+// Production, 2026-09: one 451-event research turn folded to 1.23 MiB, over
+// Convex's 1 MiB document cap. Its finalize threw every minute and, because the
+// reaper finalized its whole batch in one transaction, no stalled stream
+// anywhere was reaped again - conversations stayed locked, and a user with
+// three stuck turns could not send at all (MAX_CONCURRENT_STREAMS).
+// convex-test does not enforce the 1 MiB cap, so the bound is asserted directly.
+describe("the stall reaper cannot be wedged", () => {
+  const docBytes = (d: unknown) => new TextEncoder().encode(JSON.stringify(d)).length;
+
+  test("a turn whose timeline folds past 1 MiB still finalizes, bounded to fit", async () => {
+    const t = convexTest(schema, modules);
+    const { streamId, messageId } = await seedStream(t, { attempts: 3 });
+    await t.run(async (ctx) => {
+      for (let seq = 0; seq < 451; seq++) {
+        await ctx.db.insert("chatStreamEvents", {
+          messageId,
+          streamId,
+          eventId: `e${seq}`,
+          seq,
+          type: "TOOL_CALL",
+          v: 1,
+          ts: Date.now(),
+          payload: JSON.stringify({ tool_name: "Search", call_id: `c${seq}`, arguments: { q: "x".repeat(2_700) } }),
+        });
+      }
+      const s = await ctx.db
+        .query("chatStreams")
+        .withIndex("by_streamId", (q) => q.eq("streamId", streamId))
+        .unique();
+      if (s) await ctx.db.patch(s._id, { hasEvents: true });
+    });
+
+    const r = await t.mutation(internal.chat.stream.reapStalled, {});
+    expect(r).toMatchObject({ failed: 1, skipped: 0 });
+    const msg = await t.run((ctx) => ctx.db.get(messageId));
+    expect(msg?.status).toBe("error");
+    expect(docBytes(msg)).toBeLessThan(1_000_000);
+    // Every step survives (with shorter text), in order, closed by the terminal.
+    const events = msg?.events ?? [];
+    expect(events).toHaveLength(452);
+    expect(events.at(-1)?.type).toBe("ERROR");
+    expect(JSON.parse(events[0]?.payload ?? "{}").call_id).toBe("c0");
+    expect((await loadStream(t, streamId))?.status).toBe("error");
+  });
+
+  test("one stream that cannot be finalized is skipped; the rest of the batch is reaped", async () => {
+    const t = convexTest(schema, modules);
+    const poison = await seedStream(t, { attempts: 3, heartbeatAt: Date.now() - 20 * 60_000 });
+    const healthy = await seedStream(t, { attempts: 3, heartbeatAt: Date.now() - 10 * 60_000 });
+    // Any finalize that throws: here, its message row is gone.
+    await t.run((ctx) => ctx.db.delete(poison.messageId));
+
+    const r = await t.mutation(internal.chat.stream.reapStalled, {});
+    expect(r).toMatchObject({ failed: 1, skipped: 1 });
+    expect((await loadStream(t, healthy.streamId))?.status).toBe("error");
+    // The poison stream's sub-transaction rolled back: untouched, retried next pass.
+    expect((await loadStream(t, poison.streamId))?.status).toBe("running");
+  });
+
+  test("fitUtf8 bounds BYTES and never cuts inside a character", () => {
+    const hindi = "नमस्ते दुनिया ".repeat(40_000); // 3-byte characters, ~1.5 MB
+    const cut = fitUtf8(hindi, 400_000);
+    expect(new TextEncoder().encode(cut).length).toBeLessThanOrEqual(400_000);
+    expect(hindi.startsWith(cut)).toBe(true);
+    expect(cut).not.toContain("�");
+    const ascii = "a".repeat(400_000);
+    expect(fitUtf8(ascii, 400_000)).toBe(ascii);
+  });
+
+  test("fitEvents leaves a fitting timeline alone and drops the OLDEST when shortening is not enough", () => {
+    const small = [{ seq: 0, payload: "{}" }];
+    expect(fitEvents(small, 1_000)).toBe(small);
+    const many = Array.from({ length: 100 }, (_, seq) => ({ seq, payload: JSON.stringify({ n: seq }) }));
+    const fit = fitEvents(many, 800);
+    expect(docBytes(fit)).toBeLessThanOrEqual(800);
+    expect(fit.at(-1)?.seq).toBe(99);
+    const seqs = fit.map((e) => e.seq);
+    expect(seqs).toEqual(many.slice(100 - seqs.length).map((e) => e.seq));
   });
 });
 

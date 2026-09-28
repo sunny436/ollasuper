@@ -1084,36 +1084,48 @@ export const reapStalled = internalMutation({
 
     let resumed = 0;
     let failed = 0;
+    let skipped = 0;
     const now = Date.now();
+    // Each terminal fail is its own sub-transaction; one that throws is rolled
+    // back and SKIPPED (retried next pass) while the rest of the batch commits.
+    // Uncaught, a single stream that could not be finalized rolled back the
+    // whole batch every minute, so no stalled stream anywhere was reaped again
+    // (production, 2026-09: one oversized timeline). The resume branch is not
+    // wrapped: it writes into THIS transaction, so a caught error there would
+    // commit half a resume.
+    const fail = async (s: Doc<"chatStreams">, error: string, errorCode: string) => {
+      try {
+        await ctx.runMutation(internal.chat.ingest.failStream, {
+          streamId: s.streamId,
+          error,
+          errorCode,
+        });
+        failed++;
+      } catch (e) {
+        skipped++;
+        console.error(
+          JSON.stringify({
+            event: "STREAM_REAP_FAILED",
+            streamId: s.streamId,
+            error: e instanceof Error ? e.message.slice(0, 300) : "unknown",
+          }),
+        );
+      }
+    };
     for (const s of [...stalled, ...neverStarted]) {
       if (s.cancelRequested) {
         // The user asked to stop — never resume; finalize as the terminal fail.
-        await ctx.runMutation(internal.chat.ingest.failStream, {
-          streamId: s.streamId,
-          error: "Cancelled",
-          errorCode: "cancelled",
-        });
-        failed++;
+        await fail(s, "Cancelled", "cancelled");
       } else if (s.deadlineAt != null && now > s.deadlineAt) {
-        await ctx.runMutation(internal.chat.ingest.failStream, {
-          streamId: s.streamId,
-          error: "The response exceeded the time limit",
-          errorCode: "deadline",
-        });
-        failed++;
+        await fail(s, "The response exceeded the time limit", "deadline");
       } else if ((s.attempts ?? 0) >= MAX_RESUME_ATTEMPTS) {
-        await ctx.runMutation(internal.chat.ingest.failStream, {
-          streamId: s.streamId,
-          error: "The response timed out",
-          errorCode: "timeout",
-        });
-        failed++;
+        await fail(s, "The response timed out", "timeout");
       } else {
         await resumeStalledStream(ctx, s);
         resumed++;
       }
     }
-    return { resumed, failed };
+    return { resumed, failed, skipped };
   },
 });
 

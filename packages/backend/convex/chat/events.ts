@@ -91,3 +91,70 @@ export function stripForDisplay<T extends { type: string; payload: string }>(
     return e;
   }
 }
+
+// ------------------------------------------------------------ document bounds
+//
+// A finalized assistant message carries the answer AND the folded timeline, and
+// Convex refuses a document over 1 MiB - measured in UTF-8 BYTES, not
+// characters (400k characters of Devanagari is 1.2 MB). A 451-event research
+// turn on production folded to 1.23 MiB: its finalize threw, and so did every
+// stall-reaper pass after it. The reaper finalized its batch in one
+// transaction, so from then on NO stalled stream anywhere was reaped. These
+// bound both halves so a finalize can always commit.
+
+const utf8Size = (v: unknown): number => new TextEncoder().encode(JSON.stringify(v)).length;
+
+/** `text` cut to at most `maxBytes` of UTF-8, never inside a character. */
+export function fitUtf8(text: string, maxBytes: number): string {
+  if (text.length * 3 <= maxBytes) return text; // a UTF-16 unit is <= 3 bytes
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--; // continuation byte
+  return new TextDecoder().decode(bytes.subarray(0, end));
+}
+
+function shortenStrings(value: unknown, cap: number): unknown {
+  if (typeof value === "string") return value.length > cap ? `${value.slice(0, cap)}…` : value;
+  if (Array.isArray(value)) return value.map((x) => shortenStrings(x, cap));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, x]) => [k, shortenStrings(x, cap)]));
+  }
+  return value;
+}
+
+function shortenPayload(payload: string, cap: number): string {
+  try {
+    return JSON.stringify(shortenStrings(JSON.parse(payload), cap));
+  } catch {
+    return payload.length > cap ? payload.slice(0, cap) : payload;
+  }
+}
+
+/**
+ * The folded timeline within `maxBytes`. Untouched when it fits - every
+ * ordinary turn. Past the bound, long strings inside payloads shorten first
+ * (every step survives, with less text; payloads stay valid JSON); only if that
+ * is still too big do the OLDEST steps go. The last event - the terminal
+ * FINAL/ERROR that closes the timeline - always stays.
+ */
+export function fitEvents<T extends { payload: string }>(events: T[], maxBytes: number): T[] {
+  if (utf8Size(events) <= maxBytes) return events;
+  let out = events;
+  for (const cap of [2_000, 500]) {
+    out = out.map((e) => ({ ...e, payload: shortenPayload(e.payload, cap) }));
+    if (utf8Size(out) <= maxBytes) return out;
+  }
+  const last = out.at(-1);
+  if (!last) return out;
+  const kept: T[] = [];
+  let size = utf8Size([last]);
+  for (let i = out.length - 2; i >= 0; i--) {
+    const e = out[i] as T;
+    const s = utf8Size(e) + 1;
+    if (size + s > maxBytes) break;
+    kept.push(e);
+    size += s;
+  }
+  return [...kept.reverse(), last];
+}
