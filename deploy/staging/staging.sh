@@ -156,7 +156,9 @@ SQL
   wait_http "http://127.0.0.1:$CVX_PORT/version"
   if ! grep -q '^ADMIN_KEY=' "$SECRETS"; then
     key=$(docker exec "$CVX" ./generate_admin_key.sh | tail -1)
-    echo "ADMIN_KEY=$key" >> "$SECRETS"
+    # Quoted: an admin key is `<instance>|<hex>`, and an unquoted `|` would
+    # turn sourcing this file into a pipeline.
+    echo "ADMIN_KEY='$key'" >> "$SECRETS"
   fi
   say "staging planes up (convex :$CVX_PORT/:$SITE_PORT, postgres :$PG_PORT)"
 }
