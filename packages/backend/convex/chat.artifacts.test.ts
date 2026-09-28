@@ -145,21 +145,35 @@ describe("chat artifacts", () => {
     ).rejects.toThrow("Not found");
   });
 
-  test("purging the thread deletes the artifact row and its blob", async () => {
+  test("purging the thread deletes the artifact row; the bytes go with the Library copy", async () => {
     const t = convexTest(schema, modules);
     const { streamId, threadId } = await seed(t);
     const { storageId } = await store(t, streamId);
-    // Purge only runs on a trashed thread; also clear the stream so the message
-    // loop completes to the artifact cleanup.
+    // A generated file is also a Library file on the SAME blob.
+    const lib = await t.run((ctx) =>
+      ctx.db
+        .query("userFiles")
+        .withIndex("by_storage", (q) => q.eq("storageId", storageId))
+        .unique(),
+    );
+    expect(lib?.source).toBe("generated");
+    // Purge only runs on a trashed thread.
     await t.run(async (ctx) => {
       await ctx.db.patch(threadId, { status: "trashed" });
     });
     await t.mutation(internal.chat.threads.purge, { threadId });
     const rows = await t.run((ctx) => ctx.db.query("chatArtifacts").collect());
     expect(rows.length).toBe(0);
-    const gone = await t.run(
-      async (ctx) => (await ctx.storage.get(storageId)) === null,
-    );
+    // Deleting the chat does NOT delete the Library file (or its bytes)...
+    const kept = await t.run(async (ctx) => (await ctx.storage.get(storageId)) !== null);
+    expect(kept).toBe(true);
+    // ...deleting the Library file does, once nothing else references them.
+    const { removeLibraryFile } = await import("./libraryCore");
+    await t.run(async (ctx) => {
+      const f = await ctx.db.get(lib!._id);
+      if (f) await removeLibraryFile(ctx, f, "user");
+    });
+    const gone = await t.run(async (ctx) => (await ctx.storage.get(storageId)) === null);
     expect(gone).toBe(true);
   });
 

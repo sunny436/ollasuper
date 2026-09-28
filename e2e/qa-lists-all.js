@@ -307,10 +307,9 @@ async function verify(page, w, list, { mobile = false } = {}) {
     { n: 10, name: "Settings → Memories", route: "/settings/memories", path: "memories:list", pick: any, size: 30, total: T.memories },
     { n: 11, name: "Settings → My Skills", route: "/settings/skills", path: "userSkills:list", pick: any, size: 30, total: T.skills },
     { n: 12, name: "Settings → Shared Links", route: "/settings/shared", path: "chat/shares:listMine", pick: any, size: 20, total: T.shares },
-    { n: 13, name: "Settings → Files (workspace)", route: "/settings/files", path: "files:listPaged", pick: any, size: 20, total: T.wsFiles },
-    { n: 14, name: "Settings → Files (mine)", route: "/settings/files", path: "userFiles:list", pick: any, size: 20, total: T.myFiles },
-    { n: 15, name: "/files (workspace)", route: "/files", path: "files:listPaged", pick: any, size: 20, total: T.wsFiles },
-    { n: 16, name: "/files (mine)", route: "/files", path: "userFiles:list", pick: any, size: 20, total: T.myFiles },
+    // Settings → Files and /files are now redirects to the File Library, whose
+    // one list replaced all four (the workspace-shared list folded into it).
+    { n: 13, name: "Library", route: "/library", path: "library:list", pick: any, size: 30, total: T.myFiles },
   ];
   for (const list of LISTS) await verify(page, w, list);
 

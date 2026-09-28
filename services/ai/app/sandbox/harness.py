@@ -27,6 +27,7 @@ report states plainly which tier production runs.
 from __future__ import annotations
 
 import asyncio
+import functools
 import glob
 import json
 import os
@@ -57,13 +58,28 @@ def safe_child_env() -> dict[str, str]:
     return env
 
 
-def _prlimit_prefix() -> list[str]:
+DEFAULT_CPU_S = 20
+# The child's whole stdout is buffered by THIS service, and RLIMIT_FSIZE does
+# not apply to a pipe — so without this cap a decoder could hand the plane an
+# unbounded result. Past it the child's process group is killed.
+MAX_OUTPUT_BYTES = 64 * 1024 * 1024
+# Total scratch disk inside the mount namespace (a tmpfs over /tmp). --fsize
+# caps ONE file; this caps them all.
+TMP_SIZE = "64m"
+_READ_CHUNK = 1 << 16
+
+
+class SandboxOutputExceeded(RuntimeError):
+    """The child produced more than MAX_OUTPUT_BYTES and was killed."""
+
+
+def _prlimit_prefix(cpu_s: int = DEFAULT_CPU_S) -> list[str]:
     if shutil.which("prlimit"):
-        # address space 1.5GB, 20s CPU, 256 fds, 64MB max output file.
+        # address space 1.5GB, CPU seconds, 256 fds, 64MB max output file.
         return [
             "prlimit",
             "--as=1500000000",
-            "--cpu=20",
+            f"--cpu={max(1, int(cpu_s))}",
             "--nofile=256",
             "--fsize=67108864",
             "--",
@@ -71,13 +87,46 @@ def _prlimit_prefix() -> list[str]:
     return []
 
 
+@functools.cache
+def _pid_namespace_works() -> bool:
+    """Whether this host lets an unprivileged user create a PID namespace.
+
+    Probed once rather than assumed: an AppArmor profile or a hardened kernel
+    can permit the user+net+mount namespaces the sandbox already relies on and
+    still refuse -p. Assuming it would turn every decode into a transport
+    failure — and the harness fails CLOSED — so the result is "no attachments"
+    rather than "slightly less isolation". The tier log line says which ran.
+    """
+    try:
+        done = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            ["unshare", "-rnmpf", "--mount-proc", "true"],  # noqa: S607
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
 def _unshare_prefix() -> list[str]:
     if shutil.which("unshare"):
         # -r maps caller->root in a userns (works without privileges); -n gives a
         # private network namespace (no SSRF/exfil); -m gives a private MOUNT
         # namespace so the wrapper can mask secret files without affecting the host.
+        # -p/-f/--mount-proc add a PID namespace: the child sees no host process,
+        # and when its init dies the kernel kills everything it forked — even a
+        # process that left the group with setsid().
+        if _pid_namespace_works():
+            return ["unshare", "-rnmpf", "--mount-proc", "--"]
         return ["unshare", "-rnm", "--"]
     return []
+
+
+def _has_mount_namespace(prefix: list[str]) -> bool:
+    return len(prefix) > 1 and prefix[1].startswith("-rnm")
 
 
 _MASK_WALK_SKIP = frozenset({"node_modules", ".git", ".venv", "__pycache__"})
@@ -119,10 +168,11 @@ def _tier() -> tuple[int, str]:
     posix = os.name == "posix" and hasattr(os, "fork")
     if not posix:
         return 4, "in-process (no posix fork/exec — dev only)"
-    has_unshare = bool(_unshare_prefix())
+    ushare = _unshare_prefix()
     has_prlimit = bool(_prlimit_prefix())
-    if has_unshare and has_prlimit:
-        return 1, "unshare -rn + prlimit + stripped-env subprocess"
+    if ushare and has_prlimit:
+        pid = " + pid namespace" if "-rnmpf" in ushare else " (no pid namespace)"
+        return 1, f"unshare -rnm + prlimit + tmpfs /tmp + stripped-env subprocess{pid}"
     if has_prlimit:
         return 2, "prlimit + stripped-env subprocess (no network namespace)"
     return 3, "stripped-env subprocess (no prlimit, no network namespace)"
@@ -138,23 +188,36 @@ def sandbox_status() -> dict:
     return {"tier": _TIER, "detail": _TIER_DESC, "secret_free": _TIER <= 3}
 
 
-def _argv(op: str, params: dict) -> list[str]:
+def _argv(op: str, params: dict, cpu_s: int = DEFAULT_CPU_S) -> list[str]:
     inner = [sys.executable, "-m", "app.sandbox.worker", op, json.dumps(params)]
     ushare = _unshare_prefix()
-    limit = _prlimit_prefix()
+    limit = _prlimit_prefix(cpu_s)
     # With a mount namespace (unshare -m present), mask the secret files with
     # /dev/null before exec, inside a tiny /bin/sh. `exec "$@"` runs the real
     # command from POSITIONAL args, so the op/params JSON never goes through the
     # shell as text (no quoting/injection surface).
-    if ushare and "-rnm" in ushare:
-        masks = _secret_masks()
-        script = "".join(
+    if _has_mount_namespace(ushare):
+        # A size-capped private /tmp first: the child's scratch writes then
+        # land in RAM it cannot grow past TMP_SIZE, never on the host disk.
+        script = (
+            f"mount -t tmpfs -o size={TMP_SIZE},mode=1777 tmpfs /tmp "
+            "2>/dev/null || true; "
+        )
+        script += "".join(
             f'mount --bind /dev/null {shlex.quote(m)} 2>/dev/null || true; '
-            for m in masks
+            for m in _secret_masks()
         )
         script += 'exec "$@"'
         return [*ushare, "/bin/sh", "-c", script, "sandbox", *limit, *inner]
     return [*ushare, *limit, *inner]
+
+
+def _child_env() -> dict[str, str]:
+    env = safe_child_env()
+    if _has_mount_namespace(_unshare_prefix()):
+        # Point scratch at the capped tmpfs, whatever TMPDIR the service had.
+        env["TMPDIR"] = env["HOME"] = "/tmp"  # noqa: S108 — the private tmpfs
+    return env
 
 
 class _ChildHandle:
@@ -185,30 +248,88 @@ class _ChildHandle:
                 _kill_group(self._proc)
 
 
+def collect_bounded(
+    proc: subprocess.Popen, payload: bytes, timeout_s: float, cap: int
+) -> bytes:
+    """Feed stdin and read stdout under a HARD byte cap and a wall-clock kill.
+
+    Replaces `communicate()`, which buffers everything the child writes: a
+    decoder (or an RCE inside one) could hand this service gigabytes. Stdin is
+    fed from its own thread so a child that stops reading cannot deadlock the
+    reader, and the timeout is a timer that kills the process GROUP, which ends
+    the read with EOF.
+    """
+    timed_out = threading.Event()
+
+    def feed() -> None:
+        try:
+            if proc.stdin is not None:
+                proc.stdin.write(payload)
+        except OSError:
+            pass
+        finally:
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+            except OSError:
+                pass
+
+    def expire() -> None:
+        timed_out.set()
+        _kill_group(proc)
+
+    feeder = threading.Thread(target=feed, daemon=True)
+    timer = threading.Timer(timeout_s, expire)
+    feeder.start()
+    timer.start()
+    out = bytearray()
+    try:
+        stdout = proc.stdout
+        while stdout is not None:
+            chunk = stdout.read1(_READ_CHUNK)
+            if not chunk:
+                break
+            out += chunk
+            if len(out) > cap:
+                _kill_group(proc)
+                proc.wait()
+                raise SandboxOutputExceeded(f"sandbox output exceeded {cap} bytes")
+        proc.wait()
+    finally:
+        timer.cancel()
+        feeder.join(timeout=1.0)
+    if timed_out.is_set():
+        raise TimeoutError(f"sandbox exceeded {timeout_s}s")
+    return bytes(out)
+
+
 def _run_child(
     op: str,
     payload: bytes,
     params: dict,
     timeout_s: float,
     handle: _ChildHandle | None = None,
+    cpu_s: int = DEFAULT_CPU_S,
 ) -> tuple[dict, bytes]:
     proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell, cwd is our own pkg root
-        _argv(op, params),
+        _argv(op, params, cpu_s),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        env=safe_child_env(),
+        env=_child_env(),
         cwd=os.getcwd(),
         start_new_session=True,  # own process group, so a timeout reaps forks too
     )
     if handle is not None:
         handle.attach(proc)
     try:
-        out, _ = proc.communicate(input=payload, timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        _kill_group(proc)
-        proc.communicate()
+        out = collect_bounded(proc, payload, timeout_s, MAX_OUTPUT_BYTES)
+    except TimeoutError:
+        log.warning("LIB_SANDBOX_KILL", extra={"op": op, "why": "timeout"})
         raise TimeoutError(f"sandbox op {op!r} exceeded {timeout_s}s") from None
+    except SandboxOutputExceeded:
+        log.warning("LIB_SANDBOX_KILL", extra={"op": op, "why": "output"})
+        raise
 
     if proc.returncode != 0 or len(out) < 4:
         # non-zero with no frame == crash/segfault/OOM/rlimit kill.
@@ -236,19 +357,19 @@ async def run_sandboxed(
     *,
     timeout_s: float,
     fallback: Callable[[], Awaitable[tuple[dict, bytes]]],
+    cpu_s: int = DEFAULT_CPU_S,
 ) -> tuple[dict, bytes]:
     """Decode `payload` in a sandboxed child and return (meta, body).
 
     On a platform that cannot fork/exec (tier 4) the `fallback` runs in-process —
-    used ONLY by the dev box; production is tier 1. Any sandbox transport failure
-    also degrades to the fallback rather than dropping the user's attachment, so
-    a sandbox regression is a security downgrade to log, never an outage.
+    used ONLY by the dev box; production is tier 1. A transport failure (the
+    sandbox could not be spawned) FAILS CLOSED — see the handler below.
     """
     if _TIER == 4:
         return await fallback()
     handle = _ChildHandle()
     work = asyncio.ensure_future(
-        asyncio.to_thread(_run_child, op, payload, params, timeout_s, handle)
+        asyncio.to_thread(_run_child, op, payload, params, timeout_s, handle, cpu_s)
     )
     try:
         return await asyncio.shield(work)
@@ -276,3 +397,27 @@ async def run_sandboxed(
         raise RuntimeError(
             "the attachment sandbox is unavailable; try again shortly"
         ) from e
+
+
+def isolated() -> bool:
+    """True where decoders run in a separate secret-free process (tiers 1-3)."""
+    return _TIER <= 3
+
+
+def run_sandboxed_sync(
+    op: str, payload: bytes, params: dict, *, timeout_s: float, cpu_s: int
+) -> tuple[dict, bytes]:
+    """`run_sandboxed` for a caller that is already on a worker thread.
+
+    Same fail-closed contract; the caller checks `isolated()` first and keeps
+    its own in-process path for the dev box.
+    """
+    try:
+        return _run_child(op, payload, params, timeout_s, None, cpu_s)
+    except (TimeoutError, RuntimeError):
+        raise
+    except Exception as e:  # noqa: BLE001 — transport (spawn) failure
+        log.warning(
+            "sandbox.transport_failed", extra={"op": op, "err": type(e).__name__}
+        )
+        raise RuntimeError("the document sandbox is unavailable") from e

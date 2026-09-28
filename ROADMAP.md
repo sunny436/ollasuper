@@ -2,6 +2,69 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## File Library (2026-09-28) - branch `feat/library`, NOT deployed; blocked by B1–B4
+
+A private, persistent Library of every upload and generated file, at `/library` (rail link; `/files`
+and `/settings/files` redirect there). Built on the existing planes: Convex metadata + Convex private
+storage as the canonical original, Python for processing, pgvector as the derived index. No new
+service, database or storage backend.
+
+**What changed**
+- **One logical file = one `userFiles` row = one blob.** Chat attachments, Project links and the
+  generated file's chat card are references to it. Identical bytes are allowed to be two files (the
+  old silent collapse returned "report.pdf" for an upload named "Q3-final.pdf"). The owner-scoped
+  "You already have this file — use it / upload anyway" prompt replaces it. Python drops
+  `UNIQUE (user_id, content_hash)` (alembic `0006`).
+- **The Convex blob is never dropped on `ready`** or on a processing timeout; it is the original
+  (download, reuse, retry). A `stored` status covers kept-only files (archives, other binaries,
+  folded legacy files); it is terminal, so a late or forged callback cannot flip it.
+- **100 MB of uploads per user, app-wide** (generated files free and never deleted). Ledger
+  `storageUsage`; reservations are the live sum of open upload sessions (`uploadIntents`), so a dead
+  browser's reservation lapses with its TTL. **Nothing is ever deleted without the user's choice:**
+  an upload that does not fit opens "Free up space" (oldest pre-selected, sortable oldest/largest);
+  the chosen files are deleted in the same transaction as the new upload, re-checked there. Stale
+  choice → `QUOTA_PLAN_CHANGED`, nothing deleted. Project-linked files are never offered. One-time
+  90 % notice, re-armed below 80 %. Global ceiling `LIBRARY_GLOBAL_CEILING_BYTES` (default 500 MB).
+- **Access** is a 256-bit capability (SHA-256 stored; 60 s download / 5 min preview), re-authorised
+  on every use by `/library/file`, with per-user request and byte budgets (429). Inline only for a
+  PNG/JPEG/GIF/WebP identified from its bytes; everything else is an `application/octet-stream`
+  attachment with `nosniff`, `no-store`, `no-referrer`, a sandbox CSP and CORP `same-site`.
+- **RAG scope is always an explicit list** (no `null` = whole corpus) and Python excludes
+  tombstoned ids. Private file names left the workspace audit log (ids only).
+- **Python sandbox:** stdout is read under a 64 MB cap (it was unbounded, buffered in the service);
+  a 64 MB tmpfs over `/tmp`; a PID namespace where the host allows it (probed, never assumed). The
+  docx/pptx/csv/json/html/md/text parsers and PDF page text moved from a service THREAD into the
+  sandbox child; uploaded images are decoded and re-encoded in the sandbox before OCR sees them.
+  A parser's text is trimmed in the child to 2 × `ai_ingest_max_chars`, so large-but-legitimate
+  files index exactly as before instead of failing the new cap. Attached-document text is framed
+  as data and cannot close its own `<document>` block.
+- **Edge proxy** refuses Convex upload bodies over 26 MB while they stream (413, with or without
+  Content-Length); the upstream never receives a complete body. Unclaimed blobs are swept after 2 h.
+- **Found and fixed in review:** a double deletable-files scan per upload that could pass Convex's
+  4,096-index-read limit for a user near the 2,000-file cap; a fold migration that aborted its whole
+  page forever on a legacy row sharing bytes with a Library file.
+
+**Verified locally (not on any deployment):** backend 1161 + new Library 35 tests (A-vs-B matrix,
+tokens, headers, quota races, migrations); Python 3380 + hardening 25; edge 8; frontend 282;
+typecheck, biome, sherif, ruff and a production Next build. **Not run:** the DB-backed Python tests
+(no local PostgreSQL — CI runs them), the Linux-only real-sandbox test (CI/VM), and every e2e script
+(`qa-library.js` is written; it needs a staging stack).
+
+**Blockers before any deploy:** B1 no staging environment; B2 no Convex restore target (backups are
+exported but never restore-tested); B3 capacity — 15 GB free and each Library byte costs ~16× on
+disk (8× once `ai_ingest_store_original_copy=false`), so the 500 MB ceiling is the honest limit
+under today's backup policy; B4 no malware scanner (acceptable for staging only). `OPS_ALERT_EMAIL`
+is needed for alerts.
+
+**Deploy order when unblocked (load-bearing):**
+1. `alembic upgrade head` (0006) — the new Python writes the version columns on every persist.
+2. Python (`IngestRequest.sha256` is optional, so it accepts the old Convex).
+3. Convex (new indexes; `dispatchPayload` starts sending `sha256`, which an old Python would 422).
+4. Migrations, each dry-run first: `backfillKindSource` → `recomputeUsage` (then a dry run showing
+   zero diffs) → `foldSharedFiles` → `verifyFold` → `cleanupFoldedFiles` → `backfillGenerated` →
+   `restoreOriginals` → only then `ai_ingest_store_original_copy=false`.
+5. Edge proxy restart, then the frontend (`rm -rf .next`, full rebuild).
+
 ## Blank screen / "Something went wrong" after sign-in or sign-up (2026-09-26 night) - LIVE 32b560a, prod-verified
 
 Reported on desktop and mobile. The server logs held almost nothing, because every failure was client-side and no Sentry DSN is set. `e2e/qa-login-matrix.js` reproduced all three causes on prod **before** any change:

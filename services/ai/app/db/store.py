@@ -57,9 +57,18 @@ async def persist_ingest(
     chunks: list[dict[str, Any]],
     embedding_model: str,
     embedding_dimensions: int,
+    versions: dict[str, int] | None = None,
+    store_original: bool = True,
 ) -> int:
-    """One transaction: files row + blob (BYTEA) + chunks. Returns chunk count."""
+    """One transaction: files row + (optionally) blob + chunks. Returns chunk count.
+
+    `store_original=False` stops writing the BYTEA copy: the canonical original
+    is the Convex blob, and this copy doubled storage and every backup of it. An
+    existing copy is left as it is — it is the migration source until the
+    Convex blob is verified (libraryMigrations.restoreOriginals).
+    """
     dim = int(embedding_dimensions)
+    v = versions or {}
     async with engine.begin() as conn:
         await conn.execute(
             text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(file_id)}
@@ -79,15 +88,19 @@ async def persist_ingest(
             text("""
                 INSERT INTO files (id, user_id, workspace_id, original_filename,
                     mime_type, detected_type, file_size, content_hash, parser_used,
-                    page_count, status, metadata, created_at, updated_at, completed_at)
+                    page_count, status, metadata, created_at, updated_at, completed_at,
+                    parser_version, chunker_version, pipeline_version)
                 VALUES (:id, :uid, :wid, :fn, :mime, :dt, :sz, :ch, :pu, :pc,
-                    'ready', '{}'::jsonb, now(), now(), now())
+                    'ready', '{}'::jsonb, now(), now(), now(), :pv, :cv, :plv)
                 ON CONFLICT (id) DO UPDATE SET
                     detected_type = EXCLUDED.detected_type,
                     parser_used = EXCLUDED.parser_used,
                     page_count = EXCLUDED.page_count,
                     content_hash = EXCLUDED.content_hash,
                     file_size = EXCLUDED.file_size,
+                    parser_version = EXCLUDED.parser_version,
+                    chunker_version = EXCLUDED.chunker_version,
+                    pipeline_version = EXCLUDED.pipeline_version,
                     status = 'ready', error = NULL,
                     updated_at = now(), completed_at = now()
             """),
@@ -95,17 +108,19 @@ async def persist_ingest(
                 "id": file_id, "uid": user_id, "wid": workspace_id, "fn": filename,
                 "mime": mime_type, "dt": detected_type, "sz": file_size,
                 "ch": content_hash, "pu": parser_used, "pc": page_count,
+                "pv": v.get("parser"), "cv": v.get("chunker"), "plv": v.get("pipeline"),
             },
         )
-        await conn.execute(
-            text("""
-                INSERT INTO file_blobs (file_id, content_hash, bytes)
-                VALUES (:id, :ch, :bytes)
-                ON CONFLICT (file_id) DO UPDATE SET
-                    content_hash = EXCLUDED.content_hash, bytes = EXCLUDED.bytes
-            """),
-            {"id": file_id, "ch": content_hash, "bytes": raw_bytes},
-        )
+        if store_original:
+            await conn.execute(
+                text("""
+                    INSERT INTO file_blobs (file_id, content_hash, bytes)
+                    VALUES (:id, :ch, :bytes)
+                    ON CONFLICT (file_id) DO UPDATE SET
+                        content_hash = EXCLUDED.content_hash, bytes = EXCLUDED.bytes
+                """),
+                {"id": file_id, "ch": content_hash, "bytes": raw_bytes},
+            )
         await conn.execute(
             text("DELETE FROM file_chunks WHERE file_id = :id"), {"id": file_id}
         )
@@ -134,6 +149,25 @@ async def persist_ingest(
                 params,
             )
     return len(chunks)
+
+
+async def get_original(engine: AsyncEngine, *, file_id: str) -> bytes | None:
+    """The BYTEA copy of a file, if one was kept — the migration source that
+    restores a Convex original (libraryMigrations.restoreOriginals). A
+    tombstoned id returns nothing: a deleted file is never handed back."""
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(
+                text("""
+                    SELECT b.bytes FROM file_blobs b
+                    WHERE b.file_id = :id
+                      AND NOT EXISTS (
+                        SELECT 1 FROM ingest_tombstones t WHERE t.file_id = b.file_id)
+                """),
+                {"id": file_id},
+            )
+        ).first()
+    return bytes(row[0]) if row is not None else None
 
 
 async def _tombstone(conn: Any, file_id: str) -> None:

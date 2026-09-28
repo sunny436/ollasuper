@@ -1,6 +1,6 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { claimUploadedBlob, deleteBlobIfUnreferenced, issueUploadIntent } from "./blobOwnership";
+import { claimUploadedBlob, issueUploadIntent } from "./blobOwnership";
 import { isExecutableContentType } from "./blobSafety";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -12,11 +12,16 @@ import {
   type QueryCtx,
   query,
 } from "./_generated/server";
-import { audit } from "./auditLog";
-import { unlinkFileEverywhere } from "./projects";
 import { getUserIdOrNull, requireUserId } from "./chat/authz";
-import { bump } from "./counters";
+import {
+  assertRoomWithoutEviction,
+  capFor,
+  createLibraryFile,
+  libraryError,
+  removeLibraryFile,
+} from "./libraryCore";
 import { hasWorkspaceAccess, requireMember } from "./orgs";
+import { consumeWindow } from "./quotas";
 
 /**
  * Per-user File Knowledge System — the Convex METADATA MIRROR + orchestration.
@@ -78,11 +83,20 @@ export const generateUploadUrl = mutation({
   handler: async (ctx, { workspaceId }) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, workspaceId);
+    const rate = await consumeWindow(ctx, userId, "libraryUpload", 60, 60 * 60_000);
+    if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many uploads. Please wait a moment.");
     await issueUploadIntent(ctx, userId, workspaceId);
     return await ctx.storage.generateUploadUrl();
   },
 });
 
+/**
+ * The LEGACY knowledge upload door (Project sources and older clients). It now
+ * goes through the Library core like every other door: the 100 MB quota, the
+ * file cap and the global ceiling all apply (no eviction here — the ask-first
+ * flow is library.beginUpload/finishUpload). Identical bytes are NOT collapsed
+ * into an earlier file any more: a new upload is a new file.
+ */
 export const saveFile = mutation({
   args: {
     workspaceId: v.id("workspaces"),
@@ -90,61 +104,33 @@ export const saveFile = mutation({
     name: v.string(),
     size: v.number(),
     contentType: v.string(),
-    contentHash: v.string(), // client SHA-256, for per-user dedup + idempotency
+    contentHash: v.string(), // client SHA-256 — advisory only; the server hash wins
   },
   handler: async (ctx, a) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, a.workspaceId);
-
-    // PROVENANCE FIRST (audit F-01). The duplicate path below deletes the
-    // supplied blob, so it may only ever run on a blob proven to be the
-    // caller's own fresh, unregistered upload. This used to delete first and
-    // ask questions never: any known storage id plus one of the caller's own
-    // hashes destroyed someone else's bytes.
+    // PROVENANCE FIRST (audit F-01): only a blob proven to be the caller's own
+    // fresh, unregistered upload.
     const meta = await claimUploadedBlob(ctx, userId, a.storageId, a.workspaceId);
-
-    // Dedup identical content for THIS user (per-user hash, never global — a
-    // global hash would be a cross-user existence oracle). Drop the redundant
-    // just-uploaded staging blob — now proven to be the caller's — so it
-    // doesn't orphan.
-    const dupe = await ctx.db
-      .query("userFiles")
-      .withIndex("by_user_hash", (q) =>
-        q.eq("userId", userId).eq("contentHash", a.contentHash),
-      )
-      .first();
-    if (dupe && dupe.status !== "failed") {
-      await ctx.storage.delete(a.storageId).catch(() => {});
-      return dupe._id;
-    }
-
-    if (isExecutableContentType(meta?.contentType)) {
+    if (isExecutableContentType(meta?.contentType) || isExecutableContentType(a.contentType)) {
       throw new ConvexError(
         `Unsupported file type: ${meta?.contentType}. Upload it declared as text/plain instead.`,
       );
     }
-    const size = meta?.size ?? a.size;
-
-    const now = Date.now();
-    const ingestId = crypto.randomUUID();
-    const id = await ctx.db.insert("userFiles", {
+    const size = meta.size;
+    if (size <= 0) throw libraryError("EMPTY", "The file is empty.");
+    if (size > capFor(a.name, a.contentType)) throw libraryError("TOO_LARGE", "The file is too large.");
+    await assertRoomWithoutEviction(ctx, userId, size);
+    return await createLibraryFile(ctx, {
       userId,
       workspaceId: a.workspaceId,
-      name: a.name.slice(0, 300),
       storageId: a.storageId,
-      size,
+      name: a.name,
       contentType: a.contentType,
-      ingestId,
-      status: "processing",
-      attempts: 0,
-      contentHash: a.contentHash,
-      createdAt: now,
-      updatedAt: now,
+      size,
+      sha256: meta.sha256,
+      source: "uploaded",
     });
-    await audit(ctx, a.workspaceId, userId, "userfile.upload", { name: a.name });
-    await bump(ctx, a.workspaceId, "userFiles", 1);
-    await ctx.scheduler.runAfter(0, internal.userFiles.dispatch, { fileId: id });
-    return id;
   },
 });
 
@@ -195,23 +181,10 @@ export const remove = mutation({
   handler: async (ctx, { fileId }) => {
     const userId = await requireUserId(ctx);
     const file = await ctx.db.get(fileId);
-    // Same "Not found" for missing and not-yours — no existence oracle.
+    // Same "Not found" for missing and not-yours — no existence oracle. Deleting
+    // one's OWN file needs no membership: it grants nothing.
     if (!file || file.userId !== userId) throw new ConvexError("Not found");
-    await requireMember(ctx, userId, file.workspaceId);
-    const ingestId = file.ingestId;
-    // Drop every Project association first, so a deleted file can never leave a
-    // dangling edge that a Project sources list or a retrieval scope would try
-    // to resolve.
-    await unlinkFileEverywhere(ctx, fileId);
-    await ctx.db.delete(fileId);
-    // Row first, then bytes nothing else references (audit F-01).
-    if (file.storageId) await deleteBlobIfUnreferenced(ctx, file.storageId);
-    await bump(ctx, file.workspaceId, "userFiles", -1);
-    await audit(ctx, file.workspaceId, userId, "userfile.delete", {
-      name: file.name,
-    });
-    // Reclaim the Postgres bytes/chunks/embeddings (FK cascade, Python side).
-    await ctx.scheduler.runAfter(0, internal.userFiles.purge, { ingestId });
+    await removeLibraryFile(ctx, file, "user");
     return { ok: true };
   },
 });
@@ -231,10 +204,18 @@ export const retry = mutation({
     await requireMember(ctx, userId, file.workspaceId);
     if (file.status !== "failed") return { ok: false, reason: "not_failed" };
     if (!file.storageId) return { ok: false, reason: "needs_reupload" };
+    // Retry storms: 10 per hour per user, 3 per day per file.
+    const day = Math.floor(Date.now() / 86_400_000);
+    const today = file.retryDay === day ? (file.retriesToday ?? 0) : 0;
+    if (today >= 3) return { ok: false, reason: "retry_limit" };
+    const rate = await consumeWindow(ctx, userId, "libraryRetry", 10, 60 * 60_000);
+    if (!rate.ok) return { ok: false, reason: "rate_limited" };
     await ctx.db.patch(fileId, {
       status: "processing",
       error: undefined,
       attempts: 0,
+      retryDay: day,
+      retriesToday: today + 1,
       stage: undefined,
       progress: undefined,
       processedUnits: undefined,
@@ -262,6 +243,9 @@ export const dispatchPayload = internalQuery({
       name: file.name,
       contentType: file.contentType,
       size: file.size,
+      // The canonical original's server-computed SHA-256 (Convex _storage),
+      // so the processing copy can never silently diverge from it.
+      ...(file.sha256 ? { sha256: file.sha256 } : {}),
     };
   },
 });
@@ -372,8 +356,10 @@ export const setStatus = internalMutation({
       .withIndex("by_ingestId", (q) => q.eq("ingestId", a.fileId))
       .unique();
     if (!file) return { ok: false, unknown: true };
-    // Idempotent; never resurrect a terminal row (mirrors finishStream).
-    if (file.status === "ready" || file.status === "failed") {
+    // Idempotent; never resurrect or move a terminal row (mirrors
+    // finishStream). `stored` is terminal too: a late or forged callback must
+    // not turn a kept-only file into a processed one.
+    if (file.status !== "processing") {
       return { ok: true, alreadyFinal: true };
     }
     const now = Date.now();
@@ -399,12 +385,8 @@ export const setStatus = internalMutation({
       stageMessage: undefined,
       updatedAt: now,
     });
-    // Staging blob is transient: drop it only on durable success, then null the
-    // reference so /ai/ingest-file can never re-scope to a freed blob.
-    if (a.status === "ready" && file.storageId) {
-      await ctx.db.patch(file._id, { storageId: undefined });
-      await deleteBlobIfUnreferenced(ctx, file.storageId);
-    }
+    // The Convex blob is the CANONICAL ORIGINAL of a Library file (download,
+    // reuse in chat, retry). It used to be dropped here as a staging copy.
     return { ok: true };
   },
 });
@@ -446,7 +428,7 @@ export const failById = internalMutation({
   args: { fileId: v.id("userFiles"), error: v.string() },
   handler: async (ctx, { fileId, error }) => {
     const file = await ctx.db.get(fileId);
-    if (!file || file.status === "ready" || file.status === "failed") return;
+    if (!file || file.status !== "processing") return;
     await ctx.db.patch(fileId, {
       status: "failed",
       error: error.slice(0, 500),
@@ -484,13 +466,14 @@ export const reapStalled = internalMutation({
     for (const f of stalled) {
       const now = Date.now();
       if (f.attempts >= MAX_ATTEMPTS) {
+        // Failed, and RETRYABLE: the blob is the file's only original, so it is
+        // kept (this used to delete it, destroying the upload of a file whose
+        // processing had merely timed out).
         await ctx.db.patch(f._id, {
           status: "failed",
-          error: "Ingestion timed out",
+          error: "Processing timed out — retry the file",
           updatedAt: now,
-          storageId: undefined,
         });
-        if (f.storageId) await deleteBlobIfUnreferenced(ctx, f.storageId);
       } else {
         await ctx.db.patch(f._id, { attempts: f.attempts + 1, updatedAt: now });
         await ctx.scheduler.runAfter(0, internal.userFiles.dispatch, {

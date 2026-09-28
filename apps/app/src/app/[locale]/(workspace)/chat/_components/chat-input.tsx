@@ -1,8 +1,18 @@
 "use client";
 
+import { LibraryPicker } from "@/components/library/library-picker";
+import { LibraryUploadDialogs } from "@/components/library/upload-dialogs";
+import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@v1/ui/dropdown-menu";
 import { useMutation, useQuery } from "convex/react";
-import { ArrowUp, Loader2, Mic, Paperclip, Square } from "lucide-react";
+import { ArrowUp, Library, Loader2, Mic, Paperclip, Square, Upload } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   forwardRef,
@@ -117,6 +127,32 @@ export function ChatInput({
   const connection = useConnectionStatus();
   const attachments = useAttachments(threadId);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const { current: workspaceId } = useWorkspace();
+  const pathname = usePathname();
+  const router = useRouter();
+  // "Add to chat" from the Library arrives as /chat?attach=<fileId>. Read once
+  // from the location (not useSearchParams, which would force a Suspense
+  // boundary on this layout-level component), then drop it from the URL so a
+  // reload does not attach it twice.
+  const [attachParam, setAttachParam] = useState<string | null>(null);
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("attach");
+    if (!id) return;
+    setAttachParam(id);
+    router.replace(pathname ?? "/chat", { scroll: false });
+  }, [pathname, router]);
+  const attachRow = useQuery(
+    api.library.get,
+    attachParam && workspaceId ? { fileId: attachParam } : "skip",
+  );
+  const { addFromLibrary } = attachments;
+  useEffect(() => {
+    if (!attachParam || attachRow === undefined) return;
+    if (attachRow) addFromLibrary(attachRow);
+    else toast.error("That file is no longer in your Library");
+    setAttachParam(null);
+  }, [attachParam, attachRow, addFromLibrary]);
   // The composer's horizontal extent — what the Skills panel is centred on and
   // sized to. This element (not the inner pill) because the pill is a `w-full`
   // child of it, so their left/right edges coincide and this one is stable
@@ -440,15 +476,22 @@ export function ChatInput({
                 e.target.value = "";
               }}
             />
-            <button
-              type="button"
-              onClick={() => fileInput.current?.click()}
-              aria-label="Attach files"
-              title="Attach files"
-              className={iconBtn}
-            >
-              <Paperclip className={centred ? "h-6 w-6" : "h-[18px] w-[18px]"} />
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button type="button" aria-label="Attach files" title="Attach files" className={iconBtn}>
+                  <Paperclip className={centred ? "h-6 w-6" : "h-[18px] w-[18px]"} />
+                </button>
+              </DropdownMenuTrigger>
+              {/* Radix portals to <body>: re-enter the workspace palette. */}
+              <DropdownMenuContent align="start" side="top" className="workspace w-48">
+                <DropdownMenuItem onSelect={() => fileInput.current?.click()}>
+                  <Upload className="mr-2 h-4 w-4" /> Upload files
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setPickerOpen(true)}>
+                  <Library className="mr-2 h-4 w-4" /> Add from Library
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             {/*
               Landing screen only. The docked composer is a working surface,
               not a discovery one, and `centred` is already the empty-new-chat
@@ -600,6 +643,9 @@ export function ChatInput({
           </div>
         </div>
       </div>
+      {/* Both portal to <body>, so their place in this tree is irrelevant. */}
+      <LibraryPicker open={pickerOpen} onOpenChange={setPickerOpen} onPick={addFromLibrary} />
+      <LibraryUploadDialogs {...attachments.uploadDialogs} />
     </div>
   );
 }

@@ -544,6 +544,11 @@ class IngestRequest(BaseModel):
     name: str = Field(min_length=1, max_length=500)
     contentType: str = Field(default="application/octet-stream", max_length=300)
     size: int = Field(ge=0)
+    # The server-computed sha256 (hex) of the canonical Convex blob. The fetched
+    # bytes must hash to it, or the file is refused rather than indexed.
+    # Optional so an older Convex (which does not send it) is never 400'd —
+    # deploy Python before Convex.
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class IngestAccepted(BaseModel):

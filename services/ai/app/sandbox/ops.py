@@ -92,6 +92,124 @@ def extract_pdf_text(raw: bytes) -> str:
         return "[This PDF could not be read inline (it may be corrupt or protected).]"
 
 
+# --- ingestion parsers (File Library P0-6) ----------------------------------
+#
+# docx / pptx / csv / json / html / markdown / text used to run on a THREAD in
+# the AI service: a malformed file got the service's memory, environment and
+# network, and `wait_for` ended the await but never the parse. They now run
+# here, in the sandbox child, like xlsx already did.
+
+SANDBOXED_PARSE_TYPES = frozenset(
+    {"docx", "pptx", "csv", "json", "html", "markdown", "text"}
+)
+
+
+def doc_dict(d) -> dict:
+    return {
+        "text": d.text,
+        "page": d.page,
+        "section": d.section,
+        "metadata": d.metadata,
+    }
+
+
+def trim_docs(docs: list[dict], max_chars: int | None) -> list[dict]:
+    """Keep the first `max_chars` characters of text across `docs`, in order.
+
+    A parser can EXPAND its input (a CSV writes `header=value` for every cell),
+    so a legitimate 20 MB upload can yield hundreds of MB of text. Ingestion
+    indexes only the first `ai_ingest_max_chars` anyway; the caller passes a
+    budget above that, so the result — and the "content limit reached" note —
+    is unchanged, while the sandbox's output stays far under its hard cap.
+    """
+    if max_chars is None:
+        return docs
+    out: list[dict] = []
+    left = max_chars
+    for d in docs:
+        if left <= 0:
+            break
+        text = d.get("text") or ""
+        out.append({**d, "text": text[:left]} if len(text) > left else d)
+        left -= len(text)
+    return out
+
+
+def ingest_parse(
+    raw: bytes, *, file_type: str, name: str, max_chars: int | None = None
+) -> list[dict]:
+    """One registry parser, by type; its NormalizedDocs as plain dicts."""
+    if file_type not in SANDBOXED_PARSE_TYPES:
+        raise DecodeError(f"no sandboxed parser for {file_type}")
+    from app.ingest.parsers import REGISTRY
+    from app.ingest.types import IngestError
+
+    try:
+        docs = REGISTRY[file_type](raw, name=name)
+    except IngestError as e:
+        raise DecodeError(str(e)) from e
+    return trim_docs([doc_dict(d) for d in docs], max_chars)
+
+
+def tables_to_md(tables: list[list[list[str | None]]]) -> str:
+    """pdfplumber tables as pipe rows, mirroring the docx table style so
+    chunking + retrieval see the same shape across formats."""
+    out: list[str] = []
+    for table in tables:
+        for row in table:
+            cells = [(c or "").strip().replace("\n", " ") for c in row]
+            if any(cells):
+                out.append("| " + " | ".join(cells) + " |")
+    return "\n".join(out)
+
+
+def pdf_pages(
+    raw: bytes, *, name: str, budget_s: float, max_chars: int | None = None
+) -> dict:
+    """Digital text + tables for every page, and which pages are image-only.
+
+    Mirrors ingest/pdf.py's in-process `_extract_local` (the dev-box path), but
+    stops itself at `budget_s` and says so, so a long PDF still yields the pages
+    it read instead of being killed with nothing.
+    """
+    import time
+
+    import pdfplumber
+
+    deadline = time.monotonic() + max(0.0, budget_s)
+    out: dict = {"text_docs": [], "image_pages": [], "total_pages": 0, "stopped": False}
+    chars = 0
+    try:
+        pdf = pdfplumber.open(io.BytesIO(raw))
+    except Exception as e:  # noqa: BLE001 — an unreadable PDF is a decode error
+        raise DecodeError("this PDF could not be opened") from e
+    with pdf:
+        out["total_pages"] = len(pdf.pages)
+        for i, page in enumerate(pdf.pages):
+            # Past the time or the text budget: stop, and say so (trim_docs).
+            over_text = max_chars is not None and chars >= max_chars
+            if time.monotonic() > deadline or over_text:
+                out["stopped"] = True
+                break
+            try:
+                text = (page.extract_text() or "").strip()
+                tables = tables_to_md(page.extract_tables() or []) if page.chars else ""
+            except Exception:  # noqa: BLE001 — a bad page must not fail the file
+                text, tables = "", ""
+            combined = "\n\n".join(p for p in (text, tables) if p).strip()
+            if combined:
+                chars += len(combined)
+                out["text_docs"].append(
+                    {"text": combined, "page": i + 1, "metadata": {"source": name}}
+                )
+            else:
+                out["image_pages"].append(i)
+            # pdfplumber caches every page's parsed objects on the page; under
+            # the child's address-space cap a long PDF must not keep them all.
+            page.close()
+    return out
+
+
 # --- spreadsheets (audit F-04) ----------------------------------------------
 #
 # A workbook's SIZE ON DISK says nothing about the work it asks for. A sheet
@@ -148,7 +266,12 @@ def xlsx_scan(raw: bytes, *, max_cells: int, max_rows: int) -> dict:
 
 
 def xlsx_docs(
-    raw: bytes, *, name: str, max_cells: int, max_rows: int
+    raw: bytes,
+    *,
+    name: str,
+    max_cells: int,
+    max_rows: int,
+    max_chars: int | None = None,
 ) -> list[dict]:
     """The ingestion text of a workbook, one doc per non-empty sheet, under the
     same work ceiling. Output is identical to the former in-process parser:
@@ -161,8 +284,11 @@ def xlsx_docs(
     except Exception as e:  # noqa: BLE001
         raise DecodeError("this spreadsheet could not be opened") from e
     docs: list[dict] = []
+    chars = 0
     try:
         for ws in wb.worksheets:
+            if max_chars is not None and chars >= max_chars:
+                break  # the text budget (trim_docs); the meter still bounds work
             header: list[str] | None = None
             lines: list[str] = []
             for ri, row in _xlsx_rows_bounded(ws, meter, max_cells, max_rows):
@@ -179,7 +305,11 @@ def xlsx_docs(
                     ]
                 else:
                     pairs = [str(c) for c in row if c is not None]
-                lines.append(f"row {ri + 1}: " + ", ".join(pairs))
+                line = f"row {ri + 1}: " + ", ".join(pairs)
+                lines.append(line)
+                chars += len(line) + 1
+                if max_chars is not None and chars >= max_chars:
+                    break
             if lines:
                 docs.append(
                     {

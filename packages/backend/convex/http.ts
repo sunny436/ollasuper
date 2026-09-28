@@ -8,6 +8,7 @@ import { applyHotOp, authorizeIngressKey, timingSafeEqual } from "./chat/ingress
 import { env } from "./env";
 import { polar } from "./subscriptions";
 import { isInlineSafeImageType, neutralizedBlobType } from "./blobSafety";
+import { contentDisposition, inlineImageType } from "./fileKind";
 
 const http = httpRouter();
 
@@ -1104,6 +1105,73 @@ http.route({
   }),
 });
 
+
+// --- File Library: download / preview (browser → Convex) ---------------------
+//
+// A short-lived capability minted by library.mintAccess (owner-checked there)
+// is RE-AUTHORISED on every request by library.resolveAccess: unexpired, the
+// right purpose, the file still there and still its owner's, the owner still
+// active and a member, and within the owner's hourly request/byte budget.
+// Only the token's SHA-256 exists server-side. Every failure is one uniform
+// 404 (429 for the budget), so nothing here is an existence oracle.
+//
+// Nothing a user uploaded is rendered as active content: a preview is served
+// ONLY for a raster image identified from its bytes (never the name or stored
+// type), under an allowlisted type; everything else — HTML, SVG, PDF,
+// polyglots — is an attachment of type application/octet-stream.
+// CORP is `same-site`, not `same-origin`: the preview <img> is served from the
+// Convex SITE, which is the app's origin only in the path form (/__cvx-site).
+// The host form (convex-site.ollasuper.com) and the VM's IP:port setup are
+// cross-origin but same-site, and `same-origin` would silently blank every
+// thumbnail there. Another SITE still cannot embed the bytes; the capability
+// token is the gate either way.
+const LIBRARY_SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "cache-control": "no-store",
+  "referrer-policy": "no-referrer",
+  "content-security-policy": "sandbox; default-src 'none'",
+  "cross-origin-resource-policy": "same-site",
+} as const;
+
+http.route({
+  path: "/library/file",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const token = url.searchParams.get("t") ?? "";
+    const purpose = url.searchParams.get("p") === "preview" ? "preview" : "download";
+    const fail = (status: 404 | 429) =>
+      new Response(status === 429 ? "too many requests" : "not found", {
+        status,
+        headers: LIBRARY_SECURITY_HEADERS,
+      });
+    // 32 random bytes, base64url: anything else is not one of ours.
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return fail(404);
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+    const tokenHash = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+    const r = await ctx.runMutation(internal.library.resolveAccess, { tokenHash, purpose });
+    if (!r.ok) return fail(r.status === 429 ? 429 : 404);
+    const blob = await ctx.storage.get(r.storageId);
+    if (!blob) return fail(404);
+    let contentType = "application/octet-stream";
+    let disposition = contentDisposition("attachment", r.name);
+    if (purpose === "preview") {
+      const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+      const image = inlineImageType(head);
+      if (!image) return fail(404);
+      contentType = image;
+      disposition = contentDisposition("inline", r.name);
+    }
+    return new Response(blob, {
+      headers: {
+        ...LIBRARY_SECURITY_HEADERS,
+        "content-type": contentType,
+        "content-disposition": disposition,
+        "content-length": String(blob.size),
+      },
+    });
+  }),
+});
 
 // --- API key verification (programmatic access) ---
 http.route({

@@ -84,7 +84,12 @@ async def parse_xlsx_guarded(
 ) -> list[NormalizedDoc]:
     """Ingestion / inline text of a workbook, or XlsxRejected."""
     _check_archive(raw, settings)
-    params = {"name": name, **_limits(settings)}
+    # Text is capped at twice what ingestion indexes (see ops.trim_docs).
+    params = {
+        "name": name,
+        **_limits(settings),
+        "max_chars": int(settings.ai_ingest_max_chars) * 2,
+    }
 
     def inproc() -> tuple[dict, bytes]:
         docs = ops.xlsx_docs(raw, **params)

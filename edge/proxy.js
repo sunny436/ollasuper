@@ -25,6 +25,7 @@
 // silently break every chat stream.
 const http = require("node:http");
 const net = require("node:net");
+const { Transform } = require("node:stream");
 
 const HOST_ROUTES = {
   "app.ollasuper.com": 3000,
@@ -116,23 +117,94 @@ function storageHeaders(headers) {
   return out;
 }
 
-const server = http.createServer((req, res) => {
-  const { port, path } = route(req.headers.host, req.url);
+// UPLOAD BODIES ARE CAPPED HERE (File Library P0-10).
+//
+// Convex upload URLs (`/api/storage/upload?token=…`) accept any size, and the
+// blob is written BEFORE any mutation can look at it — so the server-side size
+// check in finishUpload runs only after the bytes already cost disk. This is
+// the one place a body can be refused while it streams. The largest file the
+// app accepts is 25 MB (libraryCore LIMITS.stored); 26 MB leaves room for
+// multipart framing. Counted on the STREAM, not trusted from Content-Length:
+// a chunked upload has none, and a lying one is caught by the count.
+const MAX_UPLOAD_BYTES = 26 * 1024 * 1024;
+
+function isUploadRequest(port, path) {
+  return STORAGE_UPSTREAM_PORTS.has(port) && /^\/api\/storage\/upload(\?|$)/.test(path);
+}
+
+function declaredTooLarge(headers, max) {
+  const n = Number(headers["content-length"]);
+  return Number.isFinite(n) && n > max;
+}
+
+// A pass-through that errors the moment more than `max` bytes have flowed.
+function byteCap(max) {
+  let seen = 0;
+  return new Transform({
+    transform(chunk, _enc, done) {
+      seen += chunk.length;
+      if (seen > max) done(Object.assign(new Error("payload too large"), { code: "E_TOO_LARGE" }));
+      else done(null, chunk);
+    },
+  });
+}
+
+function tooLarge(req, res) {
+  if (!res.headersSent) {
+    res.writeHead(413, { "content-type": "text/plain", connection: "close" });
+  }
+  // Stop reading an upload we have refused: close the socket once the 413 is out.
+  res.end("upload too large", () => req.destroy());
+}
+
+// Forward one request to 127.0.0.1:<target.port><target.path>.
+function forward(req, res, target) {
+  const { port, path } = target;
+  const max = target.maxUpload ?? MAX_UPLOAD_BYTES;
+  if (target.upload && declaredTooLarge(req.headers, max)) {
+    tooLarge(req, res); // refused before a byte reaches Convex
+    return;
+  }
   const up = http.request(
     { host: "127.0.0.1", port, path, method: req.method, headers: safeHeaders(req.headers) },
     (r) => {
-      const headers = isStorageResponse(port, path)
-        ? storageHeaders(r.headers)
-        : r.headers;
+      const headers = target.storage ? storageHeaders(r.headers) : r.headers;
       res.writeHead(r.statusCode, headers);
       r.pipe(res);
     },
   );
   up.on("error", (e) => {
+    // Headers already out (a mid-body failure, or a 413 we sent): nothing more
+    // can be said on this response — writing a 502 now would throw.
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
     res.writeHead(502, { "content-type": "text/plain" });
     res.end(`upstream 127.0.0.1:${port} ${e.code || e.message}`);
   });
-  req.pipe(up);
+  if (!target.upload) {
+    req.pipe(up);
+    return;
+  }
+  const cap = byteCap(max);
+  cap.on("error", () => {
+    tooLarge(req, res);
+    // Abort the upstream request mid-body: Convex never receives a complete
+    // upload, so no blob is committed.
+    up.destroy();
+  });
+  req.pipe(cap).pipe(up);
+}
+
+const server = http.createServer((req, res) => {
+  const { port, path } = route(req.headers.host, req.url);
+  forward(req, res, {
+    port,
+    path,
+    storage: isStorageResponse(port, path),
+    upload: isUploadRequest(port, path),
+  });
 });
 
 server.on("upgrade", (req, socket, head) => {
@@ -157,4 +229,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { route, isStorageResponse, storageHeaders, safeHeaders };
+module.exports = {
+  route,
+  isStorageResponse,
+  storageHeaders,
+  safeHeaders,
+  isUploadRequest,
+  forward,
+  MAX_UPLOAD_BYTES,
+};

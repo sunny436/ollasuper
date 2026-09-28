@@ -65,7 +65,11 @@ from app.agent.taint import (
     TaintLedger,
     source_of_id,
 )
-from app.clients.attachments import AttachmentError, build_user_content
+from app.clients.attachments import (
+    DOCUMENTS_NOTE,
+    AttachmentError,
+    build_user_content,
+)
 from app.clients.convex import ConvexClient, ConvexUnavailable
 from app.clients.ollagraph import OllagraphAdapter
 from app.config import Settings
@@ -230,6 +234,8 @@ def _seed_private_taint(
     user TYPED — this turn and earlier ones — is recorded as benign, so echoing
     their own words never counts as disclosure."""
     taint.record_benign(latest_text)
+    # Our own framing sentence around attached documents is not the user's data.
+    taint.record_benign(DOCUMENTS_NOTE)
     for h in history:
         if getattr(h, "role", None) == "user":
             taint.record_benign(getattr(h, "content", "") or "")

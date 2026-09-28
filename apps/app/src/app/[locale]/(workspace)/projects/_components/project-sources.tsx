@@ -1,7 +1,8 @@
 "use client";
 
-import { storageContentType } from "@/lib/upload-content-type";
 import { InfiniteSentinel } from "@/components/infinite-sentinel";
+import { LibraryUploadDialogs } from "@/components/library/upload-dialogs";
+import { useLibraryUpload } from "@/components/library/use-library-upload";
 
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
@@ -24,17 +25,14 @@ import { fmtSize } from "../../chat/_lib/format";
 /**
  * A Project's sources — the files its chats can retrieve from.
  *
- * Reuses the account file pipeline as-is (`userFiles.generateUploadUrl` +
- * `saveFile`, which dispatches ingestion): there is exactly one parser, chunker,
- * embedder and vector store, and a Project is a membership edge over it, never a
+ * Uploads go through the File Library (library.beginUpload/finishUpload, which
+ * dispatches ingestion): there is exactly one parser, chunker, embedder and
+ * vector store, and a Project is a membership edge over a Library file, never a
  * second pipeline.
  *
  * Both entry points converge on `projects.linkFile`:
- *   • Upload — save the file, then link it.
+ *   • Upload — add the file to the Library, then link it.
  *   • Attach — link a file the account already has.
- * That convergence is what makes DEDUP coherent. Re-uploading a file you already
- * own returns the EXISTING userFiles row, so without the link step the upload
- * would appear to do nothing at all.
  *
  * Nothing here is a security boundary: the list comes from an authorized query
  * and every mutation re-authorizes both the Project and the file server-side.
@@ -51,8 +49,7 @@ export function ProjectSources({
   workspaceId: Id<"workspaces"> | null;
   archived: boolean;
 }) {
-  const generateUploadUrl = useMutation(api.userFiles.generateUploadUrl);
-  const saveFile = useMutation(api.userFiles.saveFile);
+  const { upload, dialogs } = useLibraryUpload(workspaceId);
   const linkFile = useMutation(api.projects.linkFile);
   const unlinkFile = useMutation(api.projects.unlinkFile);
 
@@ -70,40 +67,13 @@ export function ProjectSources({
     if (!workspaceId) return;
     setUploading(true);
     try {
-      const url = await generateUploadUrl({ workspaceId });
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          // A code file can have an EMPTY browser MIME, which Convex storage
-          // rejects with a 400.
-          "Content-Type": storageContentType(file.type),
-        },
-        body: file,
-      });
-      if (!res.ok) throw new Error(`upload failed (${res.status})`);
-      const { storageId } = await res.json();
-
-      // Per-user dedup + idempotency key, same hash the account path uses.
-      const digest = await crypto.subtle.digest(
-        "SHA-256",
-        await file.arrayBuffer(),
-      );
-      const contentHash = Array.from(new Uint8Array(digest), (b) =>
-        b.toString(16).padStart(2, "0"),
-      ).join("");
-
-      const fileId = await saveFile({
-        workspaceId,
-        storageId: storageId as Id<"_storage">,
-        name: file.name,
-        size: file.size,
-        contentType: file.type || "application/octet-stream",
-        contentHash,
-      });
-      // Load-bearing: on a deduped upload saveFile returns the pre-existing row
-      // and starts no new ingestion, so this link is the only thing that
-      // actually adds the file to the Project.
-      await linkFile({ projectId, fileId });
+      // The Library upload path (quota, and "Free up space" when it does not
+      // fit), then the Project link. The file is the user's Library file; the
+      // Project is a membership edge over it, never a second copy.
+      // A Project may reuse a file the user already has ("use the one I have").
+      const r = await upload(file, { purpose: "library", offerReuse: true });
+      if (!r || "cancelled" in r) return; // refused (toasted) or the user said no
+      await linkFile({ projectId, fileId: r.fileId });
       toast.success(`Added ${file.name}`);
     } catch (e) {
       // Never console.error — the Convex client already logs rejections and
@@ -267,6 +237,7 @@ export function ProjectSources({
           onClose={() => setPickerOpen(false)}
         />
       )}
+      <LibraryUploadDialogs {...dialogs} />
     </section>
   );
 }

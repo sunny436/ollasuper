@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from dataclasses import dataclass
 
@@ -34,6 +35,8 @@ from app.ingest.pdf import parse_pdf
 from app.ingest.types import FileType, IngestError, NormalizedDoc
 from app.ingest.xlsx_guard import XlsxRejected, parse_xlsx_guarded
 from app.logging import get_logger
+from app.sandbox import ops as sandbox_ops
+from app.sandbox.harness import run_sandboxed
 
 log = get_logger(__name__)
 
@@ -51,6 +54,14 @@ _PARSER_NAMES: dict[str, str] = {
 }
 
 
+# The code generation that produced a file's chunks, recorded on its `files`
+# row. Bump `parser` when extraction output changes, `chunker` when chunk
+# boundaries change, `pipeline` for anything else that changes what is indexed
+# (OCR engine, sanitising, limits). A file whose pipeline_version is below the
+# current one is stale and can be re-dispatched (same ingestId, atomic replace).
+PROCESSING_VERSIONS: dict[str, int] = {"parser": 1, "chunker": 1, "pipeline": 1}
+
+
 @dataclass
 class _ParseOutcome:
     docs: list[NormalizedDoc]
@@ -65,13 +76,50 @@ def _is_rate_limit(e: Exception) -> bool:
     return "429" in s or "rate limit" in s
 
 
+async def _sanitize_image(raw: bytes, settings: Settings) -> bytes:
+    """Decode + re-encode an uploaded image in the SANDBOX before OCR sees it.
+
+    The OCR pool (ONNX Runtime) is a forked worker of this service; it used to
+    receive the upload's raw bytes. It now receives only what the sandboxed
+    decoder produced: an allowlisted format, under the 40-megapixel cap, scaled
+    to the OCR long edge. A decompression bomb or a malformed header is refused
+    here, in a secret-free child, with a message the user sees.
+    """
+
+    async def fallback() -> tuple[dict, bytes]:
+        try:
+            body, mime = await asyncio.to_thread(
+                sandbox_ops.normalise_image, raw, "image/png", settings.ai_ocr_long_edge
+            )
+        except sandbox_ops.DecodeError as e:
+            return {"ok": False, "error": str(e)}, b""
+        return {"ok": True, "mime": mime}, body
+
+    try:
+        meta, body = await run_sandboxed(
+            "image",
+            raw,
+            {"mime": "image/png", "long_edge": settings.ai_ocr_long_edge},
+            timeout_s=settings.ai_ingest_parse_timeout_s,
+            fallback=fallback,
+        )
+    except TimeoutError as e:
+        raise IngestError("The image took too long to read") from e
+    except RuntimeError as e:
+        raise IngestError("The image could not be read") from e
+    if not meta.get("ok"):
+        raise IngestError(str(meta.get("error") or "The image could not be read"))
+    return body
+
+
 async def _parse(
     raw: bytes, file_type: FileType, name: str, settings: Settings
 ) -> _ParseOutcome:
     if file_type == "image":
+        clean = await _sanitize_image(raw, settings)
         try:
             docs = await asyncio.wait_for(
-                ocr_image(raw, "image/png", name=name, settings=settings),
+                ocr_image(clean, "image/png", name=name, settings=settings),
                 timeout=settings.ai_ingest_ocr_timeout_s,
             )
         except TimeoutError as e:
@@ -105,19 +153,68 @@ async def _parse(
 
     if file_type in ("docx", "pptx"):
         guard_ooxml(raw, settings)
-    parser = REGISTRY.get(file_type)
-    if parser is None:
+    if REGISTRY.get(file_type) is None:
         raise IngestError(f"no parser for {file_type}")
+    return _ParseOutcome(docs=await parse_isolated(raw, file_type, name, settings))
+
+
+def text_budget(settings: Settings) -> int:
+    """Text a parser may hand back: twice what ingestion indexes, so the
+    indexed text and its "content limit reached" note are unchanged while the
+    sandbox's output stays bounded (ops.trim_docs)."""
+    return int(settings.ai_ingest_max_chars) * 2
+
+
+async def parse_isolated(
+    raw: bytes, file_type: str, name: str, settings: Settings
+) -> list[NormalizedDoc]:
+    """A registry parser in the SANDBOX child (File Library P0-6).
+
+    It used to run on a thread in this service: `wait_for` ended the await but
+    never the parse, and a malformed docx/pptx/html got this process's memory,
+    environment and network. The child is killable, rlimited, secret-free and
+    offline; a cancelled ingestion kills it. The dev box (tier 4) keeps the
+    in-thread form, under the same timeout.
+    """
+    parser = REGISTRY[file_type]  # type: ignore[index]
+    budget = text_budget(settings)
+
+    async def fallback() -> tuple[dict, bytes]:
+        try:
+            docs = await asyncio.wait_for(
+                asyncio.to_thread(parser, raw, name=name),
+                timeout=settings.ai_ingest_parse_timeout_s,
+            )
+        except TimeoutError as e:
+            raise IngestError("Parsing timed out") from e
+        body = json.dumps(
+            sandbox_ops.trim_docs([sandbox_ops.doc_dict(d) for d in docs], budget)
+        )
+        return {"ok": True}, body.encode("utf-8")
+
     try:
-        # wait_for cancels the AWAIT, not the OS thread; acceptable because the
-        # registry parsers are byte-bounded (no per-page network work).
-        docs = await asyncio.wait_for(
-            asyncio.to_thread(parser, raw, name=name),
-            timeout=settings.ai_ingest_parse_timeout_s,
+        meta, body = await run_sandboxed(
+            "ingest_parse",
+            raw,
+            {"file_type": file_type, "name": name, "max_chars": budget},
+            timeout_s=settings.ai_ingest_parse_timeout_s,
+            fallback=fallback,
         )
     except TimeoutError as e:
         raise IngestError("Parsing timed out") from e
-    return _ParseOutcome(docs=docs)
+    except RuntimeError as e:
+        raise IngestError("Parsing failed") from e
+    if not meta.get("ok"):
+        raise IngestError(str(meta.get("error") or "Parsing failed"))
+    return [
+        NormalizedDoc(
+            text=d["text"],
+            page=d.get("page"),
+            section=d.get("section"),
+            metadata=d.get("metadata") or {},
+        )
+        for d in json.loads(body.decode("utf-8") or "[]")
+    ]
 
 
 def _progress_emitter(convex: ConvexClient, ingest_id: str, settings: Settings):
@@ -166,6 +263,7 @@ async def run_ingest(
     engine: AsyncEngine,
     convex: ConvexClient,
     settings: Settings,
+    expected_sha256: str | None = None,
 ) -> None:
     safe = safe_name(name)
     t0 = time.monotonic()
@@ -178,6 +276,11 @@ async def run_ingest(
             cap = settings.ai_max_attachment_bytes / (1024 * 1024)
             raise IngestError(f"File too large: {mb:.1f} MB (max {cap:.0f} MB)")
         content_hash = hashlib.sha256(raw).hexdigest()
+        if expected_sha256 and content_hash != expected_sha256:
+            # The bytes that arrived are not the canonical original Convex
+            # hashed at upload. Index nothing rather than the wrong content.
+            log.warning("LIB_INTEGRITY", extra={"file": ingest_id})
+            raise IngestError("The stored file failed its integrity check")
         file_type = detect_type(raw, content_type, safe)
         log.info(
             "ingest_started",
@@ -283,6 +386,8 @@ async def run_ingest(
                 chunks=chunk_dicts,
                 embedding_model=settings.openrouter_embedding_model,
                 embedding_dimensions=settings.embedding_dimensions,
+                versions=PROCESSING_VERSIONS,
+                store_original=settings.ai_ingest_store_original_copy,
             )
         except store.IngestDeleted:
             # The user deleted this file mid-ingestion. Nothing was written and

@@ -759,6 +759,11 @@ class Settings(BaseSettings):
     ai_ingest_max_chars: int = 500_000
     ai_ingest_max_chunks: int = 2_000
     ai_ingest_parse_timeout_s: float = 20.0
+    # Keep a BYTEA copy of each ingested file in the knowledge DB. The Convex blob
+    # is the canonical original; this copy doubles storage and every backup. It
+    # stays ON until libraryMigrations.restoreOriginals has verified every
+    # Convex original (it is that migration's source), then goes OFF.
+    ai_ingest_store_original_copy: bool = True
     ai_ingest_embed_batch: int = 64
     # Embedding is the primary throughput lever: langchain's aembed_documents
     # awaits its 64-text batches SEQUENTIALLY (base.py:778, our

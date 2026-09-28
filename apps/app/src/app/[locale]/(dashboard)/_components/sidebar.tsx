@@ -26,7 +26,7 @@ const NAV = [
   // prefix: /chat/<id> must keep this row highlighted. Opt-in per entry so
   // that /settings does not also light up on /settings/billing.
   { href: "/chat", label: "Chat", icon: MessageSquare, prefix: true },
-  { href: "/files", label: "Files", icon: FolderOpen },
+  { href: "/library", label: "Library", icon: FolderOpen },
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/settings/billing", label: "Billing", icon: CreditCard },
 ];

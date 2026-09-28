@@ -177,10 +177,12 @@ describe("maintained counters stay accurate", () => {
       size: 2,
       contentType: "text/plain",
     });
-    expect(await counter(ws, "files")).toBe(1);
+    // files.saveFile now creates a Library file (userFiles): the SAME symmetric
+    // counting has to hold there.
+    expect(await counter(ws, "userFiles")).toBe(1);
 
-    await u.mutation(api.files.remove, { fileId });
-    expect(await counter(ws, "files")).toBe(0);
+    await u.mutation(api.userFiles.remove, { fileId });
+    expect(await counter(ws, "userFiles")).toBe(0);
   });
 });
 

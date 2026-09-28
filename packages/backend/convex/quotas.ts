@@ -74,7 +74,15 @@ export type QuotaKind =
   // survives a restart and a fresh turn. 600/hr = 5 turns' worth of the
   // per-turn cap, or ~10 calls a minute sustained — an order of magnitude above
   // measured use, an order of magnitude below a loop.
-  | "mcpToolCall";
+  | "mcpToolCall"
+  // File Library (libraryCore.ts / library.ts). Upload sessions per hour; manual
+  // processing retries per hour; access-token mints and file GETs per hour; and
+  // BYTES served per hour (weighted — see `amount`), so a valid account cannot
+  // turn download links into unbounded bandwidth.
+  | "libraryUpload"
+  | "libraryRetry"
+  | "libraryAccess"
+  | "libraryBytes";
 
 export type WindowResult =
   | { ok: true }
@@ -93,8 +101,9 @@ export async function consumeWindow(
   kind: QuotaKind,
   limit: number,
   windowMs: number,
+  amount = 1,
 ): Promise<WindowResult> {
-  const { result, commit } = await peekWindow(ctx, userId, kind, limit, windowMs);
+  const { result, commit } = await peekWindow(ctx, userId, kind, limit, windowMs, amount);
   if (result.ok) await commit();
   return result;
 }
@@ -115,6 +124,9 @@ export async function peekWindow(
   kind: QuotaKind,
   limit: number,
   windowMs: number,
+  // Units this call consumes (1 for a request; the byte count for a transfer).
+  // `count + amount > limit` is exactly the old `count >= limit` when it is 1.
+  amount = 1,
 ): Promise<{ result: WindowResult; commit: () => Promise<void> }> {
   const now = Date.now();
   const row = await ctx.db
@@ -126,14 +138,14 @@ export async function peekWindow(
   const fresh = now - start >= windowMs;
   const count = fresh ? 0 : (row?.windowCount ?? 0);
 
-  if (count >= limit) {
+  if (count + amount > limit) {
     return {
       result: { ok: false, retryInMs: Math.max(0, start + windowMs - now) },
       commit: async () => {},
     };
   }
 
-  const next = { windowStart: fresh ? now : start, windowCount: count + 1 };
+  const next = { windowStart: fresh ? now : start, windowCount: count + amount };
   return {
     result: { ok: true },
     commit: async () => {

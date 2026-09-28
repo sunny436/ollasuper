@@ -1,5 +1,5 @@
-// Prod, headed: a plain (non-knowledge) upload on Settings → Files goes through
-// files.generateUploadUrl → POST → files.saveFile (audit F-01 provenance).
+// Headed: a plain (non-processable) upload on the Library goes through
+// library.beginUpload → POST → library.finishUpload and is stored as-is.
 const { chromium } = require("playwright");
 const { account } = require("./creds");
 
@@ -17,7 +17,7 @@ const { email, password } = account();
   await page.locator('input[type="password"]').first().fill(password);
   await page.click('button[type="submit"]');
   await page.waitForURL(/\/chat/, { timeout: 30000 });
-  await page.goto(`${BASE}/en/settings/files`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/en/library`, { waitUntil: "networkidle" });
   await page.waitForTimeout(3000); // the workspace resolves before uploads are accepted
   const name = `stored-${Date.now().toString(36)}.bin`;
   await page
@@ -25,7 +25,7 @@ const { email, password } = account();
     .first()
     .setInputFiles({ name, mimeType: "application/octet-stream", buffer: Buffer.from([1, 2, 3]) });
   const outcome = await Promise.race([
-    page.getByText(`Uploaded ${name}`).first().waitFor({ timeout: 30000 }).then(() => "uploaded"),
+    page.getByText(`Added ${name}`).first().waitFor({ timeout: 30000 }).then(() => "uploaded"),
     page.getByText("Upload failed").first().waitFor({ timeout: 30000 }).then(() => "FAILED"),
   ]).catch(() => "no toast");
   console.log(`files upload: ${outcome} (${name}); console errors: ${errors.length}`);

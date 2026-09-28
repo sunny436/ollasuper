@@ -130,7 +130,7 @@ describe("F-12: blob deletion never strands bytes and tolerates missing ones", (
       contentType: "text/plain",
     });
     await t.run((ctx) => ctx.storage.delete(sid)); // bytes lost out of band
-    await t.withIdentity(as(userId)).mutation(api.files.remove, { fileId });
+    await t.withIdentity(as(userId)).mutation(api.userFiles.remove, { fileId });
     expect(await t.run((ctx) => ctx.db.get(fileId))).toBeNull();
   });
 

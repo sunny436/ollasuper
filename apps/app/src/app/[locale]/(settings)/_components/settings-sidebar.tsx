@@ -35,7 +35,8 @@ const NAV = [
   { href: "/settings/connectors", label: "Connectors", icon: Plug },
   { href: "/settings/shared", label: "Shared Links", icon: Link2 },
   { href: "/settings/archived", label: "Archived Chats", icon: Archive },
-  { href: "/settings/files", label: "Files", icon: FolderClosed },
+  // Files are managed in the File Library (a workspace surface, not a setting).
+  { href: "/library", label: "Library", icon: FolderClosed },
 ] as const;
 
 // Strip an optional /<locale> prefix so active-state matching works under

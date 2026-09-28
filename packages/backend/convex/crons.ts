@@ -154,10 +154,18 @@ crons.daily(
   {},
 );
 
-crons.daily(
+crons.interval(
   "sweep orphaned upload blobs",
-  { hourUTC: 22, minuteUTC: 0 },
+  { hours: 1 },
   internal.authDeletion.sweepOrphanBlobs,
+  {},
+);
+
+/** File Library: expired download/preview capabilities (bounded per run). */
+crons.interval(
+  "purge expired library tokens",
+  { hours: 1 },
+  internal.library.purgeExpiredTokens,
   {},
 );
 

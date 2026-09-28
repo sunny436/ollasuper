@@ -2,8 +2,10 @@
 // silently dropped. The composer used to ignore files until the workspace had
 // resolved — no chip, no toast, and (measured on the WebSocket) no upload
 // mutation at all. Each round reloads /chat, attaches as soon as the file input
-// EXISTS, and asserts the chip appears and `chat/attachments:register` is sent.
-// The chip is removed afterwards, which deletes the attachment again.
+// EXISTS, and asserts the chip appears and the chat reference
+// (`chat/attachments:attachLibraryFile`, after the Library upload) is sent.
+// The chip is removed afterwards, which deletes the attachment and the Library
+// file this upload created.
 //
 //   QA_EMAIL=… QA_PASSWORD=… node qa-attach-early.js   (ROUNDS=5 by default)
 const { chromium } = require("playwright");
@@ -21,7 +23,7 @@ const { email, password } = account();
   let registers = 0;
   page.on("websocket", (ws) =>
     ws.on("framesent", (f) => {
-      if (String(f.payload).includes("chat/attachments:register")) registers += 1;
+      if (String(f.payload).includes("chat/attachments:attachLibraryFile")) registers += 1;
     }),
   );
 

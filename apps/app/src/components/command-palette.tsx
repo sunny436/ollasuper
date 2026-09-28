@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 const COMMANDS = [
   { label: "Chat", href: "/chat" },
-  { label: "Files", href: "/files" },
+  { label: "Library", href: "/library" },
   { label: "Settings", href: "/settings" },
   { label: "Billing", href: "/settings/billing" },
 ];

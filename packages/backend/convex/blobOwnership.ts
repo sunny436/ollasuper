@@ -30,7 +30,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
  */
 
 /** Convex upload URLs are valid for an hour; the intent lives as long. */
-const INTENT_TTL_MS = 60 * 60 * 1000;
+export const INTENT_TTL_MS = 60 * 60 * 1000;
 /** Bounded bookkeeping per user: the oldest open intents are dropped beyond it. */
 const MAX_OPEN_INTENTS = 64;
 
@@ -39,7 +39,10 @@ export async function issueUploadIntent(
   ctx: MutationCtx,
   userId: Id<"users">,
   workspaceId?: Id<"workspaces">,
-): Promise<void> {
+  // A Library upload SESSION (libraryCore): the declared bytes are reserved
+  // against the quota while it is open. Legacy callers pass nothing.
+  session?: { purpose: "library" | "chat"; declaredBytes: number },
+): Promise<Id<"uploadIntents">> {
   const now = Date.now();
   // Prune intents that can no longer match any blob (expired a full TTL ago,
   // so a slow upload that finished just before expiry can still be claimed).
@@ -63,11 +66,12 @@ export async function issueUploadIntent(
     await ctx.db.delete(row._id);
   }
 
-  await ctx.db.insert("uploadIntents", {
+  return await ctx.db.insert("uploadIntents", {
     userId,
     ...(workspaceId ? { workspaceId } : {}),
     createdAt: now,
     expiresAt: now + INTENT_TTL_MS,
+    ...(session ? { ...session, status: "created" as const } : {}),
   });
 }
 
@@ -126,6 +130,9 @@ export async function claimUploadedBlob(
   const intent = candidates.find(
     (i) =>
       i.createdAt <= created &&
+      // A Library session is finished only by library.finishUpload, which
+      // accounts for its reservation; the legacy doors never consume one.
+      i.status === undefined &&
       (!workspaceId || !i.workspaceId || i.workspaceId === workspaceId),
   );
   if (!intent) throw new ConvexError("Not found");

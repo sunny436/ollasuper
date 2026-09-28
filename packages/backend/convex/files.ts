@@ -6,9 +6,24 @@ import { assertNonExecutableBlob } from "./blobSafety";
 import { mutation, query } from "./_generated/server";
 import { audit } from "./auditLog";
 import { bump } from "./counters";
+import {
+  assertRoomWithoutEviction,
+  capFor,
+  createLibraryFile,
+  libraryError,
+} from "./libraryCore";
 import { requireMember } from "./orgs";
+import { consumeWindow } from "./quotas";
 
-/** Files module — workspace-scoped uploads backed by Convex file storage. */
+/**
+ * Files module — the LEGACY workspace-shared store.
+ *
+ * New uploads no longer land here: `saveFile` now creates a private Library
+ * file (userFiles) through the Library core, so the 100 MB quota applies and
+ * there is one file system. Existing rows stay listable and deletable until
+ * libraryMigrations.foldSharedFiles has moved them — verified — into their
+ * uploaders' Libraries.
+ */
 
 export const generateUploadUrl = mutation({
   args: { workspaceId: v.id("workspaces") },
@@ -16,6 +31,8 @@ export const generateUploadUrl = mutation({
     const userId = await activeUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     await requireMember(ctx, userId, workspaceId);
+    const rate = await consumeWindow(ctx, userId, "libraryUpload", 60, 60 * 60_000);
+    if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many uploads. Please wait a moment.");
     await issueUploadIntent(ctx, userId, workspaceId);
     return ctx.storage.generateUploadUrl();
   },
@@ -37,18 +54,21 @@ export const saveFile = mutation({
     // Only a blob THIS caller uploaded, and nobody has registered, may become
     // a row here — never a storage id lifted from someone else's URL (F-01).
     const meta = await claimUploadedBlob(ctx, userId, a.storageId, a.workspaceId);
-    const id = await ctx.db.insert("files", {
-      workspaceId: a.workspaceId,
+    if (meta.size <= 0) throw libraryError("EMPTY", "The file is empty.");
+    if (meta.size > capFor(a.name, a.contentType)) {
+      throw libraryError("TOO_LARGE", "The file is too large.");
+    }
+    await assertRoomWithoutEviction(ctx, userId, meta.size);
+    return await createLibraryFile(ctx, {
       userId,
-      name: a.name,
+      workspaceId: a.workspaceId,
       storageId: a.storageId,
-      size: meta.size,
+      name: a.name,
       contentType: a.contentType,
-      createdAt: Date.now(),
+      size: meta.size,
+      sha256: meta.sha256,
+      source: "uploaded",
     });
-    await audit(ctx, a.workspaceId, userId, "file.upload", { name: a.name });
-    await bump(ctx, a.workspaceId, "files", 1);
-    return id;
   },
 });
 
@@ -118,7 +138,7 @@ export const remove = mutation({
     // Row first, then the bytes — and only if no other row still points at
     // them, so a pre-existing alias can never destroy another owner's file.
     await deleteBlobIfUnreferenced(ctx, f.storageId);
-    await audit(ctx, f.workspaceId, userId, "file.delete", { name: f.name });
+    await audit(ctx, f.workspaceId, userId, "file.delete", { fileId });
     await bump(ctx, f.workspaceId, "files", -1);
   },
 });

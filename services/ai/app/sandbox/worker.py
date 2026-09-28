@@ -32,6 +32,10 @@ def _emit(meta: dict, body: bytes = b"") -> None:
     out.flush()
 
 
+def _opt_int(v: object) -> int | None:
+    return None if v is None else int(v)  # type: ignore[call-overload]
+
+
 def main() -> int:
     op = sys.argv[1] if len(sys.argv) > 1 else ""
     params = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
@@ -56,8 +60,27 @@ def main() -> int:
                 name=str(params.get("name", "")),
                 max_cells=int(params["max_cells"]),
                 max_rows=int(params["max_rows"]),
+                max_chars=_opt_int(params.get("max_chars")),
             )
             _emit({"ok": True}, json.dumps(docs).encode("utf-8"))
+            return 0
+        if op == "ingest_parse":
+            docs = ops.ingest_parse(
+                payload,
+                file_type=str(params.get("file_type", "")),
+                name=str(params.get("name", "")),
+                max_chars=_opt_int(params.get("max_chars")),
+            )
+            _emit({"ok": True}, json.dumps(docs).encode("utf-8"))
+            return 0
+        if op == "pdf_pages":
+            pages = ops.pdf_pages(
+                payload,
+                name=str(params.get("name", "")),
+                budget_s=float(params.get("budget_s", 0)),
+                max_chars=_opt_int(params.get("max_chars")),
+            )
+            _emit({"ok": True}, json.dumps(pages).encode("utf-8"))
             return 0
         if op == "xlsx_scan":
             stats = ops.xlsx_scan(

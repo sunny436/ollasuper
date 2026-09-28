@@ -1,16 +1,11 @@
 /**
- * Is this file one the knowledge pipeline can actually READ?
+ * Is this file one a CHAT can actually read?
  *
- * This is the single predicate that decides whether an upload becomes a
- * searchable `userFiles` row (ingested + embedded, answerable by the model) or a
- * plain `files` row (stored, downloadable, not searchable). It must give the
- * SAME answer from every upload door — the chat paperclip, Settings > Files and
- * the dashboard /files page — because the whole point is that a file's
- * searchability depends on the file, never on which button uploaded it.
- *
- * That is why it lives here rather than being copied per surface: a second copy
- * of a routing rule is a second thing to forget to update, and the drift is
- * silent (a file just quietly stops being answerable).
+ * The chat composer refuses anything else up front. It no longer routes
+ * uploads anywhere: every upload, from every door, is a File Library file, and
+ * the SERVER decides whether it is processed (convex/fileKind.ts isProcessable)
+ * or only kept — so the Library page accepts any file, and this predicate only
+ * gives the composer an instant, clear refusal.
  *
  * Kept deliberately in step with the SERVER, which is the authority:
  *   - mime allowlist mirrors convex/chat/attachments.ts
@@ -60,7 +55,7 @@ export function accepted(file: File): boolean {
   return CODE_EXT.has(ext);
 }
 
-/** SHA-256 hex for per-user dedup of the persistent knowledge file. */
+/** SHA-256 hex of a file's bytes — the "you already have this file" check. */
 export async function sha256Hex(file: File): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
   return Array.from(new Uint8Array(digest), (b) =>

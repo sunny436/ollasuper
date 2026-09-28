@@ -344,7 +344,7 @@ describe("scheduled dispatch carries the full Project context", () => {
     expect(payload?.unattended).toBe(true);
   });
 
-  test("a scheduled task with no Project sends null scope, not a widened one", async () => {
+  test("a scheduled task with no Project sends the account scope spelled out, not a widened one", async () => {
     const t = convexTest(schema, modules);
     const { userId, ws, u } = await seed(t);
     // The user owns a file that is NOT in any project.
@@ -384,7 +384,8 @@ describe("scheduled dispatch carries the full Project context", () => {
     });
     expect(payload?.projectInstructions).toBeNull();
     // null, not [] — an ordinary scheduled task keeps account-wide retrieval.
-    expect(payload?.ragFileIds).toBeNull();
+    // The account scope, spelled out — never null ("whole corpus").
+    expect(Array.isArray(payload?.ragFileIds)).toBe(true);
   });
 });
 

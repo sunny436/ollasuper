@@ -53,9 +53,13 @@ import type * as email_templates_subscriptionEmail from "../email/templates/subs
 import type * as email from "../email.js";
 import type * as emailTemplates from "../emailTemplates.js";
 import type * as env from "../env.js";
+import type * as fileKind from "../fileKind.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as init from "../init.js";
+import type * as library from "../library.js";
+import type * as libraryCore from "../libraryCore.js";
+import type * as libraryMigrations from "../libraryMigrations.js";
 import type * as mailSubject from "../mailSubject.js";
 import type * as mcp_audit from "../mcp/audit.js";
 import type * as mcp_capabilities from "../mcp/capabilities.js";
@@ -155,9 +159,13 @@ declare const fullApi: ApiFromModules<{
   email: typeof email;
   emailTemplates: typeof emailTemplates;
   env: typeof env;
+  fileKind: typeof fileKind;
   files: typeof files;
   http: typeof http;
   init: typeof init;
+  library: typeof library;
+  libraryCore: typeof libraryCore;
+  libraryMigrations: typeof libraryMigrations;
   mailSubject: typeof mailSubject;
   "mcp/audit": typeof mcp_audit;
   "mcp/capabilities": typeof mcp_capabilities;

@@ -8,7 +8,14 @@ import { isExecutableContentType } from "../blobSafety";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { mutation, query } from "../_generated/server";
+import { chatKindOf, fileKind } from "../fileKind";
+import {
+  assertRoomWithoutEviction,
+  createLibraryFile,
+  libraryError,
+} from "../libraryCore";
 import { requireMember } from "../orgs";
+import { consumeWindow } from "../quotas";
 import {
   getUserIdOrNull,
   requireAttachmentAccess,
@@ -150,6 +157,8 @@ export const generateUploadUrl = mutation({
   handler: async (ctx, { workspaceId }) => {
     const userId = await requireUserId(ctx);
     await requireMember(ctx, userId, workspaceId);
+    const rate = await consumeWindow(ctx, userId, "libraryUpload", 60, 60 * 60_000);
+    if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many uploads. Please wait a moment.");
     await issueUploadIntent(ctx, userId, workspaceId);
     return await ctx.storage.generateUploadUrl();
   },
@@ -223,8 +232,23 @@ export const register = mutation({
     // Provenance (audit F-01): the caller must have uploaded this blob, and no
     // row in ANY table may already reference it. Supersedes the per-table
     // by_storage check, which let a blob registered elsewhere be claimed here.
-    await claimUploadedBlob(ctx, userId, args.storageId, args.workspaceId);
+    const claimed = await claimUploadedBlob(ctx, userId, args.storageId, args.workspaceId);
 
+    // ONE upload, ONE Library file, ONE blob: the attachment is a reference to
+    // the Library file created from the same bytes (it used to be a separate
+    // upload into a separate blob). The quota applies here too — this door
+    // must not be a way around it.
+    await assertRoomWithoutEviction(ctx, userId, realSize);
+    const userFileId = await createLibraryFile(ctx, {
+      userId,
+      workspaceId: args.workspaceId,
+      storageId: args.storageId,
+      name: args.name,
+      contentType: args.contentType,
+      size: realSize,
+      sha256: claimed.sha256,
+      source: "uploaded",
+    });
     return await ctx.db.insert("chatAttachments", {
       workspaceId: args.workspaceId,
       userId,
@@ -236,6 +260,49 @@ export const register = mutation({
       kind,
       status: "uploaded",
       createdAt: Date.now(),
+      userFileId,
+    });
+  },
+});
+
+/**
+ * "Add from Library": a REFERENCE to an existing Library file — the same blob,
+ * no upload, no copy. The file must be the caller's own, in the chat's
+ * workspace, with its original still stored, and of a kind the chat can read.
+ */
+export const attachLibraryFile = mutation({
+  args: {
+    fileId: v.id("userFiles"),
+    workspaceId: v.id("workspaces"),
+    threadId: v.optional(v.id("chatThreads")),
+  },
+  handler: async (ctx, { fileId, workspaceId, threadId }) => {
+    const userId = await requireUserId(ctx);
+    await requireMember(ctx, userId, workspaceId);
+    const f = await ctx.db.get(fileId);
+    if (!f || f.userId !== userId || f.workspaceId !== workspaceId) {
+      throw new ConvexError("Not found");
+    }
+    if (!f.storageId) {
+      throw new ConvexError("This file's original is being restored. Try again later.");
+    }
+    if (threadId) await requireThreadAccess(ctx, userId, threadId);
+    const kind = f.kind ?? fileKind(f.name, f.contentType);
+    if (kind === "other") {
+      throw new ConvexError("This type of file can't be read in a chat. Download it instead.");
+    }
+    return await ctx.db.insert("chatAttachments", {
+      workspaceId,
+      userId,
+      threadId,
+      storageId: f.storageId,
+      name: f.name,
+      size: f.size,
+      contentType: f.contentType,
+      kind: chatKindOf(kind),
+      status: "uploaded",
+      createdAt: Date.now(),
+      userFileId: f._id,
     });
   },
 });

@@ -133,10 +133,11 @@ const step = async (n, f) => {
     await page.waitForTimeout(1500);
   });
 
-  await step("Archived / Files / Shared / Billing all render", async () => {
+  await step("Archived / Library / Shared / Billing all render", async () => {
     const checks = [
       ["/en/settings/archived", "Archived chats"],
-      ["/en/settings/files", "Files"],
+      // Settings → Files is now the File Library (a redirect).
+      ["/en/settings/files", "Library"],
       ["/en/settings/shared", "Shared Links"],
     ];
     for (const [path, heading] of checks) {

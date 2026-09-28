@@ -100,6 +100,9 @@ function targetOf(n: Row): string | null {
       : `/scheduled/${n.taskId}`;
   }
   if (n.threadId) return `/chat/${n.threadId}`;
+  // File Library notices ("almost out of space", "deleted to make room") lead
+  // to the Library, where the storage meter's Free up space lives.
+  if (n.type.startsWith("library.")) return "/library";
   return null;
 }
 

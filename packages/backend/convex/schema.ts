@@ -62,6 +62,15 @@ export default defineSchema({
     workspaceId: v.optional(v.id("workspaces")),
     createdAt: v.number(),
     expiresAt: v.number(),
+    // Library upload SESSIONS (all optional — legacy intents carry none, and
+    // behave exactly as before). `declaredBytes` is RESERVED against the user's
+    // quota while the session is `created` and unexpired — computed live, so a
+    // crashed browser's reservation simply lapses with the TTL.
+    purpose: v.optional(v.union(v.literal("library"), v.literal("chat"))),
+    declaredBytes: v.optional(v.number()),
+    status: v.optional(
+      v.union(v.literal("created"), v.literal("completed"), v.literal("aborted")),
+    ),
   }).index("by_user_expires", ["userId", "expiresAt"]),
 
   // Account-level security history. Deliberately NOT auditLogs: those are
@@ -185,6 +194,9 @@ export default defineSchema({
       v.literal("processing"),
       v.literal("ready"),
       v.literal("failed"),
+      // Kept, not processed: archives, unsupported types, generated files.
+      // Terminal — no processing callback may move it.
+      v.literal("stored"),
     ),
     attempts: v.number(),
     contentHash: v.optional(v.string()),
@@ -206,8 +218,47 @@ export default defineSchema({
     note: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
+    // ---- File Library (all optional → additive; backfilled by
+    // libraryMigrations). A row is ONE logical file: identical bytes uploaded
+    // twice are two files. Its blob may also be referenced by chat attachments
+    // (userFileId) and, for a generated file, by its chatArtifacts row — always
+    // rows of the SAME owner.
+    source: v.optional(v.union(v.literal("uploaded"), v.literal("generated"))),
+    kind: v.optional(
+      v.union(
+        v.literal("image"),
+        v.literal("pdf"),
+        v.literal("document"),
+        v.literal("spreadsheet"),
+        v.literal("presentation"),
+        v.literal("text"),
+        v.literal("other"),
+      ),
+    ),
+    // Lower-cased name: the name A–Z / Z–A sort key.
+    nameKey: v.optional(v.string()),
+    // Server-computed (Convex _storage.sha256), never the client's claim.
+    sha256: v.optional(v.string()),
+    artifactId: v.optional(v.id("chatArtifacts")),
+    legacyFileId: v.optional(v.id("files")),
+    // Manual-retry budget per file per day.
+    retryDay: v.optional(v.number()),
+    retriesToday: v.optional(v.number()),
   })
     .index("by_user_ws_created", ["userId", "workspaceId", "createdAt"])
+    .index("by_user_created", ["userId", "createdAt"])
+    .index("by_user_ws_kind_created", ["userId", "workspaceId", "kind", "createdAt"])
+    .index("by_user_ws_source_created", ["userId", "workspaceId", "source", "createdAt"])
+    .index("by_user_ws_namekey", ["userId", "workspaceId", "nameKey"])
+    .index("by_artifact", ["artifactId"])
+    .index("by_legacy", ["legacyFileId"])
+    // "You already have this file" — per OWNER only (a global hash lookup would
+    // be a cross-user existence oracle). Never used to merge files.
+    .index("by_user_sha256", ["userId", "sha256"])
+    .searchIndex("search_name", {
+      searchField: "name",
+      filterFields: ["userId", "workspaceId", "kind", "source"],
+    })
     .index("by_ingestId", ["ingestId"])
     .index("by_status_updated", ["status", "updatedAt"])
     // Dedup an identical re-upload for the same user (never global — a global
@@ -907,6 +958,47 @@ export default defineSchema({
     .index("by_thread", ["threadId"])
     .index("by_user", ["userId"]),
 
+  // ---- File Library ------------------------------------------------------
+  // Quota ledger. key = "user:<userId>" (uploaded bytes, app-wide, the user's
+  // 100 MB) or "global" (every Library byte — the capacity safety net).
+  // Written ONLY inside the mutations that create or delete Library files, so
+  // it is transactional with them; libraryMigrations.recomputeUsage re-derives
+  // it from the rows. `nearFullAt` drives the one-time 90 % notice.
+  storageUsage: defineTable({
+    key: v.string(),
+    usedBytes: v.number(),
+    files: v.number(),
+    nearFullAt: v.optional(v.number()),
+  }).index("by_key", ["key"]),
+
+  // Short-lived download/preview capabilities. Only the SHA-256 of the token is
+  // stored; every use re-checks the file, its owner and the purpose.
+  fileAccessTokens: defineTable({
+    tokenHash: v.string(),
+    fileId: v.id("userFiles"),
+    userId: v.id("users"),
+    purpose: v.union(v.literal("download"), v.literal("preview")),
+    expiresAt: v.number(),
+  })
+    .index("by_hash", ["tokenHash"])
+    .index("by_file", ["fileId"])
+    .index("by_expires", ["expiresAt"]),
+
+  // Progress + verification ledger for libraryMigrations (resumable, dry-run
+  // first). A destructive phase refuses to run until `verifiedAt` is set.
+  migrationRuns: defineTable({
+    name: v.string(),
+    cursor: v.optional(v.string()),
+    processed: v.number(),
+    ok: v.number(),
+    failed: v.number(),
+    lastError: v.optional(v.string()),
+    done: v.boolean(),
+    verifiedAt: v.optional(v.number()),
+    startedAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_name", ["name"]),
+
   // Server-owned per-USER rate windows. Deliberately NOT on chatSettings: that
   // row is per-workspace and is deleted by chat.settings.reset, so a user could
   // multiply or simply erase their own allowance. See convex/quotas.ts.
@@ -1175,6 +1267,8 @@ export default defineSchema({
     contentType: v.string(),
     kind: v.union(v.literal("image"), v.literal("document"), v.literal("text")),
     extractedText: v.optional(v.string()),
+    // The Library file this attachment is a REFERENCE to (same blob, no copy).
+    userFileId: v.optional(v.id("userFiles")),
     status: v.union(
       v.literal("uploaded"),
       v.literal("processing"),
@@ -1188,7 +1282,11 @@ export default defineSchema({
     .index("by_message", ["messageId"])
     // Anti-claim-squat: a storageId may be registered exactly once, so user B
     // cannot claim a storageId belonging to user A. See chat/attachments.ts.
-    .index("by_storage", ["storageId"]),
+    .index("by_storage", ["storageId"])
+    // A Library file reused in many chats: the stream's own (blob, thread) row.
+    .index("by_storage_thread", ["storageId", "threadId"])
+    // Deleting a Library file removes every chat reference to it.
+    .index("by_userfile", ["userFileId"]),
 
   // Public share links for a whole conversation or a single turn.
   //

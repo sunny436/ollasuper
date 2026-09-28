@@ -918,17 +918,18 @@ export const attachmentInStream = internalQuery({
     const sid = ctx.db.system.normalizeId("_storage", storageId);
     if (!sid) return null;
 
+    // Exactly this stream's (blob, thread) row. A Library file reused in many
+    // chats has one reference row per chat on the SAME blob, so a lookup by
+    // blob alone would find some other chat's row and refuse the stream.
     const attachment = await ctx.db
       .query("chatAttachments")
-      .withIndex("by_storage", (q) => q.eq("storageId", sid))
+      .withIndex("by_storage_thread", (q) =>
+        q.eq("storageId", sid).eq("threadId", stream.threadId),
+      )
       .first();
     if (!attachment) return null;
-
-    // Must belong to the same user AND the same thread as the stream.
+    // Must belong to the same user as the stream.
     if (attachment.userId !== stream.userId) return null;
-    if (attachment.threadId && attachment.threadId !== stream.threadId) {
-      return null;
-    }
     return { storageId: sid };
   },
 });

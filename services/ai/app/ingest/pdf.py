@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -36,8 +37,10 @@ from app.config import Settings
 from app.ingest.ocr import ocr_image
 from app.ingest.pool import run_in_pool
 from app.ingest.render import render_page
-from app.ingest.types import NormalizedDoc
+from app.ingest.types import IngestError, NormalizedDoc
 from app.logging import get_logger
+from app.sandbox import ops
+from app.sandbox.harness import isolated, run_sandboxed_sync
 
 log = get_logger(__name__)
 
@@ -45,16 +48,7 @@ log = get_logger(__name__)
 OcrFn = Callable[..., Awaitable[list[NormalizedDoc]]]
 
 
-def _tables_to_md(tables: list[list[list[str | None]]]) -> str:
-    """Render pdfplumber tables as pipe rows, mirroring the docx table style so
-    chunking + retrieval see the same shape across formats."""
-    out: list[str] = []
-    for table in tables:
-        for row in table:
-            cells = [(c or "").strip().replace("\n", " ") for c in row]
-            if any(cells):
-                out.append("| " + " | ".join(cells) + " |")
-    return "\n".join(out)
+_tables_to_md = ops.tables_to_md
 
 
 @dataclass
@@ -82,7 +76,55 @@ class PdfParse:
 def _extract(
     raw: bytes, name: str, settings: Settings, cancel: threading.Event
 ) -> _Extraction:
-    """Sync, CPU-bound; runs in a thread. Cooperatively cancellable between pages."""
+    """Sync; runs on a worker thread. On the VM the parse itself runs in the
+    SANDBOX child (File Library P0-6): pdfplumber/pdfminer parse attacker bytes,
+    and a thread shared this service's memory, secrets and network. The child
+    stops itself at the whole-file budget and returns the pages it read; its
+    process timeout sits just past that, so a wedged parse is killed, not
+    abandoned. The dev box (no fork/exec) keeps the in-process path."""
+    if not isolated():
+        return _extract_local(raw, name, cancel)
+    budget = float(settings.ai_ingest_overall_deadline_s)
+    try:
+        meta, body = run_sandboxed_sync(
+            "pdf_pages",
+            raw,
+            {
+                "name": name,
+                "budget_s": budget,
+                "max_chars": int(settings.ai_ingest_max_chars) * 2,
+            },
+            timeout_s=budget + _SANDBOX_GRACE_S,
+            cpu_s=int(budget + _SANDBOX_GRACE_S),
+        )
+    except TimeoutError as e:
+        raise IngestError("Parsing timed out") from e
+    except RuntimeError as e:
+        raise IngestError("Parsing failed") from e
+    if not meta.get("ok"):
+        raise IngestError(str(meta.get("error") or "Parsing failed"))
+    data = json.loads(body.decode("utf-8") or "{}")
+    res = _Extraction(
+        text_docs=[
+            NormalizedDoc(
+                text=d["text"], page=d.get("page"), metadata=d.get("metadata") or {}
+            )
+            for d in data.get("text_docs", [])
+        ],
+        image_pages=[int(i) for i in data.get("image_pages", [])],
+        total_pages=int(data.get("total_pages", 0)),
+    )
+    if data.get("stopped"):
+        cancel.set()  # the caller reports the truthful "processed N of M"
+    return res
+
+
+# Past the child's own budget, before it is killed rather than trusted to stop.
+_SANDBOX_GRACE_S = 15.0
+
+
+def _extract_local(raw: bytes, name: str, cancel: threading.Event) -> _Extraction:
+    """In-process form (tier 4 / dev box only). Cooperatively cancellable."""
     import pdfplumber
 
     res = _Extraction()

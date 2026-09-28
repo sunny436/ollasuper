@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { activeUserId } from "../accountState";
 import { deleteBlobIfUnreferenced } from "../blobOwnership";
+import { addGeneratedToLibrary } from "../libraryCore";
 import { hasWorkspaceAccess } from "../orgs";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
@@ -102,6 +103,20 @@ export const registerArtifact = internalMutation({
       ...(a.role ? { role: a.role } : {}),
       ...(a.page !== undefined ? { page: a.page } : {}),
     });
+    // A generated file is also a Library file (source "generated") on the SAME
+    // blob — never a copy. Preview page images are part of their parent, not
+    // files of their own.
+    if (a.role !== "preview") {
+      await addGeneratedToLibrary(ctx, {
+        artifactId,
+        userId: stream.userId,
+        workspaceId: stream.workspaceId,
+        storageId: a.storageId,
+        name: a.filename,
+        contentType: a.mime,
+        size: a.size,
+      });
+    }
     return { ok: true as const, artifactId };
   },
 });

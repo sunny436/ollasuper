@@ -70,26 +70,23 @@ const step = async (n, f) => { try { const d = await f(); results.push([true, n,
       throw new Error("missing account-menu link: Settings");
     await page.keyboard.press("Escape");
   });
-  await step("sidebar shows all nav links (left)", async () => {
-    // The dashboard shell lives on the routes that kept it.
-    await page.goto(BASE + "/en/files", { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(2000); cur = page.url();
-    const aside = page.locator("aside");
-    for (const label of ["Chat", "Files", "Settings", "Billing"]) {
-      if (!(await aside.getByRole("link", { name: label }).first().isVisible())) throw new Error("missing nav: " + label);
+  // The dashboard aside no longer renders anywhere: its last page, /files,
+  // became the File Library (a workspace surface beside the rail).
+  await step("old /files and /settings/files links land on the Library", async () => {
+    for (const path of ["/en/files", "/en/settings/files"]) {
+      await page.goto(BASE + path, { waitUntil: "domcontentloaded" });
+      await page.waitForURL(/\/library/, { timeout: 15000 }); cur = page.url();
     }
-    await page.screenshot({ path: "C:\\Users\\test\\pw-e2e\\shots-sidebar.png" });
+    await page.getByRole("heading", { name: "Library" }).first().waitFor({ timeout: 15000 });
   });
-  await step("workspace switcher present in sidebar", async () => {
-    if (!(await page.locator("aside select").first().isVisible())) throw new Error("no workspace switcher");
-  });
-  await step("navigate via sidebar → Files", async () => {
-    await page.locator("aside").getByRole("link", { name: "Files" }).click();
-    await page.waitForURL(/\/files/, { timeout: 10000 }); cur = page.url();
-    await page.waitForSelector("text=Files", { timeout: 15000 });
-  });
-  await step("navigate via sidebar → Chat", async () => {
-    await page.locator("aside").getByRole("link", { name: "Chat" }).click();
+  await step("navigate via rail → Library → Chat", async () => {
+    await page.goto(BASE + "/en/chat", { waitUntil: "domcontentloaded" });
+    const rail = page.locator('nav[aria-label="Conversations"]').first();
+    await rail.waitFor({ timeout: 12000 });
+    await page.getByRole("link", { name: "Library", exact: true }).first().click();
+    await page.waitForURL(/\/library/, { timeout: 10000 }); cur = page.url();
+    await page.getByRole("heading", { name: "Library" }).first().waitFor({ timeout: 15000 });
+    await page.getByRole("button", { name: "New chat" }).first().click();
     await page.waitForURL(/\/chat/, { timeout: 10000 }); cur = page.url();
   });
   await b.close();

@@ -515,7 +515,10 @@ export const reconcileOrphans = internalMutation({
 
 /** Bytes younger than this are never swept: an upload intent lives one hour,
  *  so a blob uploaded moments ago and not yet registered is still legitimate. */
-const ORPHAN_BLOB_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+// Two intent lifetimes: past it an unregistered upload can never be claimed,
+// so it can only be abandoned. (It was a day; the File Library's quota makes
+// abandoned uploads a disk-exhaustion path, so they are reclaimed within hours.)
+const ORPHAN_BLOB_MIN_AGE_MS = 2 * 60 * 60 * 1000;
 const ORPHAN_BLOB_PAGE = 100;
 
 /** Storage ids held inside a share's frozen snapshot JSON (the /share/file

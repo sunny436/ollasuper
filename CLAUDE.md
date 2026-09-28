@@ -12,7 +12,7 @@ The browser opens a WebSocket to Convex directly, and it reaches it **through th
 
 `TEMPLATE.md` describes the original seam: the control-plane is the platform plumbing (auth, orgs, files, billing), and "your product/AI logic lives in a separate backend." The AI half is now built — see **Two planes** below.
 
-The dashboard, devices, sessions, AI-access, jobs and platform sections were removed; `/` redirects to `/chat`. The remaining surfaces are **Chat**, **Files**, **Settings** and **Billing**. Tenancy, RBAC, API keys, usage, audit and events survived the removal as backend-only modules — they lost their Platform UI, not their function.
+The dashboard, devices, sessions, AI-access, jobs and platform sections were removed; `/` redirects to `/chat`. The remaining surfaces are **Chat**, the **Library** (files, at `/library` beside the rail; `/files` and `/settings/files` redirect there), **Settings** and **Billing**. Tenancy, RBAC, API keys, usage, audit and events survived the removal as backend-only modules — they lost their Platform UI, not their function.
 
 ## Where the data lives (PostgreSQL since 2026-08-18)
 
@@ -233,7 +233,7 @@ There is **deliberately no workspace-only index** on `chatThreads`/`chatMessages
 - **Biome, not ESLint/Prettier.** Run `biome lint`, not `biome check --write` — the latter reformats pre-existing files and produces a diff full of unrelated churn.
 - **Never pass `budget_tokens` or `temperature` to Claude 5-series models** — they reject non-default sampling params with a 400. `services/ai/app/agent/llm.py` sets `temperature=None` for this reason.
 - **New Convex tables must be additive.** The live deployment has pre-migration rows; a required field on an existing table fails schema validation on push.
-- `/chat` lives in the **`(workspace)` route group**, not `(dashboard)` — it is full-bleed and renders neither the app sidebar nor the topbar. Route groups do not affect URLs. The routes that kept the dashboard shell (`/files`, `/settings`, `/settings/billing`) are reachable from the account menu at the foot of the conversation rail, which is their ONLY route out of the workspace.
+- `/chat` lives in the **`(workspace)` route group**, not `(dashboard)` — it is full-bleed and renders neither the app sidebar nor the topbar. Route groups do not affect URLs. `/library`, `/projects` and `/scheduled` are `(workspace)` routes beside the rail. `/settings` and `/settings/billing` are reachable from the account menu at the foot of the conversation rail, which is their ONLY route out of the workspace; the `(dashboard)` shell no longer renders any page (its two pages are redirects).
 - Chat UI uses `.h-dvh-safe` (in `packages/ui/src/globals.css`), not `h-screen` — Tailwind cannot express the `vh`/`dvh` fallback pair and `tailwind-merge` collapses it. There is no accent hue any more (see **The monochrome system** below); `--brand`/`--brand-ink` are pure ink and `--brand-foreground` its inverse, and the three-token split is kept only so ~170 existing call sites still work.
 - **`.workspace` in `globals.css` re-points the existing surface tokens** (`--card`, `--border`, `--background` …) for the chat subtree, so components re-skin without className churn. Radix portals mount outside it — any portalled surface needs `className="workspace"` or it renders against the base palette.
 - New functionality is written in **Python** (LangChain / LangGraph / Pydantic / FastAPI) unless it is inherently Convex data-plane work. This is a standing repo policy.
@@ -433,6 +433,47 @@ TOC in the renderers, and a preview the model never sees.
   installed for decks; DOCX→PDF failed silently (`source file could not be
   loaded`) until Writer was added on 19-09 (`apt-get install -y
   --no-install-recommends libreoffice-writer`). A rebuilt VM must install both.
+
+### File Library (2026-09-28 — branch `feat/library`, not deployed)
+
+`convex/libraryCore.ts` is the ONE place a Library file is created, charged,
+released and deleted; `library.ts` is its public API. Every upload door —
+Library page, chat paperclip, Project sources, the legacy `saveFile`/`register`
+paths, generated artifacts, migrations — goes through it. Do not add a door
+that writes `userFiles` directly: that is how a quota gets bypassed.
+
+- **One logical file = one `userFiles` row = one blob** (`by_storage` is checked
+  at create). Chat attachments (`userFileId`), Project links and a generated
+  file's `chatArtifacts` row REFERENCE it; bytes are deleted only when nothing
+  does. Identical bytes may be two files. Never collapse by hash again — the
+  owner-scoped `findDuplicate` only offers "use the one you have".
+- **The Convex blob is the canonical original** and is never dropped on `ready`
+  or on a processing timeout. `stored` is a terminal status (kept, not indexed);
+  Python callbacks act only on `processing` rows.
+- **Quota:** 100 MB of UPLOADS per user across all workspaces; generated files
+  are free and never evicted; Project-linked files are never offered for
+  deletion. Reservations are computed live from open `uploadIntents` sessions —
+  never stored. Nothing is deleted without the user's selection
+  (`approvedDeletions`), re-validated inside `finishUpload`'s transaction.
+  `planSpaceWithCandidates` scans the deletable files ONCE per call: scanning
+  twice can pass Convex's 4,096-index-read limit for a big Library.
+- **Access** is `mintAccess` → `/library/file?t=` (hash stored, 60 s / 5 min,
+  re-authorised per use, byte budget). Inline ONLY for a raster identified by
+  magic bytes. CORP is `same-site` on purpose (the host and IP:port forms are
+  cross-origin). Never return `storageId`, `ingestId` or a storage URL.
+- **`attachmentInStream` looks up `(storageId, threadId)` exactly.** One file
+  reused in many chats is many rows on one blob; `send` binds the thread onto
+  each attachment before the stream exists.
+- **Sandbox output is capped at 64 MB**, so a parser that EXPANDS its input
+  (CSV writes `header=value` per cell) trims its text in the child to
+  2 × `ai_ingest_max_chars` (`ops.trim_docs`). Any new sandbox op that returns
+  text needs the same budget, or a large legitimate file fails instead of
+  indexing.
+- **Deploy order:** alembic `0006` → Python → Convex → migrations (dry-run
+  first, `verifyFold` before `cleanupFoldedFiles`, `restoreOriginals` before
+  `ai_ingest_store_original_copy=false`) → edge → frontend. The new Python
+  writes 0006's columns on every persist; the new Convex sends `sha256`, which
+  an old Python rejects (`extra="forbid"`). Full runbook: ROADMAP.
 
 ## Cost controls (do not remove)
 

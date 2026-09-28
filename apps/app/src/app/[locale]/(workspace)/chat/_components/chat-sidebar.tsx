@@ -1,6 +1,5 @@
 "use client";
 
-import { FilesSection } from "./files-section";
 import { InfiniteSentinel } from "@/components/infinite-sentinel";
 import { ChatInstructionsDialog } from "./chat-instructions-dialog";
 import { MoveToProjectDialog } from "./move-to-project-dialog";
@@ -35,6 +34,7 @@ import {
   FolderInput,
   SlidersHorizontal,
   FolderKanban,
+  Library,
   LogOut,
   MessageSquare,
   MoreHorizontal,
@@ -230,6 +230,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const scheduledActive = (pathname ?? "").includes("/scheduled");
   const projectsActive = (pathname ?? "").includes("/projects");
+  const libraryActive = (pathname ?? "").includes("/library");
   const { current } = useWorkspace();
 
   // Once a thread is the active route, its own components subscribe to the same
@@ -335,7 +336,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
   useEffect(() => {
     if (loadingFirst) return;
     const warm = () => {
-      for (const href of ["/projects", "/scheduled"]) prefetchRoute(router, href);
+      for (const href of ["/library", "/projects", "/scheduled"]) prefetchRoute(router, href);
     };
     const w = window as Window & {
       requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
@@ -374,7 +375,26 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
           New chat
         </button>
 
-        <FilesSection />
+        {/* The File Library: every upload and generated file, in one place. */}
+        <Link
+          href="/library"
+          prefetch={false}
+          onPointerEnter={() => prefetchRoute(router, "/library")}
+          onPointerLeave={() => cancelRoutePrefetch("/library")}
+          onClick={() => {
+            cancelRoutePrefetch("/library");
+            onNavigate?.();
+          }}
+          aria-current={libraryActive ? "page" : undefined}
+          className={`mt-2 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
+            libraryActive
+              ? "bg-brand/10 font-medium text-brand-ink"
+              : "text-muted-foreground hover:bg-accent hover:text-primary"
+          }`}
+        >
+          <Library className="h-4 w-4 shrink-0" />
+          Library
+        </Link>
 
         {/*
           The workspace's second destination. Placed above the conversation
@@ -395,7 +415,7 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
             onNavigate?.();
           }}
           aria-current={projectsActive ? "page" : undefined}
-          className={`mt-2 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
+          className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-200 ${
             projectsActive
               ? "bg-brand/10 font-medium text-brand-ink"
               : "text-muted-foreground hover:bg-accent hover:text-primary"

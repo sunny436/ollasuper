@@ -73,7 +73,7 @@ async function seed(t: ReturnType<typeof convexTest>) {
 
 const pageOpts = { numItems: 20, cursor: null };
 
-test("saveFile creates a processing row, schedules ingest, and dedups by hash", async () => {
+test("saveFile creates a processing row, schedules ingest, and never collapses a new upload into an old file", async () => {
   const t = convexTest(schema, modules);
   const { owner, ws, storageId } = await seed(t);
   const u = t.withIdentity(as(owner));
@@ -92,7 +92,9 @@ test("saveFile creates a processing row, schedules ingest, and dedups by hash", 
   const row = await t.run(async (ctx) => ctx.db.get(id));
   expect(row?.status).toBe("processing");
 
-  // Same content hash → same row, no duplicate (drops the redundant blob).
+  // A second upload is a second logical file, even when the client claims the
+  // same hash: identical bytes are NOT the same file (the old dedup silently
+  // returned the first file — wrong name, and one delete stranded the other).
   await u.mutation(api.userFiles.generateUploadUrl, { workspaceId: ws });
   const storageId2 = await t.run(async (ctx) =>
     ctx.storage.store(new Blob(["hello world 2"])),
@@ -100,12 +102,16 @@ test("saveFile creates a processing row, schedules ingest, and dedups by hash", 
   const id2 = await u.mutation(api.userFiles.saveFile, {
     workspaceId: ws,
     storageId: storageId2,
-    name: "a.pdf",
+    name: "b.pdf",
     size: 6,
     contentType: "application/pdf",
     contentHash: "hash1",
   });
-  expect(id2).toBe(id);
+  expect(id2).not.toBe(id);
+  const row2 = await t.run(async (ctx) => ctx.db.get(id2));
+  expect(row2?.name).toBe("b.pdf");
+  // The server hash (Convex _storage.sha256) is recorded, not the client's claim.
+  expect(row2?.sha256).toMatch(/^[0-9a-f]{64}$/);
 });
 
 test("files are private-per-user; a non-owner cannot list or delete them", async () => {
@@ -172,7 +178,9 @@ test("setStatus is capability-scoped by ingestId and terminal-once", async () =>
   let row = await t.run(async (ctx) => ctx.db.get(id));
   expect(row?.status).toBe("ready");
   expect(row?.chunkCount).toBe(3);
-  expect(row?.storageId).toBeUndefined(); // staging blob dropped on ready
+  // The blob is the file's canonical original now: kept on ready (download,
+  // reuse in chat, retry). It used to be dropped as a staging copy.
+  expect(row?.storageId).toBeDefined();
 
   // A later callback cannot resurrect a terminal row.
   await t.mutation(internal.userFiles.setStatus, {
