@@ -487,7 +487,8 @@ async def run_ingest(
             extra={
                 "file": ingest_id,
                 "error": str(e),
-                "code": e.code,
+                # Not "code": the log redactor masks any key named like a secret.
+                "failure_code": e.code,
                 "reindex": reindex,
             },
         )

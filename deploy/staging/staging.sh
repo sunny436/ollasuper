@@ -209,14 +209,19 @@ write_ai_env() {
   # and every outward-acting feature (scheduled mail, MCP) switched off.
   local out=$SRC/services/ai/.env
   umask 077
-  grep -vE '^(AI_BIND_HOST|AI_PORT|AI_SERVICE_KEY|AI_INGRESS_SECRET|CONVEX_SITE_URL|CONVEX_INTERNAL_URL|KNOWLEDGE_DATABASE_URL|KNOWLEDGE_DB_PASSWORD|SCHEDULER_DATABASE_URL|SCHEDULER_DB_PASSWORD|MCP_[A-Z_]*|OLLAGRAPH_API_KEY|AI_SCHEDULED_TASKS_ENABLED|SCHEDULED_[A-Z_]*|AI_SECURITY_[A-Z_]*|LANGSMITH_[A-Z_]*|AI_SANDBOX_MIN_TIER)=' "$PROD_AI_ENV" > "$out"
+  grep -vE '^(AI_BIND_HOST|AI_PORT|AI_SERVICE_KEY|AI_INGRESS_SECRET|CONVEX_SITE_URL|CONVEX_INTERNAL_URL|CONVEX_API_URL|KNOWLEDGE_DATABASE_URL|KNOWLEDGE_DB_PASSWORD|SCHEDULER_DATABASE_URL|SCHEDULER_DB_PASSWORD|MCP_[A-Z_]*|OLLAGRAPH_API_KEY|AI_SCHEDULED_TASKS_ENABLED|SCHEDULED_[A-Z_]*|AI_SECURITY_[A-Z_]*|LANGSMITH_[A-Z_]*|AI_SANDBOX_MIN_TIER)=' "$PROD_AI_ENV" > "$out"
   cat >> "$out" <<EOF
 AI_BIND_HOST=$GW
 AI_PORT=$AI_PORT
 AI_SERVICE_KEY=$AI_SERVICE_KEY
 AI_INGRESS_SECRET=$AI_INGRESS_SECRET
-CONVEX_SITE_URL=http://127.0.0.1:$SITE_PORT
-CONVEX_INTERNAL_URL=http://127.0.0.1:$CVX_PORT
+# CONVEX_SITE_URL is only the JWT ISSUER string (never connected to): the
+# staging backend's in-container site origin. The two addresses the service
+# CONNECTS to are the next two - the HTTP-actions port and the API port - and
+# BOTH must be set: an unset CONVEX_API_URL defaults to production's :3210.
+CONVEX_SITE_URL=http://127.0.0.1:3211
+CONVEX_INTERNAL_URL=http://127.0.0.1:$SITE_PORT
+CONVEX_API_URL=http://127.0.0.1:$CVX_PORT
 KNOWLEDGE_DATABASE_URL=postgresql://myos_ai:$KNOW_PASSWORD@127.0.0.1:$PG_PORT/myos_knowledge?sslmode=disable
 SCHEDULER_DATABASE_URL=postgresql://myos_ai:$KNOW_PASSWORD@127.0.0.1:$PG_PORT/myos_dbos?sslmode=disable
 AI_SCHEDULED_TASKS_ENABLED=false
@@ -228,6 +233,34 @@ AI_SANDBOX_MIN_TIER=1
 AI_INGEST_STORE_ORIGINAL_COPY=false
 EOF
   chown myos-ai "$out"; chmod 0600 "$out"
+  assert_isolated "$out"
+}
+
+# FAIL CLOSED: every address the staging AI service CONNECTS to must be a
+# staging one. Settings are loaded exactly as the service loads them, so a
+# default the .env forgot (the way CONVEX_API_URL once fell back to
+# production's :3210) is caught here, before the service ever starts.
+assert_isolated() {
+  ( cd "$SRC/services/ai" && "$PROD_VENV/bin/python" - <<'PY'
+import sys
+from app.config import Settings
+
+s = Settings(_env_file=".env")
+connected = {
+    "convex_internal_url": s.convex_internal_url,
+    "convex_api_url": s.convex_api_url,
+    "knowledge_database_url": s.knowledge_database_url,
+    "scheduler_database_url": getattr(s, "scheduler_database_url", ""),
+    "mcp_gateway_url": s.mcp_gateway_url if s.mcp_connections_enabled else "",
+}
+prod = (":3210", ":3211", ":5432", ":5433", ":8770")
+bad = {k: v.split("@")[-1] for k, v in connected.items() if v and any(p in v for p in prod)}
+if bad:
+    print(f"FATAL: staging would connect to production: {bad}", file=sys.stderr)
+    sys.exit(1)
+print("isolation check: every connection targets staging")
+PY
+  ) || die "staging .env is not isolated from production"
 }
 
 cmd_deploy() {

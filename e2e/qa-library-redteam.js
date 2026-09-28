@@ -47,7 +47,12 @@ async function upload(jwt, ws, name, contentType, body, declared) {
     workspaceId: ws, name, contentType, size: declared ?? body.length, purpose: "library",
   });
   if (!begin.ok || !begin.value.ok) return { begin };
-  const up = await fetch(begin.value.uploadUrl, { method: "POST", headers: { "content-type": contentType }, body });
+  let up;
+  try {
+    up = await fetch(begin.value.uploadUrl, { method: "POST", headers: { "content-type": contentType }, body });
+  } catch {
+    return { begin, status: undefined }; // the edge reset the connection
+  }
   const status = up.status;
   const storageId = status === 200 ? (await up.json()).storageId : null;
   if (!storageId) return { begin, status };
@@ -167,8 +172,13 @@ async function upload(jwt, ws, name, contentType, body, declared) {
   });
   check("declaring 200 MB is refused up front", !tooBig.ok, tooBig.error.slice(0, 50));
   const lie = await upload(jwtB, wsB, `rt-lie-${tag}.bin`, "application/octet-stream", Buffer.alloc(200_000, 7), 10);
-  check("declaring 10 B then sending 200 KB: SIZE_MISMATCH, nothing kept",
-    lie.finish?.value?.ok === false && lie.finish.value.code === "SIZE_MISMATCH", lie.finish?.value?.code);
+  // The upload URL's ticket admits exactly the declared 10 B: the edge cuts the
+  // body off (413 / reset) and nothing is stored. Were a body ever to get
+  // through, finishUpload's own check must still refuse it (SIZE_MISMATCH).
+  check("declaring 10 B then sending 200 KB: cut off at the edge, nothing kept",
+    (!lie.storageId && (lie.status === 413 || lie.status === undefined)) ||
+      (lie.finish?.value?.ok === false && lie.finish.value.code === "SIZE_MISMATCH"),
+    lie.storageId ? lie.finish?.value?.code : String(lie.status));
   const beginBig = await call("mutation", jwtB, "library:beginUpload", {
     workspaceId: wsB, name: "stream.zip", contentType: "application/zip", size: 20 * 1024 * 1024, purpose: "library",
   });

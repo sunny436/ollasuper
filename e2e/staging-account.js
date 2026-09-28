@@ -72,6 +72,8 @@ function codeFor(email) {
     const text = (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 400);
     throw new Error(`still on ${page.url()} - page says: ${text}`);
   }
+  // The workspace is created on first load: wait for it, as qa-throwaway does.
+  await page.locator("#chat-composer:not([disabled])").waitFor({ timeout: 60000 });
   fs.writeFileSync(out, JSON.stringify({ email, password }), { mode: 0o600 });
   console.log(`staging account ready (${email}); password written to ${out}`);
   await browser.close();
