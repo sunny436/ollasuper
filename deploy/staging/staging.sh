@@ -148,7 +148,11 @@ SQL
     docker run -d --name "$CVX" --network "$NET" --memory 2g \
       -e INSTANCE_NAME=myos-staging -e INSTANCE_SECRET="$INSTANCE_SECRET" \
       -e POSTGRES_URL="postgresql://convex:$PG_PASSWORD@$PG:5432?sslmode=disable" \
-      -e CONVEX_CLOUD_ORIGIN="$PUBLIC_ORIGIN/__cvx" -e CONVEX_SITE_ORIGIN="$PUBLIC_ORIGIN/__cvx-site" \
+      -e CONVEX_CLOUD_ORIGIN="$PUBLIC_ORIGIN/__cvx" \
+      `# The SITE origin is the auth issuer: the backend fetches its discovery` \
+      `# document from inside this container, where the operator-side` \
+      `# localhost is unreachable. Production's is its public hostname.` \
+      -e CONVEX_SITE_ORIGIN="http://127.0.0.1:3211" \
       -e DOCUMENT_RETENTION_DELAY=172800 -e DISABLE_BEACON=true -e DO_NOT_REQUIRE_SSL=1 \
       -v myos-staging-data:/convex/data \
       -p "127.0.0.1:$CVX_PORT:3210" -p "127.0.0.1:$SITE_PORT:3211" "$IMAGE" >/dev/null
