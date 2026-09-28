@@ -4,6 +4,7 @@
 //   QA_EMAIL=… QA_PASSWORD=… node qa-responsive.js --label baseline
 //   node qa-responsive.js --label after --assert-touch        (also gate touch fixes)
 //   node qa-responsive.js --part routes|states|a11y|motion|all --engines chromium,webkit
+//   node qa-responsive.js --only "library|files"      (routes/states whose path matches)
 //
 // ROUTES × VIEWPORTS (portrait 320/375/412/768/1024/1280/1440/1920/2560 and landscape
 // 667/844/915/1024/1366), Chromium; WebKit (Playwright WebKit, NOT iOS) on the touch
@@ -38,6 +39,8 @@ const LABEL = arg("label", "run");
 const PART = arg("part", "all");
 const ENGINES = arg("engines", "chromium,webkit").split(",");
 const ASSERT_TOUCH = process.argv.includes("--assert-touch");
+const ONLY = arg("only", "");
+const only = (route) => !ONLY || (route && new RegExp(ONLY).test(route));
 const AXE_URL = "https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js";
 const OUT = path.join(__dirname, "out", "responsive");
 fs.mkdirSync(OUT, { recursive: true });
@@ -130,14 +133,15 @@ async function discover(page) {
     codeThread && [`/en/chat/${codeThread}`, "shell"],
     ["/en/projects", "shell"], project && [project, "shell"],
     ["/en/scheduled", "shell"], task && [task, "shell"],
-    ["/en/files", "document"], ["/en", "redirect"],
+    // /files and /settings/files are redirects to the Library since it shipped.
+    ["/en/library", "shell"], ["/en/files", "redirect"], ["/en", "redirect"],
     ["/en/settings", "shell"], ["/en/settings/archived", "shell"], ["/en/settings/billing", "shell"],
     ["/en/settings/connectors", "shell"], connector && [connector, "shell"],
-    ["/en/settings/files", "shell"], ["/en/settings/memories", "shell"], ["/en/settings/personalization", "shell"],
+    ["/en/settings/files", "redirect"], ["/en/settings/memories", "shell"], ["/en/settings/personalization", "shell"],
     ["/en/settings/shared", "shell"], ["/en/settings/skills", "shell"],
     ["/en/privacy", "document"], ["/en/terms", "document"], ["/en/support", "document"], ["/en/slack", "document"],
     ["/en/this-route-does-not-exist", "document"],
-  ].filter(Boolean);
+  ].filter(Boolean).filter(([r]) => only(r));
   return { routes, share, longThread: state.longThread || codeThread, codeThread };
 }
 
@@ -321,7 +325,12 @@ async function routesPart(type, touch, page, info, results) {
 const OVERLAY = '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[aria-modal="true"],nav[aria-label="Conversations"].fixed';
 
 async function openState(page, name) {
-  const b = page.getByRole("button", { name, exact: true }).first();
+  // "Actions for*" = the first button whose name STARTS with that (per-item names).
+  const b = (
+    name.endsWith("*")
+      ? page.getByRole("button", { name: new RegExp(`^${name.slice(0, -1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) })
+      : page.getByRole("button", { name, exact: true })
+  ).first();
   if (!(await b.count())) return null;
   await b.scrollIntoViewIfNeeded().catch(() => {});
   await b.click({ force: true });
@@ -365,14 +374,14 @@ async function statesPart(type, touch, page, info, results) {
     ["/en/projects", ["New"]],
     [info.routes.find(([r]) => /\/projects\/[a-z0-9]{10,}/.test(r))?.[0], ["Project settings", "Project actions"]],
     ["/en/scheduled", ["Task actions"]],
-    ["/en/files", ["Open menu"]],
+    ["/en/library", touch ? ["Open conversations", "Actions for*"] : ["Actions for*"]],
     ["/en/settings", ["Open settings menu"]],
     ["/en/settings/connectors", ["Filter by category"]],
   ];
   for (const [vn, w, h] of vps) {
     await page.setViewportSize({ width: w, height: h });
     for (const [route, triggers] of plan) {
-      if (!route) continue;
+      if (!route || !only(route)) continue;
       for (const trigger of triggers.filter(Boolean)) {
         const where = `${type.name()} ${vn} ${route.replace(/[a-z0-9]{20,}/, ":id")} [${trigger}]`;
         try {

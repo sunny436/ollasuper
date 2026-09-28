@@ -13,6 +13,8 @@
 #   RECLAIM_APPLY=1 OPS_ALERT_EMAIL=ops@example.com bash deploy/81-library-ops.sh
 #       re-run ONLY after the operator approved those reports. Deleting
 #       production bytes is never a default.
+#   CHECK_ONLY=1 bash deploy/81-library-ops.sh
+#       read-only: runs the preconditions and exits before any write.
 #
 # Idempotent. Installs:
 #   1. two shared secrets, generated once, root-only, and set in Convex:
@@ -78,6 +80,10 @@ MAILBOX=$(cvx_get OLLASTACK_REPORTS_MAILBOX_ID)
 [ -n "$MAILBOX" ] || MAILBOX=$(cvx_get OLLASTACK_AUTH_MAILBOX_ID)
 [ -n "$MAILBOX" ] || die "no Ollastack mailbox id in the Convex env (deploy/75-ollastack-mail.sh)"
 MAIL_BASE=$(cvx_get OLLASTACK_MAIL_BASE_URL)
+if [ "${CHECK_ONLY:-0}" = 1 ]; then
+  say "preconditions hold; CHECK_ONLY=1, so nothing was written"
+  exit 0
+fi
 install -d -m 0700 /etc/myos /var/lib/myos-reclaim /var/lib/myos-monitor
 
 # ------------------------------------------------------------------ 1. secrets

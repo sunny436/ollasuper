@@ -197,6 +197,7 @@ The design turns on one fact: **Convex re-sends the whole query result to every 
 - `chat.stream.active` is the **only** query that re-fires per delta. It is small **by construction**: the resident chunks (those above `committedSeq`) plus `committedSeq` and `hasEvents` — never the whole answer, never the events. The client accumulates the text itself (`chat/_lib/stream-text.ts`); it asks `chat.stream.committed` for the compacted prefix only while it is missing it (a mid-stream mount, reload or reconnect) and then drops that subscription; typed events ride `chat.stream.events`, which re-fires on append, not per delta. Returning `committedText` from `active` again would make the wire quadratic in the answer length (measured: ~1.7 MB for a p99 answer).
 - `TOOL_RESULT.content` (the model-context block, 74 % of all bytes in `chatMessages` on production) exists for durable resume, which reads the live `chatStreamEvents` row. Every DISPLAY copy — the fold at finalize, `toPublic`, `stream.events` — goes through `stripForDisplay`; the browser never rendered it.
 - `chatStreams` is a separate table from `chatMessages` because it is patched per delta, and `chatMessages` carries a full-text search index that would be rewritten every token.
+- **A finalized message is bounded in BYTES** (`fitUtf8` / `fitEvents` in `chat/events.ts`): answer 400 KB, folded timeline 450 KB. Convex refuses a document over 1 MiB, and a 451-event research turn folded to 1.23 MiB — its finalize threw, and because `reapStalled` then ran its whole batch in one transaction, NO stalled stream anywhere was reaped for days (locked conversations; three stuck turns lock a user out via `MAX_CONCURRENT_STREAMS`). Each terminal fail in the reaper is now its own sub-transaction, skipped and logged (`STREAM_REAP_FAILED`) if it throws.
 
 If you add a field to `chatMessages` that changes during a stream, you have undone this.
 
@@ -497,6 +498,40 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
   `ai_ingest_store_original_copy=false`) → edge → frontend. The new Python
   writes 0006's columns on every persist; the new Convex sends `sha256`, which
   an old Python rejects (`extra="forbid"`). Full runbook: ROADMAP.
+
+### File Library hardening (branch `feat/library-hardening` — STAGING-verified, NOT on production)
+
+- **Deleting a file does not reach the disk by itself** — this self-hosted
+  Convex never removes a deleted blob's bytes. `app.ops.blob_reclaim` does,
+  from a root timer (`deploy/81-library-ops.sh`): only keys no live
+  file-storage record names, older than grace + min-age, under the storage lock
+  `backup.sh` holds, and it STOPS (deletes nothing) above 200 candidates per
+  run. Dry run unless `--apply`; production apply needs the operator's approval.
+- **Uploads carry a single-use ticket** (`lt=` on the upload URL, SHA-256 on
+  the intent). The edge redeems it (`/edge/upload-ticket`, `EDGE_TICKET_SECRET`)
+  before forwarding a byte and cuts the stream at the ticket's `maxBytes`; low
+  disk is refused with 507 BEFORE redeeming, so the ticket survives. Finish does
+  not require redemption, so new Convex behind an old edge still uploads — the
+  edge follows Convex, never the reverse (`e2e/qa-upload-compat.js`).
+- **`userFiles.generation` fences every processing answer**: bumped on manual
+  retry, automatic retry and reindex (a reaper re-dispatch keeps it); Python
+  echoes it and its persist is fenced by `files.generation`. A late answer from
+  an older attempt changes nothing.
+- **Failure codes decide retries.** Retryable codes back off 10 min / 1 h / 6 h
+  (±20 %), then dead-letter; non-retryable ones (PARSE_FAILED, UNSUPPORTED,
+  TOO_LARGE, INTEGRITY) are final at once. The ops alert counts only
+  retry-EXHAUSTED dead letters of the last 24 h (`deadLetteredLastDay`) — a
+  user's corrupt file is `failedFinal`, never a page.
+- **Reindex never makes a file disappear**: it stays `ready` on its old chunks
+  until the atomic swap; retrieval spans embedding models (RRF) while one runs;
+  a dimension that cannot fit the index column fails `readyz` and ingest (503).
+- **`AI_SANDBOX_MIN_TIER=1` in production** — anything weaker refuses to parse.
+  The default (4) accepts every tier, for backward compatibility only.
+- **Staging** (`deploy/staging/staging.sh`, same VM, own network/ports/DBs):
+  a fail-closed check refuses any AI setting that would connect to a production
+  port — an unset `CONVEX_API_URL` defaults to production's `:3210`, and once
+  sent staging's hot ingress there. The restore drill checks table counts
+  BEFORE the deploy (`verify-restore.sh tables`); after it, crons move rows.
 
 ## Cost controls (do not remove)
 

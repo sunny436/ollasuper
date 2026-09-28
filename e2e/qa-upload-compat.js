@@ -71,6 +71,34 @@ async function call(kind, jwt, path, args) {
   const del = await call("mutation", jwt, "library:removeMany", { fileIds: [fin.value.fileId] });
   if (!del.ok) throw new Error(`cleanup: ${del.error}`);
   console.log("PASS  new Convex + old edge: a ticketed URL forwarded untouched uploads, finishes, and was cleaned up");
+
+  // Low disk, in the real stack: a second edge whose free-space floor this host
+  // cannot meet (EDGE_MIN_FREE_BYTES=1e15) must refuse with 507 BEFORE a byte
+  // is forwarded - and without spending the ticket, so the same upload goes
+  // through the normal edge once there is room.
+  const LOW = process.env.E2E_LOWDISK_EDGE;
+  if (LOW) {
+    const name2 = `lowdisk-${Date.now().toString(36)}.txt`;
+    const body2 = Buffer.from(`low-disk probe ${name2}\n`);
+    const b2 = await call("mutation", jwt, "library:beginUpload", {
+      workspaceId, name: name2, contentType: "text/plain", size: body2.length, purpose: "library",
+    });
+    if (!b2.ok || !b2.value.ok) throw new Error(`begin (low disk): ${b2.error}`);
+    const u = new URL(b2.value.uploadUrl);
+    const refused = await fetch(`${LOW}${u.pathname.replace(/^\/__cvx/, "")}${u.search}`, {
+      method: "POST", headers: { "content-type": "text/plain" }, body: body2,
+    });
+    if (refused.status !== 507) throw new Error(`the low-disk edge answered ${refused.status}, not 507`);
+    const again = await fetch(b2.value.uploadUrl, { method: "POST", headers: { "content-type": "text/plain" }, body: body2 });
+    if (again.status !== 200) throw new Error(`after a 507 the ticket no longer worked (${again.status})`);
+    const { storageId: sid2 } = await again.json();
+    const f2 = await call("mutation", jwt, "library:finishUpload", {
+      intentId: b2.value.intentId, storageId: sid2, name: name2, contentType: "text/plain",
+    });
+    if (!f2.ok || !f2.value.ok) throw new Error(`finish (after 507): ${f2.error || f2.value?.code}`);
+    await call("mutation", jwt, "library:removeMany", { fileIds: [f2.value.fileId] });
+    console.log("PASS  low disk: the edge refused with 507 before forwarding, and the unspent ticket then uploaded normally");
+  }
 })().catch((e) => {
   console.log(`FAIL  ${e.message}`);
   process.exit(1);
