@@ -312,7 +312,11 @@ export const finishUpload = mutation({
       sha256: meta.sha256,
       source: "uploaded",
     });
-    await ctx.db.patch(intent._id, { status: "completed" });
+    // The finished session has nothing left to do: its reservation ends with it,
+    // its ticket is spent, and a retried finish is answered from `by_storage`
+    // above. Deleted, not kept as "completed" - a file's delete must leave no
+    // row behind that still records its upload.
+    await ctx.db.delete(intent._id);
     if (evicted.length > 0) {
       await notify(
         ctx,

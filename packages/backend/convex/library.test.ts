@@ -170,6 +170,18 @@ describe("upload", () => {
     });
     expect(again).toMatchObject({ ok: true, fileId: r.finish && "fileId" in r.finish ? r.finish.fileId : "" });
     expect(await usage(t, a)).toBe(5);
+    // The finished session leaves no row behind ...
+    expect(await t.run(async (ctx) => (await ctx.db.query("uploadIntents").collect()).length)).toBe(0);
+    // ... and once the file is deleted, the same finish is refused, not revived.
+    await u.mutation(api.library.removeMany, { fileIds: [fileIdOf(r)] });
+    await expect(
+      u.mutation(api.library.finishUpload, {
+        intentId: r.begin.ok ? r.begin.intentId : ("" as Id<"uploadIntents">),
+        storageId: r.storageId!,
+        name: "x.txt",
+        contentType: "text/plain",
+      }),
+    ).rejects.toThrow(/Not found/);
   });
 
   test("an aborted session frees its reservation at once, and an expired one lapses on its own", async () => {
