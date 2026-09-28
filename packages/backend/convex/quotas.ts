@@ -82,7 +82,8 @@ export type QuotaKind =
   | "libraryUpload"
   | "libraryRetry"
   | "libraryAccess"
-  | "libraryBytes";
+  | "libraryBytes"
+  | "libraryUploadBytes";
 
 export type WindowResult =
   | { ok: true }

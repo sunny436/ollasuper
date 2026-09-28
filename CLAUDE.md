@@ -473,6 +473,10 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
   to refuse before any bytes move. The ingest queue's patience
   (`QUEUE_MAX_ATTEMPTS`) is sized from that cap × Python's whole-file deadline —
   a test pins the relation; change one and the test tells you to change both.
+- **Deleting a file does NOT free disk on this self-hosted Convex** (measured:
+  deleted blobs stay on the volume long past the 2-day retention). So uploads
+  also carry a per-user DAILY bytes budget (1 GiB, `UPLOAD_BYTES_PER_DAY`) that
+  deletions do not refund — the quota bounds live bytes, this bounds churn.
 - **Any code that deletes `userFiles` outside `removeLibraryFile`** (account
   deletion does) must call `releaseLibraryCharge`, or the global ledger drifts
   up with every deletion until uploads report "Storage is temporarily full".

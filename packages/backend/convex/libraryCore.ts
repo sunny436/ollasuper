@@ -8,6 +8,7 @@ import { bump } from "./counters";
 import { fileKind, isProcessable, nameKeyOf, sanitizeFileName, sha256Hex } from "./fileKind";
 import { notify } from "./notifications";
 import { unlinkFileEverywhere } from "./projects";
+import { consumeWindow, peekWindow } from "./quotas";
 
 /**
  * File Library core — the ONE place a Library file is created, charged,
@@ -46,6 +47,26 @@ export const MAX_FILES_PER_USER = 2_000;
  */
 export const UPLOADS_PER_HOUR = 300;
 export const UPLOAD_WINDOW_MS = 60 * 60_000;
+
+/**
+ * Uploaded BYTES per user per day, NOT refunded by deleting. The quota bounds
+ * live bytes, but this self-hosted Convex never reclaims a deleted blob's
+ * bytes from disk (measured on production: 1,639 blob files older than the
+ * 2-day retention window vs 753 live documents), so upload-delete churn grew
+ * the disk without bound — up to ~7.5 GB/h at the upload rate limit, against
+ * 14 GB free. 1 GiB/day is ten times the quota: generous for real use, a hard
+ * bound on churn per account.
+ */
+export const UPLOAD_BYTES_PER_DAY = 1024 * 1024 * 1024;
+const DAY_MS = 24 * 60 * 60_000;
+
+/** Would `bytes` more fit today's upload budget? (No write — for beginUpload.) */
+export async function assertUploadBudget(ctx: MutationCtx, userId: Id<"users">, bytes: number): Promise<void> {
+  const { result } = await peekWindow(ctx, userId, "libraryUploadBytes", UPLOAD_BYTES_PER_DAY, DAY_MS, bytes);
+  if (!result.ok) {
+    throw libraryError("RATE_LIMITED", "You've uploaded a lot today. Please try again tomorrow.");
+  }
+}
 
 /** At most this many files are removed by one upload. */
 export const MAX_EVICTIONS = 50;
@@ -286,6 +307,14 @@ export async function createLibraryFile(
   const sha256 = sha256Hex(a.sha256);
   const processable =
     a.source === "uploaded" && !a.forceStored && isProcessable(name, a.contentType);
+  // Today's upload budget (see UPLOAD_BYTES_PER_DAY), charged at EVERY door on
+  // the actual size. Migrations fold existing bytes in and are not uploads.
+  if (a.source === "uploaded" && !a.legacyFileId) {
+    const budget = await consumeWindow(ctx, a.userId, "libraryUploadBytes", UPLOAD_BYTES_PER_DAY, DAY_MS, a.size);
+    if (!budget.ok) {
+      throw libraryError("RATE_LIMITED", "You've uploaded a lot today. Please try again tomorrow.");
+    }
+  }
   if (processable) {
     // The processing intake cap, enforced HERE so no door can skip it. It used
     // to live only in library.beginUpload; the legacy saveFile/register doors

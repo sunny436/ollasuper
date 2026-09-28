@@ -83,6 +83,18 @@ qa-redteam-public 5/5 — all with 0 console errors.
 5. Account deletion removed Library rows without releasing their charge, so every deleted account
    inflated the global ledger toward a false "Storage is temporarily full" — fixed via
    `releaseLibraryCharge`.
+6. The 20-in-flight processing cap lived only in `beginUpload`; the legacy doors let the F-12
+   suite queue 201 files, each polling Python. It now lives in `createLibraryFile`. The queue's
+   patience (120 attempts, ~10-24 min) could not cover a full intake (20 files x the 300 s
+   whole-file deadline); it is 1,500 attempts, pinned by a test. The 60/h upload limit would
+   have failed a folder of 80 documents — it is 300/h, one constant for every door.
+7. **Platform finding (measured):** this self-hosted Convex never reclaims a deleted blob's bytes
+   from disk — 1,639 blob files older than the 2-day retention window vs 753 live documents
+   (August alone: 337 orphans). The quota bounds live bytes, not disk, so upload-delete churn
+   could grow the disk ~7.5 GB/h at the rate limit. Uploads now carry a per-user daily bytes
+   budget (1 GiB) that deletions do not refund. **The orphaned bytes themselves (~886 files) and
+   the 3.3 GB of server-side snapshot exports that each backup leaves in `storage/exports` are
+   an ops task, not done here.**
 Also found: several e2e scripts drove the removed Files pages or re-sent identical bytes, which now
 (correctly) ask "You already have this file"; they were updated, not the product.
 

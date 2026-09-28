@@ -23,6 +23,7 @@ import {
   UPLOADS_PER_HOUR,
   USER_QUOTA_BYTES,
   assertFileCap,
+  assertUploadBudget,
   capFor,
   createLibraryFile,
   deletableForSpace,
@@ -160,6 +161,8 @@ export const beginUpload = mutation({
     const rate = await consumeWindow(ctx, userId, "libraryUpload", UPLOADS_PER_HOUR, HOUR);
     if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many uploads. Please wait a moment.");
     await assertFileCap(ctx, userId);
+    // Refuse before any bytes move; createLibraryFile charges the real size.
+    await assertUploadBudget(ctx, userId, a.size);
     if ((await processingCount(ctx, userId)) >= MAX_PROCESSING_PER_USER) {
       throw libraryError("PROCESSING_BUSY", "Several of your files are still processing. Try again shortly.");
     }

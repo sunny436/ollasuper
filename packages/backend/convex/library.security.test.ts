@@ -3,7 +3,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { createLibraryFile } from "./libraryCore";
+import { createLibraryFile, removeLibraryFile } from "./libraryCore";
 import schema from "./schema";
 
 /**
@@ -255,6 +255,31 @@ describe("processing intake (red-team cycle 6, found on prod)", () => {
     expect(QUEUE_MAX_ATTEMPTS * QUEUE_MIN_DELAY_MS).toBeGreaterThanOrEqual(
       (MAX_PROCESSING_PER_USER - 1) * INGEST_DEADLINE_MS,
     );
+  });
+});
+
+describe("upload-delete churn (red-team cycle 7, measured on prod)", () => {
+  test("deleting does not refund the daily upload budget: churn is bounded at 1 GiB/day", async () => {
+    const t = convexTest(schema, modules);
+    const { b, ws } = await seed(t);
+    const churn = (i: number) =>
+      t.run(async (ctx) => {
+        const storageId = await ctx.storage.store(new Blob([`c${i}`]));
+        const id = await createLibraryFile(ctx, {
+          userId: b, workspaceId: ws, storageId, name: `c${i}.zip`, contentType: "application/zip",
+          size: 100 * 1024 * 1024, source: "uploaded",
+        });
+        const f = await ctx.db.get(id);
+        if (f) await removeLibraryFile(ctx, f, "user");
+      });
+    for (let i = 0; i < 10; i++) await churn(i); // 1,000 MB uploaded, all deleted
+    await expect(churn(10)).rejects.toThrow(/uploaded a lot today/);
+    // …and the Library door refuses BEFORE any bytes move.
+    await expect(
+      t.withIdentity(as(b)).mutation(api.library.beginUpload, {
+        workspaceId: ws, name: "more.zip", contentType: "application/zip", size: 25 * 1024 * 1024, purpose: "library",
+      }),
+    ).rejects.toThrow(/uploaded a lot today/);
   });
 });
 
