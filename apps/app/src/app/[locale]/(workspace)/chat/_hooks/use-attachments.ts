@@ -7,7 +7,7 @@ import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@v1/backend/convex/_generated/api";
 import type { Id } from "@v1/backend/convex/_generated/dataModel";
 import { useMutation } from "convex/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 export interface PendingAttachment {
@@ -44,6 +44,40 @@ export interface PendingAttachment {
    * URL.createObjectURL, so holding it costs effectively nothing.
    */
   file: File;
+  /**
+   * The conversation this chip was added in (`threadId ?? "new"`).
+   *
+   * The composer is mounted ABOVE the route segment (chat-layout.tsx) so it
+   * survives navigation, which means this hook's state survives it too. Without
+   * a key an unsent chip followed the user from one chat into "New chat" (and
+   * into any other chat), and was silently sent there. Only the current chat's
+   * chips are exposed; the rest wait for the user to come back.
+   */
+  threadKey: string;
+}
+
+/** The composer-draft key for a conversation ("new" for the landing screen). */
+export function threadKeyOf(threadId: string | null): string {
+  return threadId ?? "new";
+}
+
+/** The chips that belong to the conversation on screen. */
+export function chipsFor<T extends { threadKey: string }>(items: T[], key: string): T[] {
+  return items.filter((i) => i.threadKey === key);
+}
+
+/**
+ * Drop exactly the chips that were sent, wherever they are keyed now.
+ *
+ * NOT "clear the current conversation": the first send from the landing screen
+ * switches threadId from null to the new thread's id mid-send, so by the time
+ * the send resolves the current key is the NEW thread and the sent chips are
+ * still keyed "new" — clearing by key would leave them behind, and they would
+ * reappear on the next New chat.
+ */
+export function withoutChips<T extends { localId: string }>(items: T[], localIds: string[]): T[] {
+  const gone = new Set(localIds);
+  return items.filter((i) => !gone.has(i.localId));
 }
 
 const MAX_FILES = 6;
@@ -78,7 +112,9 @@ export function useAttachments(threadId: string | null) {
   // Persistent account-knowledge (reused as-is; see Option B in use-attachments).
   const saveKnowledgeFile = useMutation(api.userFiles.saveFile);
   const removeKnowledgeFile = useMutation(api.userFiles.remove);
-  const [items, setItems] = useState<PendingAttachment[]>([]);
+  const [all, setItems] = useState<PendingAttachment[]>([]);
+  const key = threadKeyOf(threadId);
+  const items = useMemo(() => chipsFor(all, key), [all, key]);
   const counter = useRef(0);
   /**
    * Chips removed while their upload was still in flight.
@@ -288,18 +324,19 @@ export function useAttachments(threadId: string | null) {
             attachmentId: null,
             userFileId: null,
             file,
+            threadKey: key,
           },
         ]);
         if (current) void upload(file, localId);
         else waiting.current.push({ file, localId });
       }
     },
-    [current, items.length, upload],
+    [current, items.length, upload, key],
   );
 
   const remove = useCallback(
     async (localId: string) => {
-      const item = items.find((i) => i.localId === localId);
+      const item = all.find((i) => i.localId === localId);
       setItems((prev) => prev.filter((i) => i.localId !== localId));
       if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
       // Still uploading: there is no id to delete yet, and the request will
@@ -325,7 +362,7 @@ export function useAttachments(threadId: string | null) {
         }
       }
     },
-    [items, removeAttachment, removeKnowledgeFile],
+    [all, removeAttachment, removeKnowledgeFile],
   );
 
   /** Re-upload a failed attachment in place, reusing the retained File. */
@@ -346,12 +383,16 @@ export function useAttachments(threadId: string | null) {
     [items, patch, upload],
   );
 
-  const clear = useCallback(() => {
-    for (const i of items) {
-      if (i.previewUrl) URL.revokeObjectURL(i.previewUrl);
-    }
-    setItems([]);
-  }, [items]);
+  /** Forget the chips that were just sent (by id — see withoutChips). */
+  const clearSent = useCallback(
+    (localIds: string[]) => {
+      for (const i of all) {
+        if (localIds.includes(i.localId) && i.previewUrl) URL.revokeObjectURL(i.previewUrl);
+      }
+      setItems((prev) => withoutChips(prev, localIds));
+    },
+    [all],
+  );
 
   const readyIds = items
     .filter((i) => i.status === "ready" && i.attachmentId)
@@ -362,7 +403,7 @@ export function useAttachments(threadId: string | null) {
     add,
     remove,
     retry,
-    clear,
+    clearSent,
     readyIds,
     uploading: items.some((i) => i.status === "uploading"),
     // Names, not a count: the composer refuses a send that would quietly drop

@@ -13,7 +13,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import { useAttachments } from "../_hooks/use-attachments";
+import { threadKeyOf, useAttachments } from "../_hooks/use-attachments";
 import { useChatSession } from "../_hooks/use-chat-session";
 import { useComposer } from "../_hooks/use-composer";
 import { useConnectionStatus } from "../_hooks/use-connection-status";
@@ -189,6 +189,23 @@ export function ChatInput({
     if (draft) setValue(draft);
   }, [draft]);
 
+  // The typed text belongs to its conversation, like the chips do (see
+  // useAttachments' threadKey): this composer outlives navigation, so without
+  // a per-conversation stash the half-typed text followed the user into "New
+  // chat" and every other chat. A send clears the box BEFORE its await, so the
+  // first-send switch from "new" to the fresh thread stashes an empty draft.
+  // Runs on conversation change only; `value` is read as it stood on leaving.
+  const drafts = useRef(new Map<string, string>());
+  const draftKey = useRef(threadKeyOf(threadId));
+  useEffect(() => {
+    const next = threadKeyOf(threadId);
+    if (next === draftKey.current) return;
+    drafts.current.set(draftKey.current, value);
+    draftKey.current = next;
+    setValue(drafts.current.get(next) ?? "");
+    requestAnimationFrame(autosize);
+  }, [threadId]);
+
   // Runs for programmatic fills too (setDraft), before paint so there is no
   // visible jump between the text landing and the box growing.
   useLayoutEffect(() => {
@@ -218,6 +235,11 @@ export function ChatInput({
     }
     // Read AFTER the guards, so the ids reflect settled state.
     const ids = attachments.readyIds;
+    // Which chips are being sent, by local id: cleared by id after the send,
+    // because a first send switches the conversation mid-flight.
+    const sentChips = attachments.items
+      .filter((i) => i.status === "ready" && i.attachmentId)
+      .map((i) => i.localId);
     if (!text.trim() && ids.length === 0) return;
     // Warm the markdown chunk the moment the user commits to a send (incl.
     // attachment-only) — the assistant reply renders markdown, and the empty-chat
@@ -236,7 +258,7 @@ export function ChatInput({
     requestAnimationFrame(autosize);
     const ok = await send(text, { attachmentIds: ids });
     if (ok) {
-      attachments.clear();
+      attachments.clearSent(sentChips);
     } else {
       setValue(text);
       requestAnimationFrame(autosize);

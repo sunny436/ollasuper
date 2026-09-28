@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { type WaitingUpload, releaseWaiting } from "./use-attachments";
+import {
+  type WaitingUpload,
+  chipsFor,
+  releaseWaiting,
+  threadKeyOf,
+  withoutChips,
+} from "./use-attachments";
 
 const held = (localId: string): WaitingUpload => ({
   localId,
@@ -28,4 +34,25 @@ test("releasing twice starts nothing twice", () => {
   const waiting = [held("a1")];
   expect(releaseWaiting(waiting, new Set())).toHaveLength(1);
   expect(releaseWaiting(waiting, new Set())).toHaveLength(0);
+});
+
+// A chip added in one conversation used to follow the user into "New chat" and
+// every other chat (the composer outlives navigation), and was sent there.
+const chip = (localId: string, threadKey: string) => ({ localId, threadKey });
+
+test("each conversation sees only its own unsent chips", () => {
+  const all = [chip("a1", "thread_A"), chip("a2", "new"), chip("a3", "thread_A")];
+  expect(chipsFor(all, "thread_A").map((c) => c.localId)).toEqual(["a1", "a3"]);
+  expect(chipsFor(all, threadKeyOf(null)).map((c) => c.localId)).toEqual(["a2"]);
+  expect(chipsFor(all, "thread_B")).toEqual([]);
+});
+
+test("sent chips are cleared by id even after the conversation switched mid-send", () => {
+  // First send from the landing screen: chips keyed "new", and by the time the
+  // send resolves the composer is already on the freshly created thread.
+  const all = [chip("a1", "new"), chip("a2", "new"), chip("a9", "thread_A")];
+  const left = withoutChips(all, ["a1", "a2"]);
+  expect(left.map((c) => c.localId)).toEqual(["a9"]);
+  // Nothing is left behind to reappear on the next New chat.
+  expect(chipsFor(left, "new")).toEqual([]);
 });
