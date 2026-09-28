@@ -299,7 +299,28 @@ describe("access capabilities and the /library/file route", () => {
     });
     const t1 = await A.mutation(api.library.mintAccess, { fileId, purpose: "download" });
     expect((await t.fetch(`/library/file?t=${t1.token}`)).status).toBe(200);
-    const t2 = await A.mutation(api.library.mintAccess, { fileId, purpose: "download" });
-    expect((await t.fetch(`/library/file?t=${t2.token}`)).status).toBe(429);
+    // The byte budget is charged when a capability is minted: the second
+    // 300 MB download does not even get a link.
+    await expect(A.mutation(api.library.mintAccess, { fileId, purpose: "download" })).rejects.toThrow(/downloaded a lot/);
+  });
+
+  test("one capability serves a bounded number of fetches (counted on its own row)", async () => {
+    const t = convexTest(schema, modules);
+    const { a, ws } = await seed(t);
+    const A = t.withIdentity(as(a));
+    const { fileId } = await fileOf(t, a, ws, "x.txt", "hello", "text/plain");
+    const { token } = await A.mutation(api.library.mintAccess, { fileId, purpose: "download" });
+    const statuses = [];
+    for (let i = 0; i < 4; i++) statuses.push((await t.fetch(`/library/file?t=${token}`)).status);
+    expect(statuses).toEqual([200, 200, 200, 429]); // a download manager's retries, then no more
+    // Serving never writes the user's shared quota row (no cross-file contention).
+    const quotaWritesBefore = await t.run(async (ctx) => (await ctx.db.query("userQuotas").collect()).length);
+    const png = await fileOf(t, a, ws, "p.png", PNG, "image/png");
+    const [prev] = await A.mutation(api.library.mintPreviews, { fileIds: [png.fileId] });
+    const before = await t.run(async (ctx) => JSON.stringify(await ctx.db.query("userQuotas").collect()));
+    expect((await t.fetch(`/library/file?t=${prev!.token}&p=preview`)).status).toBe(200);
+    const after = await t.run(async (ctx) => JSON.stringify(await ctx.db.query("userQuotas").collect()));
+    expect(after).toBe(before);
+    expect(quotaWritesBefore).toBeGreaterThan(0);
   });
 });

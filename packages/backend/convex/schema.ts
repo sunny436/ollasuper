@@ -982,6 +982,10 @@ export default defineSchema({
     userId: v.id("users"),
     purpose: v.union(v.literal("download"), v.literal("preview")),
     expiresAt: v.number(),
+    // Per-capability use count. Counted HERE, on the token's own row, so
+    // parallel thumbnail loads never contend on one shared per-user document.
+    uses: v.optional(v.number()),
+    maxUses: v.optional(v.number()),
   })
     .index("by_hash", ["tokenHash"])
     .index("by_file", ["fileId"])

@@ -45,6 +45,14 @@ const SORTS: { value: Sort; label: string }[] = [
   { value: "name_desc", label: "Name Z–A" },
 ];
 
+/** The server's reason for refusing a retry, in words (userFiles.retry). */
+const RETRY_REFUSED: Record<string, string> = {
+  retry_limit: "You've retried this file 3 times today. Try again tomorrow.",
+  rate_limited: "Too many retries just now. Wait a few minutes.",
+  needs_reupload: "This file's original is gone. Upload it again.",
+  not_failed: "This file is no longer in a failed state.",
+};
+
 const selectCls =
   "rounded-full border border-border bg-card px-3 py-2 text-sm text-primary outline-none transition focus:border-brand";
 
@@ -149,7 +157,7 @@ export function LibraryPane() {
       try {
         const r = await retry({ fileId: f._id });
         if (r?.ok) toast.success("Retrying…");
-        else toast.error("Couldn't retry — try again later");
+        else toast.error(RETRY_REFUSED[r?.reason ?? ""] ?? "Couldn't retry — try again later");
       } catch (e) {
         toast.error(libraryErrorMessage(e, "Couldn't retry"));
       }

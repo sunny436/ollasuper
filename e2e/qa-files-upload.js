@@ -23,7 +23,8 @@ const { email, password } = account();
   await page
     .locator('input[type="file"]')
     .first()
-    .setInputFiles({ name, mimeType: "application/octet-stream", buffer: Buffer.from([1, 2, 3]) });
+    // Unique bytes per run: identical bytes ask "You already have this file".
+    .setInputFiles({ name, mimeType: "application/octet-stream", buffer: Buffer.from(`stored ${name}`) });
   const outcome = await Promise.race([
     page.getByText(`Added ${name}`).first().waitFor({ timeout: 30000 }).then(() => "uploaded"),
     page.getByText("Upload failed").first().waitFor({ timeout: 30000 }).then(() => "FAILED"),

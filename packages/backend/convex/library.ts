@@ -49,6 +49,16 @@ const ACCESS_PER_HOUR = 300;
 const BYTES_PER_HOUR = 500 * 1024 * 1024;
 const DOWNLOAD_TTL_MS = 60_000;
 const PREVIEW_TTL_MS = 5 * 60_000;
+/**
+ * How often one capability may be fetched. A download manager retries; a
+ * thumbnail re-renders. Budgets are charged ONCE, when a capability is minted,
+ * and uses are counted on the token's own row — so the bandwidth bound per
+ * user stays hard (maxUses × BYTES_PER_HOUR) while parallel fetches never
+ * write the same document (they used to contend on the user's quota row: OCC
+ * retries on every thumbnail grid, seen in production logs).
+ */
+const DOWNLOAD_MAX_USES = 3;
+const PREVIEW_MAX_USES = 4;
 /** Raster images up to this size render inline as their own thumbnail. */
 export const PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
 const PAGE_MAX = 50;
@@ -549,6 +559,8 @@ async function mintOne(
     userId,
     purpose,
     expiresAt: Date.now() + (purpose === "download" ? DOWNLOAD_TTL_MS : PREVIEW_TTL_MS),
+    uses: 0,
+    maxUses: purpose === "download" ? DOWNLOAD_MAX_USES : PREVIEW_MAX_USES,
   });
   return token;
 }
@@ -568,6 +580,11 @@ export const mintAccess = mutation({
     if (purpose === "preview" && !toLibraryRow(f).canPreview) throw new ConvexError("Not found");
     const rate = await consumeWindow(ctx, userId, "libraryAccess", ACCESS_PER_HOUR, HOUR);
     if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many downloads. Please wait a moment.");
+    // The byte budget is charged here, once per capability (see *_MAX_USES).
+    const bytes = await consumeWindow(ctx, userId, "libraryBytes", BYTES_PER_HOUR, HOUR, f.size);
+    if (!bytes.ok) {
+      throw libraryError("RATE_LIMITED", "You've downloaded a lot this hour. Please try again later.");
+    }
     return { token: await mintOne(ctx, userId, f, purpose) };
   },
 });
@@ -578,15 +595,22 @@ export const mintPreviews = mutation({
   handler: async (ctx, { fileIds }) => {
     const userId = await requireUserId(ctx);
     const out: { fileId: Id<"userFiles">; token: string }[] = [];
+    let bytes = 0;
     for (const id of fileIds.slice(0, 24)) {
       const f = await ctx.db.get(id);
       if (!f || f.userId !== userId || !toLibraryRow(f).canPreview) continue;
       if (!(await hasWorkspaceAccess(ctx, userId, f.workspaceId))) continue;
       out.push({ fileId: id, token: await mintOne(ctx, userId, f, "preview") });
+      bytes += f.size;
     }
     if (out.length > 0) {
+      // One request unit per batch and the batch's bytes, charged at mint (a
+      // throw rolls the minted tokens back with it).
       const rate = await consumeWindow(ctx, userId, "libraryAccess", ACCESS_PER_HOUR, HOUR, 1);
-      if (!rate.ok) throw libraryError("RATE_LIMITED", "Too many requests. Please wait a moment.");
+      const budget = rate.ok
+        ? await consumeWindow(ctx, userId, "libraryBytes", BYTES_PER_HOUR, HOUR, bytes)
+        : rate;
+      if (!budget.ok) throw libraryError("RATE_LIMITED", "Too many requests. Please wait a moment.");
     }
     return out;
   },
@@ -611,12 +635,15 @@ export const resolveAccess = internalMutation({
     if (!f || f.userId !== t.userId || !f.storageId) return { ok: false as const, status: 404 };
     if (!(await isActiveUser(ctx, t.userId))) return { ok: false as const, status: 404 };
     if (!(await hasWorkspaceAccess(ctx, t.userId, f.workspaceId))) return { ok: false as const, status: 404 };
-    const req = await consumeWindow(ctx, t.userId, "libraryAccess", ACCESS_PER_HOUR * 2, HOUR);
-    const bytes = await consumeWindow(ctx, t.userId, "libraryBytes", BYTES_PER_HOUR, HOUR, f.size);
-    if (!req.ok || !bytes.ok) {
-      logEvent("LIB_DENIED", { reason: "budget", userId: t.userId, fileId: f._id });
+    // Uses are counted on THIS token's row (budgets were charged at mint), so
+    // concurrent fetches of different files never write the same document.
+    const uses = t.uses ?? 0;
+    const maxUses = t.maxUses ?? (t.purpose === "download" ? DOWNLOAD_MAX_USES : PREVIEW_MAX_USES);
+    if (uses >= maxUses) {
+      logEvent("LIB_DENIED", { reason: "uses", userId: t.userId, fileId: f._id });
       return { ok: false as const, status: 429 };
     }
+    await ctx.db.patch(t._id, { uses: uses + 1 });
     logEvent(purpose === "download" ? "LIB_DOWNLOAD" : "LIB_PREVIEW", { userId: t.userId, fileId: f._id, size: f.size });
     return { ok: true as const, storageId: f.storageId, name: f.name, size: f.size };
   },

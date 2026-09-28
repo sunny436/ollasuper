@@ -68,7 +68,8 @@ const step = async (n, f) => {
       "Personalization",
       "Shared Links",
       "Archived Chats",
-      "Files",
+      // Settings → Files became the File Library (a workspace surface).
+      "Library",
     ]) {
       if ((await aside.getByRole("link", { name: label }).count()) === 0)
         throw new Error(`sidebar missing "${label}"`);

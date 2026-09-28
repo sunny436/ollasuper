@@ -41,7 +41,9 @@ const { email, password } = account();
     const input = page.locator('input[type="file"]').first();
     await input.waitFor({ state: "attached", timeout: 30000 });
     const t0 = Date.now();
-    await input.setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from("early") });
+    // Unique bytes per round: identical bytes (correctly) ask "You already
+    // have this file" first, which is not what this regression measures.
+    await input.setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`early ${name}`) });
     const remove = page.getByRole("button", { name: `Remove ${name}` });
     try {
       await remove.waitFor({ timeout: 5000 });
