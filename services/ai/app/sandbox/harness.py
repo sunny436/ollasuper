@@ -158,7 +158,11 @@ def _pid_namespace_mode() -> str:
 # several refuse a remount (docker's nsfs handles). Reads the mount table with
 # `read` into named fields - never `set --`, which would clobber the "$@" the
 # mount script ends by exec-ing. Fails CLOSED (exit 97) on any mount it cannot
-# make read-only, and on a mount point it cannot name exactly.
+# make read-only, and on a mount point it cannot name exactly. /dev/shm stays
+# writable on purpose: the render/OCR pool's multiprocessing semaphores live
+# there - the service creates them and the sandboxed worker must open them
+# read-write (read-only broke every pooled render: EROFS) - and its pages are
+# charged to the service's own memory cgroup, not the host.
 _DATA_FS = (
     "ext2|ext3|ext4|xfs|btrfs|f2fs|vfat|exfat|ntfs|ntfs3|zfs|overlay|tmpfs|"
     "ramfs|fuseblk|nfs|nfs4|cifs|9p|virtiofs"
@@ -168,6 +172,7 @@ RO_FS_SCRIPT = (
     't=${rest#*- }; t=${t%% *}; '
     f'case "$t" in {_DATA_FS}) ;; *) continue;; esac; '
     'case ",$opts," in *,rw,*) ;; *) continue;; esac; '
+    'case "$mp" in /dev/shm) continue;; esac; '
     'case "$mp" in *\\\\*) exit 97;; esac; '
     "f=$(printf %s \"$opts\" | tr , '\\n' | "
     "grep -xE 'nosuid|nodev|noexec|noatime|nodiratime|relatime|strictatime' | "

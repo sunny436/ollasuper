@@ -192,8 +192,10 @@ def test_a_sandboxed_child_can_write_only_its_own_tmp(tmp_path_factory):
         pytest.skip("no writable directory outside /tmp to test against")
     try:
         done = _in_sandbox(
-            f'if : > "{outside}/x" 2>/dev/null; then echo OUTSIDE-WRITABLE; fi; '
-            ': > /tmp/ok && echo TMP-OK'
+            # touch, not `: > f`: a failed redirection on a special builtin
+            # makes sh EXIT, which would hide every later line.
+            f'if touch "{outside}/x" 2>/dev/null; then echo OUTSIDE-WRITABLE; fi; '
+            "touch /tmp/ok && echo TMP-OK"
         )
         assert "TMP-OK" in done.stdout
         assert "OUTSIDE-WRITABLE" not in done.stdout
