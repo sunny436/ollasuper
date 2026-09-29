@@ -38,6 +38,7 @@ import struct
 import subprocess  # noqa: S404 — fixed argv, no shell
 import sys
 import threading
+import time
 from collections.abc import Awaitable, Callable
 
 from app.logging import get_logger
@@ -147,48 +148,28 @@ def _pid_namespace_mode() -> str:
     return ""
 
 
-# Every writable DATA mount the service can see, remounted read-only inside the
-# sandbox's mount namespace, keeping the flags the kernel locks (nosuid, nodev,
-# noexec, atime). Two reasons it is per mount: clearing a locked flag is what
-# made a bare `remount,bind,ro /` fail under ProtectSystem=strict, and there the
-# service's StateDirectory / CacheDirectory / ReadWritePaths / private /var/tmp
-# are SEPARATE mounts a root-only remount never reached (measured on
-# production: a sandboxed decoder could write /var/lib/myos-ai). Pseudo
-# filesystems are skipped: the sandboxed user has no write rights there and
-# several refuse a remount (docker's nsfs handles). Reads the mount table with
-# `read` into named fields - never `set --`, which would clobber the "$@" the
-# mount script ends by exec-ing. Fails CLOSED (exit 97) on any mount it cannot
-# make read-only, and on a mount point it cannot name exactly. /dev/shm stays
-# writable on purpose: the render/OCR pool's multiprocessing semaphores live
-# there - the service creates them and the sandboxed worker must open them
-# read-write (read-only broke every pooled render: EROFS) - and its pages are
-# charged to the service's own memory cgroup, not the host.
-_DATA_FS = (
-    "ext2|ext3|ext4|xfs|btrfs|f2fs|vfat|exfat|ntfs|ntfs3|zfs|overlay|tmpfs|"
-    "ramfs|fuseblk|nfs|nfs4|cifs|9p|virtiofs"
-)
-RO_FS_SCRIPT = (
-    "while read -r _ _ _ _ mp opts rest; do "
-    't=${rest#*- }; t=${t%% *}; '
-    f'case "$t" in {_DATA_FS}) ;; *) continue;; esac; '
-    'case ",$opts," in *,rw,*) ;; *) continue;; esac; '
-    'case "$mp" in /dev/shm) continue;; esac; '
-    'case "$mp" in *\\\\*) exit 97;; esac; '
-    "f=$(printf %s \"$opts\" | tr , '\\n' | "
-    "grep -xE 'nosuid|nodev|noexec|noatime|nodiratime|relatime|strictatime' | "
-    "paste -sd, -); "
-    'mount -o "remount,bind,ro${f:+,$f}" "$mp" || exit 97; '
-    "done < /proc/self/mountinfo; "
-)
+# The exit code of a sandbox whose SETUP failed (seal, private /tmp, a secret
+# mask) - never a decoder's. The setup prints `sandbox-setup: <step>` first.
+SETUP_FAILED_RC = 97
+_SETUP_TAG = b"sandbox-setup:"
+# Makes the sandbox's whole filesystem read-only in one mount_setattr(2) call
+# (see seal.py for why one call, not a remount per mount). Run by the SAME
+# interpreter, isolated from site-packages and the environment.
+_SEAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seal.py")
+
+
+def _seal_argv() -> list[str]:
+    return [sys.executable, "-I", "-S", _SEAL]
 
 
 @functools.cache
 def _ro_fs_works() -> bool:
-    """Whether every writable data mount can be made read-only inside the
-    sandbox's mount namespace (probed once, with the very script the sandbox
-    runs): with it, a decoder RCE cannot write ANYWHERE on the host filesystem
-    the service user can - only to its private, capped /tmp."""
-    return _probe(["unshare", "-rnm", "--", "/bin/sh", "-c", RO_FS_SCRIPT])  # noqa: S607
+    """Whether the sandbox's filesystem can be sealed read-only (probed once,
+    with the very command the sandbox runs): with it, a decoder RCE cannot
+    write ANYWHERE on the host filesystem the service user can - only to its
+    private, capped /tmp and the pool's /dev/shm. Stable for the process's
+    life: the seal does not depend on the mount table, which changes."""
+    return _probe(["unshare", "-rnm", "--", *_seal_argv()])  # noqa: S607
 
 
 @functools.cache
@@ -343,20 +324,39 @@ def _assert_minimum() -> None:
         raise RuntimeError("the sandbox is below the required isolation")
 
 
+def setup_step(out: bytes) -> str:
+    """The step a failed setup named on stdout. Only a line carrying the
+    setup's own tag counts: a decoder can also exit 97, and its stdout is
+    attacker-shaped, so anything else is reported as unrecognised."""
+    head = bytes(out[:200]).split(b"\n", 1)[0]
+    if not head.startswith(_SETUP_TAG):
+        return "(unrecognised)"
+    return head[len(_SETUP_TAG) :].decode("utf-8", "replace").strip()
+
+
+def _setup_failed(step: str) -> str:
+    """Shell that reports a failed setup step on stdout and fails CLOSED."""
+    msg = shlex.quote(f"sandbox-setup: {step}")
+    return f"{{ printf '%s\\n' {msg}; exit {SETUP_FAILED_RC}; }}"
+
+
 def mount_script() -> str:
-    """The shell run INSIDE the mount namespace before the real command:
-    every data mount read-only (where the host allows it), a size- and
+    """The shell run INSIDE the mount namespace before the real command: the
+    whole filesystem sealed read-only (where the host allows it), a size- and
     inode-capped private /tmp, and /dev/null over every secret file. Each step
-    FAILS CLOSED - a decoder never runs with a mask or a cap that did not take."""
+    FAILS CLOSED and names itself - a decoder never runs with a seal, a cap or a
+    mask that did not take, and the log says which one."""
     script = ""
     if _ro_fs_works():
-        script += RO_FS_SCRIPT
+        seal = " ".join(shlex.quote(a) for a in _seal_argv())
+        script += f"{seal} || exit {SETUP_FAILED_RC}; "
     script += (
         f"mount -t tmpfs -o size={TMP_SIZE},nr_inodes={TMP_INODES},mode=1777 "
-        "tmpfs /tmp || exit 97; "
+        f"tmpfs /tmp || {_setup_failed('tmp')}; "
     )
     script += "".join(
-        f"mount --bind /dev/null {shlex.quote(m)} || exit 97; " for m in _secret_masks()
+        f"mount --bind /dev/null {shlex.quote(m)} || {_setup_failed('mask ' + m)}; "
+        for m in _secret_masks()
     )
     return script + 'exec "$@"'
 
@@ -505,6 +505,10 @@ def _run_child(
         log.warning("LIB_SANDBOX_KILL", extra={"op": op, "why": "output"})
         raise
 
+    if proc.returncode == SETUP_FAILED_RC:
+        log.warning(
+            "LIB_SANDBOX_SETUP_FAILED", extra={"op": op, "step": setup_step(out)}
+        )
     if proc.returncode != 0 or len(out) < 4:
         # non-zero with no frame == crash/segfault/OOM/rlimit kill.
         raise RuntimeError(f"sandbox op {op!r} failed (rc={proc.returncode})")
@@ -522,6 +526,62 @@ def _kill_group(proc: subprocess.Popen) -> None:
             proc.kill()
         except Exception:  # noqa: BLE001,S110
             pass
+
+
+# How long a live result stands. /readyz is polled (the host monitor, every
+# 5 min; deploy scripts); one real sandbox start per 30 s is the most it costs.
+LIVE_TTL_S = 30.0
+_LIVE_TIMEOUT_S = 15.0
+_live_lock = threading.Lock()
+_live: tuple[float, dict] | None = None
+
+
+def _start_live() -> dict:
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+            [*isolation_prefix(_prlimit_prefix(5, 256 << 20)), "/bin/true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=_child_env(),
+            cwd=os.getcwd(),
+            start_new_session=True,
+        )
+    except OSError as e:
+        return {"ok": False, "rc": None, "step": f"spawn: {type(e).__name__}"}
+    try:
+        out, _ = proc.communicate(timeout=_LIVE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        proc.communicate()
+        return {"ok": False, "rc": None, "step": "timeout"}
+    ms = round((time.monotonic() - t0) * 1000)
+    if proc.returncode == 0:
+        return {"ok": True, "rc": 0, "ms": ms}
+    step = setup_step(out) if proc.returncode == SETUP_FAILED_RC else "exit"
+    return {"ok": False, "rc": proc.returncode, "step": step, "ms": ms}
+
+
+def live_check() -> dict:
+    """Start a REAL sandbox - the same namespaces, seal, private /tmp, secret
+    masks and limits every decoder gets - and run /bin/true in it.
+
+    The import-time probes say what this host CAN do; this says what it DOES
+    right now. They differ exactly when something changes under a running
+    service, which is how production lost every decode on 29-09-2026 while
+    /readyz, reading only the probes, stayed green. Cached LIVE_TTL_S.
+    """
+    global _live
+    with _live_lock:
+        if _live is not None and time.monotonic() - _live[0] < LIVE_TTL_S:
+            return _live[1]
+    result = {"ok": True, "rc": 0, "in_process": True} if _TIER == 4 else _start_live()
+    if not result["ok"]:
+        log.warning("LIB_SANDBOX_LIVE_FAILED", extra=result)
+    with _live_lock:
+        _live = (time.monotonic(), result)
+    return result
 
 
 async def run_sandboxed(

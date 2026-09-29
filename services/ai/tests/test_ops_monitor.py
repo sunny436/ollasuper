@@ -135,6 +135,28 @@ def test_each_sandbox_layer_that_regresses_is_named():
         assert layer in alerts[0].summary and alerts[0].severity == "critical"
 
 
+def test_a_sandbox_that_cannot_start_now_is_critical_while_the_probes_read_green():
+    """Production 29-09-2026: every boot-time probe true, every decode refused.
+    Only the live start tells, and it must name the step that failed."""
+    full = {"meets_minimum": True, "pid_namespace": "shared", "readonly_fs": True,
+            "proc_isolated": True}
+    live_ok = {**full, "live": {"ok": True, "rc": 0, "ms": 40}}
+    ok = {"ready": True, "library": {"sandbox": live_ok, "index_dimension_ok": True}}
+    assert _keys(_healthy(ai=ok)) == set()
+    broken = {**full, "live": {"ok": False, "rc": 97, "step": "mask /srv/.env"}}
+    ai = {"ready": False, "library": {"sandbox": broken, "index_dimension_ok": True}}
+    alerts = {a.key: a for a in evaluate(CFG, _healthy(ai=ai))}
+    assert set(alerts) == {"SANDBOX_BROKEN", "AI_NOT_READY"}
+    assert alerts["SANDBOX_BROKEN"].severity == "critical"
+    assert "mask /srv/.env" in alerts["SANDBOX_BROKEN"].summary
+    # A spawn that timed out names no step: the exit is reported instead.
+    hung = {**full, "live": {"ok": False, "rc": None, "step": "timeout"}}
+    ai = {"ready": False, "library": {"sandbox": hung, "index_dimension_ok": True}}
+    assert "timeout" in {a.key: a for a in evaluate(CFG, _healthy(ai=ai))}[
+        "SANDBOX_BROKEN"
+    ].summary
+
+
 def test_old_dead_letters_and_corrupt_files_do_not_page_anyone():
     """A dead letter older than a day (already alerted) and a user's corrupt
     file (a non-retryable code, counted apart as failedFinal) raise nothing."""

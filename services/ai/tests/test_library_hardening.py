@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import logging
 import subprocess
 import sys
 import time
@@ -101,25 +102,99 @@ def test_the_sandbox_gets_a_capped_private_tmp_and_the_op_cpu_budget(monkeypatch
     argv = harness._argv("ingest_parse", {"file_type": "docx"}, cpu_s=315)
     assert argv[:4] == ["unshare", "-rnmpf", "--mount-proc", "--"]
     script = argv[argv.index("-c") + 1]
-    # Every data mount read-only first, then a size- AND inode-capped /tmp, then
-    # the masks; every step fails CLOSED (exit 97), never `|| true`.
-    assert script.startswith(harness.RO_FS_SCRIPT)
-    remount = 'mount -o "remount,bind,ro${f:+,$f}" "$mp" || exit 97'
-    assert remount in harness.RO_FS_SCRIPT
+    # The whole filesystem sealed read-only FIRST - one mount_setattr, never a
+    # remount per mount by path (that is what refused every production decode
+    # on 29-09-2026) - then a size- AND inode-capped /tmp, then the masks.
+    seal = " ".join(harness.shlex.quote(a) for a in harness._seal_argv())
+    assert script.startswith(f"{seal} || exit 97; ")
+    assert harness._seal_argv()[1:3] == ["-I", "-S"]  # no site, no environment
+    assert "/proc/self/mountinfo" not in script and "remount" not in script
     # Never `set --`: it would clobber the "$@" the script ends by exec-ing.
     assert "set --" not in script
+    # Every step fails CLOSED (exit 97) and names itself; never `|| true`.
     tmpfs = (
         f"mount -t tmpfs -o size={harness.TMP_SIZE},nr_inodes={harness.TMP_INODES},"
-        "mode=1777 tmpfs /tmp || exit 97; "
+        "mode=1777 tmpfs /tmp || { printf '%s\\n' 'sandbox-setup: tmp'; exit 97; }; "
     )
     assert tmpfs in script
-    assert "mount --bind /dev/null /srv/.env || exit 97; " in script
+    mask = (
+        "mount --bind /dev/null /srv/.env || "
+        "{ printf '%s\\n' 'sandbox-setup: mask /srv/.env'; exit 97; }; "
+    )
+    assert mask in script
     assert "|| true" not in script
     assert "--cpu=315" in argv
     assert f"--nproc={harness.MAX_PROCS}" in argv
     env = harness._child_env()
     private_tmp = "/tmp"  # noqa: S108 — the sandbox's own capped tmpfs
     assert env["TMPDIR"] == private_tmp and env["HOME"] == private_tmp
+
+
+def test_a_failed_setup_is_logged_with_the_step_it_named(monkeypatch, caplog):
+    """rc 97 used to be all the log said (production, 29-09-2026): now the
+    step the setup printed is logged, and the decode is still refused."""
+    caplog.set_level(logging.WARNING)
+    import os
+
+    fail = "import sys; sys.stdout.write('sandbox-setup: tmp\\n'); sys.exit(97)"
+    monkeypatch.setattr(harness, "_argv", lambda *a, **k: [sys.executable, "-c", fail])
+    # The stripped environment is not under test (and Windows' interpreter
+    # will not start without SYSTEMROOT); the step reporting is.
+    monkeypatch.setattr(harness, "_child_env", lambda: dict(os.environ))
+    with pytest.raises(RuntimeError, match="rc=97"):
+        harness._run_child("image", b"x", {}, timeout_s=20)
+    rows = [r for r in caplog.records if r.getMessage() == "LIB_SANDBOX_SETUP_FAILED"]
+    assert [(r.op, r.step) for r in rows] == [("image", "tmp")]
+
+
+def test_a_decoder_exiting_97_cannot_write_the_setup_log_line():
+    # The decoder's stdout is attacker-shaped; only the setup's own tag counts.
+    tagged = b"sandbox-setup: mask /srv/.env\nrest"
+    assert harness.setup_step(tagged) == "mask /srv/.env"
+    assert harness.setup_step(b"\x00\x00\x00\x10{...}") == "(unrecognised)"
+    assert harness.setup_step(b"") == "(unrecognised)"
+
+
+def test_the_live_check_starts_a_real_sandbox_at_most_once_per_ttl(monkeypatch):
+    starts = []
+
+    failed = {"ok": False, "rc": 97, "step": "seal: Operation not permitted", "ms": 9}
+
+    def start():
+        starts.append(1)
+        return failed
+
+    monkeypatch.setattr(harness, "_TIER", 1)
+    monkeypatch.setattr(harness, "_start_live", start)
+    monkeypatch.setattr(harness, "_live", None)
+    first = harness.live_check()
+    assert first == failed
+    assert harness.live_check() == first and len(starts) == 1  # cached
+    stamp, result = harness._live
+    monkeypatch.setattr(harness, "_live", (stamp - harness.LIVE_TTL_S - 1, result))
+    harness.live_check()
+    assert len(starts) == 2  # expired: started again
+
+
+def test_the_dev_box_live_check_runs_nothing(monkeypatch):
+    monkeypatch.setattr(harness, "_TIER", 4)
+    monkeypatch.setattr(harness, "_live", None)
+    monkeypatch.setattr(harness, "_start_live", lambda: pytest.fail("spawned"))
+    assert harness.live_check()["ok"] is True
+
+
+async def test_readyz_is_not_ready_while_the_sandbox_cannot_start(monkeypatch):
+    from tests.test_mcp_hardening import _get, _ready_app
+
+    broken = {"ok": False, "rc": 97, "step": "tmp", "ms": 12}
+    monkeypatch.setattr(harness, "live_check", lambda: broken)
+    res = await _get(_ready_app(), "/readyz")
+    body = res.json()
+    assert res.status_code == 503 and body["ready"] is False
+    assert body["library"]["sandbox"]["live"] == broken
+    monkeypatch.setattr(harness, "live_check", lambda: {"ok": True, "rc": 0, "ms": 30})
+    res = await _get(_ready_app(), "/readyz")
+    assert res.status_code == 200 and res.json()["library"]["sandbox"]["live"]["ok"]
 
 
 def test_no_secret_reaches_the_child_environment(monkeypatch):
@@ -195,15 +270,60 @@ def test_a_sandboxed_child_can_write_only_its_own_tmp(tmp_path_factory):
             # touch, not `: > f`: a failed redirection on a special builtin
             # makes sh EXIT, which would hide every later line.
             f'if touch "{outside}/x" 2>/dev/null; then echo OUTSIDE-WRITABLE; fi; '
-            "touch /tmp/ok && echo TMP-OK"
+            "touch /tmp/ok && echo TMP-OK; "
+            # The pool's semaphores: the one place outside /tmp that must stay
+            # writable (read-only broke every pooled render: EROFS).
+            "if mountpoint -q /dev/shm; then touch /dev/shm/sbx-$$ && echo SHM-OK "
+            "&& rm -f /dev/shm/sbx-$$; else echo SHM-OK; fi"
         )
         assert "TMP-OK" in done.stdout
+        assert "SHM-OK" in done.stdout
         assert "OUTSIDE-WRITABLE" not in done.stdout
         assert not os.path.exists(f"{outside}/x")
     finally:
         import shutil as _sh
 
         _sh.rmtree(outside, ignore_errors=True)
+
+
+@linux_sandbox
+def test_a_mount_the_sandbox_cannot_reach_does_not_stop_it(tmp_path):
+    """The 29-09-2026 production outage class: a writable mount in the
+    service's mount table that the sandbox cannot reach BY PATH. Here it is
+    tucked under a second mount, in a namespace standing in for the
+    service's. The per-mount remount this replaced resolved each mount point
+    by path, so it failed (exit 97) and refused every decode; the seal is one
+    recursive syscall and must start the sandbox all the same."""
+    if not harness._ro_fs_works():
+        pytest.skip("this host cannot seal a namespace read-only")
+    import os
+
+    hidden = tmp_path / "cover" / "hidden"
+    hidden.mkdir(parents=True)
+    probe = (
+        "import subprocess, sys\n"
+        "from app.sandbox import harness\n"
+        "argv = [*harness.isolation_prefix(harness._prlimit_prefix(10, 512 << 20)),\n"
+        "        '/bin/echo', 'SANDBOX-OK']\n"
+        "r = subprocess.run(argv, capture_output=True, text=True, timeout=30,\n"
+        "                   env=harness.safe_child_env())\n"
+        "print('rc=%d %s' % (r.returncode, r.stdout.strip()))\n"
+    )
+    outer = (
+        f"mount -t tmpfs t '{hidden}' && mount -t tmpfs t '{hidden.parent}' && "
+        f"grep -q ' {hidden} ' /proc/self/mountinfo && [ ! -e '{hidden}' ] && "
+        'echo HIDDEN-MOUNT-LISTED && exec "$0" -c "$1"'
+    )
+    done = subprocess.run(  # noqa: S603 — fixed argv, test-only
+        ["unshare", "-rm", "--", "/bin/sh", "-c", outer, sys.executable, probe],  # noqa: S607
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=os.getcwd(),
+        env={**harness.safe_child_env(), "PYTHONPATH": os.getcwd()},
+    )
+    assert "HIDDEN-MOUNT-LISTED" in done.stdout, done.stderr[-400:]
+    assert "rc=0 SANDBOX-OK" in done.stdout, (done.stdout, done.stderr[-400:])
 
 
 @linux_sandbox

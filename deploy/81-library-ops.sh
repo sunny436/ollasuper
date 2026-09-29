@@ -175,7 +175,9 @@ fi
 [ "$restart" = 1 ] && systemctl restart myos-ai
 ready=""
 for _ in $(seq 1 60); do
-  ready=$(curl -fsS -m 5 "$AI_URL/readyz" 2>/dev/null || true)
+  # No -f: a 503 (e.g. a sandbox that cannot start) still carries the JSON
+  # that says which layer is off - reading it beats mistaking it for no tier.
+  ready=$(curl -sS -m 5 "$AI_URL/readyz" 2>/dev/null || true)
   echo "$ready" | grep -q '"meets_minimum"' && break
   sleep 2
 done
@@ -191,12 +193,14 @@ fi
 off=$(printf '%s' "$ready" | python3 -c 'import json,sys
 s = json.load(sys.stdin)["library"]["sandbox"]
 off = [k for k in ("readonly_fs", "proc_isolated") if s.get(k) is not True]
+live = s.get("live") or {}
+off += [] if live.get("ok") is True else ["live(%s)" % (live.get("step") or live.get("rc"))]
 print(" ".join(off + ([] if s.get("pid_namespace") else ["pid_namespace"])))')
 if [ -n "$off" ]; then
   echo "   SANDBOX DEGRADED - off: $off (the monitor alerts SANDBOX_DEGRADED)" >&2
   degraded=1
 else
-  echo "   readyz: tier 1 + pid namespace + read-only filesystem + other users' processes hidden"
+  echo "   readyz: tier 1 + pid namespace + read-only filesystem + other users' processes hidden + a live sandbox started"
 fi
 
 # ------------------------------------------------------------------ 4. journald
@@ -298,7 +302,11 @@ for r in files exports; do
   echo "   $r: $(head -c 400 /var/lib/myos-reclaim/$r.json 2>/dev/null || echo 'no report')"
 done
 echo "   monitor: $(journalctl -u myos-monitor -n 20 --no-pager -o cat | grep -o '"alerts": \[[^]]*\]' | tail -1)"
-say "installed. Reclaimers are ${APPLY:+APPLYING}${APPLY:-DRY RUNS - review the reports above, then re-run with RECLAIM_APPLY=1 once approved}"
+if [ -n "$APPLY" ]; then
+  say "installed. Reclaimers are APPLYING (hourly blobs, daily exports at 04:30)"
+else
+  say "installed. Reclaimers are DRY RUNS - review the reports above, then re-run with RECLAIM_APPLY=1 once approved"
+fi
 if [ "${degraded:-0}" = 1 ]; then
   echo "FATAL: installed, but the decoder sandbox is DEGRADED (see step 3)" >&2
   exit 1

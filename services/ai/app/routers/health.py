@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter, Request, Response
@@ -75,9 +76,13 @@ async def readyz(request: Request, response: Response) -> dict:
     # LIBRARY: two configuration errors that would otherwise surface only as a
     # trickle of failed files - decoders below the required sandbox isolation,
     # and an embedding dimension that does not fit the index column.
-    from app.sandbox.harness import sandbox_status
+    from app.sandbox.harness import live_check, sandbox_status
 
     status = sandbox_status()
+    # A REAL sandbox start (cached 30 s), off the event loop: the probes above
+    # were taken at boot, and a sandbox that cannot start NOW refuses every
+    # decode while they still read green.
+    live = await asyncio.to_thread(live_check)
     index_ok = getattr(state, "index_dim_ok", True) is not False
     # Named for what it proves, and never echoing the word the leak test bans.
     sandbox = {
@@ -90,9 +95,10 @@ async def readyz(request: Request, response: Response) -> dict:
         "pid_namespace": status.get("pid_namespace", ""),
         "readonly_fs": status.get("readonly_fs", False),
         "proc_isolated": status.get("proc_isolated", False),
+        "live": live,
     }
     library = {"sandbox": sandbox, "index_dimension_ok": index_ok}
-    library_ok = bool(status["meets_minimum"]) and index_ok
+    library_ok = bool(status["meets_minimum"]) and index_ok and bool(live["ok"])
 
     ready = configured and convex_ok and mcp_ok and docs_ok and library_ok
     if not ready:

@@ -311,6 +311,21 @@ def evaluate(cfg: Config, m: Metrics) -> list[Alert]:
                     f"is below the required {sandbox.get('min_tier')}.",
                 )
             )
+        # The probes are taken at boot; `live` is a real sandbox started within
+        # the last 30 s. A sandbox that cannot start refuses EVERY decode while
+        # the probes still read green (production, 29-09-2026).
+        live = sandbox.get("live")
+        if isinstance(live, dict) and live.get("ok") is False:
+            why = live.get("step") or f"exit {live.get('rc')}"
+            out.append(
+                Alert(
+                    "SANDBOX_BROKEN",
+                    "critical",
+                    f"Decoders cannot start: the sandbox setup fails right now "
+                    f"({why}). Every upload and attachment is refused until it "
+                    "is fixed.",
+                )
+            )
         # Tier 1 is several layers; name the one that regressed. Only keys the
         # AI plane reports are judged (an older build reports none of them).
         layers = ("readonly_fs", "proc_isolated")
