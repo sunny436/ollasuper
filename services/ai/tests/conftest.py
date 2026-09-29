@@ -65,6 +65,26 @@ async def convex_client(fake_convex):
 
 
 @pytest.fixture(autouse=True)
+def _healthy_search():
+    """Every test starts with a healthy search provider.
+
+    The hedging window in clients/ollagraph.py is process-wide by design (like
+    the gate it sits beside), so one test's failed searches would otherwise make
+    a later, unrelated test's searches hedge — measured: a freshness test saw 4
+    requests where it asserts 2.
+    """
+    from app.clients import ollagraph
+
+    def reset() -> None:
+        ollagraph._search_outcomes.clear()
+        ollagraph._hedge_extra_in_flight = 0
+
+    reset()
+    yield
+    reset()
+
+
+@pytest.fixture(autouse=True)
 def _attested_fixture_rows(monkeypatch, tmp_path_factory):
     """Every `LocalRow` fixture slug has a fresh, verified runtime attestation.
 

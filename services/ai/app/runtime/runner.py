@@ -141,8 +141,9 @@ from app.seo.mutations import (
     StubSeoWriteProvider,
     register_seo_mutation_provider,
 )
+from app.skills.answer_standard import ANSWER_STANDARD
 from app.skills.capability_binding import EMPTY_CAPABILITIES, resolve_capabilities
-from app.skills.registry import pack_skills, render_skills_block
+from app.skills.registry import SkillRegistry, pack_skills, render_skills_block
 from app.skills.user_skills import EMPTY_SELECTION, select_user_skills
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector, _passes
@@ -215,6 +216,27 @@ def _compute_deadline_mono(
         return time.monotonic() + max(0.0, req.deadlineAt / 1000 - time.time())
     return started + settings.ai_agent_total_deadline_s
 
+
+def _skill_reasoning_effort(
+    settings: Settings, model: str, request: str, *, user_skill: bool
+) -> str | None:
+    """`reasoning_effort` for `model` on this turn, or None to send nothing.
+
+    A SKILL turn only, and only on an allowlisted model (config:
+    `ai_skill_reasoning_effort`, `ai_high_reasoning_models`). The built-in check
+    is the same deterministic, settings-only ranking that composes the skills
+    block further down — run early because the model client is built first.
+    """
+    effort = settings.ai_skill_reasoning_effort.strip()
+    if not effort or model not in settings.ai_high_reasoning_models:
+        return None
+    if user_skill or SkillRegistry(effective_skills(settings)).discover(
+        request,
+        limit=settings.ai_skill_max_active,
+        min_score=settings.ai_skill_min_score,
+    ):
+        return effort
+    return None
 
 
 def _seed_private_taint(
@@ -916,35 +938,6 @@ async def run_generation(
             else:
                 documents_as_tool = False
 
-        # User chat -> Ollima (title-gen + OCR keep build_llm's OpenRouter default).
-        llm = build_llm(
-            settings,
-            model=model_id,
-            context_window=model_window,
-            # The one model PARAMETER personalization may touch. None leaves the
-            # caller default; a value is still clamped by _clamp_output against
-            # this model's measured window, so a small-window model is never
-            # asked for an output it cannot produce.
-            max_tokens=personal.max_output_tokens,
-            base_url=settings.ollima_base_url,
-            api_key=settings.ollima_api_key,
-        )
-        # A DEDICATED non-streaming client for tool-bound calls. Ollima streams
-        # tool-call deltas in a shape langchain-openai's accumulator rejects
-        # ("Tool call index out of bounds"), so the model node must NOT stream
-        # when tools are bound. A `streaming=False` client returns the tool call
-        # as one complete message; `llm` above keeps streaming for the final
-        # answer. Built lazily below only if tools are actually bound.
-        llm_for_tools = build_llm(
-            settings,
-            model=model_id,
-            context_window=model_window,
-            max_tokens=personal.max_output_tokens,
-            streaming=False,
-            base_url=settings.ollima_base_url,
-            api_key=settings.ollima_api_key,
-        )
-
         # --- agent tools (Phase 4 web tools + Phase 5 knowledge tool) ------
         # Two INDEPENDENT tool sources feed one bind_tools: Ollagraph web tools
         # (agent_enabled) and the RAG `search_knowledge` tool (rag_as_tool).
@@ -1048,6 +1041,51 @@ async def run_generation(
                     "declared": user_sel.capabilities,
                 },
             )
+
+        # Built HERE, after `user_sel`, because a custom skill makes this a skill
+        # turn too — and a skill turn may reason deeper (_skill_reasoning_effort).
+        # Nothing above this point uses either client.
+        effort = _skill_reasoning_effort(
+            settings,
+            model_id,
+            latest.content if latest is not None else "",
+            user_skill=bool(user_sel.included),
+        )
+        if effort:
+            log.info(
+                "agent.skill_reasoning",
+                extra={"stream_id": req.streamId, "model": model_id, "effort": effort},
+            )
+        # User chat -> Ollima (title-gen + OCR keep build_llm's OpenRouter default).
+        llm = build_llm(
+            settings,
+            model=model_id,
+            context_window=model_window,
+            # The one model PARAMETER personalization may touch. None leaves the
+            # caller default; a value is still clamped by _clamp_output against
+            # this model's measured window, so a small-window model is never
+            # asked for an output it cannot produce.
+            max_tokens=personal.max_output_tokens,
+            base_url=settings.ollima_base_url,
+            api_key=settings.ollima_api_key,
+            reasoning_effort=effort,
+        )
+        # A DEDICATED non-streaming client for tool-bound calls. Ollima streams
+        # tool-call deltas in a shape langchain-openai's accumulator rejects
+        # ("Tool call index out of bounds"), so the model node must NOT stream
+        # when tools are bound. A `streaming=False` client returns the tool call
+        # as one complete message; `llm` above keeps streaming for the final
+        # answer. Built lazily below only if tools are actually bound.
+        llm_for_tools = build_llm(
+            settings,
+            model=model_id,
+            context_window=model_window,
+            max_tokens=personal.max_output_tokens,
+            streaming=False,
+            base_url=settings.ollima_base_url,
+            api_key=settings.ollima_api_key,
+            reasoning_effort=effort,
+        )
         # Phase 1 (v2): SKILL activation DECOUPLED from tool availability — a
         # knowledge-only skill activates even with Ollagraph off/empty. Run the ONE
         # shared prepare() here (before tools bind) and compose its guidance into the
@@ -1611,6 +1649,7 @@ async def run_generation(
                     ),
                     max_tool_calls_per_step=settings.ai_agent_max_tool_calls_per_step,
                     max_stall_steps=settings.ai_agent_max_stall_steps,
+                    answer_floor=settings.ai_empty_answer_floor_enabled,
                     max_concurrent_tools=settings.ai_agent_max_concurrent_tools,
                     rag=rag_ctx,
                     memory=mem_ctx,
@@ -1858,6 +1897,13 @@ async def run_generation(
         # happens here, and it happens here for the reasons above.
         if user_sel.block:
             system = f"{system}\n\n{user_sel.block}"
+        # The answer standard: once, on a skill turn (built-in or custom), after
+        # every skill so a skill's own format is stated first and wins, and before
+        # `tokens(system)` so it is measured like the rest of the prompt.
+        if settings.ai_skill_answer_standard_enabled and (
+            active_skill_ids or user_sel.included
+        ):
+            system = f"{system}\n\n{ANSWER_STANDARD}"
 
         # Phase 6 (B1): measure the FIXED costs (system prompt + bound tool schemas
         # + latest turn) now that all are assembled, and trim PRIOR history against
@@ -1933,12 +1979,20 @@ async def run_generation(
             fb_window = next(
                 (c.contextWindow for c in req.modelCandidates if c.id == fb_model), 0
             )
+            # The fallback's OWN allowlist entry decides, not the primary's.
+            fb_effort = _skill_reasoning_effort(
+                settings,
+                fb_model,
+                latest.content if latest is not None else "",
+                user_skill=bool(user_sel.included),
+            )
             quota_fb = build_llm(
                 settings,
                 model=fb_model,
                 context_window=fb_window,
                 base_url=settings.ollima_base_url,
                 api_key=settings.ollima_api_key,
+                reasoning_effort=fb_effort,
             )
             quota_fb_tools = (
                 quota_fb.bind_tools(specs)
@@ -1950,6 +2004,7 @@ async def run_generation(
                     streaming=False,
                     base_url=settings.ollima_base_url,
                     api_key=settings.ollima_api_key,
+                    reasoning_effort=fb_effort,
                 )
             )
             # Dynamic capability loading re-binds the primary every step; the
@@ -2904,14 +2959,30 @@ async def _deliver_writing(
 
 
 def _fastest_healthy_model(cfg: RouterConfig, candidates) -> str:
-    """The profiled candidate with the lowest time-to-first-token that the health
-    registry currently allows, or "" when there is none."""
+    """The model for the humanizer's voice edit: the lowest reasoning tier the
+    health registry currently allows, fastest first token among equals; "" when
+    there is none.
+
+    Tier FIRST: a voice edit needs no reasoning, and it is long output, where
+    decode speed dominates. Measured 2026-09-29, deepseek-v4-flash (tier 1)
+    starts ~1.5 s before gemini-3.7-flash-high (tier 0) but decodes ~2.6x slower
+    (380 vs 976 chars/s), so it only finishes first below ~1,200 chars — and a
+    held draft is far longer. Ordered by first token alone, the router's
+    re-measured profiles would have moved every rewrite onto the slower decoder.
+    """
     live = [
         c.id
         for c in candidates
         if c.id in cfg.profiles and not model_health.is_exhausted(c.id)
     ]
-    return min(live, key=lambda m: cfg.profiles[m].ttft_s) if live else ""
+    return (
+        min(
+            live,
+            key=lambda m: (cfg.profiles[m].reasoning_tier, cfg.profiles[m].ttft_s),
+        )
+        if live
+        else ""
+    )
 
 
 def _chunk_text(chunk: object) -> str:

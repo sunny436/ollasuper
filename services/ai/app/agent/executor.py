@@ -330,6 +330,14 @@ class ToolExecContext:
     # security audit turn; it turns on result redaction, the read-only and
     # GitHub-write guards, and the security built-ins. None ⇒ byte-identical.
     security: Any = None
+    # Never-empty floor (graph.answer_nudge): a turn that did tool work and then
+    # ended with no answer — nothing, or only narration — gets ONE more model
+    # step, tools unbound, told to answer from what the tools returned. Measured
+    # 2026-09-29: 21 of 318 finished turns ended with 0 chars after tool work,
+    # every one after a provider error. `answer_floor` is the switch;
+    # `answer_floor_used` makes it at most once per turn.
+    answer_floor: bool = False
+    answer_floor_used: bool = False
 
 
 # --- OpenAI function-spec construction (runner-side) ----------------------

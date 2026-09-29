@@ -453,7 +453,8 @@ async def test_a_pre_stream_provider_error_fails_over_without_latching_the_strea
                     ModelCandidate(id=DEFAULT, contextWindow=131_072),
                 ],
             ),
-            _tool_turn_settings(),
+            # Failover mechanics, not the benchmark: pin GEMINI as the routed pick.
+            _tool_turn_settings(ai_router_profiles=_profiles(GEMINI)),
             convex,
             tool_registry=reg,
             tool_selector=ToolSelector(reg),

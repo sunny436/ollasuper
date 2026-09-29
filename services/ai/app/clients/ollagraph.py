@@ -18,10 +18,13 @@ unscrubbed) and never reach the browser.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
+import time
 
 import httpx
 
+from app.agent.search_guard import SEARCH_TOOL_IDS
 from app.config import Settings
 from app.logging import get_logger
 from app.models.tools import ToolDefinition
@@ -113,6 +116,63 @@ class AdaptiveGate:
 
 
 _gate: AdaptiveGate | None = None
+
+# --- search health, for hedging -----------------------------------------
+# The last N search ATTEMPTS as (monotonic time, failed); failed = 5xx / timeout
+# / transport. A 4xx (incl. 429) says nothing about the origin's flakiness and is
+# not recorded;
+# rate limiting is the gate's business. Process-wide, like the gate: one event
+# loop, so plain module state needs no lock.
+_SEARCH_WINDOW = 20
+_SEARCH_MIN_SAMPLES = 5
+_SEARCH_DEGRADED_RATE = 0.3
+# Outcomes older than this are ignored: failures from before a quiet spell must
+# not make the first searches after it pay for hedges the provider no longer
+# needs.
+_SEARCH_MAX_AGE_S = 600.0
+# Never hedge while the gate is narrowed (the provider is rate-limiting us), and
+# never let hedging add more than this many extra requests in flight process-wide.
+_HEDGE_MIN_GATE = 4
+_HEDGE_MAX_EXTRA_IN_FLIGHT = 6
+# A hedged round finishes this long before the per-attempt timeout (see _search).
+_HEDGE_DEADLINE_MARGIN_S = 1.0
+_HEDGE_MIN_ROUND_S = 0.5
+_search_outcomes: collections.deque[tuple[float, bool]] = collections.deque(
+    maxlen=_SEARCH_WINDOW
+)
+_hedge_extra_in_flight = 0
+
+
+def _record_search(failed: bool) -> None:
+    _search_outcomes.append((time.monotonic(), failed))
+
+
+def _search_degraded() -> bool:
+    cutoff = time.monotonic() - _SEARCH_MAX_AGE_S
+    recent = [failed for at, failed in _search_outcomes if at >= cutoff]
+    return (
+        len(recent) >= _SEARCH_MIN_SAMPLES
+        and sum(recent) / len(recent) >= _SEARCH_DEGRADED_RATE
+    )
+
+
+def _log_hedge(attempts: int, failed: int, t0: float, *, ok: bool) -> None:
+    log.info(
+        "tool.search_hedged",
+        extra={
+            "attempts": attempts,
+            "failed": failed,
+            "elapsed_ms": round((time.monotonic() - t0) * 1000),
+            "ok": ok,
+        },
+    )
+
+
+def _is_origin_failure(e: ToolError) -> bool:
+    return e.kind in (
+        ToolErrorKind.TIMEOUT,
+        ToolErrorKind.UNAVAILABLE,
+    ) or (e.kind == ToolErrorKind.UPSTREAM_ERROR and (e.status or 0) >= 500)
 
 
 def tool_gate(settings: Settings) -> AdaptiveGate:
@@ -288,7 +348,121 @@ class OllagraphAdapter:
         _ident = f"{tool.tool_id} {tool.name}".lower()
         if any(m in _ident for m in self._s.ollagraph_crawl_tool_markers):
             _default = max(_default, self._s.ollagraph_crawl_tool_timeout_s)
-        timeout = tool.timeout or _default
+        timeout_s = tool.timeout or _default
+        if self._s.ai_search_hedge_enabled and tool.tool_id in SEARCH_TOOL_IDS:
+            return await self._search(tool, url, payload, headers, timeout_s)
+        return await self._request_once(tool, url, payload, headers, timeout_s)
+
+    async def _search(
+        self,
+        tool: ToolDefinition,
+        url: str,
+        payload: dict,
+        headers: dict,
+        timeout_s: float,
+    ) -> dict:
+        """Web search, hedged while the provider is degraded.
+
+        Healthy: ONE request, exactly the old path. Degraded (a recent window of
+        attempts failing at >= `_SEARCH_DEGRADED_RATE`), with the gate at full
+        width and room under the process-wide cap: the fan-out runs in parallel,
+        the first success wins, the rest are cancelled. If every attempt fails, or
+        the round runs out of time, the error is raised NON-retryable — the hedge
+        WAS the retries, so the executor must not multiply it (at most `fanout`
+        attempts per call, today's maximum of three). A 429 is never hedged into:
+        it is raised as it arrived.
+        """
+        global _hedge_extra_in_flight
+        fanout = max(1, self._s.ai_search_hedge_fanout)
+        extra = 0
+        gate_open = tool_gate(self._s).limit >= _HEDGE_MIN_GATE
+        if fanout > 1 and gate_open and _search_degraded():
+            room = _HEDGE_MAX_EXTRA_IN_FLIGHT - _hedge_extra_in_flight
+            extra = min(fanout - 1, room)
+        if extra <= 0:
+            return await self._search_attempt(tool, url, payload, headers, timeout_s)
+        _hedge_extra_in_flight += extra
+        t0 = time.monotonic()
+        # The round ends, NON-retryably, before the executor's own per-attempt
+        # timeout (the same `timeout_s`) can fire: that TimeoutError IS retryable,
+        # and a retried round would triple the attempts this exists to bound.
+        deadline = t0 + max(_HEDGE_MIN_ROUND_S, timeout_s - _HEDGE_DEADLINE_MARGIN_S)
+        tasks = [
+            asyncio.ensure_future(
+                self._search_attempt(tool, url, payload, headers, timeout_s)
+            )
+            for _ in range(1 + extra)
+        ]
+        failed = 0
+        last: BaseException | None = None
+        try:
+            pending: set[asyncio.Future] = set(tasks)
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    last = ToolError(
+                        ToolErrorKind.TIMEOUT, "search timed out", tool_id=tool.tool_id
+                    )
+                    break
+                done, pending = await asyncio.wait(
+                    pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
+                )
+                for t in done:
+                    exc = t.exception()
+                    if exc is None:
+                        _log_hedge(len(tasks), failed, t0, ok=True)
+                        return t.result()
+                    if (
+                        isinstance(exc, ToolError)
+                        and exc.kind == ToolErrorKind.RATE_LIMITED
+                    ):
+                        raise exc
+                    failed += 1
+                    last = exc
+            _log_hedge(len(tasks), failed, t0, ok=False)
+            if isinstance(last, ToolError):
+                raise ToolError(
+                    last.kind,
+                    last.message,
+                    tool_id=last.tool_id,
+                    status=last.status,
+                    retryable=False,
+                )
+            raise last  # type: ignore[misc]  # a non-ToolError: surface it as-is
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            _hedge_extra_in_flight -= extra
+
+    async def _search_attempt(
+        self,
+        tool: ToolDefinition,
+        url: str,
+        payload: dict,
+        headers: dict,
+        timeout_s: float,
+    ) -> dict:
+        """One search request, its outcome recorded for the hedging window."""
+        try:
+            out = await self._request_once(tool, url, payload, headers, timeout_s)
+        except ToolError as e:
+            if _is_origin_failure(e):
+                _record_search(True)
+            raise
+        _record_search(False)
+        return out
+
+    async def _request_once(
+        self,
+        tool: ToolDefinition,
+        url: str,
+        payload: dict,
+        headers: dict,
+        timeout_s: float,
+    ) -> dict:
+        """The single-request primitive: gate slot, request, normalization."""
         gate = tool_gate(self._s)
         try:
             # An explicit Timeout, NOT a bare float: httpx applies a bare float to
@@ -305,7 +479,7 @@ class OllagraphAdapter:
                     headers=headers,
                     timeout=httpx.Timeout(
                         connect=5.0,
-                        read=timeout,
+                        read=timeout_s,
                         write=10.0,
                         pool=self._s.ollagraph_pool_acquire_timeout_s,
                     ),

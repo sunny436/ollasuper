@@ -498,17 +498,19 @@ def test_failover_with_unknown_upstreams_still_works(clock):
 
 
 def test_the_router_drops_an_unhealthy_model_and_readmits_it_on_recovery(clock):
+    # Shipped profiles (re-measured 2026-09-29): deepseek-v4-flash is the fastest
+    # model meeting floor 0 for text; gemini-3.7-flash-high is next.
     cands = [Candidate(id="gemini-3.7-flash-high"), Candidate(id="deepseek-v4-flash")]
     sig = Signals(text="What is a mutex?")
     assert select(cfg=SHIPPED, candidates=cands, fallback="x", signals=sig).model == (
-        "gemini-3.7-flash-high"
+        "deepseek-v4-flash"
     )
-    health.mark_exhausted("gemini-3.7-flash-high", 600)
+    health.mark_exhausted("deepseek-v4-flash", 600)
     d = select(cfg=SHIPPED, candidates=cands, fallback="x", signals=sig)
-    assert d.model == "deepseek-v4-flash" and d.floor == 0
-    health.record_success("gemini-3.7-flash-high")  # probe or traffic success
+    assert d.model == "gemini-3.7-flash-high" and d.floor == 0
+    health.record_success("deepseek-v4-flash")  # probe or traffic success
     assert select(cfg=SHIPPED, candidates=cands, fallback="x", signals=sig).model == (
-        "gemini-3.7-flash-high"
+        "deepseek-v4-flash"
     )
 
 

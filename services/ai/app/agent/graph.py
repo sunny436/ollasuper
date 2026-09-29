@@ -43,6 +43,7 @@ from app.agent import health
 from app.agent.budget import fit_messages
 from app.agent.executor import execute_tool_calls
 from app.agent.harmony import recover_into_message
+from app.humanizer.stage import MIN_WORDS, word_count
 from app.logging import get_logger
 from app.models.events import EventType
 
@@ -50,6 +51,62 @@ if TYPE_CHECKING:
     from app.agent.executor import ToolExecContext
 
 log = get_logger(__name__)
+
+# Never-empty floor (see route_after_model). Fires only when the turn has no
+# ANSWER — neither a final message with text nor a deliverable-sized block. Both
+# failure shapes are measured on production (2026-09-29): 21 of the 23 near-empty
+# answers after tool work were exactly 0 characters, all after provider errors;
+# and skill turns whose searches all failed ended on narration alone ("I'll
+# research X first… Search backend hiccuped. Retrying.", 12-13 words) with the
+# deliverable never written. A short FINAL answer ("391", "Yes.") is an answer.
+ANSWER_FLOOR_PROMPT = (
+    "The tool work for this request is finished. Now write the final answer for "
+    "the user, directly and completely, using the tool results above. If some "
+    "tools failed or returned nothing useful, say plainly what could not be "
+    "verified, then give the best answer you can from reliable knowledge. Do not "
+    "call tools and do not leave the answer empty."
+)
+
+
+def _message_text(message: object) -> str:
+    """The visible text of a model message: plain content, or the text parts
+    of a structured content list."""
+    content = getattr(message, "content", "") or ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return ""
+
+
+def _turn_has_answer(messages: list, writer: object) -> bool:
+    """Whether this turn has already produced an answer, not just narration.
+
+    A final message (no tool calls) counts with any text. Text that rode along
+    with a tool call is narration unless it reaches deliverable size — the
+    humanizer's MIN_WORDS, the line the runner already draws between narration
+    and a deliverable. Both sources are read because each has a blind spot: the
+    messages hold a draft the humanizer is keeping back from the writer, and the
+    writer holds streamed text whose message copy the stream-break recovery
+    cleared.
+    """
+    if word_count(getattr(writer, "text", "") or "") >= MIN_WORDS:
+        return True
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            return False
+        if not isinstance(message, AIMessage):
+            continue
+        text = _message_text(message)
+        if not text.strip():
+            continue
+        if not getattr(message, "tool_calls", None) or word_count(text) >= MIN_WORDS:
+            return True
+    return False
+
 
 # LangGraph's messages-mode drops a chat-model run tagged with this from BOTH its
 # streamed tokens and its on_llm_end: StreamMessagesHandler.on_chat_model_start skips
@@ -425,7 +482,34 @@ def _build_agent_graph(
         # (see SecurityTurn.checkpoint_due). Every other turn ends as before.
         if tools_ctx.security is not None and tools_ctx.security.checkpoint_due():
             return "security_checkpoint"
+        # NEVER-EMPTY FLOOR: tool work happened, yet the turn is about to end with
+        # no answer for the user — typically the tools failed and the model gave
+        # up, leaving nothing or only narration. One more step, tools unbound, to
+        # answer from what exists. Not after an unanswerable tool call (a history
+        # with a dangling call is a provider 400), and never twice.
+        if (
+            tools_ctx.answer_floor
+            and not tools_ctx.answer_floor_used
+            and tools_ctx.security is None
+            and tools_ctx.step_counter > 0
+            and not has_calls
+            and not _turn_has_answer(state["messages"], tools_ctx.writer)
+        ):
+            return "answer_nudge"
         return END
+
+    async def answer_nudge(state: ChatState) -> dict:
+        tools_ctx.answer_floor_used = True
+        log.info(
+            "agent.answer_floor",
+            extra={"run_id": tools_ctx.run_id, "steps": tools_ctx.step_counter},
+        )
+        # Budget 0: the model node binds NO tools, so this step can only write.
+        return {
+            "messages": [HumanMessage(content=ANSWER_FLOOR_PROMPT)],
+            "tool_budget": 0,
+            "tool_stalls": 0,
+        }
 
     async def security_checkpoint(state: ChatState) -> dict:
         from app.secaudit.report import CHECKPOINT_PROMPT
@@ -457,7 +541,9 @@ def _build_agent_graph(
     builder.add_node("model", model)
     builder.add_node("executor", executor)
     builder.add_node("security_checkpoint", security_checkpoint)
+    builder.add_node("answer_nudge", answer_nudge)
     builder.add_edge("security_checkpoint", "model")
+    builder.add_edge("answer_nudge", "model")
     builder.add_edge(START, "prepare")
     builder.add_edge("prepare", "model")
     builder.add_conditional_edges(
@@ -466,6 +552,7 @@ def _build_agent_graph(
         {
             "executor": "executor",
             "security_checkpoint": "security_checkpoint",
+            "answer_nudge": "answer_nudge",
             END: END,
         },
     )

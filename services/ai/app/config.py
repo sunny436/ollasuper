@@ -111,6 +111,15 @@ class Settings(BaseSettings):
     # the provider's real capacity — not a configured guess — decides how wide the
     # fan-out runs. This floor only stops it collapsing to zero.
     ollagraph_min_concurrency: int = 2
+    # Hedged web search (clients/ollagraph.py). Measured 2026-09-29: 46% of
+    # search ATTEMPTS failed over 72h (58-78% in the worst hours), each a fast
+    # ~3.1s Cloudflare 502, random per request; a success takes 4-10s. Three
+    # SEQUENTIAL attempts with backoff made a failing search cost ~8-10s. While
+    # search is degraded, the same three attempts run IN PARALLEL instead —
+    # replacing the retries, never adding to them (at most 3 attempts per call,
+    # today's maximum). A healthy provider gets exactly one request, as before.
+    ai_search_hedge_enabled: bool = True
+    ai_search_hedge_fanout: int = 3
 
     # --- Tool discovery / selection (Phase 2: metadata-only, provider-agnostic)
     # Deterministic selection over the cached Tool Registry. No execution, no LLM.
@@ -151,6 +160,12 @@ class Settings(BaseSettings):
     # is a convergence criterion, not a work ceiling: a productive step resets it,
     # so genuinely long work is unbounded while a stuck loop still terminates.
     ai_agent_max_stall_steps: int = 2
+    # The never-empty floor (graph.answer_nudge): a turn that did tool work and
+    # is about to end with no answer (nothing, or only narration) gets ONE more
+    # model step, tools unbound, to answer from what the tools returned. 21 of
+    # 318 finished turns (7%) ended with 0 chars after tool failures (measured
+    # 2026-09-29), and skill turns ended on narration alone when search failed.
+    ai_empty_answer_floor_enabled: bool = True
     # Emergency backstop ONLY — 0 (the default) means unlimited, and unlimited is
     # the intended operating mode. A batch wider than the concurrency budget is
     # QUEUED by the executor's semaphore, not refused; the natural bound on one
@@ -232,6 +247,25 @@ class Settings(BaseSettings):
     # second smaller one — enough to be useful, small enough that the combined
     # prompt stays measured against the real context window.
     ai_user_skill_budget_chars: int = 6000
+    # Skill-turn quality (runtime/runner.py). Both apply ONLY when a skill —
+    # built-in or custom — activated for the turn; a plain chat turn is untouched.
+    #
+    # The answer standard (skills/answer_standard.py) is a short, proportional
+    # "cover everything, then add the expert layer" block appended once to the
+    # system prompt, outside both skill budgets so it can never evict a skill's
+    # own constraints. Measured 2026-09-29: skill answers on the two fast models
+    # averaged 441 and 801 chars, against 12,914 on gemini-3.8 for the same kind
+    # of request, so how complete an answer was depended on the model the router
+    # happened to pick. The standard asks every model for the same result.
+    ai_skill_answer_standard_enabled: bool = True
+    # Deeper reasoning, sent as `reasoning_effort` only on a skill turn and only
+    # to a model listed below. Probed 2026-09-29: gemini-3.8 spent 3x the
+    # reasoning tokens at "high" (1,392 -> 4,129, +7 s per call); gemini-3.7 +21%;
+    # deepseek did not change, and at a 1,500-token cap it spent the whole budget
+    # reasoning and returned an EMPTY answer — which is why this is an allowlist,
+    # never "every model". "" = off, the default until the A/B shows it wins.
+    ai_skill_reasoning_effort: str = ""
+    ai_high_reasoning_models: tuple[str, ...] = ("gemini-3.8-flash-high",)
     # Phase 6 — resolve a skill's DECLARED capabilities through the intent map
     # before reserving them. ON by default, because the alternative is the bug:
     # `reserve_skill_tools` looked declarations up as literal tool ids, skills
@@ -562,21 +596,36 @@ class Settings(BaseSettings):
     # mapping is produced by the EXISTING rule in routing.select() — "the
     # cheapest model that meets the capability floor":
     #
-    #   floor 0 (simple)   all three qualify      -> lowest ttft  -> gemini-3.7
+    #   floor 0 (simple)   all three qualify      -> lowest ttft  -> deepseek
     #   floor 1 (moderate) deepseek + gemini-3.8  -> lowest ttft  -> deepseek
     #   floor 2 (heavy)    only gemini-3.8        ->                 gemini-3.8
     #
-    # That only works because the measured TTFT ordering matches the tier
-    # ordering, which was checked rather than assumed (medians of 3 streamed
-    # samples against the live endpoint, 2026-09-16):
+    # An image promotes a turn to floor 1, where deepseek (no vision) drops out,
+    # so image turns go to gemini-3.8 exactly as before. gemini-3.7 now serves
+    # failover and the humanizer's rewrite (runner._fastest_healthy_model).
     #
-    #   gemini-3.7-flash-high  2.97s  [2.92 2.97 3.42]  529 tok/s
-    #   deepseek-v4-flash      3.68s  [2.89 3.68 4.46]  159 tok/s
-    #   gemini-3.8-flash-high  5.23s  [4.88 5.23 5.64]  571 tok/s
+    # RE-MEASURED 2026-09-29 FROM PRODUCTION, and the order FLIPPED. The 09-16
+    # numbers (3 synthetic samples: gemini-3.7 2.97s < deepseek 3.68s) sent every
+    # simple turn to the slower model. These are the p50 of model time-to-first-
+    # token on real no-tool turns over 7 days (generation_finished ttft_ms minus
+    # prep_ms; n = 62 / 21 / 14), cross-checked by a live probe (deepseek 0.34s,
+    # gemini-3.7 1.52s, gemini-3.8 1.73s on a tiny prompt):
     #
-    # The samples OVERLAP (deepseek's best beat gemini-3.7's median), so these
-    # are medians, not guarantees. Routing reads these static numbers, which is
-    # what makes the mapping deterministic per turn instead of a race.
+    #   gemini-3.7-flash-high  2.4s  p90 3.8s
+    #   deepseek-v4-flash      0.9s  p90 3.1s
+    #   gemini-3.8-flash-high  3.2s  p90 4.0s
+    #
+    # TOTAL time was checked too, because deepseek decodes ~2.6x slower (380 vs
+    # 976 chars/s on the same turns): it finishes first only below ~1,200 chars.
+    # Real no-tool answers are short (p50 ~100 chars, p90 ~800), so its TOTAL is
+    # also lower: p50 1.3s vs 3.0s, p90 3.1s vs 4.8s. Long-output work that does
+    # not need its reasoning — the humanizer's rewrite — is ordered by tier
+    # first (runner._fastest_healthy_model) and stays on gemini-3.7.
+    #
+    # Re-measure from generation_finished before trusting these again; they are
+    # medians, not guarantees. Routing reads these static numbers, which is what
+    # makes the mapping deterministic per turn instead of a race. Instant revert
+    # without a deploy: set AI_ROUTER_PROFILES in the service .env.
     #
     # A catalogue model that is ABSENT here is emergency-only by construction:
     # select() falls back to ModelProfile() = ttft 99s, tier 0, so it loses
@@ -590,11 +639,11 @@ class Settings(BaseSettings):
     # input", which reached the user as "Something went wrong". Absent = true, so
     # only a model KNOWN to refuse images is excluded from an image turn.
     ai_router_profiles: str = (
-        '{"gemini-3.7-flash-high": {"ttft_s": 2.97, "tok_per_s": 529,'
+        '{"gemini-3.7-flash-high": {"ttft_s": 2.4, "tok_per_s": 529,'
         ' "reasoning_tier": 0, "vision": true},'
-        ' "deepseek-v4-flash": {"ttft_s": 3.68, "tok_per_s": 159,'
+        ' "deepseek-v4-flash": {"ttft_s": 0.9, "tok_per_s": 159,'
         ' "reasoning_tier": 1, "vision": false},'
-        ' "gemini-3.8-flash-high": {"ttft_s": 5.23, "tok_per_s": 571,'
+        ' "gemini-3.8-flash-high": {"ttft_s": 3.2, "tok_per_s": 571,'
         ' "reasoning_tier": 2, "vision": true}}'
     )
     # Estimated prompt+history tokens at or above which a turn routes to the

@@ -414,13 +414,21 @@ def shipped() -> RouterConfig:
     return cfg
 
 
-def _ship(shipped, text, candidates=None, **kw):
+def _ship_decision(shipped, text, candidates=None, **kw):
     return select(
         cfg=shipped,
         candidates=SHIPPED if candidates is None else candidates,
         fallback=MODERATE_MODEL,
         signals=Signals(text=text, **kw),
-    ).model
+    )
+
+
+def _ship(shipped, text, candidates=None, **kw):
+    return _ship_decision(shipped, text, candidates, **kw).model
+
+
+def _ship_floor(shipped, text, **kw):
+    return _ship_decision(shipped, text, **kw).floor
 
 
 def test_the_shipped_roster_is_exactly_three_models_one_per_tier(shipped):
@@ -431,13 +439,13 @@ def test_the_shipped_roster_is_exactly_three_models_one_per_tier(shipped):
 
 
 def test_the_ttft_ordering_is_what_makes_the_tie_break_correct(shipped):
-    """select() takes the lowest TTFT among models meeting the floor, so the
-    tier->model mapping below only holds while TTFT rises with tier. Measured
-    2026-09-16 it does (2.97 / 3.68 / 5.23). If a re-benchmark ever inverts it,
-    this fails HERE with the reason, rather than silently routing simple work to
-    the deep model."""
+    """select() takes the lowest TTFT among models meeting the floor, so this
+    ordering IS the routing. Re-measured on production 2026-09-29 (no-tool TTFT
+    p50: 0.9 / 2.4 / 3.2 s) the moderate model is the fastest, so text work at
+    BOTH lower floors goes to it (image turns are promoted to the heavy model
+    either way). If a re-benchmark inverts this, it fails HERE with the reason."""
     ttft = {m: p.ttft_s for m, p in shipped.profiles.items()}
-    assert ttft[SIMPLE_MODEL] < ttft[MODERATE_MODEL] < ttft[HEAVY_MODEL]
+    assert ttft[MODERATE_MODEL] < ttft[SIMPLE_MODEL] < ttft[HEAVY_MODEL]
 
 
 @pytest.mark.parametrize(
@@ -450,7 +458,7 @@ def test_the_ttft_ordering_is_what_makes_the_tie_break_correct(shipped):
     ],
 )
 def test_simple_work_routes_to_the_speed_first_model(shipped, text):
-    assert _ship(shipped, text) == SIMPLE_MODEL
+    assert _ship(shipped, text) == MODERATE_MODEL
 
 
 @pytest.mark.parametrize(
@@ -486,9 +494,12 @@ def test_structural_signals_promote_without_any_keyword(shipped):
     # would NOT do, because it matches the analytic taxonomy and is already
     # heavy before any structural signal is added.
     bland = "here are the notes"
-    assert _ship(shipped, bland) == SIMPLE_MODEL
+    # The fastest text model already serves floors 0 and 1, so the promotion is
+    # asserted on the FLOOR it produces rather than on the model id.
+    assert _ship_floor(shipped, bland) == SIMPLE
+    assert _ship_floor(shipped, bland, has_document=True) >= MODERATE
+    assert _ship_floor(shipped, bland, open_loops=2) >= MODERATE
     assert _ship(shipped, bland, has_document=True) == MODERATE_MODEL
-    assert _ship(shipped, bland, open_loops=2) == MODERATE_MODEL
     # An image promotes the CLASSIFICATION the same way, but the moderate model
     # cannot take images, so the promotion is served by the vision-capable model
     # at that floor. This line used to assert MODERATE_MODEL, which is precisely
