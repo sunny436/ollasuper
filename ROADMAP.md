@@ -2,6 +2,70 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Response speed + quality (2026-09-29) - LIVE 91aa231 (fa19db0 → 6e4ae72 → 724fe38 → ca480de → 91aa231), prod-verified
+
+Measured first (7-day + 48 h production logs, then a 63-turn headed benchmark, `e2e/perf-response.js`):
+the slowness was not generation speed. (1) deepseek-v4-flash does not converge in tool loops — grounded
+turns 11 steps / 235 s p50 (p90 530 s) against gemini-3.7's 3 steps / 19 s — and it was getting every
+moderate grounded turn and every web-researching skill turn (the cold-email sales prompt: 144 s p50, 2 of
+5 runs never wrote the emails). (2) Ollagraph search fails 47–88% of attempts (fast Cloudflare 502s),
+retried sequentially. (3) 21 of 318 finished turns ended with 0 characters after tool failures, and
+research-skill turns ended on narration alone.
+
+Shipped, each behind a flag or a profile value:
+- **Router tool-loop capability** (`ModelProfile.agentic`, `Classification.fetches`, `Signals.skill_research`):
+  a turn that fetches (URL, retrieval words, or a skill that DECLARES web research) avoids deepseek —
+  floor 0 → gemini-3.7, floor 1 → gemini-3.8. Floor 0 stays on gemini-3.7 even though deepseek's first
+  token is faster (see CLAUDE.md for why the profile TTFTs are an order).
+- **Hedged search** — while search is degraded, one parallel round of 3 replaces the sequential retries
+  (non-retryable, ends inside the executor timeout; ≤3 attempts per call, as before).
+- **Never-empty floor** — a tool turn that is about to end with no answer (nothing, only narration, or —
+  after a failed tool — a one-line "let me retry" under 25 words) gets one tools-unbound step to answer
+  from what exists.
+- **Skill answer standard** — proportional "cover everything + expert layer" block on skill turns.
+- **Failover note removed** — it printed model names into the chat and the thread title.
+- **Skill-only deeper reasoning** — built, flag `ai_skill_reasoning_effort` OFF (see below).
+
+Results (app.ollasuper.com, QA account, the same 15 prompts; BEFORE = 48bb1a4 headed, 63 turns; AFTER =
+the final routing, 62 turns — headed, the last 33 headless after the headed window was closed mid-run):
+
+| class (n) | TTFT p50 | TTFT p90 | total p50 | total p90 |
+|---|---|---|---|---|
+| simple (12) | 3.6 → 3.3 s | 5.4 → 5.0 s | 3.9 → 3.7 s | 5.6 → 5.1 s |
+| web (20) | 14.8 → 13.5 s | 27.0 → 16.7 s | 15.0 → 14.4 s | 27.7 → 17.1 s |
+| skill (25/24) | 20.9 → 22.7 s | 62.6 → 42.6 s | 40.5 → 33.6 s | 138.7 → 50.9 s |
+| reasoning (6) | 5.5 → 5.6 s | 10.1 → 8.4 s | 10.0 → 11.6 s | 15.9 → 14.3 s |
+
+Per prompt, total p50: cold-email sequence 144 → 25 s; SOP + RACI 99 → 49 s; SEO audit 41 → 35 s; latest
+Python release 26 → 15 s; Delhi weather 12 → 9.5 s; one-page status report 40 → 45 s (still deepseek,
+floor 1 self-contained — the one prompt that got slower). Deterministic checks: LTV 3/5 → 5/5, LTV:CAC 4/5
+→ 5/5, all three cold emails written 3/5 → 5/5, 17 × 23 = 391 3/3, RACI table 5/5, Python version 5/5;
+empty answers 0 → 0, timeouts 0. Blind pairwise judge (claude-opus-4-6-thinking via Ollima, both
+orders, told not to reward length), 62 pairs: AFTER 17 wins / 30 ties / 15 losses. The judge cannot
+check 2026 facts (it called the correct "Python 3.14.7" fabricated), preferred longer answers where the
+AFTER one was correct and shorter (LTV sensitivity tables; a haiku with no commentary), and web pairs
+are confounded by Ollagraph failing 82–88% of attempts that evening — so "quality on par, correctness up"
+is the honest reading, not "better on every axis". `p-chat.js` 18/18, `qa-attach-early.js` 5/5, 0
+console errors; Python suite 3,479 passed.
+
+**Mistakes made and caught on production (the lesson is in CLAUDE.md):** fa19db0 routed ALL floor 0–1
+text to deepseek on its faster first token — web questions slowed and one searched for five minutes;
+reverted by `AI_ROUTER_PROFILES` in 15 minutes, fixed by the agentic rule. Floor-0 text on deepseek then
+proved slower in total, truncated a 60-item list, and its upstream 503'd — the failover note leaked model
+names (p-chat caught it); floor 0 went back to gemini-3.7 and the note was removed.
+
+**Still open / not verified:**
+- Ollagraph search itself (82–88% attempt failures on the evening of 09-29, before hedging existed) — the
+  only real fix is on the provider; hedging bounds the latency, not the failure rate.
+- The 48 h before/after production-log comparison: **Verification pending** (only ~1 h of post-deploy
+  traffic existed at the time of writing).
+- `ai_skill_reasoning_effort` stays OFF: gemini-3.8 at "high" costs ~+7 s per call and reasoning tokens
+  count against the 8,192 output cap; enable only after an A/B shows a quality win without truncation.
+- Pre-existing flaky tests seen during this work: humanizer 50 KB scan budget (509 ms vs 500 ms under
+  load), router worst-case budget (1.1 ms vs 1 ms under load), MCP OAuth refresh (1 of 3 isolated runs).
+- Deferred with evidence: dead Google MCP connectors retried every turn (~1.1 s each), MCP connectors
+  opened sequentially (~3.3 s → ~1.4 s possible), scrape results cut at 8k chars.
+
 ## Sidebar: compact nav, toggle in the rail header (2026-09-29) - LIVE f3321e9, prod-verified
 
 ChatGPT's rhythm and placement, nothing else redesigned. New chat / Library / Projects / Scheduled

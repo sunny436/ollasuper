@@ -559,6 +559,71 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
   sent staging's hot ingress there. The restore drill checks table counts
   BEFORE the deploy (`verify-restore.sh tables`); after it, crons move rows.
 
+### Response speed + quality (LIVE 2026-09-29, fa19db0 … 91aa231 — see ROADMAP)
+
+Python-only, every piece behind a flag (revert = `.env` + restart).
+
+- **Search hedging** (`clients/ollagraph.py`, `ai_search_hedge_enabled`).
+  Ollagraph search fails ~47% of ATTEMPTS (fast Cloudflare 502s, random per
+  request). While the last 10 min of attempts fail ≥30%, ONE parallel round of
+  3 REPLACES the executor's sequential retries: first success wins, the rest
+  are cancelled and awaited, and a failed round is raised `retryable=False` —
+  the round WAS the retries. It also ends 1 s inside the executor's own
+  per-attempt timeout, because THAT TimeoutError is retryable and a retried
+  round would triple the attempts. Never while the gate is narrowed by 429s
+  (limit < 4); ≤6 extra requests in flight process-wide; a 429 is raised as it
+  arrived. The window is process-wide state, so `tests/conftest.py` resets it
+  per test — without that one test's failures hedged another's searches.
+- **Router: a tool-loop capability** (`routing.ModelProfile.agentic`).
+  deepseek-v4-flash does NOT converge in a tool loop: 11 steps / 235 s p50 on
+  grounded turns vs gemini-3.7's 3 steps / 19 s. So a turn that FETCHES keeps
+  to `agentic` models: floor 0 → gemini-3.7, floor 1 fetch → gemini-3.8 (was
+  deepseek at 235 s), floor 1 self-contained → deepseek. A fetch is a
+  URL, retrieval words, OR a web-researching skill about to activate
+  (`Signals.skill_research`: the skill DECLARES `*.web_research` /
+  `web_search` / `serp_research` — sales, hr, finance, equity, marketing,
+  operations, deep-research, blog; the router reads the same deterministic
+  skill ranking before the skills block exists). The cold-email benchmark
+  prompt reads self-contained, yet the sales skill researched for 144-300 s on
+  deepseek. `grounded` is NOT the signal: it also counts an attached document,
+  whose text arrives inline. Like vision, the filter never leaves a turn
+  without a model. **The profile TTFTs are an ORDER, not the latest medians**:
+  deepseek's first token IS fastest (0.9 s p50), and shipping that put floor-0
+  text on it (fa19db0 / 6e4ae72) — web questions searched for minutes until the
+  agentic rule, and even self-contained turns got slower in TOTAL (longer
+  answers, ~2.6× slower decode), a 60-item list came back as 297 chars, and its
+  upstream threw 503 `auth_unavailable`. Floor 0 stays on gemini-3.7. The
+  humanizer rewrite orders by reasoning tier FIRST for the same reason. The
+  failover note that printed "<model> is out of capacity — answered with
+  <model>" was removed: it leaked model names into the chat AND the thread's
+  auto-title (p-chat's invariant). deepseek shares an upstream limit with
+  gpt-oss — watch `generation_quota_fallback`.
+- **Never-empty floor** (`graph.answer_nudge`, `ai_empty_answer_floor_enabled`):
+  a turn with tool work that is about to END with no ANSWER gets one more
+  tools-unbound step. "Answer" = a final message (no tool calls) with any text
+  ("391" counts), or deliverable-sized text (≥ `humanize_stage.MIN_WORDS`)
+  that rode along with a tool call or already reached the writer. Narration
+  ("I'll research X first… Retrying.") is NOT an answer — that is the failure
+  it exists for. Both the messages and the writer are read: the humanizer
+  holds its draft back from the writer, and the stream-break recovery clears a
+  message's copy of text that already streamed. After a FAILED tool, a final
+  message under 25 words is not an answer either ("…let me try the simpler
+  section format." ended a report turn with no report). Never on a security
+  turn, never after a dangling tool call (provider 400), at most once.
+- **Skill answer standard** (`skills/answer_standard.py`,
+  `ai_skill_answer_standard_enabled`): appended once when any skill (built-in
+  or custom) reached the prompt, AFTER the skills (their own format wins) and
+  BEFORE `tokens(system)` (it is measured). Proportional: narrow ask → precise
+  answer + ≤2 extras; deliverable → the expert layer. Outside both skill
+  budgets on purpose.
+- **Skill-only deeper reasoning** (`ai_skill_reasoning_effort`, default OFF):
+  `reasoning_effort` only on a skill turn AND only for `ai_high_reasoning_models`
+  (gemini-3.8). deepseek spent a 1,500-token budget entirely on reasoning and
+  answered nothing, hence an allowlist. On Gemini reasoning tokens count
+  against `max_tokens` (8,192): check `finish_reason=length` before enabling.
+  The model clients are built AFTER `user_sel` for this — nothing above that
+  point may use `llm`/`llm_for_tools`.
+
 ## Cost controls (do not remove)
 
 Unbounded context is the default failure mode of a chat product. Four layers, all deliberate:
