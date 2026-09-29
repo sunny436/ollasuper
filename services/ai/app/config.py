@@ -596,13 +596,20 @@ class Settings(BaseSettings):
     # mapping is produced by the EXISTING rule in routing.select() — "the
     # cheapest model that meets the capability floor":
     #
-    #   floor 0 (simple)   all three qualify      -> lowest ttft  -> deepseek
-    #   floor 1 (moderate) deepseek + gemini-3.8  -> lowest ttft  -> deepseek
-    #   floor 2 (heavy)    only gemini-3.8        ->                 gemini-3.8
+    #                      self-contained        FETCHES (URL / retrieval)
+    #   floor 0 (simple)   deepseek (lowest ttft) gemini-3.7
+    #   floor 1 (moderate) deepseek (lowest ttft) gemini-3.8
+    #   floor 2 (heavy)    gemini-3.8             gemini-3.8
     #
+    # A fetching turn runs a tool loop, and deepseek does not converge in one:
+    # `"agentic": false` (routing.ModelProfile.agentic) keeps it off those turns
+    # — 11 steps / 235 s p50 on grounded turns the week before, against 3 steps /
+    # 19 s on gemini-3.7. Shipped once WITHOUT that flag (fa19db0): simple web
+    # questions moved to deepseek and one searched for five minutes without an
+    # answer, so the flag and the re-measured TTFTs belong together.
     # An image promotes a turn to floor 1, where deepseek (no vision) drops out,
-    # so image turns go to gemini-3.8 exactly as before. gemini-3.7 now serves
-    # failover and the humanizer's rewrite (runner._fastest_healthy_model).
+    # so image turns go to gemini-3.8 as before; an attached document is not a
+    # fetch (its text arrives inline) and routes as a self-contained turn.
     #
     # RE-MEASURED 2026-09-29 FROM PRODUCTION, and the order FLIPPED. The 09-16
     # numbers (3 synthetic samples: gemini-3.7 2.97s < deepseek 3.68s) sent every
@@ -642,7 +649,7 @@ class Settings(BaseSettings):
         '{"gemini-3.7-flash-high": {"ttft_s": 2.4, "tok_per_s": 529,'
         ' "reasoning_tier": 0, "vision": true},'
         ' "deepseek-v4-flash": {"ttft_s": 0.9, "tok_per_s": 159,'
-        ' "reasoning_tier": 1, "vision": false},'
+        ' "reasoning_tier": 1, "vision": false, "agentic": false},'
         ' "gemini-3.8-flash-high": {"ttft_s": 3.2, "tok_per_s": 571,'
         ' "reasoning_tier": 2, "vision": true}}'
     )

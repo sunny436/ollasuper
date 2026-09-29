@@ -279,6 +279,14 @@ class ModelProfile:
     # turn is not a preference — the provider returns 400 and the user sees
     # "Something went wrong".
     vision: bool = True
+    # Whether the model CONVERGES in a tool loop. How many steps a fetching turn
+    # takes is a property of the model, not only of the turn, and per-step TTFT
+    # does not predict it. Measured on grounded turns, week of 2026-09-22:
+    # deepseek-v4-flash 11 steps / 235 s p50 (p90 40 steps / 530 s) against
+    # gemini-3.7-flash-high's 3 steps / 19 s; on the benchmark it searched for
+    # five minutes on "the biggest AI news this week" and never answered.
+    # Defaults TRUE, like `vision`: only a model KNOWN to over-iterate is avoided.
+    agentic: bool = True
 
 
 @dataclass(frozen=True)
@@ -356,6 +364,7 @@ class RouterConfig:
                         # dataclass default: a profile written before this field
                         # existed must not start excluding its model.
                         vision=bool(p.get("vision", True)),
+                        agentic=bool(p.get("agentic", True)),
                     )
             except (ValueError, TypeError, AttributeError) as e:
                 log.warning("router.profiles_invalid", extra={"error": str(e)[:200]})
@@ -375,6 +384,10 @@ class Classification:
     reasoning: int
     grounded: bool
     work: str
+    # The turn asks for data from OUTSIDE — a URL or an explicit retrieval — so it
+    # will run a tool loop. Narrower than `grounded`, which also counts an
+    # attached document, whose text arrives inline and needs no loop.
+    fetches: bool = False
 
 
 def _edges(text: str) -> str:
@@ -445,12 +458,15 @@ def classify(sig: Signals, heavy_token_threshold: int = 1200) -> Classification:
     # THIS turn asks for data it does not hold: a URL, an explicit retrieval, or
     # a document attached to this message.
     grounded = bool(saw_url or saw_retrieval or sig.has_document)
+    fetches = saw_url or saw_retrieval
 
     # --- security intent: BEFORE the taxonomy, and final -------------------
     # Security work always gets the deepest reasoning on offer. Returned here so
     # no later demotion (definitional opener, `fast` preference) can touch it.
     if security_intent(sig.text):
-        return Classification(reasoning=HEAVY, grounded=grounded, work="security")
+        return Classification(
+            reasoning=HEAVY, grounded=grounded, work="security", fetches=fetches
+        )
 
     # --- Tier B: the work type, decided by the EARLIEST action in the head -
     #
@@ -535,7 +551,9 @@ def classify(sig: Signals, heavy_token_threshold: int = 1200) -> Classification:
     elif sig.response_speed == "fast":
         reasoning = max(MODERATE if reasoning >= HEAVY else SIMPLE, reasoning - 1)
 
-    return Classification(reasoning=reasoning, grounded=grounded, work=work)
+    return Classification(
+        reasoning=reasoning, grounded=grounded, work=work, fetches=fetches
+    )
 
 
 def select(
@@ -598,6 +616,15 @@ def select(
             # caller's fallback would have been used anyway) and the shortfall is
             # recorded rather than hidden.
             vision_unmet = True
+
+    # A turn that FETCHES runs a tool loop, and the loop's length is a property
+    # of the model (ModelProfile.agentic). A capability filter like vision — a
+    # model that searches for four minutes has not answered faster — and, like
+    # vision, never one that leaves the turn without a model.
+    if cls.fetches:
+        agentic = [c for c in healthy if profile(c).agentic]
+        if agentic:
+            healthy = agentic
 
     # --- capability floor --------------------------------------------------
     capable = [c for c in healthy if profile(c).reasoning_tier >= cls.reasoning]

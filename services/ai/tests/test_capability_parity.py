@@ -557,7 +557,17 @@ async def test_failover_goes_to_an_independent_upstream_and_keeps_discovered_too
                     ModelCandidate(id=GEMINI_38, contextWindow=0),
                 ],
             ),
-            _tool_turn_settings(ai_orchestrated_runtime_enabled=True),
+            # Failover mechanics, not the tool-loop rule (which keeps a fetching
+            # turn off the shipped deepseek): pin deepseek as the routed pick.
+            _tool_turn_settings(
+                ai_orchestrated_runtime_enabled=True,
+                ai_router_profiles=json.dumps(
+                    {
+                        DEFAULT: {"ttft_s": 0.9, "reasoning_tier": 1},
+                        GEMINI_38: {"ttft_s": 3.2, "reasoning_tier": 2},
+                    }
+                ),
+            ),
             convex,
             tool_registry=reg,
             tool_selector=ToolSelector(reg),

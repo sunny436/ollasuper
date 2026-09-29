@@ -508,6 +508,49 @@ def test_structural_signals_promote_without_any_keyword(shipped):
     assert shipped.profiles[_ship(shipped, bland, has_image=True)].vision
 
 
+def test_a_fetching_turn_goes_to_a_model_that_converges(shipped):
+    """deepseek is the fastest first token and the worst tool loop: on grounded
+    turns it took 11 steps / 235 s p50 against gemini-3.7's 3 steps / 19 s, and
+    shipped without this rule it searched for five minutes on a news question.
+    A turn that fetches keeps to models marked agentic, at every floor."""
+    assert not shipped.profiles[MODERATE_MODEL].agentic
+    simple = _ship_decision(shipped, "what is the latest stable python release")
+    assert (simple.model, simple.floor) == (SIMPLE_MODEL, SIMPLE)
+    moderate = _ship_decision(shipped, "write a short summary of today's AI news")
+    assert (moderate.model, moderate.floor) == (HEAVY_MODEL, MODERATE)
+    assert _ship(shipped, "check https://example.com/pricing") != MODERATE_MODEL
+
+
+def test_a_self_contained_turn_keeps_the_fastest_model(shipped):
+    # The agentic rule must not cost the no-tool turns their speed.
+    assert _ship(shipped, "what is a mutex") == MODERATE_MODEL
+    assert _ship(shipped, "write a onboarding email for new customers") == (
+        MODERATE_MODEL
+    )
+
+
+def test_an_attached_document_is_not_a_tool_loop(shipped):
+    # Grounded, but its text arrives inline: routed as self-contained work.
+    bland = "here are the notes"
+    assert classify(Signals(text=bland, has_document=True)).fetches is False
+    assert _ship(shipped, bland, has_document=True) == MODERATE_MODEL
+
+
+def test_a_fetching_turn_is_still_answered_when_only_a_looping_model_is_up(shipped):
+    only = [c for c in SHIPPED if c.id == MODERATE_MODEL]
+    assert _ship(shipped, "what is the latest stable python release", only) == (
+        MODERATE_MODEL
+    )
+
+
+def test_agentic_defaults_to_true_for_an_unmarked_profile():
+    cfg = RouterConfig.from_settings(
+        True, '{"a": {"ttft_s": 1}, "b": {"ttft_s": 2, "agentic": false}}'
+    )
+    assert cfg.profiles["a"].agentic is True
+    assert cfg.profiles["b"].agentic is False
+
+
 def test_the_speed_preference_leans_but_never_overrides(shipped):
     """responseSpeed controls answer LENGTH by contract, so it may nudge a tier
     and must not redefine capability."""
