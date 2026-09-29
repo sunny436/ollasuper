@@ -143,7 +143,12 @@ from app.seo.mutations import (
 )
 from app.skills.answer_standard import ANSWER_STANDARD
 from app.skills.capability_binding import EMPTY_CAPABILITIES, resolve_capabilities
-from app.skills.registry import SkillRegistry, pack_skills, render_skills_block
+from app.skills.registry import (
+    SkillRegistry,
+    pack_skills,
+    render_skills_block,
+    researches,
+)
 from app.skills.user_skills import EMPTY_SELECTION, select_user_skills
 from app.tools.registry import ToolRegistry
 from app.tools.selection import ToolSelector, _passes
@@ -237,6 +242,24 @@ def _skill_reasoning_effort(
     ):
         return effort
     return None
+
+
+def _skill_researches(settings: Settings, request: str) -> bool:
+    """Whether a web-researching built-in skill will activate for this turn.
+
+    Read by the ROUTER, which runs before the skills block is composed: the
+    same deterministic, settings-only ranking, and built-in skills compose only
+    on the orchestrated runtime.
+    """
+    if not (settings.ai_orchestrated_runtime_enabled and request):
+        return False
+    return researches(
+        SkillRegistry(effective_skills(settings)).discover(
+            request,
+            limit=settings.ai_skill_max_active,
+            min_score=settings.ai_skill_min_score,
+        )
+    )
 
 
 def _seed_private_taint(
@@ -491,6 +514,9 @@ async def run_generation(
                             req.personalization.responseSpeed
                             if req.personalization
                             else "balanced"
+                        ),
+                        skill_research=_skill_researches(
+                            settings, (latest.content or "") if latest else ""
                         ),
                     ),
                 )

@@ -543,6 +543,17 @@ def test_a_fetching_turn_is_still_answered_when_only_a_looping_model_is_up(shipp
     )
 
 
+def test_a_researching_skill_makes_the_turn_a_fetch(shipped):
+    """A cold-email request reads as self-contained, but the sales skill's method
+    researches first: 17 search steps and 144-300 s on deepseek on production."""
+    text = "Write a 3-email cold outreach sequence to sell SD-WAN to banks."
+    plain = _ship_decision(shipped, text)
+    assert plain.model == MODERATE_MODEL
+    researched = _ship_decision(shipped, text, skill_research=True)
+    assert (researched.model, researched.floor) == (HEAVY_MODEL, plain.floor)
+    assert classify(Signals(text=text, skill_research=True)).fetches is True
+
+
 def test_agentic_defaults_to_true_for_an_unmarked_profile():
     cfg = RouterConfig.from_settings(
         True, '{"a": {"ttft_s": 1}, "b": {"ttft_s": 2, "agentic": false}}'

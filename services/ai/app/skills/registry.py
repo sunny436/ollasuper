@@ -157,6 +157,21 @@ class SkillRegistry:
         return scored[: max(1, limit)]
 
 
+# A declared capability that sends the skill's methodology out to the web —
+# `sales.web_research`, `research.web_search`, `blog.serp_research`. Declared, not
+# guessed: reading the web is part of these skills' method, whatever the wording.
+_RESEARCH_CAPABILITY = re.compile(r"(?:^|\.)(?:web_research|web_search|serp_research)$")
+
+
+def researches(active: list[ActiveSkill]) -> bool:
+    """Whether any of these activated skills researches the web."""
+    return any(
+        _RESEARCH_CAPABILITY.search(cap)
+        for a in active
+        for cap in a.manifest.preferred_capabilities
+    )
+
+
 def _segments(request: str) -> list[str]:
     """Sentence-ish chunks of a request, URLs kept whole, noise fragments removed."""
     masked = _URL.sub(" ␣ ", request)

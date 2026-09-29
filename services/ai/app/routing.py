@@ -318,6 +318,11 @@ class Signals:
     artifacts: int = 0
     # "fast" | "balanced" | "thorough" — an existing user preference.
     response_speed: str = "balanced"
+    # A skill that researches the web (it declares a web-research capability)
+    # will activate for this turn. Its methodology runs a tool loop whatever the
+    # wording says: the sales skill's "research first" took a cold-email request
+    # classified self-contained to 17 search steps and 144-300 s on deepseek.
+    skill_research: bool = False
 
 
 @dataclass(frozen=True)
@@ -458,7 +463,7 @@ def classify(sig: Signals, heavy_token_threshold: int = 1200) -> Classification:
     # THIS turn asks for data it does not hold: a URL, an explicit retrieval, or
     # a document attached to this message.
     grounded = bool(saw_url or saw_retrieval or sig.has_document)
-    fetches = saw_url or saw_retrieval
+    fetches = saw_url or saw_retrieval or sig.skill_research
 
     # --- security intent: BEFORE the taxonomy, and final -------------------
     # Security work always gets the deepest reasoning on offer. Returned here so
