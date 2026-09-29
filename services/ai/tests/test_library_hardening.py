@@ -288,42 +288,48 @@ def test_a_sandboxed_child_can_write_only_its_own_tmp(tmp_path_factory):
 
 @linux_sandbox
 def test_a_mount_the_sandbox_cannot_reach_does_not_stop_it(tmp_path):
-    """The 29-09-2026 production outage class: a writable mount in the
-    service's mount table that the sandbox cannot reach BY PATH. Here it is
-    tucked under a second mount, in a namespace standing in for the
-    service's. The per-mount remount this replaced resolved each mount point
-    by path, so it failed (exit 97) and refused every decode; the seal is one
-    recursive syscall and must start the sandbox all the same."""
+    """The 29-09-2026 production outage, in its real order: the service probes
+    at import (green), THEN a writable mount appears in its namespace that the
+    sandbox cannot reach BY PATH (here: tucked under a second mount). The
+    per-mount remount this replaced resolved each mount point by path, so from
+    that moment every setup exited 97 and every decode was refused while
+    /readyz, reading the import-time probe, stayed green. The seal is one
+    recursive syscall: the sandbox must still start, AND still be sealed."""
     if not harness._ro_fs_works():
         pytest.skip("this host cannot seal a namespace read-only")
     import os
 
     hidden = tmp_path / "cover" / "hidden"
     hidden.mkdir(parents=True)
+    # Runs as root of its own user namespace, standing in for the service's.
     probe = (
-        "import subprocess, sys\n"
+        "import os, subprocess\n"
         "from app.sandbox import harness\n"
+        "ok = harness._ro_fs_works()  # at 'import', before the mount exists\n"
+        "def sh(*a): subprocess.run(list(a), check=True)\n"
+        "sh('mount', '-t', 'tmpfs', 't', '/var/tmp')  # writable, outside /tmp\n"
+        f"sh('mount', '-t', 'tmpfs', 't', {str(hidden)!r})\n"
+        f"sh('mount', '-t', 'tmpfs', 't', {str(hidden.parent)!r})  # tucks it\n"
+        f"listed = any(' {hidden} ' in ln for ln in open('/proc/self/mountinfo'))\n"
+        f"gone = not os.path.exists({str(hidden)!r})\n"
+        "print('probe=%s hidden=%s' % (ok, listed and gone))\n"
+        "touch = 'touch /var/tmp/x 2>/dev/null && echo WRITABLE || echo SEALED'\n"
         "argv = [*harness.isolation_prefix(harness._prlimit_prefix(10, 512 << 20)),\n"
-        "        '/bin/echo', 'SANDBOX-OK']\n"
+        "        '/bin/sh', '-c', touch]\n"
         "r = subprocess.run(argv, capture_output=True, text=True, timeout=30,\n"
         "                   env=harness.safe_child_env())\n"
         "print('rc=%d %s' % (r.returncode, r.stdout.strip()))\n"
     )
-    outer = (
-        f"mount -t tmpfs t '{hidden}' && mount -t tmpfs t '{hidden.parent}' && "
-        f"grep -q ' {hidden} ' /proc/self/mountinfo && [ ! -e '{hidden}' ] && "
-        'echo HIDDEN-MOUNT-LISTED && exec "$0" -c "$1"'
-    )
     done = subprocess.run(  # noqa: S603 — fixed argv, test-only
-        ["unshare", "-rm", "--", "/bin/sh", "-c", outer, sys.executable, probe],  # noqa: S607
+        ["unshare", "-rm", "--", sys.executable, "-c", probe],  # noqa: S607
         capture_output=True,
         text=True,
         timeout=60,
         cwd=os.getcwd(),
         env={**harness.safe_child_env(), "PYTHONPATH": os.getcwd()},
     )
-    assert "HIDDEN-MOUNT-LISTED" in done.stdout, done.stderr[-400:]
-    assert "rc=0 SANDBOX-OK" in done.stdout, (done.stdout, done.stderr[-400:])
+    assert "probe=True hidden=True" in done.stdout, (done.stdout, done.stderr[-400:])
+    assert "rc=0 SEALED" in done.stdout, (done.stdout, done.stderr[-400:])
 
 
 @linux_sandbox
