@@ -34,6 +34,7 @@ from langchain_core.messages import (
     AnyMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 from langchain_core.runnables import Runnable
 from langgraph.graph import END, START, StateGraph
@@ -82,10 +83,19 @@ def _message_text(message: object) -> str:
     return ""
 
 
+# After a tool FAILED this turn, a final message this short is a retry that
+# never happened, not an answer: "The document tool rejected that schema — let
+# me try the simpler section format." (13 words) ended a one-page-report turn on
+# production (2026-09-29). Short answers after SUCCESSFUL tools ("391") are real;
+# the shortest web answer after failed searches on the benchmark was ~50 words.
+FAILED_TURN_MIN_WORDS = 25
+
+
 def _turn_has_answer(messages: list, writer: object) -> bool:
     """Whether this turn has already produced an answer, not just narration.
 
-    A final message (no tool calls) counts with any text. Text that rode along
+    A final message (no tool calls) counts with any text — unless a tool failed
+    this turn, when it must reach FAILED_TURN_MIN_WORDS. Text that rode along
     with a tool call is narration unless it reaches deliverable size — the
     humanizer's MIN_WORDS, the line the runner already draws between narration
     and a deliverable. Both sources are read because each has a blind spot: the
@@ -95,15 +105,26 @@ def _turn_has_answer(messages: list, writer: object) -> bool:
     """
     if word_count(getattr(writer, "text", "") or "") >= MIN_WORDS:
         return True
+    turn: list = []
     for message in reversed(messages):
         if isinstance(message, HumanMessage):
-            return False
+            break
+        turn.append(message)
+    failed = any(
+        isinstance(m, ToolMessage) and getattr(m, "status", "") == "error"
+        for m in turn
+    )
+    for message in turn:
         if not isinstance(message, AIMessage):
             continue
         text = _message_text(message)
         if not text.strip():
             continue
-        if not getattr(message, "tool_calls", None) or word_count(text) >= MIN_WORDS:
+        words = word_count(text)
+        if getattr(message, "tool_calls", None):
+            if words >= MIN_WORDS:
+                return True
+        elif not failed or words >= FAILED_TURN_MIN_WORDS:
             return True
     return False
 

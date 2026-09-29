@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage
 
 from app.agent.graph import ANSWER_FLOOR_PROMPT
 from app.humanizer.stage import MIN_WORDS
+from app.tools.errors import ToolError, ToolErrorKind
 from tests.test_agent_graph import ScriptedLLM, _invoke, _read_tool, _setup, _tc
 
 RECOVERED = "The search failed, so this is from what I already know."
@@ -118,6 +119,38 @@ async def test_a_deliverable_written_alongside_a_tool_call_blocks_the_floor():
     await _invoke(
         plain, _tools_then(AIMessage(content=""), preamble=DELIVERABLE), ctx, None
     )
+    assert plain.calls == 0
+
+
+class _FailingAdapter:
+    async def call_tool(self, tool, payload, **kw) -> dict:
+        raise ToolError(
+            ToolErrorKind.UPSTREAM_ERROR, "schema rejected", retryable=False
+        )
+
+
+ABANDONED = (
+    "The document tool rejected that schema — let me try the simpler section format."
+)
+REAL_SHORT = (
+    "Delhi is 31 degrees and hazy today with light winds from the northwest, "
+    "humidity near 60 percent, and no rain expected before tomorrow evening, "
+    "according to the last reading I could retrieve."
+)
+
+
+async def test_an_abandoned_retry_after_a_failed_tool_is_not_an_answer():
+    # Production, 2026-09-29: this sentence ended a one-page-report turn.
+    ctx, _ = _floored(adapter=_FailingAdapter())
+    plain = RecordingLLM([AIMessage(content=RECOVERED)])
+    await _invoke(plain, _tools_then(AIMessage(content=ABANDONED)), ctx, None)
+    assert plain.calls == 1
+
+
+async def test_a_real_answer_after_a_failed_tool_is_left_alone():
+    ctx, _ = _floored(adapter=_FailingAdapter())
+    plain = RecordingLLM([AIMessage(content=RECOVERED)])
+    await _invoke(plain, _tools_then(AIMessage(content=REAL_SHORT)), ctx, None)
     assert plain.calls == 0
 
 
