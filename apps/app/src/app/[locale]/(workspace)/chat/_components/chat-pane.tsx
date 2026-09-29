@@ -112,6 +112,11 @@ export function ChatPane({
         name matcher is substring-based — a label of `Close conversations`
         would collide with the prompt library's `Close` button and throw on
         strict mode. Hence `Hide`.
+
+        The docked one exists only while the rail is collapsed: an open rail
+        carries its own `Hide conversations` toggle in its header (ChatGPT's
+        placement), and a collapsed rail is zero-wide and invisible, so this is
+        the only place it can be reopened from. One visible toggle, always.
       */}
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-card px-4">
         <button
@@ -122,14 +127,17 @@ export function ChatPane({
         >
           <PanelLeft className="h-4 w-4" />
         </button>
-        <button
-          type="button"
-          onClick={toggleCollapsed}
-          aria-label={collapsed ? "Open conversations" : "Hide conversations"}
-          className="hidden rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-primary md:block [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
-        >
-          <PanelLeft className="h-4 w-4" />
-        </button>
+        {collapsed && (
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            aria-label="Open conversations"
+            data-rail-opener=""
+            className="hidden rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-primary md:block [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+          >
+            <PanelLeft className="h-4 w-4" />
+          </button>
+        )}
 
         {/* Breadcrumb — OllaSuper › current conversation. */}
         <div className="flex min-w-0 items-center gap-1 text-sm">

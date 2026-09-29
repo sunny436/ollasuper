@@ -82,14 +82,18 @@ export function ScheduledPane() {
           >
             <PanelLeft className="h-4 w-4" />
           </button>
-          <button
-            type="button"
-            onClick={toggleCollapsed}
-            aria-label={collapsed ? "Show conversations" : "Hide conversations"}
-            className="hidden rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary md:block"
-          >
-            <PanelLeft className="h-4 w-4" />
-          </button>
+          {/* Only while collapsed: the open rail carries its own toggle. */}
+          {collapsed && (
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              aria-label="Show conversations"
+              data-rail-opener=""
+              className="hidden rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary md:block"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </button>
+          )}
           {/* This route has no header of its own, and it is where scheduled-run
               notifications actually lead — so the bell must be reachable here
               too, not only from the chat header. Same component. */}

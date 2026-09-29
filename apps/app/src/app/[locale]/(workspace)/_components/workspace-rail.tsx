@@ -58,6 +58,7 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const restoreFocus = useRef<HTMLElement | null>(null);
+  const handOffFocus = useRef(false);
 
   const openSidebar = useCallback(() => {
     restoreFocus.current = document.activeElement as HTMLElement | null;
@@ -84,6 +85,7 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
   }, []);
 
   const toggleCollapsed = useCallback(() => {
+    handOffFocus.current = true;
     setCollapsed((prev) => {
       const next = !prev;
       try {
@@ -94,6 +96,36 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
       return next;
     });
   }, []);
+
+  /**
+   * Hand focus to the control that replaced the one just pressed.
+   *
+   * The docked toggle lives in the rail header while the rail is open, and a
+   * pane opener ([data-rail-opener]) exists only while it is collapsed — so
+   * whichever one a keyboard user pressed leaves the page, and without this
+   * their focus falls to <body>. User toggles only: the collapsed state
+   * restored from localStorage on load must never steal focus.
+   *
+   * Retried for a few frames because React flushes this effect before the
+   * browser restyles, and the rail animates `visibility`: at frame 0 of an
+   * expand the header toggle is still hidden and focus() is silently ignored.
+   */
+  useEffect(() => {
+    if (!handOffFocus.current) return;
+    handOffFocus.current = false;
+    const target = collapsed ? "[data-rail-opener]" : "[data-rail-hider]";
+    let frames = 10;
+    let id = 0;
+    const tryFocus = () => {
+      const el = document.querySelector<HTMLElement>(target);
+      el?.focus();
+      if (el && document.activeElement !== el && --frames > 0) {
+        id = requestAnimationFrame(tryFocus);
+      }
+    };
+    id = requestAnimationFrame(tryFocus);
+    return () => cancelAnimationFrame(id);
+  }, [collapsed]);
 
   // Escape closes the drawer. The dashboard sidebar lacks this; the command
   // palette has it, and it is what people expect from an overlay.
@@ -197,8 +229,12 @@ export function WorkspaceRail({ children }: { children: ReactNode }) {
       >
         <div className="h-full w-[272px]">
           {/* closeSidebar is a no-op when the drawer is not open, so the docked
-              rail can share the prop. */}
-          <ChatSidebar onNavigate={closeSidebar} />
+              rail can share the prop. The header toggle closes the drawer when
+              it is the drawer, and collapses the dock otherwise. */}
+          <ChatSidebar
+            onNavigate={closeSidebar}
+            onHideRail={open ? closeSidebar : toggleCollapsed}
+          />
         </div>
       </nav>
 

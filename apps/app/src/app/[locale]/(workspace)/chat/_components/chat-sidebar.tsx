@@ -38,6 +38,7 @@ import {
   LogOut,
   MessageSquare,
   MoreHorizontal,
+  PanelLeft,
   Pencil,
   Pin,
   PinOff,
@@ -74,14 +75,36 @@ interface ThreadItem {
 function BrandHeader({
   recent,
   onNavigate,
+  onHideRail,
 }: {
   recent: RecentChat[];
   onNavigate?: () => void;
+  onHideRail?: () => void;
 }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-2 px-4 py-4 text-foreground">
       <OllaSuperBrand variant="app" />
-      <SearchChats recent={recent} onNavigate={onNavigate} />
+      <div className="flex items-center gap-1">
+        <SearchChats recent={recent} onNavigate={onNavigate} />
+        {/*
+          The rail's own toggle, where ChatGPT puts it. Same look as the search
+          trigger beside it. While the rail is collapsed it is invisible with
+          it, so each pane renders an opener (data-rail-opener) only then —
+          exactly one toggle is ever visible. `Hide`, never `Close`: see the
+          comment on the pane openers in chat-pane.tsx.
+        */}
+        {onHideRail && (
+          <button
+            type="button"
+            onClick={onHideRail}
+            aria-label="Hide conversations"
+            data-rail-hider=""
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-primary/65 transition hover:bg-primary/5 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:-my-2 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+          >
+            <PanelLeft className="h-4 w-4" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -220,7 +243,13 @@ function ProfileFooter({ onNavigate }: { onNavigate?: () => void }) {
     </div>
   );
 }
-export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
+export function ChatSidebar({
+  onNavigate,
+  onHideRail,
+}: {
+  onNavigate?: () => void;
+  onHideRail?: () => void;
+}) {
   const router = useRouter();
   const convex = useConvex();
   const params = useParams<{ threadId?: string }>();
@@ -353,11 +382,13 @@ export function ChatSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      <BrandHeader recent={threads} onNavigate={onNavigate} />
+      <BrandHeader recent={threads} onNavigate={onNavigate} onHideRail={onHideRail} />
 
-      {/* Grouped header block — New chat, Files — with no internal
-          dividers, matching the reference's grouping. */}
-      <div className="flex shrink-0 flex-col gap-3 px-3 py-3">
+      {/* Grouped header block — New chat, then Library / Projects / Scheduled
+          as one compact group (2px apart, ChatGPT's rhythm); Library's mt-2
+          keeps New chat set apart, and the container's bottom padding plus the
+          list's top padding keep a clearly larger gap before the history. */}
+      <div className="flex shrink-0 flex-col gap-0.5 px-3 py-3">
         <button
           type="button"
           onClick={() => void onNewChat()}

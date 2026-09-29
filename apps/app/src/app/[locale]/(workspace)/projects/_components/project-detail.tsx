@@ -228,14 +228,18 @@ Its chats are kept and move back to your conversation list. You can restore the 
           >
             <PanelLeft className="h-4 w-4" />
           </button>
-          <button
-            type="button"
-            onClick={toggleCollapsed}
-            aria-label={collapsed ? "Show conversations" : "Hide conversations"}
-            className="hidden rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary md:block"
-          >
-            <PanelLeft className="h-4 w-4" />
-          </button>
+          {/* Only while collapsed: the open rail carries its own toggle. */}
+          {collapsed && (
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              aria-label="Show conversations"
+              data-rail-opener=""
+              className="hidden rounded-md p-1.5 text-primary/65 hover:bg-primary/5 hover:text-primary md:block"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </button>
+          )}
           <div className="ml-auto">
             <NotificationsBell />
           </div>
