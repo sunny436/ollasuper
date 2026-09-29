@@ -164,6 +164,8 @@ only in `services/ai/.env`. Never commit any of these.
 
 Snapshots taken during the perf deploy (on the VM, under `/root/`):
 - `next-prod-backup-20260819-082903/` — the pre-perf production build
+  (**deleted 2026-09-29** to free 782 MB; many deploys old, no longer a
+  usable rollback)
 - `app-env-backup-20260819-082903` — pre-perf `apps/app/.env`
 - `myos-uncommitted-20260819-082903.patch` — the working-tree state that existed before cleanup
 - `authorized_keys.safe-20260819-083341` — pre-edit SSH keys
