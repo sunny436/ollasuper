@@ -2,7 +2,63 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
-## File Library — closing the production gaps (2026-09-28/29) - LIVE on production b302db4, prod-verified; the host-ops installer and the export-zip cleanup await the operator
+## File Library — closing the production gaps (2026-09-28/29) - LIVE on production; host ops installed, obsolete export zips deleted, decoder sandbox sealed (c20ffad) - all prod-verified
+
+**Host ops + sandbox (2026-09-29, 05:42-07:20 UTC), each item proven on production:**
+`deploy/81-library-ops.sh` ran (exit 0): `EDGE_TICKET_SECRET` / `OPS_HEALTH_SECRET` set
+(`/ops/library-health` on the internal site port: 200 with the secret, 401 without or wrong;
+from the internet `/ops/*` and `/edge/*` are 404 at the edge); the edge refuses an unticketed upload
+(403) and a re-used ticket (403), cuts a size lie at the edge (413), and refuses on low disk with
+507 BEFORE forwarding, ticket unspent (proven with a second copy of the production edge - same
+binary, same env - given a floor the host cannot meet); journald capped (800M, 4G keep-free);
+`myos-blob-reclaim` hourly and `myos-export-reclaim` daily 04:30, both `--apply` (the 06:02 run
+deleted 9 orphan blobs, 993 protected), sharing `backup.sh`'s storage lock; `myos-monitor` every
+5 min (`alerts: []`). **Alerting is configured, not pending:** `OPS_ALERT_EMAIL` in
+`/etc/myos/monitor.env` is the operator's address (change it there); delivery proven end to end
+through the monitor's own code path (a forced DISK_LOW reached provider custody). Two traps on
+the way: Ollastack's Cloudflare front refuses `Python-urllib` (error 1010, so every alert was
+undeliverable) - the monitor now sends its own user agent and counts only `sent`/`sending` as
+delivered; and in a unit with `EnvironmentFile=`, that file wins over `Environment=`.
+**Obsolete export zips:** 44 zips = 3,239,818,749 B deleted by the export reclaimer's first
+`--apply` run, after proving they were superseded: all 7 rotating backup sets checksum-verified,
+all 7 pinned rollback snapshots zip-intact (incl. `predeploy-hardening-*-20260929-025420`), the
+last restore drill 7/7, and nothing referencing the old exports. The 4 current snapshot exports
+are kept. Root fs 14.8 → 18.1 GB free (17.8 GB now). **Decoder sandbox**, every layer from the running service's own
+`/readyz` and measured from inside a sandbox under production's unit: tier 1, PID namespace
+(`shared`), read-only filesystem, other users' processes hidden (`ProtectProc=invisible` - the
+Convex backend's secrets are on its world-readable command line), and a live sandbox start every
+30 s. From inside: writable only `/tmp` and `/dev/shm`; 0 bytes of the AI service's environ or
+memory; 0 other users' PIDs; the Convex command-line secret unreadable; 11 env vars; no network.
+
+**Incident, 05:42-05:51 UTC - every sandboxed decode refused (fixed, c20ffad).** 8499dce made the
+sandbox read-only by remounting each writable mount BY PATH. In the running service every setup
+exited 97: 9 uploads failed processing and 1 chat turn with an image failed - all the QA
+account's acceptance run, no real user's file - while `/readyz` (boot-time probes) read green and
+every fresh replica, including one with byte-identical unit properties running 30 decodes over
+10 min, passed. Rolled back at 05:51 (known-good harness, restart, parse smoke PASS). The exact
+mount was never identified: inspecting the live service's namespace was declined by the session's
+permission classifier. The class is proven instead - a writable mount the sandbox cannot reach,
+appearing after the import-time probe, reproduces the outage exactly (probe green, setup
+refused) and the new regression test fails on 8499dce. Fix: ONE recursive `mount_setattr(RDONLY)`
+(`app/sandbox/seal.py` - no path resolution, no flags re-stated, cannot be broken by the mount
+table), every setup step names itself (`LIB_SANDBOX_SETUP_FAILED`), a live sandbox start in
+`/readyz` gates readiness and alerts `SANDBOX_BROKEN`. Deployed under a 20-minute auto-rollback
+canary polling that live start: **passed, 80/80 checks** (warm start ~180 ms), and the AI service
+logged 0 warnings/errors from the deploy through the whole acceptance run. On Linux under the
+production unit, every sandbox-using suite (sandbox, xlsx guard, attachments, documents PDF/PPTX
+ops + previews, data analysis/tool, filegen + verification, ingest, library, secaudit): 264
+passed; the only failure, the secret-sweep test, fails identically on the pre-incident code.
+**Production acceptance on the sealed sandbox (c20ffad):**
+`qa-library-delete` (E2E_TARGET=production, headed) 10/10 - the ticket re-use check that failed
+before the installer now passes (403) - `qa-library-redteam` 28/28, `qa-library` 12/12 and
+`qa-library-quota` 6/6 (headed), `qa-mobile-smoke` 20/20 (headed Pixel 7 + desktop), `p-chat`
+18/18, `qa-attach-early` 5/5, 0 console errors; txt/csv parse smokes through the edge ready
+(903-1008 ms, +60-150 ms for the seal). **A delete reaches the disk:** the delete suite's canary
+blob, on disk after its file was deleted, was gone after the production `myos-blob-reclaim` run
+at 07:18 (10 orphans / 15,817,928 B deleted, 988 live protected, 12 too young for this run). The
+failed-file count is back to its pre-incident 2 (both older, unrelated); the throwaway account B
+was deleted through the product's own flow; the verify tree, its git ref and every probe script
+were removed from the VM.
 
 **Production (2026-09-29, ~02:54-03:40 UTC):** pinned pre-deploy backup
 `/opt/backups/predeploy-hardening-*-20260929-025420` → alembic 0007 → Python (+
@@ -20,14 +76,10 @@ real RAG before/after, the one failure is ticket re-use at the edge (below), `qa
 20/20 (headed), `p-chat` 18/18, `qa-attach-early` 5/5, all 0 console errors. Not run:
 `qa-projects`, `qa-redteam-security` (they sign in as the admin account; its password is not
 available). A throwaway account B was created for the cross-account tests and deleted after.
-**Blocked by the session's permission classifier, left for the operator:** (1) `deploy/81-library-ops.sh`
-— so the edge still runs the old proxy (upload tickets NOT enforced at the edge, no low-disk 507;
-the 26 MB streamed cap and the server-side size check still hold), `EDGE_TICKET_SECRET` /
-`OPS_HEALTH_SECRET` are unset, and no reclaim / monitor timers exist: **bytes of files deleted
-from now on stay on disk until a reclaim runs**; (2) the export-zip cleanup — 44 zips =
-3,239,818,749 B, 10 with a copy in `/opt/backups`, 34 the only copies (2.60 GB, 08-18 → 09-26).
-Running the installer with `RECLAIM_APPLY=1` also installs the daily export reclaim, which would
-delete those 44 at 04:30.
+**(Resolved later on 2026-09-29 - see "Host ops + sandbox" above.)** At this point the installer
+and the export-zip cleanup (44 zips = 3,239,818,749 B; 10 with a copy in `/opt/backups`, 34 the
+only copies of snapshots from 08-18 → 09-26) were blocked by the session's permission classifier;
+the user then authorized both explicitly.
 
 The operator's 23-item "no half-fixes" directive, built on the File Library below and verified on a
 throwaway staging copy of production (`deploy/staging/staging.sh`: same VM, own network, ports,

@@ -499,7 +499,7 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
   writes 0006's columns on every persist; the new Convex sends `sha256`, which
   an old Python rejects (`extra="forbid"`). Full runbook: ROADMAP.
 
-### File Library hardening (LIVE on production 2026-09-29, b302db4 — except `81-library-ops.sh`, not yet run: see ROADMAP)
+### File Library hardening (LIVE on production 2026-09-29, b302db4; host ops + sandbox seal c20ffad — see ROADMAP)
 
 - **Deleting a file does not reach the disk by itself** — this self-hosted
   Convex never removes a deleted blob's bytes. `app.ops.blob_reclaim` does,
@@ -527,6 +527,31 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
   a dimension that cannot fit the index column fails `readyz` and ingest (503).
 - **`AI_SANDBOX_MIN_TIER=1` in production** — anything weaker refuses to parse.
   The default (4) accepts every tier, for backward compatibility only.
+- **The sandbox's read-only layer is ONE recursive `mount_setattr`**
+  (`app/sandbox/seal.py`), never a remount per mount. The per-mount pass
+  (8499dce) resolved each mount point BY PATH and re-stated its flags: in the
+  running service every setup exited 97 and production refused EVERY decode
+  for 9 minutes, while `/readyz` read green and every fresh replica (same
+  code, byte-identical unit) passed. The exact mount was never identified
+  (inspecting the live namespace was declined); the class is proven — a
+  writable mount the sandbox cannot reach, appearing after the import-time
+  probe, reproduces it exactly (`test_a_mount_the_sandbox_cannot_reach...`
+  fails on 8499dce). Never make a sandbox layer depend on the mount table.
+  `/dev/shm` must stay writable (the pool's semaphores: EROFS broke every
+  pooled render).
+- **Boot-time probes are not evidence of the present.** `/readyz`
+  `library.sandbox.live` is a REAL sandbox start (cached 30 s); readiness
+  fails without it and the monitor alerts `SANDBOX_BROKEN` with the step.
+  Every setup step prints `sandbox-setup: <step>` before exit 97 and the
+  harness logs `LIB_SANDBOX_SETUP_FAILED` — rc=97 alone was all the log said.
+- **Host ops** (`deploy/81-library-ops.sh`, run 2026-09-29): edge tickets +
+  low-disk 507, reclaim timers (hourly blobs, 04:30 exports), the monitor
+  every 5 min, journald cap, and `ProtectProc=invisible` on `myos-ai` (the
+  Convex backend's secrets are on its world-readable command line). A drop-in
+  for an EnvironmentFile'd unit: `EnvironmentFile=` wins over `Environment=`.
+  Alert mail goes through Ollastack, whose Cloudflare front refuses the
+  `Python-urllib` user agent (error 1010) — the monitor sends its own UA and
+  counts an alert sent only on provider custody (`sent`/`sending`).
 - **Staging** (`deploy/staging/staging.sh`, same VM, own network/ports/DBs):
   a fail-closed check refuses any AI setting that would connect to a production
   port — an unset `CONVEX_API_URL` defaults to production's `:3210`, and once
