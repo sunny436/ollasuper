@@ -75,7 +75,14 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$SITE/ops/library-health" -
 curl -fsS -m 10 "$AI_URL/readyz" | grep -q '"library"' \
   || die "the AI plane's /readyz has no library section: deploy the new Python first"
 ALERT=${OPS_ALERT_EMAIL:-$(env_get "$MONITOR_ENV" OPS_ALERT_EMAIL)}
-[ -n "$ALERT" ] || die "OPS_ALERT_EMAIL is required: an alert nobody receives is not an alert"
+if [ -z "$ALERT" ]; then
+  # An alert nobody receives is not an alert. ALERTS_PENDING=1 installs anyway
+  # (metrics are recorded; every alert is UNDELIVERABLE, so the monitor unit
+  # fails visibly) until the operator supplies the address and re-runs this.
+  [ "${ALERTS_PENDING:-0}" = 1 ] \
+    || die "OPS_ALERT_EMAIL is required (ALERTS_PENDING=1 installs without it; the monitor then fails loudly until set)"
+  echo "   WARNING: no OPS_ALERT_EMAIL - alerts are undeliverable until one is set" >&2
+fi
 MAILBOX=$(cvx_get OLLASTACK_REPORTS_MAILBOX_ID)
 [ -n "$MAILBOX" ] || MAILBOX=$(cvx_get OLLASTACK_AUTH_MAILBOX_ID)
 [ -n "$MAILBOX" ] || die "no Ollastack mailbox id in the Convex env (deploy/75-ollastack-mail.sh)"

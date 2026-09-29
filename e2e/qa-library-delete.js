@@ -10,18 +10,25 @@
 // integrity pass proving the reclaimer removed nothing that was still live.
 // A GENERATED file is deleted with its chat card and preview pages.
 //
-// Staging only: it reads the staging volume and databases over SSH.
+// Staging by default: it reads the volume and databases over SSH.
+// E2E_TARGET=production (the post-deploy acceptance run) reads production's
+// instead and does NOT force the reclaimer: production keeps its 10-minute
+// grace, so the canary's bytes are left for the hourly timer and the step
+// records the path to check after it has run.
 const { execFileSync } = require("node:child_process");
 const { chromium } = require("playwright");
 const { account } = require("./creds");
 
-const BASE = process.env.E2E_BASE_URL || "http://localhost:3400";
+const PROD = process.env.E2E_TARGET === "production";
+const BASE = process.env.E2E_BASE_URL || (PROD ? "https://app.ollasuper.com" : "http://localhost:3400");
 const CONVEX = process.env.E2E_CONVEX_URL || `${BASE}/__cvx`;
 const SITE = CONVEX.replace("/__cvx", "/__cvx-site");
 const VM = process.env.STAGING_VM || "root@172.16.70.25";
-if (!/localhost|127\.0\.0\.1/.test(BASE)) throw new Error("qa-library-delete.js runs against staging only");
+if (!PROD && !/localhost|127\.0\.0\.1/.test(BASE)) throw new Error("set E2E_TARGET=production to run against production");
 
-const VOLUME = "/var/lib/docker/volumes/myos-staging-data/_data/storage";
+const VOLUME = PROD
+  ? "/var/lib/docker/volumes/self-hosted_data/_data/storage"
+  : "/var/lib/docker/volumes/myos-staging-data/_data/storage";
 const { email, password } = account();
 const results = [];
 const errors = [];
@@ -47,12 +54,16 @@ const step = async (name, fn) => {
 function vm(cmd) {
   return execFileSync("ssh", ["-o", "BatchMode=yes", VM, cmd], { encoding: "utf8", maxBuffer: 32 << 20 }).trim();
 }
-const knowledge = (sql) => vm(`docker exec myos-staging-pg psql -U myos_ai -d myos_knowledge -At -c "${sql}"`);
+const knowledge = (sql) =>
+  vm(`docker exec ${PROD ? "ai-knowledge-db-1" : "myos-staging-pg"} psql -U myos_ai -d myos_knowledge -At -c "${sql}"`);
 const admin = (fn, args) =>
   vm(
-    `. /opt/myos-staging/.staging.env && cd /opt/myos-staging/src/packages/backend && ` +
-      `CONVEX_SELF_HOSTED_URL=http://127.0.0.1:3310 CONVEX_SELF_HOSTED_ADMIN_KEY="$ADMIN_KEY" ` +
-      `node ../../node_modules/convex/bin/main.js run ${fn} '${JSON.stringify(args)}' 2>/dev/null`,
+    PROD
+      ? // production's own CLI config (packages/backend/.env.local)
+        `cd /opt/myos/packages/backend && node ../../node_modules/convex/bin/main.js run ${fn} '${JSON.stringify(args)}' 2>/dev/null`
+      : `. /opt/myos-staging/.staging.env && cd /opt/myos-staging/src/packages/backend && ` +
+          `CONVEX_SELF_HOSTED_URL=http://127.0.0.1:3310 CONVEX_SELF_HOSTED_ADMIN_KEY="$ADMIN_KEY" ` +
+          `node ../../node_modules/convex/bin/main.js run ${fn} '${JSON.stringify(args)}' 2>/dev/null`,
   );
 const blobWith = (needle) => vm(`grep -l -F '${needle}' ${VOLUME}/files/*.blob 2>/dev/null | head -1 || true`);
 const exists = (path) => vm(`test -e '${path}' && echo yes || echo no`) === "yes";
@@ -231,21 +242,29 @@ async function ask(page, question) {
     if (answer.includes(code)) throw new Error("the deleted file's content was retrieved");
   });
 
-  await step("the bytes leave the DISK when the host reclaimer runs (and nothing live is touched)", async () => {
+  await step(
+    PROD
+      ? "the bytes are left to the production reclaimer (its grace), and nothing live is broken"
+      : "the bytes leave the DISK when the host reclaimer runs (and nothing live is touched)",
+    async () => {
     if (!exists(blobPath)) throw new Error("the blob vanished before the reclaimer ran (unexpected)");
-    // Staging runs it with no grace: production waits 10 minutes after the
-    // delete. The minimum age (60 s here) still protects uploads in flight -
-    // and so protects a canary younger than that: wait it out.
-    const age = Number(vm(`echo $(( $(date +%s) - $(stat -c %Y '${blobPath}') ))`));
-    if (age < 65) await page.waitForTimeout((65 - age) * 1000);
-    const report = vm(
-      "cd /opt/myos-staging/src/services/ai && /opt/myos/services/ai/.venv/bin/python -m app.ops.blob_reclaim " +
-        `--storage-dir ${VOLUME} --psql 'docker exec -i myos-staging-pg psql -U convex -d myos_staging' ` +
-        "--grace-s 0 --min-age-s 60 --max 500 --lock /tmp/myos-staging-storage.lock --apply",
-    );
-    const rep = JSON.parse(report.split("\n").pop());
-    if (rep.status !== "ok") throw new Error(`reclaimer ${rep.status}: ${rep.message}`);
-    if (exists(blobPath)) throw new Error(`still on disk (${rep.deleted} deleted, candidates ${rep.candidates})`);
+    let reclaimed = "";
+    if (!PROD) {
+      // Staging runs it with no grace: production waits 10 minutes after the
+      // delete. The minimum age (60 s here) still protects uploads in flight -
+      // and so protects a canary younger than that: wait it out.
+      const age = Number(vm(`echo $(( $(date +%s) - $(stat -c %Y '${blobPath}') ))`));
+      if (age < 65) await page.waitForTimeout((65 - age) * 1000);
+      const report = vm(
+        "cd /opt/myos-staging/src/services/ai && /opt/myos/services/ai/.venv/bin/python -m app.ops.blob_reclaim " +
+          `--storage-dir ${VOLUME} --psql 'docker exec -i myos-staging-pg psql -U convex -d myos_staging' ` +
+          "--grace-s 0 --min-age-s 60 --max 500 --lock /tmp/myos-staging-storage.lock --apply",
+      );
+      const rep = JSON.parse(report.split("\n").pop());
+      if (rep.status !== "ok") throw new Error(`reclaimer ${rep.status}: ${rep.message}`);
+      if (exists(blobPath)) throw new Error(`still on disk (${rep.deleted} deleted, candidates ${rep.candidates})`);
+      reclaimed = `${rep.deleted} orphan blob(s) reclaimed (${rep.deleted_bytes} B); `;
+    }
     // Every blob that is still live must still be readable, byte for byte.
     let cursor = null;
     let checked = 0;
@@ -259,8 +278,10 @@ async function ask(page, question) {
       cursor = p.continueCursor;
     }
     if (bad) throw new Error(`${bad} live blob(s) broken after reclaiming`);
-    return `${rep.deleted} orphan blob(s) reclaimed (${rep.deleted_bytes} B); ${checked} live blobs re-hashed intact`;
-  });
+    const later = PROD ? `; after the next myos-blob-reclaim run, check: test ! -e ${blobPath}` : "";
+    return `${reclaimed}${checked} live blobs re-hashed intact${later}`;
+    },
+  );
 
   await step("a GENERATED file is deleted with its chat card and preview pages", async () => {
     await page.goto(`${BASE}/en/chat`, { waitUntil: "domcontentloaded" });
