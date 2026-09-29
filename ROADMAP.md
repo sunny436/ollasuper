@@ -2,6 +2,18 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Sidebar: compact nav, toggle in the rail header (2026-09-29) - LIVE f3321e9, prod-verified
+
+ChatGPT's rhythm and placement, nothing else redesigned. New chat / Library / Projects / Scheduled
+went from a 48px to a 38px pitch (the group's `gap-3` → `gap-0.5`; measured on production: New chat
+→ Library 20 → 10px, Library → Projects and Projects → Scheduled 12 → 2px, Scheduled → history kept
+at 20px). The collapse toggle moved INTO the rail header, right of the brand beside search; it
+collapses the dock, or closes the phone drawer. A pane's opener renders only while the rail is
+collapsed, so exactly one toggle is ever visible; keyboard focus is handed to whichever control
+replaced the one pressed. `e2e/qa-sidebar-compact.js` (headed, desktop + phone, 42 checks incl.
+/chat, /library, /projects, a project page, /scheduled; 0 console errors) PASS; `BASELINE=1`
+recorded the numbers before the deploy.
+
 ## File Library — closing the production gaps (2026-09-28/29) - LIVE on production; host ops installed, obsolete export zips deleted, decoder sandbox sealed (c20ffad) - all prod-verified
 
 **Host ops + sandbox (2026-09-29, 05:42-07:20 UTC), each item proven on production:**

@@ -206,10 +206,18 @@ async function desktop(browser, errors) {
 
   // The other panes, both collapsed-label variants.
   const routes = ["/en/library", "/en/projects", "/en/scheduled"];
-  const project = await page.evaluate(() => {
-    const a = [...document.querySelectorAll('a[href*="/projects/"]')][0];
-    return a ? new URL(a.href).pathname : null;
-  });
+  // A project page, when the account has one (or PROJECT_ID names one).
+  // PROJECT_ID, not a path: Git Bash rewrites a "/en/..." env value into a
+  // Windows path before node ever sees it.
+  let project = process.env.PROJECT_ID ? `/en/projects/${process.env.PROJECT_ID}` : null;
+  if (!project) {
+    await page.goto(`${BASE}/en/projects`, { waitUntil: "domcontentloaded" });
+    await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => undefined);
+    project = await page.evaluate(() => {
+      const a = [...document.querySelectorAll('a[href*="/projects/"]')][0];
+      return a ? new URL(a.href).pathname : null;
+    });
+  }
   if (project) routes.push(project);
   for (const r of routes) {
     await page.goto(`${BASE}${r}`, { waitUntil: "domcontentloaded" });
