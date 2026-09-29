@@ -108,47 +108,110 @@ def _prlimit_prefix(
     return []
 
 
-@functools.cache
-def _pid_namespace_works() -> bool:
-    """Whether this host lets an unprivileged user create a PID namespace.
+def _probe(argv: list[str]) -> bool:
+    try:
+        done = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
 
-    Probed once rather than assumed: an AppArmor profile or a hardened kernel
-    can permit the user+net+mount namespaces the sandbox already relies on and
-    still refuse -p. Assuming it would turn every decode into a transport
-    failure — and the harness fails CLOSED — so the result is "no attachments"
-    rather than "slightly less isolation". The tier log line says which ran.
+
+@functools.cache
+def _pid_namespace_mode() -> str:
+    """The PID namespace this host lets an unprivileged user create, probed once:
+
+      "private" - `--mount-proc`: the child sees only its own processes;
+      "shared"  - a PID namespace WITHOUT a fresh /proc (the child still sees
+                  the service's /proc) - kept for the kill guarantee;
+      ""        - none.
+
+    "shared" exists because of production: under systemd's
+    ProtectKernelTunables the kernel refuses a new /proc inside a user
+    namespace (it would reveal what the unit over-mounted), so --mount-proc
+    fails there while the namespace itself works - and the namespace is what
+    kills a decoder's setsid() grandchild when the decode is killed. Probed,
+    never assumed: an assumed capability that is missing turns every decode
+    into a failure (the harness fails CLOSED).
     """
-    try:
-        done = subprocess.run(  # noqa: S603 — fixed argv, no shell
-            ["unshare", "-rnmpf", "--mount-proc", "true"],  # noqa: S607
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode == 0
+    if _probe(["unshare", "-rnmpf", "--mount-proc", "true"]):  # noqa: S607
+        return "private"
+    if _probe(["unshare", "-rnmpf", "true"]):  # noqa: S607
+        return "shared"
+    return ""
+
+
+# Every writable DATA mount the service can see, remounted read-only inside the
+# sandbox's mount namespace, keeping the flags the kernel locks (nosuid, nodev,
+# noexec, atime). Two reasons it is per mount: clearing a locked flag is what
+# made a bare `remount,bind,ro /` fail under ProtectSystem=strict, and there the
+# service's StateDirectory / CacheDirectory / ReadWritePaths / private /var/tmp
+# are SEPARATE mounts a root-only remount never reached (measured on
+# production: a sandboxed decoder could write /var/lib/myos-ai). Pseudo
+# filesystems are skipped: the sandboxed user has no write rights there and
+# several refuse a remount (docker's nsfs handles). Reads the mount table with
+# `read` into named fields - never `set --`, which would clobber the "$@" the
+# mount script ends by exec-ing. Fails CLOSED (exit 97) on any mount it cannot
+# make read-only, and on a mount point it cannot name exactly.
+_DATA_FS = (
+    "ext2|ext3|ext4|xfs|btrfs|f2fs|vfat|exfat|ntfs|ntfs3|zfs|overlay|tmpfs|"
+    "ramfs|fuseblk|nfs|nfs4|cifs|9p|virtiofs"
+)
+RO_FS_SCRIPT = (
+    "while read -r _ _ _ _ mp opts rest; do "
+    't=${rest#*- }; t=${t%% *}; '
+    f'case "$t" in {_DATA_FS}) ;; *) continue;; esac; '
+    'case ",$opts," in *,rw,*) ;; *) continue;; esac; '
+    'case "$mp" in *\\\\*) exit 97;; esac; '
+    "f=$(printf %s \"$opts\" | tr , '\\n' | "
+    "grep -xE 'nosuid|nodev|noexec|noatime|nodiratime|relatime|strictatime' | "
+    "paste -sd, -); "
+    'mount -o "remount,bind,ro${f:+,$f}" "$mp" || exit 97; '
+    "done < /proc/self/mountinfo; "
+)
 
 
 @functools.cache
-def _ro_root_works() -> bool:
-    """Whether the mount namespace may remount / read-only (probed once, like
-    the PID namespace): with it, a decoder RCE cannot write ANYWHERE on the host
-    filesystem the service user can - only to its private, capped /tmp."""
+def _ro_fs_works() -> bool:
+    """Whether every writable data mount can be made read-only inside the
+    sandbox's mount namespace (probed once, with the very script the sandbox
+    runs): with it, a decoder RCE cannot write ANYWHERE on the host filesystem
+    the service user can - only to its private, capped /tmp."""
+    return _probe(["unshare", "-rnm", "--", "/bin/sh", "-c", RO_FS_SCRIPT])  # noqa: S607
+
+
+@functools.cache
+def _proc_isolated() -> bool:
+    """Whether a sandboxed decoder is blind to every OTHER user's process.
+
+    Not a detail: the self-hosted Convex backend runs as root with its instance
+    secret (from which the admin key is derived) and its Postgres password on
+    its command line, and /proc/<pid>/cmdline is world-readable. With a private
+    /proc the child sees only itself; otherwise only the service unit's own
+    `ProtectProc=invisible` (hidepid) hides them. Counted, from this process's
+    view of /proc - which is the child's view whenever it gets no /proc of its
+    own.
+    """
+    if _pid_namespace_mode() == "private":
+        return True
+    me = os.getuid()
     try:
-        done = subprocess.run(  # noqa: S603 — fixed argv, no shell
-            ["unshare", "-rnm", "--", "/bin/sh", "-c", "mount -o remount,bind,ro /"],  # noqa: S607
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+        pids = [e for e in os.listdir("/proc") if e.isdigit()]
+    except OSError:
         return False
-    return done.returncode == 0
+    for pid in pids:
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != me:
+                return False
+        except OSError:
+            continue  # exited between listdir and stat
+    return True
 
 
 def _unshare_prefix() -> list[str]:
@@ -156,11 +219,14 @@ def _unshare_prefix() -> list[str]:
         # -r maps caller->root in a userns (works without privileges); -n gives a
         # private network namespace (no SSRF/exfil); -m gives a private MOUNT
         # namespace so the wrapper can mask secret files without affecting the host.
-        # -p/-f/--mount-proc add a PID namespace: the child sees no host process,
-        # and when its init dies the kernel kills everything it forked — even a
-        # process that left the group with setsid().
-        if _pid_namespace_works():
+        # -p/-f add a PID namespace: when its init dies the kernel kills
+        # everything it forked — even a process that left the group with
+        # setsid(). --mount-proc also hides every host process (where allowed).
+        mode = _pid_namespace_mode()
+        if mode == "private":
             return ["unshare", "-rnmpf", "--mount-proc", "--"]
+        if mode == "shared":
+            return ["unshare", "-rnmpf", "--"]
         return ["unshare", "-rnm", "--"]
     return []
 
@@ -219,11 +285,19 @@ def _tier() -> tuple[int, str]:
     ushare = _unshare_prefix()
     has_prlimit = bool(_prlimit_prefix())
     if ushare and has_prlimit:
-        pid = " + pid namespace" if "-rnmpf" in ushare else " (no pid namespace)"
-        ro = " + read-only root" if _ro_root_works() else " (root writable)"
+        pid = {
+            "private": " + pid namespace",
+            "shared": " + pid namespace (service /proc)",
+        }.get(_pid_namespace_mode(), " (no pid namespace)")
+        ro = " + read-only filesystem" if _ro_fs_works() else " (filesystem writable)"
+        procs = (
+            " + other users' processes hidden"
+            if _proc_isolated()
+            else " (other users' processes visible)"
+        )
         return 1, (
             "unshare -rnm + prlimit(nproc) + tmpfs /tmp + stripped-env subprocess"
-            f"{pid}{ro}"
+            f"{pid}{ro}{procs}"
         )
     if has_prlimit:
         return 2, "prlimit + stripped-env subprocess (no network namespace)"
@@ -238,12 +312,18 @@ def sandbox_status() -> dict:
     """For the health endpoint / tests: the achievable tier, whether the child
     is guaranteed secret-free (tiers 1-3) vs an in-process dev fallback (4), and
     whether it meets this deployment's required minimum (AI_SANDBOX_MIN_TIER)."""
+    posix = _TIER == 1
     return {
         "tier": _TIER,
         "detail": _TIER_DESC,
         "secret_free": _TIER <= 3,
         "min_tier": _MIN_TIER,
         "meets_minimum": _TIER <= _MIN_TIER,
+        # Each layer on its own, so the host monitor can alert on the one that
+        # regressed instead of parsing the detail string.
+        "pid_namespace": _pid_namespace_mode() if posix else "",
+        "readonly_fs": _ro_fs_works() if posix else False,
+        "proc_isolated": _proc_isolated() if posix else False,
     }
 
 
@@ -260,12 +340,12 @@ def _assert_minimum() -> None:
 
 def mount_script() -> str:
     """The shell run INSIDE the mount namespace before the real command:
-    read-only root (where the host allows it), a size- and inode-capped private
-    /tmp, and /dev/null over every secret file. Each step FAILS CLOSED - a
-    decoder never runs with a mask or a cap that did not take."""
+    every data mount read-only (where the host allows it), a size- and
+    inode-capped private /tmp, and /dev/null over every secret file. Each step
+    FAILS CLOSED - a decoder never runs with a mask or a cap that did not take."""
     script = ""
-    if _ro_root_works():
-        script += "mount -o remount,bind,ro / || exit 97; "
+    if _ro_fs_works():
+        script += RO_FS_SCRIPT
     script += (
         f"mount -t tmpfs -o size={TMP_SIZE},nr_inodes={TMP_INODES},mode=1777 "
         "tmpfs /tmp || exit 97; "

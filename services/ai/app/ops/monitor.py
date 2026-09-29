@@ -311,6 +311,21 @@ def evaluate(cfg: Config, m: Metrics) -> list[Alert]:
                     f"is below the required {sandbox.get('min_tier')}.",
                 )
             )
+        # Tier 1 is several layers; name the one that regressed. Only keys the
+        # AI plane reports are judged (an older build reports none of them).
+        layers = ("readonly_fs", "proc_isolated")
+        degraded = [k for k in layers if sandbox.get(k) is False]
+        if sandbox.get("pid_namespace") == "":
+            degraded.append("pid_namespace")
+        if degraded:
+            out.append(
+                Alert(
+                    "SANDBOX_DEGRADED",
+                    "critical",
+                    "Decoders run with a weaker sandbox than production requires: "
+                    f"{', '.join(degraded)} off (see /readyz library.sandbox).",
+                )
+            )
         if lib_ai and lib_ai.get("index_dimension_ok") is False:
             out.append(
                 Alert(
@@ -428,6 +443,16 @@ def plan(
 # ------------------------------------------------------------------ deliver
 
 
+# The provider sits behind Cloudflare, which refuses urllib's default
+# "Python-urllib/x" signature outright (HTTP 403, error 1010) - measured on
+# production: every alert was undeliverable until a real user agent was sent.
+USER_AGENT = "OllaSuper-HostMonitor/1.0 (+https://app.ollasuper.com)"
+# Delivered means the provider took CUSTODY, not a bare 2xx: it can accept a
+# message and never transmit it (`dry_run`, `failed`). The same rule as the
+# app's own sends (packages/backend/convex/email.ts, ollastackSend).
+CUSTODY = ("sent", "sending")
+
+
 def send_mail(cfg: Config, subject: str, text: str) -> bool:
     if not (cfg.alert_email and cfg.mail_token and cfg.mailbox_id):
         return False
@@ -441,12 +466,16 @@ def send_mail(cfg: Config, subject: str, text: str) -> bool:
         headers={
             "content-type": "application/json",
             "authorization": f"Bearer {cfg.mail_token}",
+            "user-agent": USER_AGENT,
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310
-            return 200 <= r.status < 300
-    except (OSError, urllib.error.HTTPError):
+            if not 200 <= r.status < 300:
+                return False
+            data = json.loads(r.read().decode() or "{}").get("data") or {}
+            return data.get("deliveryStatus") in CUSTODY
+    except (OSError, urllib.error.HTTPError, ValueError, AttributeError):
         return False
 
 

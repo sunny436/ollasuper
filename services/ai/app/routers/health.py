@@ -86,6 +86,10 @@ async def readyz(request: Request, response: Response) -> dict:
         "isolated": status["secret_free"],
         "min_tier": status["min_tier"],
         "meets_minimum": status["meets_minimum"],
+        # Each isolation layer on its own (the host monitor alerts per layer).
+        "pid_namespace": status.get("pid_namespace", ""),
+        "readonly_fs": status.get("readonly_fs", False),
+        "proc_isolated": status.get("proc_isolated", False),
     }
     library = {"sandbox": sandbox, "index_dimension_ok": index_ok}
     library_ok = bool(status["meets_minimum"]) and index_ok

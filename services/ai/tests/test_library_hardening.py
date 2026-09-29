@@ -97,13 +97,17 @@ def test_the_sandbox_gets_a_capped_private_tmp_and_the_op_cpu_budget(monkeypatch
     )
     monkeypatch.setattr(harness.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(harness, "_secret_masks", lambda: ["/srv/.env"])
-    monkeypatch.setattr(harness, "_ro_root_works", lambda: True)
+    monkeypatch.setattr(harness, "_ro_fs_works", lambda: True)
     argv = harness._argv("ingest_parse", {"file_type": "docx"}, cpu_s=315)
     assert argv[:4] == ["unshare", "-rnmpf", "--mount-proc", "--"]
     script = argv[argv.index("-c") + 1]
-    # Read-only root first, then a size- AND inode-capped /tmp, then the masks;
-    # every step fails CLOSED (exit 97), never `|| true`.
-    assert script.startswith("mount -o remount,bind,ro / || exit 97; ")
+    # Every data mount read-only first, then a size- AND inode-capped /tmp, then
+    # the masks; every step fails CLOSED (exit 97), never `|| true`.
+    assert script.startswith(harness.RO_FS_SCRIPT)
+    remount = 'mount -o "remount,bind,ro${f:+,$f}" "$mp" || exit 97'
+    assert remount in harness.RO_FS_SCRIPT
+    # Never `set --`: it would clobber the "$@" the script ends by exec-ing.
+    assert "set --" not in script
     tmpfs = (
         f"mount -t tmpfs -o size={harness.TMP_SIZE},nr_inodes={harness.TMP_INODES},"
         "mode=1777 tmpfs /tmp || exit 97; "
@@ -126,7 +130,7 @@ def test_no_secret_reaches_the_child_environment(monkeypatch):
 
 
 def test_a_host_that_refuses_a_pid_namespace_keeps_the_rest_of_the_sandbox(monkeypatch):
-    harness._pid_namespace_works.cache_clear()
+    harness._pid_namespace_mode.cache_clear()
 
     def refuse(*a, **k):
         raise OSError("apparmor said no")
@@ -136,7 +140,100 @@ def test_a_host_that_refuses_a_pid_namespace_keeps_the_rest_of_the_sandbox(monke
     try:
         assert harness._unshare_prefix() == ["unshare", "-rnm", "--"]
     finally:
-        harness._pid_namespace_works.cache_clear()
+        harness._pid_namespace_mode.cache_clear()
+
+
+def test_a_host_that_refuses_only_a_fresh_proc_keeps_the_pid_namespace(monkeypatch):
+    """Production: under ProtectKernelTunables the kernel refuses --mount-proc in
+    a user namespace, but the PID namespace itself - and the kill guarantee it
+    gives - still works."""
+    harness._pid_namespace_mode.cache_clear()
+
+    def run(argv, **k):
+        return SimpleNamespace(returncode=1 if "--mount-proc" in argv else 0)
+
+    monkeypatch.setattr(harness.subprocess, "run", run)
+    monkeypatch.setattr(harness.shutil, "which", lambda name: f"/usr/bin/{name}")
+    try:
+        assert harness._pid_namespace_mode() == "shared"
+        assert harness._unshare_prefix() == ["unshare", "-rnmpf", "--"]
+    finally:
+        harness._pid_namespace_mode.cache_clear()
+
+
+def _in_sandbox(script: str) -> subprocess.CompletedProcess:
+    argv = [
+        *harness.isolation_prefix(harness._prlimit_prefix(10, 512 << 20)),
+        "/bin/sh",
+        "-c",
+        script,
+    ]
+    return subprocess.run(  # noqa: S603 — fixed argv, test-only
+        argv, capture_output=True, text=True, timeout=30, env=harness.safe_child_env()
+    )
+
+
+@linux_sandbox
+def test_a_sandboxed_child_can_write_only_its_own_tmp(tmp_path_factory):
+    if not harness._ro_fs_works():
+        pytest.skip("this host cannot make its data mounts read-only in a namespace")
+    import os
+    import tempfile
+
+    # A directory the SERVICE user can write, outside /tmp (the child's /tmp is
+    # its own tmpfs): the child must not be able to write it.
+    outside = None
+    var_tmp = "/var/tmp"  # noqa: S108 — a place the CHILD must not be able to write
+    for base in (os.environ.get("XDG_STATE_HOME"), os.path.expanduser("~"), var_tmp):
+        if base and not base.startswith("/tmp") and os.access(base, os.W_OK):  # noqa: S108
+            outside = tempfile.mkdtemp(prefix="sbx-", dir=base)
+            break
+    if outside is None:
+        pytest.skip("no writable directory outside /tmp to test against")
+    try:
+        done = _in_sandbox(
+            f'if : > "{outside}/x" 2>/dev/null; then echo OUTSIDE-WRITABLE; fi; '
+            ': > /tmp/ok && echo TMP-OK'
+        )
+        assert "TMP-OK" in done.stdout
+        assert "OUTSIDE-WRITABLE" not in done.stdout
+        assert not os.path.exists(f"{outside}/x")
+    finally:
+        import shutil as _sh
+
+        _sh.rmtree(outside, ignore_errors=True)
+
+
+@linux_sandbox
+def test_a_setsid_grandchild_dies_with_the_sandbox():
+    if not harness._pid_namespace_mode():
+        pytest.skip("this host gives no PID namespace")
+    marker = "7171.4242"  # an unmistakable argument, found and cleaned below
+    _in_sandbox(f"setsid sleep {marker} >/dev/null 2>&1 & exit 0")
+    time.sleep(1)
+    pattern = f"^sleep {marker}$"
+    alive = subprocess.run(  # noqa: S603 — fixed argv, test-only
+        ["pgrep", "-f", pattern],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if alive.stdout.strip():
+        subprocess.run(["pkill", "-f", pattern], check=False)  # noqa: S603, S607
+    assert not alive.stdout.strip(), "a setsid() grandchild outlived its sandbox"
+
+
+@linux_sandbox
+def test_a_host_reported_proc_isolated_shows_the_child_no_other_users_process():
+    if not harness._proc_isolated():
+        pytest.skip("this host does not isolate /proc (production's unit does)")
+    # Inside the user namespace the service user is root (uid 0); any process
+    # of another user shows as unmapped. None may be listed.
+    done = _in_sandbox(
+        'n=0; for d in /proc/[0-9]*; do u=$(stat -c %u "$d" 2>/dev/null) || continue; '
+        '[ "$u" = 0 ] || n=$((n+1)); done; echo "foreign=$n"'
+    )
+    assert "foreign=0" in done.stdout, done.stdout
 
 
 # ------------------------------------------------------ P0-6 sandboxed parsing

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+
+from app.ops import monitor
 from app.ops.monitor import GIB, Alert, Config, Metrics, evaluate, plan
 
 NOW = 2_000_000_000.0
@@ -118,9 +121,74 @@ def test_the_config_reads_its_environment():
     assert cfg.disk_crit_bytes == 123
 
 
+def test_each_sandbox_layer_that_regresses_is_named():
+    full = {"meets_minimum": True, "pid_namespace": "shared", "readonly_fs": True,
+            "proc_isolated": True}
+    ok = {"ready": True, "library": {"sandbox": full, "index_dimension_ok": True}}
+    assert _keys(_healthy(ai=ok)) == set()
+    for layer, bad in (("readonly_fs", False), ("proc_isolated", False),
+                       ("pid_namespace", "")):
+        ai = {"ready": True, "library": {"sandbox": {**full, layer: bad},
+                                         "index_dimension_ok": True}}
+        alerts = evaluate(CFG, _healthy(ai=ai))
+        assert [a.key for a in alerts] == ["SANDBOX_DEGRADED"]
+        assert layer in alerts[0].summary and alerts[0].severity == "critical"
+
+
 def test_old_dead_letters_and_corrupt_files_do_not_page_anyone():
     """A dead letter older than a day (already alerted) and a user's corrupt
     file (a non-retryable code, counted apart as failedFinal) raise nothing."""
     lib = _healthy().library
     quiet = {**lib, "deadLettered": 4, "deadLetteredLastDay": 0, "failedFinal": 9}
     assert _keys(_healthy(library=quiet)) == set()
+
+
+# ------------------------------------------------------------------ delivery
+
+
+class _Resp:
+    def __init__(self, status: int, body: dict) -> None:
+        self.status = status
+        self._body = json.dumps(body).encode()
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a) -> None:
+        return None
+
+
+MAIL = Config(alert_email="ops@example.com", mail_token="t", mailbox_id="m")
+
+
+def test_an_alert_counts_as_sent_only_when_the_provider_took_custody(monkeypatch):
+    seen = []
+
+    def fake(req, timeout):
+        seen.append(req)
+        return _Resp(200, {"data": {"deliveryStatus": status}})
+
+    monkeypatch.setattr(monitor.urllib.request, "urlopen", fake)
+    cases = (("sent", True), ("sending", True), ("dry_run", False), ("failed", False))
+    for status, want in cases:
+        assert monitor.send_mail(MAIL, "s", "t") is want, status
+    # Cloudflare refuses urllib's default signature (error 1010): a real UA is sent.
+    assert all(r.get_header("User-agent") == monitor.USER_AGENT for r in seen)
+
+
+def test_a_refused_or_unreachable_provider_is_undeliverable(monkeypatch):
+    def refused(req, timeout):
+        raise monitor.urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(monitor.urllib.request, "urlopen", refused)
+    assert monitor.send_mail(MAIL, "s", "t") is False
+    def down(req, timeout):
+        raise OSError("down")
+
+    monkeypatch.setattr(monitor.urllib.request, "urlopen", down)
+    assert monitor.send_mail(MAIL, "s", "t") is False
+    # No address, token or mailbox: nothing is attempted, and it is not "sent".
+    assert monitor.send_mail(Config(), "s", "t") is False

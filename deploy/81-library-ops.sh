@@ -150,28 +150,53 @@ fi
 echo "   edge answers; an unticketed upload is refused (403)"
 
 # ------------------------------------------------------------------ 3. sandbox floor
-say "3/5 AI plane sandbox floor (AI_SANDBOX_MIN_TIER=1)"
+say "3/5 AI plane sandbox: floor (AI_SANDBOX_MIN_TIER=1) + ProtectProc=invisible"
+restart=0
 prev=$(env_get "$AI_ENV" AI_SANDBOX_MIN_TIER)
 if [ "$prev" != 1 ]; then
   cp -p "$AI_ENV" "$AI_ENV.bak-$stamp"
   sed -i '/^AI_SANDBOX_MIN_TIER=/d' "$AI_ENV"
   echo "AI_SANDBOX_MIN_TIER=1" >> "$AI_ENV"
-  systemctl restart myos-ai
-  ready=""
-  for _ in $(seq 1 60); do
-    ready=$(curl -fsS -m 5 "$AI_URL/readyz" 2>/dev/null || true)
-    echo "$ready" | grep -q '"meets_minimum"' && break
-    sleep 2
-  done
-  if ! echo "$ready" | grep -q '"meets_minimum":true'; then
+  restart=1
+fi
+# Other users' processes hidden from the AI service and every decoder it
+# sandboxes. The Convex backend runs as root with its instance secret (the
+# admin key derives from it) and its Postgres password on its command line,
+# and /proc/<pid>/cmdline is world-readable; under ProtectKernelTunables the
+# kernel refuses a sandbox its own /proc, so this is what keeps a decoder from
+# reading it (measured on production: readable before this drop-in).
+DROPIN=/etc/systemd/system/myos-ai.service.d/60-protect-proc.conf
+if ! grep -qx 'ProtectProc=invisible' "$DROPIN" 2>/dev/null; then
+  install -d /etc/systemd/system/myos-ai.service.d
+  printf '[Service]\nProtectProc=invisible\n' > "$DROPIN"
+  systemctl daemon-reload
+  restart=1
+fi
+[ "$restart" = 1 ] && systemctl restart myos-ai
+ready=""
+for _ in $(seq 1 60); do
+  ready=$(curl -fsS -m 5 "$AI_URL/readyz" 2>/dev/null || true)
+  echo "$ready" | grep -q '"meets_minimum"' && break
+  sleep 2
+done
+if ! echo "$ready" | grep -q '"meets_minimum":true'; then
+  if [ -f "$AI_ENV.bak-$stamp" ]; then
     echo "   this host cannot give sandbox tier 1: ROLLING BACK the floor" >&2
     install -m 0640 "$AI_ENV.bak-$stamp" "$AI_ENV"
     systemctl restart myos-ai
-    die "AI_SANDBOX_MIN_TIER=1 refused (readyz: $(echo "$ready" | head -c 300))"
   fi
-  echo "   readyz: sandbox tier 1 meets the minimum"
+  die "sandbox tier 1 not met (readyz: $(echo "$ready" | head -c 300))"
+fi
+# Every layer, from the running service's own probes - not assumed.
+off=$(printf '%s' "$ready" | python3 -c 'import json,sys
+s = json.load(sys.stdin)["library"]["sandbox"]
+off = [k for k in ("readonly_fs", "proc_isolated") if s.get(k) is not True]
+print(" ".join(off + ([] if s.get("pid_namespace") else ["pid_namespace"])))')
+if [ -n "$off" ]; then
+  echo "   SANDBOX DEGRADED - off: $off (the monitor alerts SANDBOX_DEGRADED)" >&2
+  degraded=1
 else
-  echo "   already 1"
+  echo "   readyz: tier 1 + pid namespace + read-only filesystem + other users' processes hidden"
 fi
 
 # ------------------------------------------------------------------ 4. journald
@@ -259,12 +284,22 @@ OnUnitActiveSec=5min
 WantedBy=timers.target
 EOF
 systemctl daemon-reload
+# The first reports BEFORE any timer is enabled, ONE AT A TIME: the two
+# reclaimers share the storage lock (started together, one skipped as "a
+# backup holds the lock"), and enabling the monitor timer runs the monitor at
+# once (its boot delay passed long ago) - measured on production, it read the
+# reclaim report before the first reclaim had written it: a false
+# RECLAIM_NOT_RUNNING. `start` of a oneshot waits for it to finish.
+systemctl start myos-blob-reclaim.service || true
+systemctl start myos-export-reclaim.service || true
 for t in myos-blob-reclaim myos-export-reclaim myos-monitor; do systemctl enable --now "$t.timer" >/dev/null; done
-# One run of each now, so the first report and metrics exist immediately.
-systemctl start myos-blob-reclaim.service myos-export-reclaim.service || true
 systemctl start myos-monitor.service || echo "   the monitor exited non-zero: an alert could not be delivered (see journalctl -u myos-monitor)"
 for r in files exports; do
   echo "   $r: $(head -c 400 /var/lib/myos-reclaim/$r.json 2>/dev/null || echo 'no report')"
 done
 echo "   monitor: $(journalctl -u myos-monitor -n 20 --no-pager -o cat | grep -o '"alerts": \[[^]]*\]' | tail -1)"
 say "installed. Reclaimers are ${APPLY:+APPLYING}${APPLY:-DRY RUNS - review the reports above, then re-run with RECLAIM_APPLY=1 once approved}"
+if [ "${degraded:-0}" = 1 ]; then
+  echo "FATAL: installed, but the decoder sandbox is DEGRADED (see step 3)" >&2
+  exit 1
+fi
