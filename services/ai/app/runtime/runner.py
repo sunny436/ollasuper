@@ -2039,9 +2039,12 @@ async def run_generation(
             if tools_ctx is not None and tools_ctx.rebind is not None:
                 tools_ctx.rebind_quota_fallback = quota_fb.bind_tools
 
-        # NOT silent. A user whose answer came from a different model than the one
-        # in their picker must be told, or the picker is lying to them. One line,
-        # pushed ahead of the answer through the existing delta channel.
+        # Recorded, not shown. This used to push "_<model> is out of capacity —
+        # answered with <model> instead._" into the answer, written for the model
+        # PICKER, which no longer exists: the router hides model identity, and on
+        # 2026-09-29 the line leaked "deepseek" and "gemini" into a user's chat
+        # (p-chat's invariant). The log and chatMessages.model still say which
+        # model answered.
         notified = {"done": False}
 
         async def _note_quota_fallback() -> None:
@@ -2059,10 +2062,6 @@ async def run_generation(
                 # a model that produced none of it.
                 writer.set_routed_model(
                     fb_model, f"{route.reason}|quota_fallback_from:{model_id}"
-                )
-                await writer.push(
-                    f"_{model_id} is out of capacity — answered with "
-                    f"{fb_model} instead._\n\n"
                 )
 
         # EVERY option refusing: say so NOW. Starting the graph would spend two

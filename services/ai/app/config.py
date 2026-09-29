@@ -596,43 +596,29 @@ class Settings(BaseSettings):
     # mapping is produced by the EXISTING rule in routing.select() — "the
     # cheapest model that meets the capability floor":
     #
-    #                      self-contained        FETCHES (URL / retrieval)
-    #   floor 0 (simple)   deepseek (lowest ttft) gemini-3.7
-    #   floor 1 (moderate) deepseek (lowest ttft) gemini-3.8
+    #                      self-contained        FETCHES (URL / retrieval /
+    #                                            a web-researching skill)
+    #   floor 0 (simple)   gemini-3.7             gemini-3.7
+    #   floor 1 (moderate) deepseek               gemini-3.8
     #   floor 2 (heavy)    gemini-3.8             gemini-3.8
     #
     # A fetching turn runs a tool loop, and deepseek does not converge in one:
     # `"agentic": false` (routing.ModelProfile.agentic) keeps it off those turns
     # — 11 steps / 235 s p50 on grounded turns the week before, against 3 steps /
-    # 19 s on gemini-3.7. Shipped once WITHOUT that flag (fa19db0): simple web
-    # questions moved to deepseek and one searched for five minutes without an
-    # answer, so the flag and the re-measured TTFTs belong together.
+    # 19 s on gemini-3.7; the cold-email sales benchmark went 144 s -> 25 s p50.
     # An image promotes a turn to floor 1, where deepseek (no vision) drops out,
-    # so image turns go to gemini-3.8 as before; an attached document is not a
-    # fetch (its text arrives inline) and routes as a self-contained turn.
+    # so image turns go to gemini-3.8; an attached document is not a fetch (its
+    # text arrives inline) and routes as a self-contained turn.
     #
-    # RE-MEASURED 2026-09-29 FROM PRODUCTION, and the order FLIPPED. The 09-16
-    # numbers (3 synthetic samples: gemini-3.7 2.97s < deepseek 3.68s) sent every
-    # simple turn to the slower model. These are the p50 of model time-to-first-
-    # token on real no-tool turns over 7 days (generation_finished ttft_ms minus
-    # prep_ms; n = 62 / 21 / 14), cross-checked by a live probe (deepseek 0.34s,
-    # gemini-3.7 1.52s, gemini-3.8 1.73s on a tiny prompt):
-    #
-    #   gemini-3.7-flash-high  2.4s  p90 3.8s
-    #   deepseek-v4-flash      0.9s  p90 3.1s
-    #   gemini-3.8-flash-high  3.2s  p90 4.0s
-    #
-    # TOTAL time was checked too, because deepseek decodes ~2.6x slower (380 vs
-    # 976 chars/s on the same turns): it finishes first only below ~1,200 chars.
-    # Real no-tool answers are short (p50 ~100 chars, p90 ~800), so its TOTAL is
-    # also lower: p50 1.3s vs 3.0s, p90 3.1s vs 4.8s. Long-output work that does
-    # not need its reasoning — the humanizer's rewrite — is ordered by tier
-    # first (runner._fastest_healthy_model) and stays on gemini-3.7.
-    #
-    # Re-measure from generation_finished before trusting these again; they are
-    # medians, not guarantees. Routing reads these static numbers, which is what
-    # makes the mapping deterministic per turn instead of a race. Instant revert
-    # without a deploy: set AI_ROUTER_PROFILES in the service .env.
+    # THE TTFT VALUES ARE AN ORDER, NOT THE LATEST MEDIANS. Production medians on
+    # 2026-09-29 (no-tool turns, 7 days): deepseek 0.9s, gemini-3.7 2.4s,
+    # gemini-3.8 3.2s. Shipping those (fa19db0 / 6e4ae72) put floor-0 text on
+    # deepseek, and on the headed benchmark that was a bad trade: first token
+    # 0.8s sooner but TOTAL p50 3.9s -> 4.3s (longer answers, ~2.6x slower
+    # decode), a 60-item list returned as 297 chars, and deepseek's upstream
+    # threw 503 auth_unavailable mid-run — a failover on every simple turn it
+    # takes. So floor 0 stays on gemini-3.7 with the 09-16 values below. Instant
+    # change without a deploy: set AI_ROUTER_PROFILES in the service .env.
     #
     # A catalogue model that is ABSENT here is emergency-only by construction:
     # select() falls back to ModelProfile() = ttft 99s, tier 0, so it loses
@@ -646,11 +632,11 @@ class Settings(BaseSettings):
     # input", which reached the user as "Something went wrong". Absent = true, so
     # only a model KNOWN to refuse images is excluded from an image turn.
     ai_router_profiles: str = (
-        '{"gemini-3.7-flash-high": {"ttft_s": 2.4, "tok_per_s": 529,'
+        '{"gemini-3.7-flash-high": {"ttft_s": 2.97, "tok_per_s": 529,'
         ' "reasoning_tier": 0, "vision": true},'
-        ' "deepseek-v4-flash": {"ttft_s": 0.9, "tok_per_s": 159,'
+        ' "deepseek-v4-flash": {"ttft_s": 3.68, "tok_per_s": 159,'
         ' "reasoning_tier": 1, "vision": false, "agentic": false},'
-        ' "gemini-3.8-flash-high": {"ttft_s": 3.2, "tok_per_s": 571,'
+        ' "gemini-3.8-flash-high": {"ttft_s": 5.23, "tok_per_s": 571,'
         ' "reasoning_tier": 2, "vision": true}}'
     )
     # Estimated prompt+history tokens at or above which a turn routes to the

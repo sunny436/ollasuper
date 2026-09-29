@@ -427,9 +427,6 @@ def _ship(shipped, text, candidates=None, **kw):
     return _ship_decision(shipped, text, candidates, **kw).model
 
 
-def _ship_floor(shipped, text, **kw):
-    return _ship_decision(shipped, text, **kw).floor
-
 
 def test_the_shipped_roster_is_exactly_three_models_one_per_tier(shipped):
     assert set(shipped.profiles) == {SIMPLE_MODEL, MODERATE_MODEL, HEAVY_MODEL}
@@ -440,12 +437,13 @@ def test_the_shipped_roster_is_exactly_three_models_one_per_tier(shipped):
 
 def test_the_ttft_ordering_is_what_makes_the_tie_break_correct(shipped):
     """select() takes the lowest TTFT among models meeting the floor, so this
-    ordering IS the routing. Re-measured on production 2026-09-29 (no-tool TTFT
-    p50: 0.9 / 2.4 / 3.2 s) the moderate model is the fastest, so text work at
-    BOTH lower floors goes to it (image turns are promoted to the heavy model
-    either way). If a re-benchmark inverts this, it fails HERE with the reason."""
+    ordering IS the routing, and it is a deliberate ORDER rather than the latest
+    medians: deepseek has the fastest first token (0.9 s p50 on 2026-09-29), but
+    taking floor-0 text on it made total time worse on the headed benchmark,
+    truncated a list, and exposed simple turns to its flakier upstream (see
+    config). If a profile edit inverts this, it fails HERE with the reason."""
     ttft = {m: p.ttft_s for m, p in shipped.profiles.items()}
-    assert ttft[MODERATE_MODEL] < ttft[SIMPLE_MODEL] < ttft[HEAVY_MODEL]
+    assert ttft[SIMPLE_MODEL] < ttft[MODERATE_MODEL] < ttft[HEAVY_MODEL]
 
 
 @pytest.mark.parametrize(
@@ -458,7 +456,7 @@ def test_the_ttft_ordering_is_what_makes_the_tie_break_correct(shipped):
     ],
 )
 def test_simple_work_routes_to_the_speed_first_model(shipped, text):
-    assert _ship(shipped, text) == MODERATE_MODEL
+    assert _ship(shipped, text) == SIMPLE_MODEL
 
 
 @pytest.mark.parametrize(
@@ -494,12 +492,9 @@ def test_structural_signals_promote_without_any_keyword(shipped):
     # would NOT do, because it matches the analytic taxonomy and is already
     # heavy before any structural signal is added.
     bland = "here are the notes"
-    # The fastest text model already serves floors 0 and 1, so the promotion is
-    # asserted on the FLOOR it produces rather than on the model id.
-    assert _ship_floor(shipped, bland) == SIMPLE
-    assert _ship_floor(shipped, bland, has_document=True) >= MODERATE
-    assert _ship_floor(shipped, bland, open_loops=2) >= MODERATE
+    assert _ship(shipped, bland) == SIMPLE_MODEL
     assert _ship(shipped, bland, has_document=True) == MODERATE_MODEL
+    assert _ship(shipped, bland, open_loops=2) == MODERATE_MODEL
     # An image promotes the CLASSIFICATION the same way, but the moderate model
     # cannot take images, so the promotion is served by the vision-capable model
     # at that floor. This line used to assert MODERATE_MODEL, which is precisely
@@ -509,10 +504,10 @@ def test_structural_signals_promote_without_any_keyword(shipped):
 
 
 def test_a_fetching_turn_goes_to_a_model_that_converges(shipped):
-    """deepseek is the fastest first token and the worst tool loop: on grounded
-    turns it took 11 steps / 235 s p50 against gemini-3.7's 3 steps / 19 s, and
-    shipped without this rule it searched for five minutes on a news question.
-    A turn that fetches keeps to models marked agentic, at every floor."""
+    """deepseek does not converge in a tool loop: on grounded turns it took 11
+    steps / 235 s p50 against gemini-3.7's 3 steps / 19 s, and routed onto it a
+    news question searched for five minutes. A turn that fetches keeps to models
+    marked agentic, at every floor."""
     assert not shipped.profiles[MODERATE_MODEL].agentic
     simple = _ship_decision(shipped, "what is the latest stable python release")
     assert (simple.model, simple.floor) == (SIMPLE_MODEL, SIMPLE)
@@ -521,9 +516,8 @@ def test_a_fetching_turn_goes_to_a_model_that_converges(shipped):
     assert _ship(shipped, "check https://example.com/pricing") != MODERATE_MODEL
 
 
-def test_a_self_contained_turn_keeps_the_fastest_model(shipped):
-    # The agentic rule must not cost the no-tool turns their speed.
-    assert _ship(shipped, "what is a mutex") == MODERATE_MODEL
+def test_a_self_contained_turn_is_untouched_by_the_tool_loop_rule(shipped):
+    assert _ship(shipped, "what is a mutex") == SIMPLE_MODEL
     assert _ship(shipped, "write a onboarding email for new customers") == (
         MODERATE_MODEL
     )
