@@ -2,7 +2,32 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
-## File Library — closing the production gaps (2026-09-28) - branch `feat/library-hardening`, STAGING-verified, NOT on production
+## File Library — closing the production gaps (2026-09-28/29) - LIVE on production b302db4, prod-verified; the host-ops installer and the export-zip cleanup await the operator
+
+**Production (2026-09-29, ~02:54-03:40 UTC):** pinned pre-deploy backup
+`/opt/backups/predeploy-hardening-*-20260929-025420` → alembic 0007 → Python (+
+`AI_SANDBOX_MIN_TIER=1`; readyz tier 1 meets it) → Convex (3 new indexes) → frontend
+(`deploy/68`) → `recomputeUsage` (only the absent generated ledgers; re-run 0 diffs) →
+`requeueFailed` (82 requeued, 2 final; re-run 0) → `cleanupKnowledgeCopies` (111 copies, all
+verified against their Convex originals, deleted; `file_blobs` 0, files 112 untouched) →
+one-off orphan reclaim (fresh proof: 1,306/1,306 live refs resolve, 0 dangling; **1,748 blobs =
+796,137,772 B deleted**, disk 13.75 → 14.56 GB free; then all **1,013 live blobs re-hashed
+intact**) → the 37 QA test fixtures deleted through `library:removeMany` (37 → 0). The stall
+reaper's "Value is too large" stopped at the deploy (0 since) and the 2 stuck streams were reaped.
+**Acceptance on app.ollasuper.com:** `qa-library` 12/12 and `qa-library-quota` 6/6 (headed),
+`qa-library-redteam` 28/28, `qa-library-delete` (E2E_TARGET=production) 9/10 — every layer incl.
+real RAG before/after, the one failure is ticket re-use at the edge (below), `qa-mobile-smoke`
+20/20 (headed), `p-chat` 18/18, `qa-attach-early` 5/5, all 0 console errors. Not run:
+`qa-projects`, `qa-redteam-security` (they sign in as the admin account; its password is not
+available). A throwaway account B was created for the cross-account tests and deleted after.
+**Blocked by the session's permission classifier, left for the operator:** (1) `deploy/81-library-ops.sh`
+— so the edge still runs the old proxy (upload tickets NOT enforced at the edge, no low-disk 507;
+the 26 MB streamed cap and the server-side size check still hold), `EDGE_TICKET_SECRET` /
+`OPS_HEALTH_SECRET` are unset, and no reclaim / monitor timers exist: **bytes of files deleted
+from now on stay on disk until a reclaim runs**; (2) the export-zip cleanup — 44 zips =
+3,239,818,749 B, 10 with a copy in `/opt/backups`, 34 the only copies (2.60 GB, 08-18 → 09-26).
+Running the installer with `RECLAIM_APPLY=1` also installs the daily export reclaim, which would
+delete those 44 at 04:30.
 
 The operator's 23-item "no half-fixes" directive, built on the File Library below and verified on a
 throwaway staging copy of production (`deploy/staging/staging.sh`: same VM, own network, ports,

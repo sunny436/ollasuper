@@ -499,7 +499,7 @@ that writes `userFiles` directly: that is how a quota gets bypassed.
   writes 0006's columns on every persist; the new Convex sends `sha256`, which
   an old Python rejects (`extra="forbid"`). Full runbook: ROADMAP.
 
-### File Library hardening (branch `feat/library-hardening` — STAGING-verified, NOT on production)
+### File Library hardening (LIVE on production 2026-09-29, b302db4 — except `81-library-ops.sh`, not yet run: see ROADMAP)
 
 - **Deleting a file does not reach the disk by itself** — this self-hosted
   Convex never removes a deleted blob's bytes. `app.ops.blob_reclaim` does,

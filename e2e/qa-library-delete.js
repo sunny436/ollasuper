@@ -153,6 +153,7 @@ async function ask(page, question) {
   let ingestId = "";
   let downloadUrl = "";
   let attachmentUrl = "";
+  let usedUploadUrl = "";
 
   await step("upload a canary file through the ticketed upload path", async () => {
     await login(page);
@@ -166,14 +167,21 @@ async function ask(page, question) {
     const up = await fetch(begin.value.uploadUrl, { method: "POST", headers: { "content-type": "text/plain" }, body });
     if (up.status !== 200) throw new Error(`upload ${up.status}`);
     const { storageId } = await up.json();
-    const again = await fetch(begin.value.uploadUrl, { method: "POST", headers: { "content-type": "text/plain" }, body });
-    if (again.status !== 403) throw new Error(`a used ticket was accepted again (${again.status})`);
     const fin = await call("mutation", jwt, "library:finishUpload", {
       intentId: begin.value.intentId, storageId, name, contentType: "text/plain",
     });
     if (!fin.ok || !fin.value.ok) throw new Error(`finish: ${fin.error || fin.value?.code}`);
     fileId = fin.value.fileId;
-    return "the ticket was single-use (second POST 403)";
+    usedUploadUrl = begin.value.uploadUrl;
+  });
+
+  // Its own step: a failure here (an edge that does not redeem tickets yet)
+  // must not take the rest of the proof down with it.
+  await step("the upload ticket is single-use at the edge", async () => {
+    if (!usedUploadUrl) throw new Error("no upload to replay");
+    const again = await fetch(usedUploadUrl, { method: "POST", headers: { "content-type": "text/plain" }, body });
+    if (again.status !== 403) throw new Error(`a used ticket was accepted again (${again.status})`);
+    return "second POST 403";
   });
 
   await step("it is processed and every layer has it", async () => {
