@@ -384,6 +384,43 @@ same face at 800.
 - Named limits: the OPEN popup of a native `<select>`/date/time input is OS-drawn;
   the OG image is Satori with its own bundled font; email is out of scope.
 
+### Content width (2026-10-09)
+
+Everything right of the rail (and of the Settings sidebar) is one column of
+**`max-w-content` = `max(48rem, 70cqw)`** (`packages/ui/tailwind.config.ts`): 70%
+of the area beside the sidebar, never narrower than the 768px it used to be. The
+empty chat uses `max-w-[max(58rem,70cqw)]` and Library `max-w-[max(64rem,70cqw)]`
+— each surface's old width is its floor, so no screen got narrower.
+
+- **`cqw` needs a query container, and fails silently without one**: it falls
+  back to the viewport (measured 1,344px at 1920 with the rail open). Every pane
+  holding such a column declares `[container-type:inline-size]` — the roots of
+  chat-layout, projects, project-detail and library, the Settings `<main>`, and on
+  Scheduled the LIST scroller, not the root: the root also holds the 420px task
+  panel, and 70% of it put the list 37px from that panel.
+- **Not a percentage.** `%` resolves against each element's own parent: the
+  transcript sits inside a scrollbar and the composer does not, so they came out
+  5.6px apart, and every line re-wrapped when the scrollbar appeared mid-answer.
+  `cqw` measures one box for both.
+- **The composer shell has no cap of its own** — inside the 70% column a second
+  cap compounds to 70% of 70%. The transcript mirrors its scrollbar gutter
+  (`scrollbar-gutter: stable both-edges`) only from a 50rem container; that is
+  what puts transcript text and composer box on one axis (Δ 0px). Unconditional,
+  it doubled the narrow-width offset (16px vs the 8px it is below 50rem).
+- `container-type` does **not** make the pane the containing block of
+  `position: fixed` (measured, Chromium and WebKit), so the inline dialogs and
+  backdrops inside these panes stay viewport-relative. `contain: layout|paint`, a
+  `transform` or a `filter` on a pane root WOULD capture all of them.
+- Cost: the rail's 300ms width transition re-resolves `70cqw` on every frame. On
+  a real long thread (~7k chars) that is 0–1 frames over 33ms per toggle, the
+  same as the old fixed caps measured alongside; a synthetic 220-paragraph
+  transcript cost 3–4. Over the budget (4), the fallback is
+  `max(48rem, (100vw - var(--rail-w)) * 0.7)`, flipped once per toggle.
+- `e2e/qa-content-width.js` is the gate: the formula on every surface × nine
+  widths × rail open/collapsed + a phone, overflow against the OLD caps
+  re-applied live on the same page, composer/transcript alignment, the stream
+  re-wrap, the rail animation, and fixed-position probes in WebKit too.
+
 ### Freshness, evidence and rendered verification (2026-09-19)
 
 The 18.09.2026 skill audit found a "last 30 days" question answered from a

@@ -2,6 +2,48 @@
 
 Deferred work, captured so it isn't lost. Ordered roughly by priority.
 
+## Content width: 70% of the area beside the sidebar (2026-10-09) - LIVE 4027132 (857c8c9 → 4027132), prod-verified
+
+Every surface right of the rail (chat empty and thread, Projects, a project, Scheduled, Library) and
+Settings now caps its column at `max(floor, 70cqw)` instead of a fixed width: `max-w-content` =
+`max(48rem, 70cqw)` in `packages/ui/tailwind.config.ts`, 58rem floor on the empty chat, 64rem on
+Library. Each floor is the width that surface had before, so no screen got narrower. Measured on
+production at 1920: 1,153.6 px of the 1,648 px pane (0.700) on every workspace surface, 1,343.3 of 1,919
+with the rail collapsed, Settings 1,142.4 of 1,632; below a ~1,097 px pane the 768 px floor holds;
+phones unchanged (full width).
+
+- **Why `cqw`, not `%`** (the second deep pass rejected v1 on measurements): a percentage resolves
+  against each element's own parent, so the transcript (inside its scrollbar) and the composer came out
+  5.6 px apart and the transcript re-wrapped when its scrollbar appeared mid-answer. Each pane root is a
+  query container; the composer shell lost its own cap (it would compound to 70% of 70%); the transcript
+  mirrors its scrollbar gutter from a 50rem pane, so composer box and transcript text share both edges
+  (Δ 0 px; they were 4 px off before this change).
+- **Found in acceptance and fixed (4027132):** on `/scheduled/<task>` the 420 px detail panel lives in
+  the pane root, so 70% of the root put the list 37 px from the panel (1,153.6 of a 1,228 px area). The
+  list scroller is Scheduled's query container now: 859.6 of 1,228.
+- **`e2e/qa-content-width.js` (new; headed Chromium + WebKit): 960/960, 0 console errors.** The
+  formula ±0.5 px on 9 routes (incl. the panel case) × 1920→768 × rail open/collapsed, a 390 phone, and
+  WebKit; overflow against the OLD caps re-applied live on the same page (the empty chat's 20 px pane
+  overflow at 768 is pre-existing — 20 px under the old caps too); a real generated thread (deleted
+  after): transcript width constant over 757 stream samples as its scrollbar appeared; content wider
+  than any column (bare URL, 400-char code line, 18-column table, display math) widens nothing,
+  escapes nothing and scrolls inside its own box, at every width and on the phone; rail toggle on
+  a 7k-char thread 0 frames > 33 ms median (old caps the same; a synthetic 220-paragraph transcript
+  cost 3–4); search dialog 576 px; the inline New-project and Scheduled-filter overlays still cover the
+  viewport in both engines (`container-type` does not capture `position: fixed`).
+- **Harness trap:** WebKit has no `requestIdleCallback`, so the rail's /library /projects /scheduled
+  warm-up fires ~1.65 s after EVERY full load, and a `page.goto` in that window aborts it: "Failed to
+  fetch RSC payload … Load failed" (the pre-existing noise noted under File Library). The suite waits
+  for the three warm-ups instead of filtering the error.
+- Regression: `p-chat` 18/18, 0 console errors · `qa-sidebar-compact` PASS, 0 console errors ·
+  `qa-responsive --part all`: 578 route rows with 0 horizontal overflow, 0 content outside the
+  viewport, 0 covered controls. Its 188 failures are all pre-existing and listed under File Library
+  "found, not fixed": 184 are the WebKit prefetch-abort console noise above, 4 the Escape-at-375 bug in
+  "Move to project" / "Chat instructions". **Its `unbreakable` part silently SKIPPED** at every
+  viewport ("no assistant message on this route"; the selector `div.group.my-5` is still current, the
+  cause is not yet investigated), so it does not guard wide transcript content as it stands;
+  `qa-content-width.js` now probes that shape on a real thread.
+
 ## Response speed + quality (2026-09-29) - LIVE 91aa231 (fa19db0 → 6e4ae72 → 724fe38 → ca480de → 91aa231), prod-verified
 
 Measured first (7-day + 48 h production logs, then a 63-turn headed benchmark, `e2e/perf-response.js`):
