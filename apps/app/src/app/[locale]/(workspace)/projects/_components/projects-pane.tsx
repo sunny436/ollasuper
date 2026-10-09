@@ -82,7 +82,8 @@ export function ProjectsPane() {
   const settling = searching && status === "LoadingMore";
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1">
+    // The query container `max-w-content` (70cqw) measures — see tailwind.config.
+    <div className="relative flex min-h-0 min-w-0 flex-1 [container-type:inline-size]">
       <div className="scrollbar-quiet flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
         <div className="flex shrink-0 items-center gap-1 px-3 py-3">
           <button
@@ -110,10 +111,9 @@ export function ProjectsPane() {
           </div>
         </div>
 
-        {/* max-w-3xl, matching every other workspace surface (chat transcript,
-            scheduled). The reference column is wider, but breaking the app's own
-            content rhythm for one page would be the more visible inconsistency. */}
-        <div className="mx-auto w-full max-w-3xl px-5 pb-24">
+        {/* max-w-content, matching every other workspace surface (chat transcript,
+            scheduled, library, settings): 70% of the pane, never under 768px. */}
+        <div className="mx-auto w-full max-w-content px-5 pb-24">
           <header className="flex flex-wrap items-center justify-between gap-3 pt-6">
             <h1 className="text-3xl font-semibold tracking-tight text-primary">
               Projects

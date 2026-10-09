@@ -194,10 +194,10 @@ export default function ConnectorsPage() {
   );
 }
 
-/** Two columns from `sm` up, one below — inside the layout's existing
- *  `max-w-3xl` column. No settings page has ever opted out of that width, and a
- *  two-up grid fits it comfortably, so the catalogue needs no layout exception
- *  of its own. */
+/** Two columns from `sm` up, one below — inside the layout's `max-w-content`
+ *  column (70% of the pane, never under 768px). No settings page opts out of
+ *  that width, and a two-up grid fits it at every size, so the catalogue needs
+ *  no layout exception of its own. */
 function Grid({
   views,
   onRun,

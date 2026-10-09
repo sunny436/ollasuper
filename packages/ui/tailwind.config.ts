@@ -40,6 +40,17 @@ const config = {
           "monospace",
         ],
       },
+      maxWidth: {
+        // The workspace content column: 70% of the area beside the sidebar, never
+        // narrower than 768px. `cqw` is the nearest QUERY CONTAINER's width, so
+        // every pane root that uses this declares `[container-type:inline-size]`;
+        // without one it silently falls back to the whole window (measured: 1,344px
+        // at 1920 with the sidebar open). A percentage was measured and rejected —
+        // it resolves against each element's own parent, so the transcript (inside a
+        // scrollbar) and the composer (not) came out 5.6px apart and the transcript
+        // re-wrapped when its scrollbar appeared mid-answer.
+        content: "max(48rem, 70cqw)",
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

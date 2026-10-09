@@ -230,7 +230,13 @@ export function MessageList({ threadId }: { threadId: string | null }) {
         // overflow-anchor:none — browser scroll anchoring silently adjusts
         // scrollTop to keep an anchor node stationary, which fights the manual
         // pin during streaming and produces 1-3px jitter per token.
-        className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
+        //
+        // scrollbar-gutter both-edges, once the pane is wide enough that the
+        // column is capped (from 50rem): the scrollbar's gutter is mirrored on the
+        // left, so the transcript centres on the same axis as the composer, which
+        // has no scrollbar — they were 4px off (half an 8px bar). Not below 50rem:
+        // there the column is the full width, and a second gutter only narrows it.
+        className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none] [@container(min-width:50rem)]:[scrollbar-gutter:stable_both-edges]"
       >
         {/*
           overflow-wrap is INHERITED, and it is set here rather than per renderer:
@@ -244,7 +250,7 @@ export function MessageList({ threadId }: { threadId: string | null }) {
           break-word, NOT anywhere: `anywhere` also shrinks min-content, which
           would make wide tables wrap instead of scroll inside their wrapper.
         */}
-        <div className="mx-auto w-full max-w-3xl px-4 py-6 [overflow-wrap:break-word] md:px-6">
+        <div className="mx-auto w-full max-w-content px-4 py-6 [overflow-wrap:break-word] md:px-6">
           {loadingFirst && settled.length === 0 && pendingToShow.length === 0 && (
             <>
               <MessageSkeleton align="right" />

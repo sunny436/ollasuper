@@ -171,7 +171,8 @@ export function LibraryPane() {
 
   return (
     <div
-      className="relative flex min-h-0 min-w-0 flex-1"
+      // The query container the column's 70cqw measures — see tailwind.config.
+      className="relative flex min-h-0 min-w-0 flex-1 [container-type:inline-size]"
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes("Files")) return;
         e.preventDefault();
@@ -214,7 +215,9 @@ export function LibraryPane() {
           </div>
         </div>
 
-        <div className="mx-auto w-full max-w-5xl px-5 pb-24">
+        {/* 70% of the pane like every other surface, but never under the 64rem
+            the file grid already had, so no screen size gets a narrower Library. */}
+        <div className="mx-auto w-full max-w-[max(64rem,70cqw)] px-5 pb-24">
           <header className="flex flex-wrap items-end justify-between gap-4 pt-6">
             <div className="flex min-w-0 flex-col gap-3">
               <h1 className="text-3xl font-semibold tracking-tight text-primary">Library</h1>

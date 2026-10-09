@@ -72,7 +72,9 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
   return (
     // `isolate` contains the backdrop's -z-10 so it stays behind this pane's
     // header/transcript but never slides under the workspace-level background.
-    <div className="relative isolate flex min-h-0 min-w-0 flex-1 flex-col">
+    // The query container is what `max-w-content` (70cqw) measures: the
+    // transcript and the composer both size from THIS pane, so they match.
+    <div className="relative isolate flex min-h-0 min-w-0 flex-1 flex-col [container-type:inline-size]">
       {children}
 
       {/*
@@ -133,7 +135,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
               // e2e/qa-responsive.js on every touch viewport). So on touch the
               // column is transparent to pointers and its two children take the
               // events back.
-              className={`pointer-events-auto mx-auto flex w-full flex-col items-center gap-5 ${centred ? "max-w-[58rem] [@media(pointer:coarse)]:h-full [@media(pointer:coarse)]:pointer-events-none" : "max-w-3xl"}`}
+              className={`pointer-events-auto mx-auto flex w-full flex-col items-center gap-5 ${centred ? "max-w-[max(58rem,70cqw)] [@media(pointer:coarse)]:h-full [@media(pointer:coarse)]:pointer-events-none" : "max-w-content"}`}
             >
               <AnimatePresence mode="popLayout">
                 {centred && (

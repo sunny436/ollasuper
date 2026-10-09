@@ -67,8 +67,8 @@ export default function SettingsLayout({
             </div>
           )}
 
-          {/* Content */}
-          <main className="relative z-10 flex min-w-0 flex-1 flex-col">
+          {/* Content. The query container `max-w-content` (70cqw) measures. */}
+          <main className="relative z-10 flex min-w-0 flex-1 flex-col [container-type:inline-size]">
             <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border px-4 sm:px-6">
               <button
                 type="button"
@@ -85,7 +85,7 @@ export default function SettingsLayout({
             </header>
 
             <div className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto">
-              <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+              <div className="mx-auto w-full max-w-content px-4 py-8 sm:px-6">
                 {children}
               </div>
             </div>

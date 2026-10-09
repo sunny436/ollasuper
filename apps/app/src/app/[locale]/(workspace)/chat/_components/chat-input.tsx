@@ -423,7 +423,9 @@ export function ChatInput({
       <div
         ref={composerShell}
         data-composer-shell
-        className={`mx-auto w-full [container-type:inline-size] ${centred ? "max-w-[58rem]" : "max-w-3xl"}`}
+        // No width cap of its own: it sits inside chat-layout's column, which is
+        // already 70% of the pane. A second cap here would compound (70% of 70%).
+        className="mx-auto w-full [container-type:inline-size]"
       >
         <label htmlFor="chat-composer" className="sr-only">
           Message
