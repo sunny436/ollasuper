@@ -70,9 +70,13 @@ export function ScheduledPane() {
   }, [tasks, filter]);
 
   return (
-    // The query container `max-w-content` (70cqw) measures — see tailwind.config.
-    <div className="relative flex min-h-0 min-w-0 flex-1 [container-type:inline-size]">
-      <div className="scrollbar-quiet flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+    <div className="relative flex min-h-0 min-w-0 flex-1">
+      {/* The query container `max-w-content` (70cqw) measures is the LIST, not
+          this root: with a task open, the root also holds the 420px detail panel,
+          and 70% of the whole pane put the list 37px from that panel (measured at
+          1920: 1,154px of a 1,228px area). Being the scroller, its width drops by
+          the scrollbar's when the list overflows — 5.6px, on a list, not a stream. */}
+      <div className="scrollbar-quiet flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto [container-type:inline-size]">
         {/* Rail controls, matching the chat pane's header affordances. */}
         <div className="flex shrink-0 items-center gap-1 px-3 py-3">
           <button
